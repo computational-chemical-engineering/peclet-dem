@@ -1,2 +1,0 @@
-# Empty dependencies file for cuBQL_cpu_float2_static.
-# This may be replaced when dependencies are built.

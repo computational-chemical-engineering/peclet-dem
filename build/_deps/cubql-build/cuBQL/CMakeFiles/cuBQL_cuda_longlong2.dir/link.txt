@@ -1,1 +1,0 @@
-/usr/bin/g++ -fPIC -Wl,--dependency-file=CMakeFiles/cuBQL_cuda_longlong2.dir/link.d -shared -Wl,-soname,libcuBQL_cuda_longlong2.so -o libcuBQL_cuda_longlong2.so @CMakeFiles/cuBQL_cuda_longlong2.dir/objects1.rsp @CMakeFiles/cuBQL_cuda_longlong2.dir/linkLibs.rsp -L"/usr/local/cuda/targets/x86_64-linux/lib/stubs" -L"/usr/local/cuda/targets/x86_64-linux/lib"

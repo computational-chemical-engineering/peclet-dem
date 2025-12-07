@@ -1,3 +1,0 @@
-/usr/bin/ar qc libcuBQL_cuda_float3_static.a CMakeFiles/cuBQL_cuda_float3_static.dir/builder/cuda/instantiate_builders.cu.o
-/usr/bin/ar q libcuBQL_cuda_float3_static.a CMakeFiles/cuBQL_cuda_float3_static.dir/cmake_device_link.o
-/usr/bin/ranlib libcuBQL_cuda_float3_static.a

@@ -1,3 +1,0 @@
-/usr/bin/ar qc libcuBQL_cpu_longlong2_static.a CMakeFiles/cuBQL_cpu_longlong2_static.dir/builder/cpu/instantiate_builders.cpp.o
-/usr/bin/ar q libcuBQL_cpu_longlong2_static.a CMakeFiles/cuBQL_cpu_longlong2_static.dir/cmake_device_link.o
-/usr/bin/ranlib libcuBQL_cpu_longlong2_static.a
