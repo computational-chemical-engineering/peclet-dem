@@ -54,6 +54,7 @@ set(DEMGPU_CPP_SRC
     src/simulation.cpp
     src/mpi/domain.cpp
     src/mpi/communicator.cpp
+    src/shapes/point_sampler.cpp
 )
 
 # ---- Python Extension Module ----
@@ -87,7 +88,7 @@ if (DEMGPU_ENABLE_MPI)
     target_link_libraries(demgpu PRIVATE MPI::MPI_CXX)
 endif()
 
-target_link_libraries(demgpu PRIVATE pybind11::module CUDA::cudart)
+target_link_libraries(demgpu PRIVATE pybind11::module CUDA::cudart cuBQL_queries cuBQL_cuda_float3_static)
 
 # ---- Warnings ----
 if (MSVC)

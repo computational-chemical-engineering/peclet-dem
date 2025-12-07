@@ -10,7 +10,7 @@ __global__ void predict_position_kernel(ParticleSystemData ps, float dt,
 
   // Load active only
   float4 vel_w = ps.d_vel[idx];
-  if (vel_w.w < 0.5f)
+  if (vel_w.w > 0.5f)
     return; // Ghost or inactive
 
   float3 pos = make_float3(ps.d_pos[idx].x, ps.d_pos[idx].y, ps.d_pos[idx].z);
@@ -49,7 +49,7 @@ __global__ void update_velocity_kernel(ParticleSystemData ps, float dt) {
     return;
 
   float4 vel_w = ps.d_vel[idx];
-  if (vel_w.w < 0.5f)
+  if (vel_w.w > 0.5f)
     return;
 
   float3 pos = make_float3(ps.d_pos[idx].x, ps.d_pos[idx].y, ps.d_pos[idx].z);

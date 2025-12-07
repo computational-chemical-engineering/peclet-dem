@@ -8,11 +8,15 @@ public:
   Simulation(int num_particles);
   ~Simulation();
 
-  void initialize();
+  void initialize(int shape_type = 1); // 0=Sphere, 1=Cylinder
   void step(float dt);
+  int num_particles() const { return num_particles_; }
 
-  // Helpers for Python binding
+  // Helpers // Python Bindings
   void get_positions_numpy(unsigned long h_ptr, int max_size);
+  void get_quaternions_numpy(unsigned long h_ptr, int max_size);
+  void get_scales_numpy(unsigned long h_ptr, int max_size);
+  void set_scales_numpy(unsigned long h_ptr, int max_size);
 
 private:
   int num_particles_;
