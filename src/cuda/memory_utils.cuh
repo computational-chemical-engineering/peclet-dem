@@ -1,56 +1,26 @@
 #pragma once
-// memory_utils.cuh - Helpers for cudaMalloc, SoA structs
+#include <cstdio>
 #include <cuda_runtime.h>
 #include <stdexcept>
-#include <string>
 
-namespace demgpu {
+#define CUDA_CHECK(call)                                                       \
+  {                                                                            \
+    cudaError_t err = call;                                                    \
+    if (err != cudaSuccess) {                                                  \
+      fprintf(stderr, "CUDA Error: %s in %s:%d\n", cudaGetErrorString(err),    \
+              __FILE__, __LINE__);                                             \
+      throw std::runtime_error(cudaGetErrorString(err));                       \
+    }                                                                          \
+  }
 
-inline void cudaCheck(cudaError_t err, const char* msg) {
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("CUDA Error: ") + msg + ": " + cudaGetErrorString(err));
-    }
+template <typename T> void allocate_device(T *&ptr, size_t count) {
+  CUDA_CHECK(cudaMalloc((void **)&ptr, count * sizeof(T)));
+  CUDA_CHECK(cudaMemset(ptr, 0, count * sizeof(T)));
 }
 
-// Simple RAII device buffer
-template <typename T>
-class DeviceBuffer {
-public:
-    DeviceBuffer() = default;
-    explicit DeviceBuffer(size_t count) { allocate(count); }
-    ~DeviceBuffer() { release(); }
-
-    void allocate(size_t count) {
-        release();
-        count_ = count;
-        cudaCheck(cudaMalloc(&ptr_, count * sizeof(T)), "cudaMalloc failed");
-    }
-
-    void release() {
-        if (ptr_) {
-            cudaFree(ptr_);
-            ptr_ = nullptr;
-            count_ = 0;
-        }
-    }
-
-    T* data() { return ptr_; }
-    const T* data() const { return ptr_; }
-    size_t size() const { return count_; }
-
-    void upload(const T* host, size_t n) {
-        if (n > count_) throw std::runtime_error("Upload exceeds buffer size");
-        cudaCheck(cudaMemcpy(ptr_, host, n * sizeof(T), cudaMemcpyHostToDevice), "Memcpy H2D failed");
-    }
-
-    void download(T* host, size_t n) const {
-        if (n > count_) throw std::runtime_error("Download exceeds buffer size");
-        cudaCheck(cudaMemcpy(host, ptr_, n * sizeof(T), cudaMemcpyDeviceToHost), "Memcpy D2H failed");
-    }
-
-private:
-    T* ptr_ = nullptr;
-    size_t count_ = 0;
-};
-
-} // namespace demgpu
+template <typename T> void free_device(T *&ptr) {
+  if (ptr) {
+    CUDA_CHECK(cudaFree(ptr));
+    ptr = nullptr;
+  }
+}
