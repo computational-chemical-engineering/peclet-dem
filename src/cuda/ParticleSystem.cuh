@@ -49,8 +49,11 @@ struct ParticleSystemData {
   // --- Broadphase Data ---
   cuBQL::bvh3f bvh;
   int2 *d_potential_collisions;
-  int *d_potential_count;
+  int *d_potential_count; // Single counter
   int max_potential_collisions;
+
+  // Locks for Gauss-Seidel
+  int *d_locks;
 
   // --- System Bounds ---
 };

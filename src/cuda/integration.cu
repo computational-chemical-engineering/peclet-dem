@@ -10,6 +10,7 @@ __global__ void predict_position_kernel(ParticleSystemData ps, float dt,
 
   // Load active only
   float4 vel_w = ps.d_vel[idx];
+
   if (vel_w.w > 0.5f)
     return; // Ghost or inactive
 
@@ -57,13 +58,40 @@ __global__ void update_velocity_kernel(ParticleSystemData ps, float dt) {
                                 ps.d_pos_star[idx].z);
 
   // Update velocity v = (x* - x) / dt
-  float3 new_vel =
-      make_float3((pos_star.x - pos.x) / dt, (pos_star.y - pos.y) / dt,
-                  (pos_star.z - pos.z) / dt);
+  float damping = 0.1f; // Heavy Damping for Packing
+  float3 new_vel = make_float3((pos_star.x - pos.x) / dt * damping,
+                               (pos_star.y - pos.y) / dt * damping,
+                               (pos_star.z - pos.z) / dt * damping);
 
   // Update position
+  float3 final_pos = make_float3(pos_star.x, pos_star.y, pos_star.z);
+
+  // Periodic Wrapping
+  float3 size = ps.domain_size;
+  float3 min = ps.domain_min;
+  float3 max = ps.domain_max;
+
+  if (ps.periodic_x) {
+    if (final_pos.x < min.x)
+      final_pos.x += size.x;
+    else if (final_pos.x >= max.x)
+      final_pos.x -= size.x;
+  }
+  if (ps.periodic_y) {
+    if (final_pos.y < min.y)
+      final_pos.y += size.y;
+    else if (final_pos.y >= max.y)
+      final_pos.y -= size.y;
+  }
+  if (ps.periodic_z) {
+    if (final_pos.z < min.z)
+      final_pos.z += size.z;
+    else if (final_pos.z >= max.z)
+      final_pos.z -= size.z;
+  }
+
   ps.d_pos[idx] =
-      make_float4(pos_star.x, pos_star.y, pos_star.z, ps.d_pos[idx].w);
+      make_float4(final_pos.x, final_pos.y, final_pos.z, ps.d_pos[idx].w);
   ps.d_vel[idx] = make_float4(new_vel.x, new_vel.y, new_vel.z, vel_w.w);
 }
 

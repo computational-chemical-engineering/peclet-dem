@@ -1,13 +1,8 @@
 #include "ParticleSystem.cuh"
 #include <cuBQL/builder/cuda.h>
-#include <cuBQL/bvh.h>
 #include <cuBQL/traversal/fixedBoxQuery.h>
 #include <cuda_runtime.h>
 #include <iostream>
-
-// Re-declare since I overwrote the file (wait, I should use the existing
-// content as base?) I will just copy the generate_ghosts stuff and add the
-// rest.
 
 // Generate ghosts for periodic boundaries
 __global__ void generate_ghosts_kernel(ParticleSystemData ps,
@@ -94,6 +89,10 @@ __global__ void generate_ghosts_kernel(ParticleSystemData ps,
         ps.d_quat[dest_idx] = ps.d_quat[idx];
         ps.d_scale[dest_idx] = ps.d_scale[idx];
         ps.d_shape_ids[dest_idx] = ps.d_shape_ids[idx];
+
+        // Initialize solver buffers for ghosts
+        ps.d_delta_pos[dest_idx] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        ps.d_constraint_counts[dest_idx] = 0;
       }
     }
   }
@@ -120,33 +119,46 @@ void generate_ghosts(ParticleSystemData &ps, float threshold) {
 
 // Wrapper to convert particles to AABBs
 __global__ void particles_to_aabb_kernel(ParticleSystemData ps,
-                                         cuBQL::box3f *boxes,
-                                         float radius_expansion) {
+                                         float global_scale,
+                                         cuBQL::box3f *d_aabbs) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= ps.num_particles)
     return;
 
-  float3 p = make_float3(ps.d_pos_star[idx].x, ps.d_pos_star[idx].y,
-                         ps.d_pos_star[idx].z);
+  float4 p = ps.d_pos_star[idx]; // Use predicted position
+  // Effective Scale
+  float s = ps.d_scale[idx] * global_scale;
 
-  // Scale the AABB
-  float s = ps.d_scale[idx];
-  // Assuming simple sphere radius for now (e.g., 0.5) + expansion
-  // For cylinder (r=0.5, h=2.0), the bound radius is ~1.2
-  // Let's use 1.5 * scale as safe bound
-  float r = 1.5f * s + radius_expansion;
+  // Simple bounding box for sphere of radius s * shape_radius
+  // Assuming worst case shape radius ~ 0.5 (unit diameter)
+  // Expand slightly for motion or shape
+  float radius = 0.5f * s;
+  // For cylinder: max dimension? 2.0 height -> 1.0 half height.
+  // We used 1.5 * s in solver ground check.
+  // Safe bound: 1.5 * s
 
-  boxes[idx].upper = cuBQL::vec_t<float, 3>(p.x + r, p.y + r, p.z + r);
-  boxes[idx].lower = cuBQL::vec_t<float, 3>(p.x - r, p.y - r, p.z - r);
+  float bound = 1.5f * s; // Conservative
+
+  d_aabbs[idx].upper =
+      cuBQL::vec_t<float, 3>(p.x + bound, p.y + bound, p.z + bound);
+  d_aabbs[idx].lower =
+      cuBQL::vec_t<float, 3>(p.x - bound, p.y - bound, p.z - bound);
+
+  if (idx == 0) {
+    // printf("DEBUG: AABB[0] p=(%f, %f, %f), s=%f, bound=%f, lower=(%f), "
+    //        "upper=(%f)\n",
+    //        p.x, p.y, p.z, s, bound, d_aabbs[idx].lower.x,
+    //        d_aabbs[idx].upper.x);
+  }
 }
 
 // Global storage for AABBs (managed here or allocated per frame)
 cuBQL::box3f *d_boxes = nullptr;
 size_t boxes_capacity = 0;
 
-void build_bvh(ParticleSystemData &ps) {
+void build_bvh(ParticleSystemData &ps, float global_scale) {
   // Re-alloc boxes if needed
-  if (ps.capacity > boxes_capacity) {
+  if ((size_t)ps.capacity > boxes_capacity) {
     if (d_boxes)
       cudaFree(d_boxes);
     cudaMalloc(&d_boxes, ps.capacity * sizeof(cuBQL::box3f));
@@ -156,42 +168,30 @@ void build_bvh(ParticleSystemData &ps) {
   int threads = 256;
   int blocks = (ps.num_particles + threads - 1) / threads;
 
-  float radius_expansion = 0.1f; // For broadphase
-  particles_to_aabb_kernel<<<blocks, threads>>>(ps, d_boxes, radius_expansion);
+  particles_to_aabb_kernel<<<blocks, threads>>>(ps, global_scale, d_boxes);
 
   // Build BVH
-  // Note: gpuBuilder usually frees previous nodes if handled by wrapper, but
-  // here ps.bvh is raw struct. If ps.bvh.nodes was allocated by previous build,
-  // we should probably check. However, cuBQL::gpuBuilder might overwrite? Let's
-  // assume gpuBuilder handles it or leaks. Usually it calls internal
-  // allocators. The best practice is to likely free if not null. But bvh struct
-  // members are just pointers. cuBQL::free(ps.bvh) ?
-
-  cuBQL::gpuBuilder(ps.bvh, d_boxes, ps.num_particles, cuBQL::BuildConfig());
+  using namespace cuBQL;
+  BuildConfig config; // Default constructor
+  gpuBuilder(ps.bvh, d_boxes, ps.num_particles, config);
 }
 
 __global__ void find_collisions_kernel(ParticleSystemData ps,
-                                       float query_radius) {
+                                       float global_scale, float query_radius) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= ps.num_particles)
     return;
 
-  // We only care about collisions involving at least one Real particle.
-  // Or we handle all pairs and solver handles duplicates?
-  // Optimization: If both A and B are ghosts, ignore. Collision is handled on
-  // the original side.
-
-  // Also, we traverse for "idx". If idx is Ghost, we might skip?
-  // If idx is Ghost, its Real counterpart is handled.
-  // But Ghost->Real collision? Real handles it.
-  // Ghost->Ghost? Handled by Real->Real.
-  // So ONLY iterate Real particles.
+  // Only iterate Real particles.
   if (idx >= ps.num_real)
     return;
 
   float3 p = make_float3(ps.d_pos_star[idx].x, ps.d_pos_star[idx].y,
                          ps.d_pos_star[idx].z);
-  float r = 0.5f + query_radius;
+
+  float s = ps.d_scale[idx] * global_scale;
+  // Unit sphere radius 1.0 * s + margin
+  float r = 2.0f * s + query_radius;
 
   cuBQL::box3f queryBox;
   queryBox.lower = cuBQL::vec_t<float, 3>(p.x - r, p.y - r, p.z - r);
@@ -200,31 +200,34 @@ __global__ void find_collisions_kernel(ParticleSystemData ps,
   auto collision_lambda = [&](int other_idx) -> int {
     if (idx == other_idx)
       return CUBQL_CONTINUE_TRAVERSAL;
-    // Avoid duplicates: only accept if other_idx > idx?
-    // But what if other_idx is Ghost? Ghosts have high indices.
-    // If other_idx is Ghost, duplicate check is tricky.
-    // Simple rule: always accept (idx, other) and let solver uniqueify or just
-    // solve twice (wasted work but correct). Standard in parallel: add (idx,
-    // other).
 
     // Add to list
     int slot = atomicAdd(ps.d_potential_count, 1);
     if (slot < ps.max_potential_collisions) {
       ps.d_potential_collisions[slot] = make_int2(idx, other_idx);
+      if (slot < 5)
+        printf("DEBUG: Found collision: %d and %d (slot %d)\n", idx, other_idx,
+               slot);
     } else {
       return CUBQL_TERMINATE_TRAVERSAL; // Buffer full
     }
     return CUBQL_CONTINUE_TRAVERSAL;
   };
 
+  // fixedBoxQuery is a namespace inside cuBQL
   cuBQL::fixedBoxQuery::forEachPrim(collision_lambda, ps.bvh, queryBox);
 }
 
-void find_collisions(ParticleSystemData &ps) {
+void find_collisions(ParticleSystemData &ps, float global_scale) {
   cudaMemset(ps.d_potential_count, 0, sizeof(int));
 
-  int threads = 128; // Traversal uses stack, lower occupancy might be better?
+  int threads = 128;
   int blocks = (ps.num_real + threads - 1) / threads;
 
-  find_collisions_kernel<<<blocks, threads>>>(ps, 0.1f);
+  // if (global_scale > 0.9f)
+  //   printf("DEBUG: Launching find_collisions_kernel blocks=%d, threads=%d, "
+  //          "num_real=%d\n",
+  //          blocks, threads, ps.num_real);
+
+  find_collisions_kernel<<<blocks, threads>>>(ps, global_scale, 0.1f);
 }

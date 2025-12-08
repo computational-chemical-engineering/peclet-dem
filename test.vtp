@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<VTKFile type="PolyData" version="0.1" byte_order="LittleEndian" compressor="vtkZLibDataCompressor">
+<VTKFile type="PolyData" version="0.1" byte_order="LittleEndian">
+  <PolyData>
+    <Piece NumberOfPoints="10" NumberOfVerts="0" NumberOfLines="0" NumberOfStrips="0" NumberOfPolys="0">
+      <Points>
+        <DataArray type="Float32" Name="Points" NumberOfComponents="3" format="binary">
+          eAAAAPmkFD8oqVc/skgqP3PYJT/WzQw/vvJxPj+iRj7ABlg/cxGrPrCxzj4NS3I+XsrtPncbWj+ptyw/r/YvP33vCT9jCKE9PipBP6IAQD+Sdww/IEN+Pxui+D7yhR4/jEI2P0DxGD+6IyA+0te3PiSeTD6Hp/8+3Bw6Pw==
+        </DataArray>
+      </Points>
+      <PointData>
+        <DataArray type="Float32" Name="Velocity" NumberOfComponents="3" format="binary">
+          eAAAAO7ImT6TMvo+qlFGPzVMND8cxqw+Bw5ZP5c0ID/+vII+WfAsParleD/M84s9YD/sPvsDHz+mgDs/QmOnPi0WIj+eOGY+q2YeP4eo/j3lUo0+z49jPKMHQT9y6Zw+tPlHPwsOfjw6iBg/ELA+PkmNoz043E0/AyIZPw==
+        </DataArray>
+        <DataArray type="Float32" Name="Scale" NumberOfComponents="1" format="binary">
+          KAAAAL3GYD9EGRg/Ay4JP1sTrj4C5Hw/TlUoP3uotj7zrh0/EEQ3PsgULz4=
+        </DataArray>
+        <DataArray type="Int32" Name="ID" NumberOfComponents="1" format="binary">
+          KAAAAAAAAAABAAAAAgAAAAMAAAAEAAAABQAAAAYAAAAHAAAACAAAAAkAAAA=
+        </DataArray>
+      </PointData>
+    </Piece>
+  </PolyData>
+</VTKFile>
