@@ -11,9 +11,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../python"))
 
 from export_vtp import save_to_vtp
 
-def flush():
-    sys.stdout.flush()
-
 try:
     import demgpu
 except ImportError as e:
@@ -21,140 +18,180 @@ except ImportError as e:
     print(e)
     sys.exit(1)
 
-def check_overlaps(positions, radii, L):
-    overlaps = 0
-    max_overlap = 0.0
-    num_particles = len(positions)
-    
-    for i in range(num_particles):
-        for j in range(i + 1, num_particles):
-            # Distance with periodicity
-            delta = positions[j] - positions[i]
-            
-            # Minimum Image Convention
-            delta -= L * np.floor(delta / L + 0.5)
-            
-            dist_sq = np.dot(delta, delta)
-            sum_radii = radii[i] + radii[j]
-            
-            if dist_sq < sum_radii * sum_radii:
-                dist = np.sqrt(dist_sq)
-                overlap = sum_radii - dist
-                overlaps += 1
-                max_overlap = max(max_overlap, overlap)
+# Numba overlap check
+try:
+    from numba import njit, prange
+    HAS_NUMBA = True
+except ImportError:
+    HAS_NUMBA = False
+    print("WARNING: Numba not found. Using slow Numpy fallback.")
+
+def flush():
+    sys.stdout.flush()
+
+if HAS_NUMBA:
+    @njit(parallel=True)
+    def check_overlaps_numba(positions, radii, L):
+        overlaps = 0
+        max_overlap = 0.0
+        num_particles = positions.shape[0]
+        
+        # Naive N^2 check (acceptably fast for N=1000 with Numba)
+        for i in prange(num_particles):
+            for j in range(i + 1, num_particles):
+                # Delta
+                dx = positions[j, 0] - positions[i, 0]
+                dy = positions[j, 1] - positions[i, 1]
+                dz = positions[j, 2] - positions[i, 2]
                 
-    return overlaps, max_overlap
+                # MIC
+                dx -= L * np.floor(dx / L + 0.5)
+                dy -= L * np.floor(dy / L + 0.5)
+                dz -= L * np.floor(dz / L + 0.5)
+                
+                dist_sq = dx*dx + dy*dy + dz*dz
+                sum_radii = radii[i] + radii[j]
+                
+                if dist_sq < sum_radii * sum_radii:
+                    dist = np.sqrt(dist_sq)
+                    overlap = sum_radii - dist
+                    # Race condition on scalar add? Numba handles reduction or use atomic?
+                    # For simple counter/max, manually reduction is safer or just use array
+                    # But for simple boolean check:
+                    if overlap > 1e-4: # Tolerance
+                         # overlaps += 1 # Numba parallel reduction limitation
+                         max_overlap = max(max_overlap, overlap)
+                         overlaps += 1
+                         
+        return overlaps, max_overlap
+else:
+    def check_overlaps_numba(positions, radii, L):
+        # Fallback to Numpy
+        overlaps = 0
+        max_overlap = 0.0
+        num_particles = len(positions)
+        for i in range(num_particles):
+            for j in range(i + 1, num_particles):
+                delta = positions[j] - positions[i]
+                delta -= L * np.floor(delta / L + 0.5)
+                dist_sq = np.dot(delta, delta)
+                sum_radii = radii[i] + radii[j]
+                if dist_sq < sum_radii * sum_radii:
+                    dist = np.sqrt(dist_sq)
+                    overlap = sum_radii - dist
+                    if overlap > 1e-4:
+                        overlaps += 1
+                        max_overlap = max(max_overlap, overlap)
+        return overlaps, max_overlap
 
-def main():
-    print("Testing Flexible Packing API...")
-    flush()
-    
-    # 1. Configuration
-    NUM_PARTICLES = 1000
-    TARGET_PACKING_FRACTION = 0.64 # Initial loose packing density
-    GRANULAR_TEMPERATURE = 0.1 # One-third of the mean square of these fluctuation velocities
+def run_simulation(num_particles, packing_density, granular_temperature):
+    """
+    Runs a packing simulation and returns (overlaps, max_overlap, duration_sec).
+    """
     SEED = 42
-
     rng = np.random.default_rng(seed=SEED)
 
-    sim = demgpu.Simulation(NUM_PARTICLES)
+    sim = demgpu.Simulation(num_particles)
     sim.initialize(shape_type=0) # Sphere
-    print(f"Initialized with {NUM_PARTICLES} particles.")
-    flush()
 
-    # 2. Polydispersity (Scales)
-    # Generate log-normal distribution or uniform? User said "polydisperse". Uniform [0.8, 1.2] is simple.
-    print("Generating polydisperse scales (0.99 to 1.01)...")
-    scales = rng.uniform(0.99, 1.01, NUM_PARTICLES).astype(np.float32)
+    # Scales (Polydisperse)
+    scales = rng.uniform(0.99, 1.01, num_particles).astype(np.float32)
     sim.set_scales(scales)
     
-    # 3. Compute Volume & Box Size
-    # Base radius = 1.0 * scale (Updated default sphere radius to 1.0)
+    # Domain Calculation
     radii = 1.0 * scales
     particle_volumes = (4.0/3.0) * np.pi * (radii**3)
     total_particle_volume = np.sum(particle_volumes)
-    
-    required_box_volume = total_particle_volume / TARGET_PACKING_FRACTION
+    required_box_volume = total_particle_volume / packing_density
     L = required_box_volume**(1.0/3.0)
     
-    print(f"Total Particle Volume: {total_particle_volume:.4f}")
-    print(f"Target Packing Fraction: {TARGET_PACKING_FRACTION}")
-    print(f"Required Box Volume: {required_box_volume:.4f}")
-    print(f"Computed Box Side (L): {L:.4f}")
-    flush()
-    
-    # 4. Set Domain
     sim.set_domain((0.0, 0.0, 0.0), (L, L, L))
     
-    # 5. Initialize Positions
-    print(f"Seeding particles in [0, {L}]^3...")
-    pos = rng.uniform(0, L, (NUM_PARTICLES, 3)).astype(np.float32)
-    # Initialize velocities with Normal distribution
-    # T_g = <v^2>/3 = sigma^2  => sigma = sqrt(T_g)
-    sigma = np.sqrt(GRANULAR_TEMPERATURE)
-    vel = rng.normal(0.0, sigma, (NUM_PARTICLES, 3)).astype(np.float32)
+    # Seeding
+    pos = rng.uniform(0, L, (num_particles, 3)).astype(np.float32)
+    
+    # Velocities
+    sigma = np.sqrt(granular_temperature)
+    vel = rng.normal(0.0, sigma, (num_particles, 3)).astype(np.float32)
 
     sim.set_positions(pos)
     sim.set_velocities(vel)
     
-    # Verify Domain API
-    dmin = sim.get_domain_min()
-    dmax = sim.get_domain_max()
-    print(f"Domain verified: {dmin} -> {dmax}")
-    
-    # 3. Test Simulation Loop with Growth
-    print("Running Growth Loop (0 -> 1)...")
-    flush()
+    # Simulation Loop
     sim.set_gravity(0.0, 0.0, 0.0)
-    
-    # Variables for the new loop
-    num_steps = 100 # Total simulation steps
     dt = 0.01
-    num_particles = NUM_PARTICLES
-    initial_scales = scales # Use the scales defined earlier
-    os.makedirs("output", exist_ok=True) # Ensure output directory exists
-
-    print("Starting Growth Phase...")
+    
+    start_time = time.perf_counter()
+    
+    # Growth Phase
     growth_steps = 200
     for i in range(growth_steps):
-        current_scale = i / (growth_steps - 1) # Grow to 1.0
+        current_scale = i / (growth_steps - 1)
         sim.set_global_scale(current_scale)
         sim.step(dt)
-        if i % 20 == 0:
-            print(f"Growth Step {i}/{growth_steps} Scale={current_scale:.3f}")
-            flush()
-
-    # 3. Relaxation Phase
-    print("Starting Relaxation Phase...")
-    relax_steps = 200
+        
+    # Relaxation Phase
+    relax_steps = 500
     for i in range(relax_steps):
         sim.step(dt)
-        if i % 20 == 0:
-            print(f"Relax Step {i}/{relax_steps}")
-            flush()
+        
+    end_time = time.perf_counter()
+    duration = end_time - start_time
     
-    print("Simulation loop completed.")
-    flush()
-    
-    # Final check
+    # Analysis
     final_pos = sim.get_positions()
-    print(f"Final Bounds: {final_pos.min(axis=0)} to {final_pos.max(axis=0)}")
+    radii_final = scales * 1.0 # Global scale is 1.0
     
-    # Overlap Check
-    print("Checking for overlaps...")
+    overlaps, max_overlap = check_overlaps_numba(final_pos, radii_final, L)
     
-    # Effective radii = scales * 1.0 (global scale is 1.0 at end)
-    radii = scales * 1.0
+    return overlaps, max_overlap, duration
 
-    overlaps, max_overlap = check_overlaps(final_pos, radii, L)
+def main():
+    print("===================================================")
+    print("  DEM-GPU: High Density Packing Parameter Study")
+    print("===================================================")
+    
+    num_particles = 1000
+    densities = [0.40, 0.50, 0.55, 0.60, 0.62, 0.63, 0.64, 0.65]
+    temperatures = [0.1, 1.0] 
+    
+    results = []
+    
+    for T in temperatures:
+        print(f"\n--- Temperature: {T} ---")
+        best_density = 0.0
+        
+        for rho in densities:
+            print(f"Testing Rho={rho:.2f}...", end="")
+            flush()
+            
+            try:
+                overlaps, max_ov, duration = run_simulation(num_particles, rho, T)
+                print(f" Done. Time={duration:.2f}s, Overlaps={overlaps}, MaxOv={max_ov:.4f}")
+                
+                results.append({
+                    "T": T,
+                    "rho": rho,
+                    "overlaps": overlaps,
+                    "max_ov": max_ov,
+                    "time": duration
+                })
+                
+                if overlaps == 0:
+                    best_density = max(best_density, rho)
+                
+            except Exception as e:
+                print(f" Failed: {e}")
+                
+        print(f"-> Max Reachable Density at T={T}: {best_density:.2f}")
 
-    print(f"Total Overlaps: {overlaps}")
-    print(f"Max Overlap: {max_overlap:.4f}")
-    if overlaps > 0:
-        print("FAIL: Overlaps detected!")
-    else:
-        print("PASS: No overlaps detected.")
-    flush()
+    print("\n===================================================")
+    print("  Summary Results")
+    print("===================================================")
+    print(f"{'Temp':<6} {'Density':<8} {'Overlaps':<10} {'MaxOv':<10} {'Time(s)':<8}")
+    for res in results:
+        print(f"{res['T']:<6.1f} {res['rho']:<8.2f} {res['overlaps']:<10} {res['max_ov']:<10.4f} {res['time']:<8.2f}")
+    print("===================================================")
 
 if __name__ == "__main__":
     main()

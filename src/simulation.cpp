@@ -4,8 +4,10 @@
 #include "simulation.h"
 #include <cmath>
 #include <cuda_runtime.h>
+#include <fstream>
 #include <iostream>
 #include <random>
+#include <vector>
 #include <vector_types.h>
 
 Simulation::Simulation(int num_particles) : num_particles_(num_particles) {
@@ -25,11 +27,27 @@ Simulation::Simulation(int num_particles) : num_particles_(num_particles) {
   ps_.d_potential_collisions = nullptr;
   ps_.d_potential_count = nullptr;
   ps_.d_shapes = nullptr;
+  ps_.d_bvh_nodes = nullptr;
+  ps_.d_bvh_indices = nullptr;
+  ps_.d_morton = nullptr;
+  ps_.d_indices_sorted = nullptr;
+  ps_.d_contacts = nullptr;
+  ps_.d_num_contacts = nullptr;
+
   // Initialize defaults
   gravity_ = make_float3(0, -9.8f, 0);
   global_scale_ = 1.0f;
 
   allocate_system(num_particles_);
+
+  cudaEventCreate(&start_event_);
+  cudaEventCreate(&stop_event_);
+  cudaEventCreate(&integration_start_);
+  cudaEventCreate(&integration_stop_);
+  cudaEventCreate(&broadphase_start_);
+  cudaEventCreate(&broadphase_stop_);
+  cudaEventCreate(&solver_start_);
+  cudaEventCreate(&solver_stop_);
 }
 
 Simulation::~Simulation() {
@@ -48,8 +66,10 @@ Simulation::~Simulation() {
   free_device(ps_.d_shape_ids);
 
   // Cleanup collision buffers if allocated
-  // if (ps_.d_contacts) free_device(ps_.d_contacts);
-  // ..
+  if (ps_.d_contacts)
+    free_device(ps_.d_contacts);
+  if (ps_.d_num_contacts)
+    free_device(ps_.d_num_contacts);
 
   if (ps_.d_potential_collisions)
     free_device(ps_.d_potential_collisions);
@@ -57,6 +77,23 @@ Simulation::~Simulation() {
     free_device(ps_.d_potential_count);
   if (ps_.d_shapes)
     free_device(ps_.d_shapes);
+  if (ps_.d_bvh_nodes)
+    free_device(ps_.d_bvh_nodes);
+  if (ps_.d_bvh_indices)
+    free_device(ps_.d_bvh_indices);
+  if (ps_.d_morton)
+    free_device(ps_.d_morton);
+  if (ps_.d_indices_sorted)
+    free_device(ps_.d_indices_sorted);
+
+  cudaEventDestroy(start_event_);
+  cudaEventDestroy(stop_event_);
+  cudaEventDestroy(integration_start_);
+  cudaEventDestroy(integration_stop_);
+  cudaEventDestroy(broadphase_start_);
+  cudaEventDestroy(broadphase_stop_);
+  cudaEventDestroy(solver_start_);
+  cudaEventDestroy(solver_stop_);
 }
 
 void Simulation::allocate_system(int num_particles) {
@@ -113,6 +150,18 @@ void Simulation::initialize(int shape_type) {
   ps_.max_potential_collisions = max_potential;
   allocate_device(ps_.d_potential_collisions, max_potential * sizeof(int2));
   allocate_device(ps_.d_potential_count, 1 * sizeof(int));
+
+  // BVH Buffers
+  allocate_device(ps_.d_bvh_nodes, (2 * capacity - 1) * sizeof(BVHNode));
+  allocate_device(ps_.d_bvh_indices, capacity * sizeof(int));
+  allocate_device(ps_.d_morton, capacity * sizeof(unsigned int));
+  allocate_device(ps_.d_indices_sorted, capacity * sizeof(int));
+
+  // Contact Buffers
+  int max_contacts = capacity * 50; // Max contacts for solver
+  ps_.max_contacts = max_contacts;
+  allocate_device(ps_.d_contacts, max_contacts * sizeof(int2));
+  allocate_device(ps_.d_num_contacts, 1 * sizeof(int));
 
   // Locks
   allocate_device(ps_.d_locks, capacity * sizeof(int));
@@ -248,26 +297,42 @@ void Simulation::step(float dt) {
   float3 gravity = make_float3(0.0f, -9.8f, 0.0f);
 
   ps_.num_particles = ps_.num_real;
-  launch_integration(ps_, dt, gravity_);
 
-  // 2. Ghost Generation (Periodic Boundaries)
-  generate_ghosts(ps_, 1.0f); // 1.0 margin
+  // 1. Integration
+  cudaEventRecord(integration_start_);
+  launch_integration(ps_, dt, gravity_);
+  // Ghost Generation
+  generate_ghosts(ps_, 1.0f);
+  cudaEventRecord(integration_stop_);
 
   // 3. Broadphase
+  cudaEventRecord(broadphase_start_);
   build_bvh(ps_, global_scale_);
-  find_collisions(ps_, global_scale_);
+
+  // Clear contacts
+  cudaMemset(ps_.d_contacts, 0, ps_.max_contacts * sizeof(int2));
+  cudaMemset(ps_.d_num_contacts, 0, sizeof(int));
+
+  find_collisions(ps_, 1.0f); // search_radius = 1.0 (Unit Sphere)
+  cudaEventRecord(broadphase_stop_);
 
   // 4. Solver
-  int solver_substeps = 20;
-  for (int i = 0; i < solver_substeps; ++i) {
-    // Randomized Offset using prime stride
-    int offset = i * 9973;
-    launch_solver(ps_, dt / solver_substeps, global_scale_, offset);
-  }
+  cudaEventRecord(solver_start_);
+  int substeps = 50; // Increased to 50 for stability at 0.64 density
+  float sub_dt = dt / substeps;
 
-  // 5. Update Velocity - ONLY Real
-  ps_.num_particles = ps_.num_real;
+  launch_solver(ps_, sub_dt, substeps, global_scale_);
+  cudaEventRecord(solver_stop_);
+
+  // 5. Update Velocity (Finalize)
   launch_update(ps_, dt);
+
+  // Profile Sync
+  cudaEventSynchronize(solver_stop_);
+  cudaEventElapsedTime(&time_integration_, integration_start_,
+                       integration_stop_);
+  cudaEventElapsedTime(&time_broadphase_, broadphase_start_, broadphase_stop_);
+  cudaEventElapsedTime(&time_solver_, solver_start_, solver_stop_);
 }
 
 // -----------------------------------------------------------------------------
@@ -279,16 +344,34 @@ void Simulation::set_positions_numpy(py::array_t<float> pos) {
   if (buf.ndim != 2 || buf.shape[0] != num_particles_ || buf.shape[1] < 3) {
     throw std::runtime_error("Positions must be (N, 3) or (N, 4)");
   }
-  float *ptr = static_cast<float *>(buf.ptr);
 
   std::vector<float4> h_pos(num_particles_);
+  char *raw_ptr = (char *)buf.ptr;
   for (int i = 0; i < num_particles_; ++i) {
-    float x = ptr[i * buf.shape[1] + 0];
-    float y = ptr[i * buf.shape[1] + 1];
-    float z = ptr[i * buf.shape[1] + 2];
-    float w = (buf.shape[1] >= 4) ? ptr[i * buf.shape[1] + 3] : 1.0f;
-    h_pos[i] = make_float4(x, y, z, w);
+    char *row = raw_ptr + i * buf.strides[0];
+    float x = *(float *)(row + 0 * buf.strides[1]);
+    float y = *(float *)(row + 1 * buf.strides[1]);
+    float z = *(float *)(row + 2 * buf.strides[1]);
+    float w_val = 1.0f;
+    if (buf.shape[1] >= 4) {
+      w_val = *(float *)(row + 3 * buf.strides[1]);
+    }
+
+    // Safety Force
+    if (w_val == 0.0f) {
+      // Warning only once
+      if (i == 0)
+        printf(
+            "WARNING: Particles have w=0.0 (infinite mass), forcing to 1.0\n");
+      w_val = 1.0f;
+    }
+
+    h_pos[i] = make_float4(x, y, z, w_val);
   }
+
+  // Remove stderr debug
+  // fflush(stdout);
+
   CUDA_CHECK(cudaMemcpy(ps_.d_pos, h_pos.data(),
                         num_particles_ * sizeof(float4),
                         cudaMemcpyHostToDevice));
@@ -385,4 +468,78 @@ py::array_t<float> Simulation::get_scales_numpy() {
   printf("DEBUG: get_scales for %d particles. d_scale: %p. First val: %f\n",
          num_particles_, ps_.d_scale, ptr[0]);
   return result;
+}
+
+void Simulation::write_vtp(const std::string &filename) const {
+  std::vector<float4> h_pos(num_particles_);
+  std::vector<float> h_scale(num_particles_);
+
+  CUDA_CHECK(cudaMemcpy(h_pos.data(), ps_.d_pos,
+                        num_particles_ * sizeof(float4),
+                        cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(h_scale.data(), ps_.d_scale,
+                        num_particles_ * sizeof(float),
+                        cudaMemcpyDeviceToHost));
+
+  std::ofstream out(filename);
+  if (!out) {
+    throw std::runtime_error("Could not open file for writing: " + filename);
+  }
+
+  out << "<?xml version=\"1.0\"?>\n";
+  out << "<VTKFile type=\"PolyData\" version=\"0.1\" "
+         "byte_order=\"LittleEndian\">\n";
+  out << "  <PolyData>\n";
+  out << "    <Piece NumberOfPoints=\"" << num_particles_
+      << "\" NumberOfVerts=\"0\" "
+      << "NumberOfLines=\"0\" NumberOfStrips=\"0\" NumberOfPolys=\"0\">\n";
+
+  // Points
+  out << "      <Points>\n";
+  out << "        <DataArray type=\"Float32\" Name=\"Position\" "
+         "NumberOfComponents=\"3\" format=\"ascii\">\n";
+  for (int i = 0; i < num_particles_; ++i) {
+    out << h_pos[i].x << " " << h_pos[i].y << " " << h_pos[i].z << " ";
+  }
+  out << "\n        </DataArray>\n";
+  out << "      </Points>\n";
+
+  // Point Data
+  out << "      <PointData Scalars=\"Radius\">\n";
+  out << "        <DataArray type=\"Float32\" Name=\"Radius\" "
+         "NumberOfComponents=\"1\" format=\"ascii\">\n";
+  for (int i = 0; i < num_particles_; ++i) {
+    // Radius = scale * global_scale * 1.0 (Unit Sphere)
+    float r = h_scale[i] * global_scale_;
+    out << r << " ";
+  }
+  out << "\n        </DataArray>\n";
+
+  // Velocity
+  std::vector<float4> h_vel(num_particles_);
+  CUDA_CHECK(cudaMemcpy(h_vel.data(), ps_.d_vel,
+                        num_particles_ * sizeof(float4),
+                        cudaMemcpyDeviceToHost));
+  out << "        <DataArray type=\"Float32\" Name=\"Velocity\" "
+         "NumberOfComponents=\"3\" format=\"ascii\">\n";
+  for (int i = 0; i < num_particles_; ++i) {
+    out << h_vel[i].x << " " << h_vel[i].y << " " << h_vel[i].z << " ";
+  }
+  out << "\n        </DataArray>\n";
+
+  out << "      </PointData>\n";
+  out << "    </Piece>\n";
+  out << "  </PolyData>\n";
+  out << "</VTKFile>\n";
+  out.close();
+  printf("Exported VTP: %s\n", filename.c_str());
+}
+
+py::dict Simulation::get_profiling_info() {
+  py::dict d;
+  d["integration"] = time_integration_;
+  d["broadphase"] = time_broadphase_;
+  d["solver"] = time_solver_;
+  d["total"] = time_integration_ + time_broadphase_ + time_solver_;
+  return d;
 }

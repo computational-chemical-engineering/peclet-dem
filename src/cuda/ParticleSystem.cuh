@@ -13,6 +13,15 @@ struct ShapeData {
   int2 *d_tile_descriptors;        // Lookup for tiles
 };
 
+struct BVHNode {
+  float3 aabb_min;
+  float3 aabb_max;
+  int left;
+  int right;
+  int parent;
+  int object_id;
+};
+
 struct ParticleSystemData {
   // -------------------------------------------------------------------------
   // Particle Data (SoA) - Size = Capacity (Real + Ghosts)
@@ -51,6 +60,17 @@ struct ParticleSystemData {
   int2 *d_potential_collisions;
   int *d_potential_count; // Single counter
   int max_potential_collisions;
+
+  // BVH Construction Buffers (Linear BVH / Morton)
+  BVHNode *d_bvh_nodes;
+  int *d_bvh_indices;
+  unsigned int *d_morton;
+  int *d_indices_sorted;
+
+  // Narrowphase Contacts
+  int2 *d_contacts;
+  int *d_num_contacts;
+  int max_contacts;
 
   // Locks for Gauss-Seidel
   int *d_locks;

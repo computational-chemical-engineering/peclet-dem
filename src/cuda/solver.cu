@@ -326,14 +326,18 @@ __global__ void solve_contacts_kernel(ParticleSystemData ps, float dt,
 
   // XPBD / PBD
   float4 pi = ps.d_pos_star[i];
+  float4 qi = ps.d_quat_star[i];
   float4 pj = ps.d_pos_star[j];
+  float4 qj = ps.d_quat_star[j];
+
+  if (idx < 5) {
+    printf("DEBUG: Pos i=(%f %f %f %f) j=(%f %f %f %f)\n", pi.x, pi.y, pi.z,
+           pi.w, pj.x, pj.y, pj.z, pj.w);
+  }
 
   float si = ps.d_scale[i] * global_scale;
   float sj = ps.d_scale[j] * global_scale;
 
-  // Quats
-  float4 qi = ps.d_quat[i];
-  float4 qj = ps.d_quat[j];
   // Retrieve inverse masses
   float wi = ps.d_pos[i].w;
   float wj = ps.d_pos[j].w;
@@ -389,12 +393,6 @@ __global__ void solve_contacts_gs_kernel(ParticleSystemData ps, float dt,
   int i = pair.x;
   int j = pair.y;
 
-  if (idx < 5) {
-    if ((i == 0 && j == 1) || (i == 1 && j == 0)) {
-      printf("DEBUG: Kernel pair idx=%d i=%d j=%d\n", idx, i, j);
-    }
-  }
-
   // Lock Ordering to prevent Deadlock (AB vs BA)
   int first = (i < j) ? i : j;
   int second = (i < j) ? j : i;
@@ -444,14 +442,7 @@ __global__ void solve_contacts_gs_kernel(ParticleSystemData ps, float dt,
   float dist_sq = rel.x * rel.x + rel.y * rel.y + rel.z * rel.z;
   float dist = sqrtf(dist_sq);
 
-  if (idx < 5)
-    printf("DEBUG: Radii i=%f j=%f sum=%f dist_check=%f\n", ri, rj, sum_radii,
-           dist);
-
   if (dist < sum_radii && dist > 1e-6f) {
-    if (idx < 5)
-      printf("DEBUG: Inline Hit i=%d j=%d dist=%f\n", i, j, dist);
-
     float C = dist - sum_radii;
     float alpha = 1e-4f; // Hardcoded compliance
     float w_sum = wi + wj;

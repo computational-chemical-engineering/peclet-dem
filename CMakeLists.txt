@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.24)
 set(CMAKE_CUDA_ARCHITECTURES "native" CACHE STRING "CUDA architectures")
+
+# Auto-detect CUDA compiler in standard locations if not found in PATH
+if(NOT CMAKE_CUDA_COMPILER)
+    find_program(CUDA_COMPILER_SEARCH_PATH nvcc PATHS /usr/local/cuda/bin NO_DEFAULT_PATH)
+    if(CUDA_COMPILER_SEARCH_PATH)
+        set(CMAKE_CUDA_COMPILER ${CUDA_COMPILER_SEARCH_PATH} CACHE FILEPATH "Path to nvcc" FORCE)
+        message(STATUS "Found NVCC via fallback search: ${CMAKE_CUDA_COMPILER}")
+    endif()
+endif()
+
 project(demgpu LANGUAGES CXX CUDA)
 
 # ---- Options ----

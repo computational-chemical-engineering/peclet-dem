@@ -31,5 +31,7 @@ PYBIND11_MODULE(demgpu, m) {
       .def("step", &Simulation::step)
       .def("get_positions", &Simulation::get_positions_numpy)
       .def("get_quaternions", &Simulation::get_quaternions_numpy)
-      .def("get_scales", &Simulation::get_scales_numpy);
+      .def("get_scales", &Simulation::get_scales_numpy)
+      .def("write_vtp", &Simulation::write_vtp, py::arg("filename"))
+      .def("get_profiling_info", &Simulation::get_profiling_info);
 }

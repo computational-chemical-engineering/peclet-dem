@@ -22,6 +22,9 @@ def test_2_particles():
     scales = np.ones(2, dtype=np.float32)
 
     sim.initialize(0) # Sphere
+    
+    print("Python Pos:", pos)
+    pos = np.ascontiguousarray(pos)
     sim.set_positions(pos)
     sim.set_velocities(vel)
     sim.set_scales(scales)

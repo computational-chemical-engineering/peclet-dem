@@ -35,6 +35,12 @@ public:
   std::tuple<float, float, float> get_domain_min();
   std::tuple<float, float, float> get_domain_max();
 
+  // Visualization
+  void write_vtp(const std::string &filename) const;
+
+  // Profiling
+  py::dict get_profiling_info();
+
 private:
   ParticleSystemData ps_;
   int num_particles_;
@@ -43,4 +49,14 @@ private:
 
   // Helper to re-allocate if needed or just zero out
   void allocate_system(int num_particles);
+
+  // Profiling Events
+  cudaEvent_t start_event_, stop_event_;
+  cudaEvent_t integration_start_, integration_stop_;
+  cudaEvent_t broadphase_start_, broadphase_stop_;
+  cudaEvent_t solver_start_, solver_stop_;
+
+  float time_integration_ = 0.0f;
+  float time_broadphase_ = 0.0f;
+  float time_solver_ = 0.0f;
 };

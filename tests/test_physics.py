@@ -74,7 +74,12 @@ def run_simulation(num_particles, density_target, steps=1000):
         # Linear growth to 1.0
         s = min(1.0, 0.1 + 0.9 * i / (steps * 0.8))
         sim.set_global_scale(s)
+        sim.set_global_scale(s)
         sim.step(0.01) # Substeps internal
+        
+        if i % 50 == 0:
+            prof = sim.get_profiling_info()
+            print(f"Step {i}: Int={prof['integration']:.2f}ms BP={prof['broadphase']:.2f}ms Solver={prof['solver']:.2f}ms")
     
     # Check Overlaps
     pos = sim.get_positions()
@@ -100,11 +105,27 @@ def run_simulation(num_particles, density_target, steps=1000):
                     max_overlap = max(max_overlap, ov)
     
     print(f"Result: Max Overlap = {max_overlap:.4f}")
+    
+    # Check Containment (Explosion Check)
+    # Domain is centered at 0, size L. Range is [-L/2, L/2].
+    limit = L / 2.0 * 1.5 # Allow 50% buffer before calling it "Explosion"
+    max_dist = np.max(np.abs(pos[:, :3]))
+    print(f"Max Particle Distance from Origin: {max_dist:.4f} (Limit L/2={L/2:.4f})")
+    
+    if max_dist > limit:
+         print(f"FAIL: Explosion detected. Particles flew out of domain (Max Dist {max_dist} > {limit})")
+         return False
+
+    # Export VTP for visual check
+    vtp_filename = f"packing_density_{density_target:.2f}.vtp"
+    sim.write_vtp(vtp_filename)
+    print(f"Exported {vtp_filename}")
+
     if max_overlap > 0.1:
         print("FAIL: High overlap detected.")
         return False
     else:
-        print("PASS: Low overlap.")
+        print("PASS: Stable packing.")
         return True
 
 def test_two_particles():
@@ -138,5 +159,5 @@ def test_two_particles():
 
 if __name__ == "__main__":
     p1 = test_two_particles()
-    # p2 = run_simulation(100, 0.40, steps=200)
-    # p3 = run_simulation(100, 0.64, steps=500) # Defer high density to after tuning
+    p2 = run_simulation(125, 0.40, steps=500)
+    p3 = run_simulation(216, 0.64, steps=500)

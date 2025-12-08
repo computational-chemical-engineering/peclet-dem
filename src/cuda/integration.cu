@@ -32,7 +32,6 @@ __global__ void predict_position_kernel(ParticleSystemData ps, float dt,
   // Store
   ps.d_pos_star[idx] =
       make_float4(pos_star.x, pos_star.y, pos_star.z, inv_mass);
-  // Prediction for orientation can be added here
 }
 
 __global__ void reset_deltas_kernel(ParticleSystemData ps) {
