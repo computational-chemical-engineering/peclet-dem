@@ -2,16 +2,55 @@
 #include <cuBQL/bvh.h>
 #include <cuda_runtime.h>
 
-struct ShapeData {
-  int type; // 0=Sphere, 1=Cylinder
-  float4
-      params; // Generic params (e.g. Cylinder: x=radius, y=height, z=thickness)
-  cudaTextureObject_t sdf_texture; // 3D Texture for general shapes
-  float4 *d_proxies;               // Coarse Level 1 Mask
-  float4 *d_fine_points;           // Level 2 Point Shell
-  int num_points;                  // Number of points in shell
-  int2 *d_tile_descriptors;        // Lookup for tiles
+enum ShapeType {
+  SHAPE_GRID_SDF = 0,
+  SHAPE_ANALYTIC_SPHERE = 1,
+  SHAPE_ANALYTIC_HOLLOW_CYLINDER = 2, // The primary target
+  SHAPE_ANALYTIC_BOX = 3
 };
+
+struct ShapeDescriptor {
+  ShapeType type;
+
+  // --- Type A: Grid SDF (Texture) ---
+  cudaTextureObject_t sdf_texture;
+  float3 aabb_min; // For UVW mapping (World -> Texture Space)
+  float3 aabb_max;
+
+  // --- Type B: Analytic Parameters ---
+  // Pack parameters into float4 registers to save memory bandwidth
+  // For Hollow Cylinder:
+  // .x = height (h)
+  // .y = outer_radius (R)
+  // .z = thickness (t)
+  // .w = unused (or inner_radius precalc)
+  float4 params;
+
+  // --- Common: Point Shell (for Collision Source) ---
+  // Index into the global 'd_all_shell_points' buffer
+  // Note: For now we kept d_fine_points in logic, but we can map it here.
+  // To keep compatibility with existing code that assumes ShapeData, we'll
+  // alias/adapt.
+  // Actually, let's Replace ShapeData completely or update it.
+  // The plan calls for "ShapeDescriptor".
+  // Existing code uses ShapeData. Let's rename ShapeData to ShapeDescriptor but
+  // keep legacy fields if needed or refactor them.
+  // Existing fields: d_proxies, d_fine_points, num_points
+  // We should keep d_fine_points pointer for now as per plan?
+  // Plan says: "Index into global d_all_shell_points buffer".
+  // Let's stick to the pointer for now to minimize refactor friction in
+  // Step 2.1, or define both.
+
+  float4 *d_fine_points; // Level 2 Point Shell (Pointer for now)
+  int num_points;        // Number of points in shell
+
+  // Legacy/Unused
+  float4 *d_proxies;        // Coarse Level 1 Mask
+  int2 *d_tile_descriptors; // Lookup for tiles
+};
+
+// Typedef for backward compatibility if needed, or just update usages.
+using ShapeData = ShapeDescriptor;
 
 struct BVHNode {
   float3 aabb_min;
@@ -68,6 +107,7 @@ struct ParticleSystemData {
   ContactConstraint *d_contacts;
   int *d_contact_count;        // Atomic counter (INT)
   int *d_global_contact_count; // Alias if needed
+  float *d_max_overlap;        // Global atomic for max penetration
 
   // Counters & Capacity
   int num_particles; // Total particles (Real + Ghosts)

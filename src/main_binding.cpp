@@ -9,15 +9,20 @@ PYBIND11_MODULE(demgpu, m) {
 
   py::class_<Simulation>(m, "Simulation")
       .def(py::init<int>(), py::arg("num_particles") = 1000)
-      .def("initialize", &Simulation::initialize, py::arg("shape_type") = 1)
+      .def("initialize", &Simulation::initialize, py::arg("shape_type"),
+           py::arg("radius") = 0.5f, py::arg("height") = 2.0f,
+           py::arg("thickness") = 0.2f)
       .def("set_positions", &Simulation::set_positions_numpy)
       .def("set_velocities", &Simulation::set_velocities_numpy)
       .def("get_velocities", &Simulation::get_velocities_numpy)
+      .def("set_quaternions", &Simulation::set_quaternions_numpy)
       .def("set_scales", &Simulation::set_scales_numpy)
       .def("set_material_params", &Simulation::set_material_params,
            py::arg("restitution_normal"), py::arg("restitution_tangent"),
            py::arg("friction_dynamic"))
       .def("set_gravity", &Simulation::set_gravity)
+      .def("set_material_params", &Simulation::set_material_params)
+      .def("set_solver_iterations", &Simulation::set_solver_iterations)
       .def("set_global_scale", &Simulation::set_global_scale)
       .def(
           "set_domain",
@@ -36,5 +41,9 @@ PYBIND11_MODULE(demgpu, m) {
       .def("get_quaternions", &Simulation::get_quaternions_numpy)
       .def("get_scales", &Simulation::get_scales_numpy)
       .def("write_vtp", &Simulation::write_vtp, py::arg("filename"))
+      .def("export_sdf", &Simulation::export_sdf, py::arg("filename"),
+           py::arg("resolution"),
+           "Export SDF field to VTI. Resolution is (rx, ry, rz)")
+      .def("get_max_overlap", &Simulation::get_max_overlap)
       .def("get_profiling_info", &Simulation::get_profiling_info);
 }

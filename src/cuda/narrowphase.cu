@@ -4,15 +4,30 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 
-__global__ void detect_contacts_sphere_kernel(ParticleSystemData ps,
-                                              float global_scale,
-                                              float safety_margin) {
+#include "math_utils.cuh"
+#include "shapes/sdf_analytic.cuh"
+
+// Helper to evaluate SDF for any shape type
+__device__ inline float sdf_eval(float3 p, ShapeDescriptor desc) {
+  if (desc.type == SHAPE_ANALYTIC_SPHERE) {
+    return dem::sdf_sphere(p, desc.params);
+  } else if (desc.type == SHAPE_ANALYTIC_HOLLOW_CYLINDER) {
+    return dem::sdf_hollow_cylinder(p, desc.params);
+  } else if (desc.type == SHAPE_GRID_SDF) {
+    // Map to UVW
+    // float3 uvw = (p - desc.aabb_min) / (desc.aabb_max - desc.aabb_min);
+    // return tex3D<float>(desc.sdf_texture, uvw.x, uvw.y, uvw.z);
+    return 1e9f; // Placeholder until Textures are set up
+  }
+  return 1e9f;
+}
+
+__global__ void detect_contacts_kernel(ParticleSystemData ps,
+                                       float global_scale,
+                                       float safety_margin) {
 
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   int num_potential = *ps.d_potential_count;
-  if (idx == 0) {
-    // printf("Narrowphase: Potential Collisions = %d\n", num_potential);
-  }
   if (idx >= num_potential)
     return;
 
@@ -20,86 +35,152 @@ __global__ void detect_contacts_sphere_kernel(ParticleSystemData ps,
   int idA = pair.x;
   int idB = pair.y;
 
-  // Load Predicted Positions
+  // 1. Load Shape Info
+  int shape_id_A = ps.d_shape_ids[idA];
+  int shape_id_B = ps.d_shape_ids[idB];
+  ShapeDescriptor desc_A = ps.d_shapes[shape_id_A];
+  ShapeDescriptor desc_B = ps.d_shapes[shape_id_B];
+
+  // 2. Load World Transforms (Predicted)
   float4 pA_w = ps.d_pos_pred[idA];
+  float4 qA_w = ps.d_quat_pred[idA];
   float4 pB_w = ps.d_pos_pred[idB];
+  float4 qB_w = ps.d_quat_pred[idB];
 
-  float3 pA = make_float3(pA_w.x, pA_w.y, pA_w.z);
-  float3 pB = make_float3(pB_w.x, pB_w.y, pB_w.z);
+  float3 posA = make_float3(pA_w.x, pA_w.y, pA_w.z);
+  float3 posB = make_float3(pB_w.x, pB_w.y, pB_w.z);
+  float scaleA = ps.d_scale[idA];
+  // float scaleB = ps.d_scale[idB]; // Assume B params are pre-scaled or
+  // handled in SDF
 
-  // Radii
-  float rA = 1.0f * ps.d_scale[idA] * global_scale;
-  float rB = 1.0f * ps.d_scale[idB] * global_scale;
+  // 3. Loop over Point Shell of Body A
+  // If Body A is a simple Sphere (legacy), it might not have points set up yet.
+  // Fallback: If num_points == 0, use center point?
+  // Or assume Sphere Generator puts 1 point at (0,0,0) if it is a sphere.
+  // For now, let's assume we iterate points.
 
-  // Distance Check
-  float3 diff = make_float3(pB.x - pA.x, pB.y - pA.y, pB.z - pA.z);
-  float dist_sq = diff.x * diff.x + diff.y * diff.y + diff.z * diff.z;
-  float dist = sqrtf(dist_sq);
+  int countA = desc_A.num_points;
+  float4 *shellA = desc_A.d_fine_points;
 
-  float overlap = dist - (rA + rB);
+  // Optimization: If A is a sphere and has no points, treat as single point at
+  // 0,0,0 with radius But SDF check logic implies point probe. Sphere-Sphere
+  // logic used radius. General SDF logic: Distance(p) < margin. If A is a
+  // sphere, we check Distance(center) < margin + radius? Yes. That is
+  // equivalent to dist(surface) < margin. So if countA == 0 (Legacy Sphere), we
+  // use 1 point (0,0,0) but margin increases by Radius A.
 
-  // SPECULATIVE CONTACT LOGIC
-  // Generate constraint if overlap < safety_margin (i.e. if penetrating OR
-  // close enough) overlap is negative if penetrating. If overlap = 0.01 and
-  // margin = 0.05 -> Generate. If overlap = 0.06 -> Skip.
+  // Actually, let's Stick to the Point Shell plan.
+  // Even for Spheres, we should report "Surface Points" if we want robust
+  // collision vs SDF. BUT sphere-sphere is exact. For Sphere vs Cylinder,
+  // Sphere Center at distance 'd' means surface at 'd-r'. So Effective Margin =
+  // safety_margin + radius_A.
+  bool is_sphere_A = (desc_A.type == SHAPE_ANALYTIC_SPHERE);
+  int iter_count = (countA > 0) ? countA : 1;
 
-  if (overlap < safety_margin) {
-    // Generate Contact
-    int contact_idx = atomicAdd(ps.d_contact_count, 1);
-    if (contact_idx >= ps.max_contacts) {
-      atomicSub(ps.d_contact_count, 1); // Revert
-      return;                           // Overflow
+  for (int k = 0; k < iter_count; ++k) {
+    float3 p_local_A = make_float3(0, 0, 0);
+    float point_radius = 0.0f;
+
+    if (countA > 0) {
+      float4 p4 = shellA[k];
+      p_local_A = make_float3(p4.x, p4.y, p4.z);
+      // If points have encoded radius? p4.w?
+    } else if (is_sphere_A) {
+      // Use Center, effective margin += Radius
+      // Radius = params.x * scale * global_scale
+      float r_semantic = desc_A.params.x;
+      point_radius = r_semantic * scaleA * global_scale;
     }
 
-    // Normal B -> A ?
-    // Plan says: normal (B -> A).
-    // Use standard: Normal points FROM B TO A (separating direction).
-    // If B is at (1,0), A is at (0,0). Normal should be (-1, 0).
-    // diff is pB - pA = (1,0).
-    // So normal = -diff / dist.
-    // OR: Normal points FROM A TO B?
-    // Let's stick to: Normal is direction to move A to resolve.
-    // If A is overlapping B, A should move away from B.
-    // Vector B->A.
+    // Transform A-Local -> World
+    float3 p_world = posA + rotate_vector(qA_w, p_local_A * scaleA);
 
-    float3 normal;
-    if (dist > 1e-9f) {
-      normal = make_float3(-diff.x / dist, -diff.y / dist, -diff.z / dist);
-    } else {
-      // Coincident? Pick arbitrary.
-      normal = make_float3(0, 1, 0);
+    // Transform World -> B-Local
+    float3 p_rel = p_world - posB;
+    float3 p_local_B = inv_rotate_vector(qB_w, p_rel);
+
+    // Evaluate SDF with Handling for Scale B
+    // Canonical Space: p_canonical = p_local / scaleB
+    // dist_world = dist_canonical * scaleB
+    float scaleB = ps.d_scale[idB];
+    float3 p_canonical_B = p_local_B / scaleB;
+
+    // Dist in Canonical Space (e.g. against Unit Sphere)
+    float dist_canonical = sdf_eval(p_canonical_B, desc_B);
+
+    // Scale back to World
+    float dist = dist_canonical * scaleB;
+
+    // Check Collision
+    // Overlap if dist < (margin + point_radius)
+    // i.e. dist - point_radius < margin
+    float effective_dist = dist - point_radius;
+
+    if (effective_dist < safety_margin) {
+      // Collision!
+      int contact_idx = atomicAdd(ps.d_contact_count, 1);
+      if (contact_idx >= ps.max_contacts) {
+        atomicSub(ps.d_contact_count, 1);
+        continue; // Overflow
+      }
+
+      // Compute Gradient (Normal) in B-Local via Central Diff
+      // We compute gradient of Canonical SDF, which gives Normal in Local space
+      // directly (Direction doesn't change with uniform scale)
+      float eps = 1e-4f;
+      float3 n_local;
+      n_local.x = sdf_eval(make_float3(p_canonical_B.x + eps, p_canonical_B.y,
+                                       p_canonical_B.z),
+                           desc_B) -
+                  sdf_eval(make_float3(p_canonical_B.x - eps, p_canonical_B.y,
+                                       p_canonical_B.z),
+                           desc_B);
+      n_local.y = sdf_eval(make_float3(p_canonical_B.x, p_canonical_B.y + eps,
+                                       p_canonical_B.z),
+                           desc_B) -
+                  sdf_eval(make_float3(p_canonical_B.x, p_canonical_B.y - eps,
+                                       p_canonical_B.z),
+                           desc_B);
+      n_local.z = sdf_eval(make_float3(p_canonical_B.x, p_canonical_B.y,
+                                       p_canonical_B.z + eps),
+                           desc_B) -
+                  sdf_eval(make_float3(p_canonical_B.x, p_canonical_B.y,
+                                       p_canonical_B.z - eps),
+                           desc_B);
+
+      float len = length(n_local);
+      if (len > 1e-9f) {
+        n_local = n_local / len;
+      } else {
+        n_local = make_float3(0, 1, 0); // Fallback
+      }
+
+      // Transform Normal to World: B-Local -> World
+      float3 n_world = rotate_vector(qB_w, n_local);
+
+      // Contact Point on B (World) = p_world - n_world * dist
+      // where p_world is the probe point (Center of A)
+      float3 contact_pt_on_B = p_world - n_world * dist;
+
+      // rB: Vector from Center B to Contact Point on B
+      float3 rB_vec = contact_pt_on_B - posB;
+
+      // rA: Vector from Center A to Contact Point on A
+      // Point on A surface = p_world - n_world * point_radius
+      // (Normal points B -> A, so we go against normal to get to surface facing
+      // B)
+      float3 rA_vec = n_world * (-point_radius);
+
+      ContactConstraint c;
+      c.bodyA = idA;
+      c.bodyB = idB;
+      c.normal = make_float4(n_world.x, n_world.y, n_world.z, 0.0f);
+      c.rA = make_float4(rA_vec.x, rA_vec.y, rA_vec.z, 0.0f);
+      c.rB = make_float4(rB_vec.x, rB_vec.y, rB_vec.z, 0.0f);
+      c.dist = effective_dist;
+      c.friction_lambda_n = 0.0f;
+      ps.d_contacts[contact_idx] = c;
     }
-
-    // Contact Points & Lever Arms
-    // For Sphere: contact point is on surface along normal.
-    // rA = vector from Center A to Contact Point.
-    // Found interaction
-    // of overlap". Let's use midpoint
-    // of the overlap region? rA = -normal * rA? (Vector from Center to Surface)
-    // If Normal points B->A. Surface of A in direction of B is -Normal. So rA =
-    // -normal * rA. Wait, Normal B->A means it points "out" of B towards A. So
-    // contact on A is at pA - normal * rA.
-
-    float3 rA_vec = make_float3(normal.x * -rA, normal.y * -rA, normal.z * -rA);
-    float3 rB_vec = make_float3(normal.x * rB, normal.y * rB, normal.z * rB);
-
-    // Wait, check signs.
-    // A is at 0. B is at 10. Normal B->A is (-1, 0).
-    // Contact on A surface towards B is at +rA.
-    // normal is -1. -normal * rA = +1 * rA. Correct.
-    // Contact on B surface towards A is at -rB.
-    // normal is -1. +normal * rB = -1 * rB. Correct.
-
-    ContactConstraint c;
-    c.bodyA = idA;
-    c.bodyB = idB;
-    c.normal = make_float4(normal.x, normal.y, normal.z, 0.0f);
-    c.rA = make_float4(rA_vec.x, rA_vec.y, rA_vec.z, 0.0f);
-    c.rB = make_float4(rB_vec.x, rB_vec.y, rB_vec.z, 0.0f);
-    c.dist = overlap;           // Signed distance
-    c.friction_lambda_n = 0.0f; // Initialize
-
-    ps.d_contacts[contact_idx] = c;
   }
 }
 
@@ -141,7 +222,7 @@ __global__ void detect_ground_kernel(ParticleSystemData ps, float global_scale,
     c.bodyB = -1; // Ground
     c.normal = make_float4(normal.x, normal.y, normal.z, 0.0f);
     c.rA = make_float4(rA_vec.x, rA_vec.y, rA_vec.z, 0.0f);
-    c.rB = make_float4(0, 0, 0, 0);
+    c.rB = make_float4(rB_vec.x, rB_vec.y, rB_vec.z, 0.0f);
     c.dist = dist;
     c.friction_lambda_n = 0.0f;
     ps.d_contacts[contact_idx] = c;
@@ -161,8 +242,13 @@ void launch_narrowphase(ParticleSystemData ps, float global_scale) {
   CUDA_CHECK(cudaMemcpy(&num_potential, ps.d_potential_count, sizeof(int),
                         cudaMemcpyDeviceToHost));
 
-  if (num_potential == 0)
-    return;
+  if (num_potential == 0) {
+    // Still need ground check?
+    // Yes, fall through to ground check?
+    // Or separate logic.
+    // Let's allow fallthrough but skip sphere kernel.
+  }
+
   int threads = 256;
   int blocks;
 
@@ -170,8 +256,8 @@ void launch_narrowphase(ParticleSystemData ps, float global_scale) {
 
   if (num_potential > 0) {
     blocks = (num_potential + threads - 1) / threads;
-    detect_contacts_sphere_kernel<<<blocks, threads>>>(ps, global_scale,
-                                                       safety_margin);
+    detect_contacts_kernel<<<blocks, threads>>>(ps, global_scale,
+                                                safety_margin);
     CUDA_CHECK(cudaGetLastError());
   }
 

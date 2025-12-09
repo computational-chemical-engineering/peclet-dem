@@ -1,18 +1,24 @@
 #pragma once
 #include "cuda/ParticleSystem.cuh"
+#include "shapes/ShapeManager.hpp" // Added
 #include <memory>
 #include <pybind11/numpy.h>
 #include <vector>
 #include <vector_types.h> // For float3
 
 namespace py = pybind11;
+namespace dem {
+class OutputGenerator;
+}
 
 class Simulation {
 public:
+  friend class dem::OutputGenerator; // Allow access to private members
   Simulation(int num_particles);
   ~Simulation();
 
-  void initialize(int shape_type = 1); // 0=Sphere, 1=Cylinder
+  void initialize(int shape_type, float radius = 0.5f, float height = 2.0f,
+                  float thickness = 0.2f);
   void step(float dt);
   int num_particles() const { return num_particles_; }
 
@@ -27,12 +33,14 @@ public:
   void set_scales_numpy(py::array_t<float> scales);
   void set_positions_numpy(py::array_t<float> pos);
   void set_velocities_numpy(py::array_t<float> vel);
+  void set_quaternions_numpy(py::array_t<float> quat); // Added
   void set_gravity(float x, float y, float z);
   void set_global_scale(float s);
 
   // Material Parameters
   void set_material_params(float restitution_normal, float restitution_tangent,
                            float friction_dynamic);
+  void set_solver_iterations(int pos_its, int vel_its);
 
   // Domain Configuration
   void set_domain(float3 min, float3 max);
@@ -43,13 +51,23 @@ public:
   void write_vtp(const std::string &filename) const;
 
   // Profiling
+  // Profiling
   py::dict get_profiling_info();
+
+  // Export SDF
+  void export_sdf(const std::string &filename,
+                  std::tuple<int, int, int> resolution);
+
+  float get_max_overlap();
 
 private:
   ParticleSystemData ps_;
   int num_particles_;
   float3 gravity_;
   float global_scale_;
+  dem::ShapeManager shape_manager_;
+  int position_iterations_;
+  int velocity_iterations_;
 
   // Helper to re-allocate if needed or just zero out
   void allocate_system(int num_particles);
@@ -63,4 +81,8 @@ private:
   float time_integration_ = 0.0f;
   float time_broadphase_ = 0.0f;
   float time_solver_ = 0.0f;
+
+  // Periodic Helpers
+  int calculate_capacity(int n_real, float3 box_size, float skin_width);
+  void update_ghosts();
 };

@@ -59,7 +59,9 @@ set(DEMGPU_CUDA_SRC
     src/cuda/narrowphase.cu
     src/cuda/solver_velocity.cu
     src/cuda/solver_position.cu
-    # Add other cuda files as they are created
+    src/cuda/periodicity.cu
+    src/cuda/output_sdf.cu
+    # Add other cuda files as they are creating
 )
 
 set(DEMGPU_CPP_SRC
@@ -68,6 +70,8 @@ set(DEMGPU_CPP_SRC
     src/mpi/domain.cpp
     src/mpi/communicator.cpp
     src/shapes/point_sampler.cpp
+    src/shapes/ShapeManager.cpp
+    src/cpp/OutputGenerator.cpp
 )
 
 # ---- Python Extension Module ----
@@ -108,6 +112,20 @@ if (MSVC)
     target_compile_options(demgpu PRIVATE /W4)
 else()
     target_compile_options(demgpu PRIVATE -Wall)
+endif()
+
+# ---- Tests ----
+add_executable(test_periodicity_corner
+    tests/test_periodicity_corner.cpp
+    ${DEMGPU_CPP_SRC}
+    ${DEMGPU_CUDA_SRC}
+)
+set_target_properties(test_periodicity_corner PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+target_include_directories(test_periodicity_corner PRIVATE src src/cuda ${cuBQL_SOURCE_DIR})
+target_link_libraries(test_periodicity_corner PRIVATE CUDA::cudart cuBQL_queries cuBQL_cuda_float3_static pybind11::embed)
+if (DEMGPU_ENABLE_MPI)
+    target_link_libraries(test_periodicity_corner PRIVATE MPI::MPI_CXX)
+    target_compile_definitions(test_periodicity_corner PRIVATE DEMGPU_USE_MPI=1)
 endif()
 
 # ---- Installation (optional) ----

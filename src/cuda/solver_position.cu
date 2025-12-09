@@ -254,6 +254,14 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
   // Count (only if active?)
   // Yes, if we added deltas, we increment.
   atomicAdd(ps.d_constraint_counts + idA, 1);
+
+  // Track Max Overlap (Penetration = -C)
+  // C is typically negative for overlap. So Penetration = -C.
+  // We want to track the MAXIMUM penetration.
+  if (C < 0.0f) {
+    float penetration = -C;
+    atomicMaxFloat(ps.d_max_overlap, penetration);
+  }
 }
 
 void launch_position_solve(ParticleSystemData ps) {

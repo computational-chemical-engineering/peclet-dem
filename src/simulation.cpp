@@ -1,8 +1,12 @@
 #include "simulation.h"
+#include "cpp/OutputGenerator.hpp"
+#include "cuda/math_utils.cuh"
 #include "cuda/memory_utils.cuh"
+#include "cuda/periodicity.cuh"
 #include "shapes/point_sampler.h"
-#include "simulation.h"
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cuda_runtime.h>
 #include <fstream>
 #include <iostream>
@@ -46,6 +50,8 @@ Simulation::Simulation(int num_particles) : num_particles_(num_particles) {
   // Initialize defaults
   gravity_ = make_float3(0, -9.8f, 0);
   global_scale_ = 1.0f;
+  position_iterations_ = 10;
+  velocity_iterations_ = 0;
 
   allocate_system(num_particles_);
 
@@ -80,6 +86,8 @@ Simulation::~Simulation() {
   // Cleanup collision buffers if allocated
   if (ps_.d_contacts)
     free_device(ps_.d_contacts);
+  if (ps_.d_max_overlap)
+    free_device(ps_.d_max_overlap);
 
   free_device(ps_.d_contact_count); // Renamed from d_num_contacts
   free_device(ps_.d_locks);         // Moved from separate if
@@ -102,8 +110,6 @@ Simulation::~Simulation() {
     free_device(ps_.d_potential_collisions);
   if (ps_.d_potential_count)
     free_device(ps_.d_potential_count);
-  if (ps_.d_shapes)
-    free_device(ps_.d_shapes);
   if (ps_.d_bvh_nodes)
     free_device(ps_.d_bvh_nodes);
   if (ps_.d_bvh_indices)
@@ -144,9 +150,12 @@ void find_collisions(ParticleSystemData ps, float global_scale);
 void generate_ghosts(ParticleSystemData &ps, float threshold);
 
 // 0=Sphere, 1=Cylinder
-void Simulation::initialize(int shape_type) {
+// 0=Sphere, 1=Cylinder
+void Simulation::initialize(int shape_type, float radius, float height,
+                            float thickness) {
   // Allocate more for Ghosts (e.g., 8.0x for robust periodicity)
-  int capacity = num_particles_ * 8;
+  int capacity = calculate_capacity(num_particles_, ps_.domain_size,
+                                    1.0f); // Init with 1.0 margin
   ps_.capacity = capacity;
   ps_.num_real = num_particles_;
   ps_.num_particles = num_particles_;
@@ -205,31 +214,42 @@ void Simulation::initialize(int shape_type) {
 
   // Locks
   allocate_device(ps_.d_locks, capacity * sizeof(int));
+  allocate_device(ps_.d_max_overlap, 1 * sizeof(float));
   CUDA_CHECK(cudaMemset(ps_.d_locks, 0, capacity * sizeof(int)));
 
   // Arrays for Shapes
   // 0=Sphere, 1=Cylinder
 
   CylinderParams cyl_params;
-  cyl_params.radius = 0.5f;
-  cyl_params.height = 2.0f;
-  cyl_params.thickness = 0.2f;
+  cyl_params.radius = radius;
+  cyl_params.height = height;
+  cyl_params.thickness = thickness;
 
   std::vector<float4> h_points;
-  ShapeData h_shape;
-  h_shape.type = shape_type;
+  ShapeType type = (ShapeType)shape_type;
+  float4 params;
 
-  if (shape_type == 1) {
-    // CYLINDER
-    h_shape.params = make_float4(cyl_params.radius, cyl_params.height,
-                                 cyl_params.thickness, 0);
+  if (shape_type == 2) {
+    // CYLINDER (ID=2)
+    params = make_float4(cyl_params.radius, cyl_params.height,
+                         cyl_params.thickness, 0);
     h_points = generate_cylinder_points(cyl_params, 0.1f);
   } else {
-    // SPHERE
-    // Use radius = 1.0
-    h_shape.params = make_float4(1.0f, 0, 0, 0);
-    // Generate Fibonacci sphere points for robust Point-SDF testing
-    // Or just random points
+    // SPHERE (ID=1)  -- Defaulting to Sphere if not Cylinder
+    // Force type to 1 if it was 0 or something else, effectively default
+    if (type != SHAPE_ANALYTIC_SPHERE && type != SHAPE_ANALYTIC_HOLLOW_CYLINDER)
+      type = SHAPE_ANALYTIC_SPHERE;
+
+    // Use radius = passed radius (default 0.5? User expects 1.0 for sphere
+    // usually?) Previously hardcoded to 1.0f. Let's keep 1.0f for canonical
+    // sphere and let scale handle size. Or use 'radius' arg? If I change this,
+    // I might break assumptions. But 'params' for sphere in `sdf_sphere` is
+    // `params.x`.
+    params = make_float4(1.0f, 0, 0, 0);
+    // Wait, if I change radius here, 'generate_packing_sdf' (phi=0.45) relying
+    // on R=1.0 (internal) + Scale 0.5 (external) might break? No,
+    // 'generate_packing_sdf' relies on scale. Let's stick to Canonical Sphere
+    // R=1.0. Generate Fibonacci sphere points
     int num_sphere_points = 500;
     float phi = 3.14159265f * (3.0f - sqrtf(5.0f));
     for (int i = 0; i < num_sphere_points; ++i) {
@@ -238,30 +258,20 @@ void Simulation::initialize(int shape_type) {
       float theta = phi * i;
       float x = cosf(theta) * radius;
       float z = sinf(theta) * radius;
-      // Scale by 1.0
       h_points.push_back(make_float4(x * 1.0f, y * 1.0f, z * 1.0f, 0));
     }
   }
 
-  int num_points = h_points.size();
-  printf("Generated %d points for shape type %d.\n", num_points, shape_type);
+  // Create Shape via Manager
+  int created_id = shape_manager_.createAnalyticShape(type, params, h_points);
+  printf("Created Shape ID %d via Manager. Points: %lu\n", created_id,
+         h_points.size());
 
-  // Allocate Fine Points on GPU
-  float4 *d_fine_points;
-  allocate_device(d_fine_points, num_points * sizeof(float4));
-  CUDA_CHECK(cudaMemcpy(d_fine_points, h_points.data(),
-                        num_points * sizeof(float4), cudaMemcpyHostToDevice));
+  // Upload to GPU
+  shape_manager_.uploadToGPU();
 
-  // Prepare ShapeData
-  h_shape.d_fine_points = d_fine_points;
-  h_shape.num_points = num_points;
-  // d_proxies, sdf_texture, tile_descriptors can be null for now if we use raw
-  // points
-
-  // Allocate ShapeData Array on GPU (Size 1)
-  allocate_device(ps_.d_shapes, 1 * sizeof(ShapeData));
-  CUDA_CHECK(cudaMemcpy(ps_.d_shapes, &h_shape, sizeof(ShapeData),
-                        cudaMemcpyHostToDevice));
+  // Link Device Pointer
+  ps_.d_shapes = shape_manager_.getDeviceShapes();
 
   printf("Simulation initialized. Seeding particles...\n");
 
@@ -289,6 +299,9 @@ void Simulation::initialize(int shape_type) {
     h_shape_ids[i] = 0;
   }
 
+  // Create default inertia (1.0)
+  std::vector<float> h_inv_inertia(num_particles_, 1.0f);
+
   CUDA_CHECK(cudaMemcpy(ps_.d_pos, h_pos.data(),
                         num_particles_ * sizeof(float4),
                         cudaMemcpyHostToDevice));
@@ -303,6 +316,9 @@ void Simulation::initialize(int shape_type) {
                         cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy(ps_.d_shape_ids, h_shape_ids.data(),
                         num_particles_ * sizeof(int), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_inv_inertia, h_inv_inertia.data(),
+                        num_particles_ * sizeof(float),
+                        cudaMemcpyHostToDevice));
 }
 
 // -----------------------------------------------------------------------------
@@ -344,6 +360,11 @@ std::tuple<float, float, float> Simulation::get_domain_max() {
   return std::make_tuple(ps_.domain_max.x, ps_.domain_max.y, ps_.domain_max.z);
 }
 
+void Simulation::set_solver_iterations(int pos_its, int vel_its) {
+  position_iterations_ = pos_its;
+  velocity_iterations_ = vel_its;
+}
+
 void Simulation::step(float dt) {
   // New Pipeline
 
@@ -352,64 +373,33 @@ void Simulation::step(float dt) {
   // Also CLEARS accumulators (d_delta_*) and contact_count
   // printf("DEBUG: Launch Integrate Predict. N=%d, dt=%f\n", ps_.num_particles,
   // dt);
+  CUDA_CHECK(cudaMemset(ps_.d_max_overlap, 0, sizeof(float)));
   launch_integrate_predict(ps_, dt, gravity_);
-  CUDA_CHECK(cudaDeviceSynchronize());
 
   // 1a. Generate Ghosts (Periodic)
-  CUDA_CHECK(cudaMemcpy(ps_.d_top_ghost, &ps_.num_real, sizeof(int),
-                        cudaMemcpyHostToDevice));
   float margin = 1.0f * global_scale_;
-  launch_generate_ghosts(ps_, margin);
-
-  // Read back total particles
-  int total_particles = 0;
-  CUDA_CHECK(cudaMemcpy(&total_particles, ps_.d_top_ghost, sizeof(int),
-                        cudaMemcpyDeviceToHost));
-  if (total_particles > ps_.capacity)
-    total_particles = ps_.capacity;
-  ps_.num_particles = total_particles;
-
-  // 1b. Broadphase + Narrowphase
-  build_bvh(ps_, global_scale_);
-  find_collisions(ps_, 1.0f);             // Generates d_potential_collisions
-  launch_narrowphase(ps_, global_scale_); // Generates d_contacts
-
-  // 2. Velocity Solver (Projected Jacobi)
-  int velocity_iterations = 5; // Start small
-  for (int i = 0; i < velocity_iterations; ++i) {
-    launch_velocity_solve(ps_);
-    // If we had multi-pass Jacobi, we'd apply accumulated deltas here or
-    // accumulate to a temp buffer. Current implementation accumulates to
-    // d_delta_vel directly. But Jacobi usually accumulates locally then adds.
-    // My kernel accumulates to global buffer atomically.
-    // Then Apply Updates adds them to pred state?
-    // Wait. Velocity Solver should update Velocity PREDICTION?
-    // Plan said: "Accumulate J -> d_delta_vel".
-    // "Apply Updates: v_pred += d_delta_vel / M".
-    // But if we iterate, we need v_pred to be updated?
-    // If we don't update v_pred between iters, it's just one big step
-    // (parallel). Standard Jacobi: Compute all deltas based on State K. Update
-    // -> State K+1. So:
-    launch_apply_updates(ps_); // Update v_pred
+  if (ps_.periodic_x || ps_.periodic_y || ps_.periodic_z) {
+    update_ghosts();
   }
 
+  // 2. Broadphase & Narrowphase
+  // Build BVH (Collision Detection)
+  build_bvh(ps_, global_scale_);
+
+  // Collision Detection
+  find_collisions(ps_, 1.0f);
+
+  // Narrowphase
+  launch_narrowphase(ps_, global_scale_); // Generates d_contacts
+
   // 3. Position Solver (Projected Jacobi)
-  int position_iterations = 10;
-  for (int i = 0; i < position_iterations; ++i) {
+  for (int i = 0; i < position_iterations_; ++i) {
     launch_position_solve(ps_);
     launch_apply_updates(ps_); // Update pos_pred, quat_pred
   }
 
   // 4. Final Commit
   launch_final_commit(ps_, dt);
-
-  // Timing
-  // cudaEventSynchronize(solver_stop_);
-  // cudaEventElapsedTime(&time_integration_, integration_start_,
-  //                      integration_stop_);
-  // cudaEventElapsedTime(&time_broadphase_, broadphase_start_,
-  // broadphase_stop_); cudaEventElapsedTime(&time_solver_, solver_start_,
-  // solver_stop_);
 }
 
 // -----------------------------------------------------------------------------
@@ -547,6 +537,13 @@ py::array_t<float> Simulation::get_scales_numpy() {
   return result;
 }
 
+float Simulation::get_max_overlap() {
+  float overlap = 0.0f;
+  CUDA_CHECK(cudaMemcpy(&overlap, ps_.d_max_overlap, sizeof(float),
+                        cudaMemcpyDeviceToHost));
+  return overlap;
+}
+
 void Simulation::write_vtp(const std::string &filename) const {
   std::vector<float4> h_pos(num_particles_);
   std::vector<float> h_scale(num_particles_);
@@ -619,4 +616,110 @@ py::dict Simulation::get_profiling_info() {
   d["solver"] = time_solver_;
   d["total"] = time_integration_ + time_broadphase_ + time_solver_;
   return d;
+}
+
+// -----------------------------------------------------------------------------
+// Periodicity Helpers
+// -----------------------------------------------------------------------------
+int Simulation::calculate_capacity(int n_real, float3 box_size,
+                                   float skin_width) {
+  float3 inner = make_float3(fmaxf(0.0f, box_size.x - 2.0f * skin_width),
+                             fmaxf(0.0f, box_size.y - 2.0f * skin_width),
+                             fmaxf(0.0f, box_size.z - 2.0f * skin_width));
+  double vol_total = (double)box_size.x * box_size.y * box_size.z;
+  double vol_inner = (double)inner.x * inner.y * inner.z;
+  if (vol_total <= 0.0)
+    return n_real * 8; // Degenerate box
+
+  double ghost_fraction = (vol_total - vol_inner) / vol_total;
+
+  double estimated_ghosts = 0;
+  if (ghost_fraction > 0.5) {
+    estimated_ghosts = n_real * 7.0; // Small box
+  } else {
+    estimated_ghosts = n_real * ghost_fraction * 2.0; // 2x Safety
+  }
+  return n_real + (int)estimated_ghosts + 1024;
+}
+
+void Simulation::update_ghosts() {
+  using namespace dem; // Use dem namespace for this function
+
+  // 1. Reset Logic
+  ps_.num_particles = ps_.num_real;
+
+  // 2. Build Local BVH (Real particles only)
+  int old_num = ps_.num_particles;
+  ps_.num_particles = ps_.num_real;
+
+  // Re-use logic from step(): just update aabb?
+  // We need to run update_aabb kernels for REAL particles if they moved?
+  // Assuming this is called AFTER integration, pos_pred is valid.
+  // We do need to update AABBs for real particles to build the tree.
+  // Let's assume AABBs are handled by build_bvh call?
+  // Wait, build_bvh calls particles_to_aabb_kernel. Yes.
+
+  build_bvh(ps_, global_scale_);
+
+  // 3. Find Candidates
+  PeriodicConfig config;
+  config.min = ps_.domain_min;
+  config.max = ps_.domain_max;
+  config.size = ps_.domain_size;
+  config.skin_width = 1.0f * global_scale_; // Use max radius + margin
+
+  CUDA_CHECK(cudaMemset(ps_.d_potential_count, 0, sizeof(int)));
+
+  // Use indices_sorted or bvh_indices as scratch?
+  // d_bvh_indices is output of BVH build. We can overwrite it if we rebuild
+  // Global BVH later. Yes.
+  dem::launch_find_ghost_candidates(ps_, config, ps_.d_bvh_indices,
+                                    ps_.d_potential_count);
+
+  // 4. Generate Ghosts
+  CUDA_CHECK(cudaMemcpy(ps_.d_top_ghost, &ps_.num_real, sizeof(int),
+                        cudaMemcpyHostToDevice));
+
+  dem::launch_generate_ghosts_bitmask(ps_.d_bvh_indices, ps_.d_potential_count,
+                                      ps_, config);
+
+  // 5. Update Total Count
+  int total = 0;
+  CUDA_CHECK(
+      cudaMemcpy(&total, ps_.d_top_ghost, sizeof(int), cudaMemcpyDeviceToHost));
+  if (total > ps_.capacity) {
+    printf("WARNING: Ghost buffer overflow (Req: %d, Cap: %d)\n", total,
+           ps_.capacity);
+    total = ps_.capacity;
+  }
+  ps_.num_particles = total;
+}
+
+void Simulation::export_sdf(const std::string &filename,
+                            std::tuple<int, int, int> resolution) {
+  dem::OutputGenerator generator(this);
+  auto [rx, ry, rz] = resolution;
+
+  // Bounds: use domain min/max expanded slightly?
+  // Or just exact domain if periodic.
+  // If periodic, exact domain is best.
+  float3 min_b = ps_.domain_min;
+  float3 max_b = ps_.domain_max;
+
+  generator.generateAndSaveVTI(filename, make_int3(rx, ry, rz), min_b, max_b);
+}
+
+void Simulation::set_quaternions_numpy(py::array_t<float> quat) {
+  auto r = quat.unchecked<2>();
+  if (r.shape(0) != num_particles_ || r.shape(1) != 4) {
+    throw std::runtime_error("Quaternions array must be (N, 4)");
+  }
+  std::vector<float4> h_quat(num_particles_);
+  for (int i = 0; i < num_particles_; ++i) {
+    h_quat[i] = make_float4(r(i, 0), r(i, 1), r(i, 2), r(i, 3));
+  }
+  allocate_device(ps_.d_quat, num_particles_ * sizeof(float4));
+  CUDA_CHECK(cudaMemcpy(ps_.d_quat, h_quat.data(),
+                        num_particles_ * sizeof(float4),
+                        cudaMemcpyHostToDevice));
 }
