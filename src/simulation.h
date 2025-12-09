@@ -30,6 +30,10 @@ public:
   void set_gravity(float x, float y, float z);
   void set_global_scale(float s);
 
+  // Material Parameters
+  void set_material_params(float restitution_normal, float restitution_tangent,
+                           float friction_dynamic);
+
   // Domain Configuration
   void set_domain(float3 min, float3 max);
   std::tuple<float, float, float> get_domain_min();

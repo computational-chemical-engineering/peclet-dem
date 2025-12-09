@@ -56,6 +56,9 @@ set(DEMGPU_CUDA_SRC
     src/cuda/integration.cu
     src/cuda/broadphase.cu
     src/cuda/solver.cu 
+    src/cuda/narrowphase.cu
+    src/cuda/solver_velocity.cu
+    src/cuda/solver_position.cu
     # Add other cuda files as they are created
 )
 

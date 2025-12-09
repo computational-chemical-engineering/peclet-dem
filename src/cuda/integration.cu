@@ -1,112 +1,308 @@
 #include "ParticleSystem.cuh"
+#include "memory_utils.cuh"
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 
-__global__ void predict_position_kernel(ParticleSystemData ps, float dt,
-                                        float3 gravity) {
+// ------------------------------------------------------------------
+// Generate Ghosts for Periodic Boundaries (Legacy/Preserved)
+// ------------------------------------------------------------------
+__global__ void generate_ghosts_kernel(ParticleSystemData ps, float margin) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= ps.num_real)
+    return;
+
+  float4 p =
+      ps.d_pos_pred[idx]; // Use Predicted position for Ghost Gen?
+                          // Usually we ghost based on current state at start of
+                          // frame. Let's use d_pos (ReadOnly State)
+  p = ps.d_pos[idx];
+
+  float3 pos = make_float3(p.x, p.y, p.z);
+  float3 min_b = ps.domain_min;
+  float3 max_b = ps.domain_max;
+  float3 size = ps.domain_size;
+
+  bool px = ps.periodic_x;
+  bool py = ps.periodic_y;
+  bool pz = ps.periodic_z;
+
+  int shift_x[2] = {0, 0};
+  int shift_y[2] = {0, 0};
+  int shift_z[2] = {0, 0};
+  int nx = 1, ny = 1, nz = 1;
+
+  if (px) {
+    if (pos.x < min_b.x + margin)
+      shift_x[nx++] = 1; // Shift +L
+    else if (pos.x > max_b.x - margin)
+      shift_x[nx++] = -1; // Shift -L
+  }
+  if (py) {
+    if (pos.y < min_b.y + margin)
+      shift_y[ny++] = 1;
+    else if (pos.y > max_b.y - margin)
+      shift_y[ny++] = -1;
+  }
+  if (pz) {
+    if (pos.z < min_b.z + margin)
+      shift_z[nz++] = 1;
+    else if (pos.z > max_b.z - margin)
+      shift_z[nz++] = -1;
+  }
+
+  if (nx == 1 && ny == 1 && nz == 1)
+    return;
+
+  for (int ix = 0; ix < nx; ix++) {
+    for (int iy = 0; iy < ny; iy++) {
+      for (int iz = 0; iz < nz; iz++) {
+        if (shift_x[ix] == 0 && shift_y[iy] == 0 && shift_z[iz] == 0)
+          continue;
+
+        float3 offset = make_float3(shift_x[ix] * size.x, shift_y[iy] * size.y,
+                                    shift_z[iz] * size.z);
+
+        int ghost_idx = atomicAdd(ps.d_top_ghost, 1);
+        if (ghost_idx >= ps.capacity) {
+          atomicSub(ps.d_top_ghost, 1);
+          continue;
+        }
+
+        // Copy State to Ghost
+        float4 p_ghost = p;
+        p_ghost.x += offset.x;
+        p_ghost.y += offset.y;
+        p_ghost.z += offset.z;
+
+        // Initialize Ghost Predictors
+        ps.d_pos[ghost_idx] = p_ghost;
+        ps.d_pos_pred[ghost_idx] = p_ghost; // Initial guess
+        ps.d_quat[ghost_idx] = ps.d_quat[idx];
+        ps.d_quat_pred[ghost_idx] = ps.d_quat[idx];
+        ps.d_vel[ghost_idx] = ps.d_vel[idx];
+        ps.d_vel_pred[ghost_idx] = ps.d_vel[idx];
+        ps.d_ang_vel[ghost_idx] = ps.d_ang_vel[idx];
+        ps.d_ang_vel_pred[ghost_idx] = ps.d_ang_vel[idx];
+        ps.d_scale[ghost_idx] = ps.d_scale[idx];
+        ps.d_shape_ids[ghost_idx] = ps.d_shape_ids[idx];
+      }
+    }
+  }
+}
+
+// ------------------------------------------------------------------
+// 1. Predict and Clear
+// ------------------------------------------------------------------
+__global__ void predict_and_clear_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx == 0) {
+    // printf("Predict: dt=%f, g=(%f, %f, %f)\n", ps.dt, ps.gravity.x,
+    // ps.gravity.y, ps.gravity.z);
+    // printf("Pos[0]: (%f, %f, %f)\n", ps.d_pos[0].x, ps.d_pos[0].y,
+    // ps.d_pos[0].z);
+  }
   if (idx >= ps.num_particles)
     return;
 
-  // Load active only
+  // Active check? Ghost or Real.
   float4 vel_w = ps.d_vel[idx];
+  // w component is type? (0=Real, 1=Ghost). Both need prediction?
+  // Yes, Ghosts behave like particles for now, or do they?
+  // Usually Ghost is just a geometric copy. If we integrate ghosts, they drift
+  // correctly.
 
-  if (vel_w.w > 0.5f)
-    return; // Ghost or inactive
-
-  float3 pos = make_float3(ps.d_pos[idx].x, ps.d_pos[idx].y, ps.d_pos[idx].z);
-  float3 vel = make_float3(vel_w.x, vel_w.y, vel_w.z);
   float inv_mass = ps.d_pos[idx].w;
 
-  // Apply gravity
+  // 1. Predict Velocity (Gravity)
+  float3 v_curr = make_float3(vel_w.x, vel_w.y, vel_w.z);
+  float3 v_pred = v_curr;
+
   if (inv_mass > 0.0f) {
-    vel.x += gravity.x * dt;
-    vel.y += gravity.y * dt;
-    vel.z += gravity.z * dt;
+    v_pred.x += ps.gravity.x * ps.dt;
+    v_pred.y += ps.gravity.y * ps.dt;
+    v_pred.z += ps.gravity.z * ps.dt;
   }
+  ps.d_vel_pred[idx] = make_float4(v_pred.x, v_pred.y, v_pred.z, vel_w.w);
 
-  // Predict
-  float3 pos_star =
-      make_float3(pos.x + vel.x * dt, pos.y + vel.y * dt, pos.z + vel.z * dt);
+  // 2. Predict Position
+  float4 pos_curr = ps.d_pos[idx];
+  float3 x_pred = make_float3(pos_curr.x, pos_curr.y, pos_curr.z);
 
-  // Store
-  ps.d_pos_star[idx] =
-      make_float4(pos_star.x, pos_star.y, pos_star.z, inv_mass);
-}
+  if (inv_mass > 0.0f) {
+    x_pred.x += v_pred.x * ps.dt;
+    x_pred.y += v_pred.y * ps.dt;
+    x_pred.z += v_pred.z * ps.dt;
+  }
+  ps.d_pos_pred[idx] = make_float4(x_pred.x, x_pred.y, x_pred.z, pos_curr.w);
 
-__global__ void reset_deltas_kernel(ParticleSystemData ps) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= ps.num_particles)
-    return;
+  // 3. Predict Rotation
+  float4 q_curr = ps.d_quat[idx];
+  float4 w_curr = ps.d_ang_vel[idx];
+  float3 omega = make_float3(w_curr.x, w_curr.y, w_curr.z);
 
-  ps.d_delta_pos[idx] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+  float4 q_pred = q_curr;
+  if (inv_mass > 0.0f) {
+    // Small angle approximation or direct integrate
+    float dq_x = 0.5f * ps.dt *
+                 (omega.x * q_curr.w + omega.y * q_curr.z - omega.z * q_curr.y);
+    float dq_y = 0.5f * ps.dt *
+                 (omega.y * q_curr.w + omega.z * q_curr.x - omega.x * q_curr.z);
+    float dq_z = 0.5f * ps.dt *
+                 (omega.z * q_curr.w + omega.x * q_curr.y - omega.y * q_curr.x);
+    float dq_w =
+        0.5f * ps.dt *
+        (-omega.x * q_curr.x - omega.y * q_curr.y - omega.z * q_curr.z);
+    q_pred.x += dq_x;
+    q_pred.y += dq_y;
+    q_pred.z += dq_z;
+    q_pred.w += dq_w;
+
+    // Normalize
+    float len = sqrtf(q_pred.x * q_pred.x + q_pred.y * q_pred.y +
+                      q_pred.z * q_pred.z + q_pred.w * q_pred.w);
+    if (len > 1e-9f) {
+      float inv = 1.0f / len;
+      q_pred.x *= inv;
+      q_pred.y *= inv;
+      q_pred.z *= inv;
+      q_pred.w *= inv;
+    }
+  }
+  ps.d_quat_pred[idx] = q_pred;
+  ps.d_ang_vel_pred[idx] = w_curr; // No torque yet
+
+  // 4. Clear Accumulators
+  ps.d_delta_pos[idx] = make_float4(0, 0, 0, 0);
+  ps.d_delta_vel[idx] = make_float4(0, 0, 0, 0);
+  ps.d_delta_quat[idx] = make_float4(0, 0, 0, 0);
+  ps.d_delta_ang_vel[idx] = make_float4(0, 0, 0, 0);
   ps.d_constraint_counts[idx] = 0;
+
+  // Single thread clears global counters? No, separate kernel or memset.
+  // We'll rely on launch_integrate_predict calling cudaMemset/Memcpy for scalar
+  // globals.
 }
 
-__global__ void update_velocity_kernel(ParticleSystemData ps, float dt) {
+// ------------------------------------------------------------------
+// 2. Apply Updates (Jacobi Average)
+// ------------------------------------------------------------------
+__global__ void apply_updates_kernel(ParticleSystemData ps) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= ps.num_particles)
     return;
 
-  float4 vel_w = ps.d_vel[idx];
-  if (vel_w.w > 0.5f)
+  int count = ps.d_constraint_counts[idx];
+  if (count > 0) {
+    float factor = 1.0f / (float)count;
+
+    // Position
+    float4 dp = ps.d_delta_pos[idx];
+    float4 p = ps.d_pos_pred[idx];
+    p.x += dp.x * factor;
+    p.y += dp.y * factor;
+    p.z += dp.z * factor;
+    ps.d_pos_pred[idx] = p;
+
+    // Velocity
+    float4 dv = ps.d_delta_vel[idx];
+    float4 v = ps.d_vel_pred[idx];
+    v.x += dv.x * factor;
+    v.y += dv.y * factor;
+    v.z += dv.z * factor;
+    ps.d_vel_pred[idx] = v;
+
+    // Quaternion - normalize?
+    // For now simplify: Rotation updates might be complex.
+    // If we used d_delta_quat logic...
+    // Let's assume No Rotation Correction for Phase 1 Sphere Packing (No
+    // friction torque yet)
+
+    // Clear for next iteration if re-used?
+    // Solvers usually run once per substep, or iterating?
+    // Projected Jacobi typically iterates.
+    // If iterating, we need to clear deltas here.
+    ps.d_delta_pos[idx] = make_float4(0, 0, 0, 0);
+    ps.d_delta_vel[idx] = make_float4(0, 0, 0, 0);
+    ps.d_constraint_counts[idx] = 0;
+  }
+}
+
+// ------------------------------------------------------------------
+// 3. Final Commit
+// ------------------------------------------------------------------
+__global__ void final_commit_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= ps.num_particles)
     return;
 
-  float3 pos = make_float3(ps.d_pos[idx].x, ps.d_pos[idx].y, ps.d_pos[idx].z);
-  float3 pos_star = make_float3(ps.d_pos_star[idx].x, ps.d_pos_star[idx].y,
-                                ps.d_pos_star[idx].z);
-
-  // Update velocity v = (x* - x) / dt
-  float damping = 0.1f; // Heavy Damping for Packing
-  float3 new_vel = make_float3((pos_star.x - pos.x) / dt * damping,
-                               (pos_star.y - pos.y) / dt * damping,
-                               (pos_star.z - pos.z) / dt * damping);
-
-  // Update position
-  float3 final_pos = make_float3(pos_star.x, pos_star.y, pos_star.z);
-
-  // Periodic Wrapping
+  // Periodic Wrap!
+  float4 p = ps.d_pos_pred[idx];
+  float3 pos = make_float3(p.x, p.y, p.z);
   float3 size = ps.domain_size;
-  float3 min = ps.domain_min;
-  float3 max = ps.domain_max;
+  float3 min_b = ps.domain_min;
+  float3 max_b = ps.domain_max;
 
+  // Periodic Wrap!
   if (ps.periodic_x) {
-    if (final_pos.x < min.x)
-      final_pos.x += size.x;
-    else if (final_pos.x >= max.x)
-      final_pos.x -= size.x;
+    if (pos.x < min_b.x)
+      pos.x += size.x;
+    else if (pos.x >= max_b.x)
+      pos.x -= size.x;
   }
   if (ps.periodic_y) {
-    if (final_pos.y < min.y)
-      final_pos.y += size.y;
-    else if (final_pos.y >= max.y)
-      final_pos.y -= size.y;
+    if (pos.y < min_b.y)
+      pos.y += size.y;
+    else if (pos.y >= max_b.y)
+      pos.y -= size.y;
   }
-  if (ps.periodic_z) {
-    if (final_pos.z < min.z)
-      final_pos.z += size.z;
-    else if (final_pos.z >= max.z)
-      final_pos.z -= size.z;
-  }
+  if (pos.z < min_b.z)
+    pos.z += size.z;
+  else if (pos.z >= max_b.z)
+    pos.z -= size.z;
 
-  ps.d_pos[idx] =
-      make_float4(final_pos.x, final_pos.y, final_pos.z, ps.d_pos[idx].w);
-  ps.d_vel[idx] = make_float4(new_vel.x, new_vel.y, new_vel.z, vel_w.w);
+  ps.d_pos[idx] = make_float4(pos.x, pos.y, pos.z, p.w);
+  ps.d_vel[idx] = ps.d_vel_pred[idx];
+  ps.d_quat[idx] = ps.d_quat_pred[idx];
+  ps.d_ang_vel[idx] = ps.d_ang_vel_pred[idx];
 }
 
-void launch_integration(ParticleSystemData &ps, float dt, float3 gravity) {
+// ------------------------------------------------------------------
+// Wrappers
+// ------------------------------------------------------------------
+
+void launch_generate_ghosts(ParticleSystemData ps, float margin) {
+  int threads = 256;
+  int blocks = (ps.num_real + threads - 1) / threads;
+  generate_ghosts_kernel<<<blocks, threads>>>(ps, margin);
+  CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_integrate_predict(ParticleSystemData ps, float dt, float3 gravity) {
+  // Update PS with current time step params
+  ps.dt = dt;
+  ps.gravity = make_float4(gravity.x, gravity.y, gravity.z, 0);
+
   int threads = 256;
   int blocks = (ps.num_particles + threads - 1) / threads;
 
-  predict_position_kernel<<<blocks, threads>>>(ps, dt, gravity);
-  reset_deltas_kernel<<<blocks, threads>>>(ps);
-  cudaDeviceSynchronize(); // For safety during dev
+  // Clear atomic contact counter
+  CUDA_CHECK(cudaMemset(ps.d_contact_count, 0, sizeof(int)));
+
+  predict_and_clear_kernel<<<blocks, threads>>>(ps);
+  CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_update(ParticleSystemData &ps, float dt) {
+void launch_apply_updates(ParticleSystemData ps) {
   int threads = 256;
   int blocks = (ps.num_particles + threads - 1) / threads;
+  apply_updates_kernel<<<blocks, threads>>>(ps);
+  CUDA_CHECK(cudaGetLastError());
+}
 
-  update_velocity_kernel<<<blocks, threads>>>(ps, dt);
-  cudaDeviceSynchronize();
+void launch_final_commit(ParticleSystemData ps, float dt) {
+  ps.dt = dt;
+  int threads = 256;
+  int blocks = (ps.num_particles + threads - 1) / threads;
+  final_commit_kernel<<<blocks, threads>>>(ps);
+  CUDA_CHECK(cudaGetLastError());
 }

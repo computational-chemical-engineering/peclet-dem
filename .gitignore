@@ -29,3 +29,5 @@ venv/
 # Generated artifacts (if any not in build)
 *.egg-info/
 dist/
+.cache/
+output/

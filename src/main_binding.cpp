@@ -14,6 +14,9 @@ PYBIND11_MODULE(demgpu, m) {
       .def("set_velocities", &Simulation::set_velocities_numpy)
       .def("get_velocities", &Simulation::get_velocities_numpy)
       .def("set_scales", &Simulation::set_scales_numpy)
+      .def("set_material_params", &Simulation::set_material_params,
+           py::arg("restitution_normal"), py::arg("restitution_tangent"),
+           py::arg("friction_dynamic"))
       .def("set_gravity", &Simulation::set_gravity)
       .def("set_global_scale", &Simulation::set_global_scale)
       .def(

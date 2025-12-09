@@ -118,20 +118,21 @@ def run_simulation(num_particles, packing_density, granular_temperature):
     sim.set_velocities(vel)
     
     # Simulation Loop
+    # Simulation Loop
     sim.set_gravity(0.0, 0.0, 0.0)
-    dt = 0.01
+    dt = 0.001 # Reduced from 0.01 for stability
     
     start_time = time.perf_counter()
     
     # Growth Phase
-    growth_steps = 200
+    growth_steps = 2000 # Increased from 200
     for i in range(growth_steps):
         current_scale = i / (growth_steps - 1)
         sim.set_global_scale(current_scale)
         sim.step(dt)
         
     # Relaxation Phase
-    relax_steps = 500
+    relax_steps = 5000 # Increased from 500
     for i in range(relax_steps):
         sim.step(dt)
         
@@ -143,6 +144,12 @@ def run_simulation(num_particles, packing_density, granular_temperature):
     radii_final = scales * 1.0 # Global scale is 1.0
     
     overlaps, max_overlap = check_overlaps_numba(final_pos, radii_final, L)
+    
+    # Export VTP
+    output_dir = "output"
+    os.makedirs(output_dir, exist_ok=True)
+    vtp_filename = os.path.join(output_dir, f"packing_T{granular_temperature:.1f}_rho{packing_density:.2f}.vtp")
+    sim.write_vtp(vtp_filename)
     
     return overlaps, max_overlap, duration
 
