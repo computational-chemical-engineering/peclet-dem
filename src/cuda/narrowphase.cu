@@ -117,6 +117,11 @@ __global__ void detect_contacts_kernel(ParticleSystemData ps,
     float effective_dist = dist - point_radius;
 
     if (effective_dist < safety_margin) {
+      // TRACK MAX OVERLAP
+      if (effective_dist < 0) {
+        atomicMaxFloat(ps.d_max_overlap, -effective_dist);
+      }
+
       // Collision!
       int contact_idx = atomicAdd(ps.d_contact_count, 1);
       if (contact_idx >= ps.max_contacts) {
@@ -184,8 +189,9 @@ __global__ void detect_contacts_kernel(ParticleSystemData ps,
   }
 }
 
-__global__ void detect_ground_kernel(ParticleSystemData ps, float global_scale,
-                                     float safety_margin) {
+__global__ void detect_boundary_kernel(ParticleSystemData ps,
+                                       float global_scale,
+                                       float safety_margin) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= ps.num_real)
     return;
@@ -193,66 +199,62 @@ __global__ void detect_ground_kernel(ParticleSystemData ps, float global_scale,
   float4 p_w = ps.d_pos_pred[idx];
   float s = ps.d_scale[idx] * global_scale;
   float radius = 1.0f * s;
-  float ground_y = ps.domain_min.y;
 
-  // Dist = (y - rad) - ground
-  float dist = (p_w.y - radius) - ground_y;
+  // Helper lambda for adding contact
+  auto add_plane_contact = [&](float3 normal, float dist, float3 plane_point) {
+    if (dist < safety_margin) {
+      if (dist < 0) {
+        atomicMaxFloat(ps.d_max_overlap, -dist);
+      }
+      int contact_idx = atomicAdd(ps.d_contact_count, 1);
+      if (contact_idx >= ps.max_contacts) {
+        atomicSub(ps.d_contact_count, 1);
+        return;
+      }
 
-  if (dist < safety_margin) {
-    int contact_idx = atomicAdd(ps.d_contact_count, 1);
-    if (contact_idx >= ps.max_contacts) {
-      atomicSub(ps.d_contact_count, 1);
-      return;
+      ContactConstraint c;
+      c.bodyA = idx;
+      c.bodyB = -1; // Wall/Plane
+      c.normal = make_float4(normal.x, normal.y, normal.z, 0.0f);
+      c.rA = make_float4(-normal.x * radius, -normal.y * radius,
+                         -normal.z * radius, 0.0f);
+      // Store World Space Contact Point on Plane in rB (Anchor)
+      c.rB = make_float4(plane_point.x, plane_point.y, plane_point.z, 0.0f);
+      c.dist = dist;
+      c.friction_lambda_n = 0.0f;
+      ps.d_contacts[contact_idx] = c;
     }
+  };
 
-    float3 normal = make_float3(0, 1, 0); // Wall Normal (Ground -> Up)
-    // Correct? Standard "B -> A". If Ground is B. Ground points UP to A.
-    // Yes.
+  // Iterate over Explicit Planes
+  for (int i = 0; i < ps.num_planes; ++i) {
+    Plane p = ps.d_planes[i];
+    // Distance from point to plane: dot(pos - plane_point, normal)
+    float3 diff =
+        make_float3(p_w.x - p.point.x, p_w.y - p.point.y, p_w.z - p.point.z);
+    float signed_dist_center =
+        diff.x * p.normal.x + diff.y * p.normal.y + diff.z * p.normal.z;
 
-    float3 rA_vec = make_float3(0, -radius, 0); // Center to bottom
-    float3 rB_vec = make_float3(
-        0, 0,
-        0); // Irrelevant for static plane typically, but use contact point?
-    // Contact point on Wall = (p.x, ground_y, p.z).
-    // rB is relative to Center of B. Static body has no center?
-    // Let's use 0 and handle mass=inf in solver.
+    // Surface distance
+    float dist = signed_dist_center - radius;
 
-    ContactConstraint c;
-    c.bodyA = idx;
-    c.bodyB = -1; // Ground
-    c.normal = make_float4(normal.x, normal.y, normal.z, 0.0f);
-    c.rA = make_float4(rA_vec.x, rA_vec.y, rA_vec.z, 0.0f);
-    c.rB = make_float4(rB_vec.x, rB_vec.y, rB_vec.z, 0.0f);
-    c.dist = dist;
-    c.friction_lambda_n = 0.0f;
-    ps.d_contacts[contact_idx] = c;
+    add_plane_contact(p.normal, dist, p.point);
   }
+
+  // NOTE: Automatic Box Walls are REMOVED per user request.
+  // Periodicity only affects Ghost Generation in Broadphase.
 }
 
 void launch_narrowphase(ParticleSystemData ps, float global_scale) {
-  // 1. Reset contact count
-  // Done in integration predict_and_clear? No, that was for accumulators.
-  // Contact count needs reset before this or at start of frame.
-  // Plan said "Reset: Set *d_contact_count = 0" in Kernel A
-  // (predict_and_clear). So we don't need to reset here if
-  // launch_integrate_predict was called.
-
   // Check potential collisions count
   int num_potential;
   CUDA_CHECK(cudaMemcpy(&num_potential, ps.d_potential_count, sizeof(int),
                         cudaMemcpyDeviceToHost));
 
-  if (num_potential == 0) {
-    // Still need ground check?
-    // Yes, fall through to ground check?
-    // Or separate logic.
-    // Let's allow fallthrough but skip sphere kernel.
-  }
-
   int threads = 256;
   int blocks;
 
-  float safety_margin = 0.1f * global_scale; // Consistent with Broadphase
+  float safety_margin = 0.1f * global_scale;
 
   if (num_potential > 0) {
     blocks = (num_potential + threads - 1) / threads;
@@ -261,15 +263,12 @@ void launch_narrowphase(ParticleSystemData ps, float global_scale) {
     CUDA_CHECK(cudaGetLastError());
   }
 
-  // Ground Check
-  // Can simple call ground kernel with same threading (check per particle)
-  // Or just append after?
-  // Let's iterate all particles again?
-  // blocks/threads same as ps.num_real
-  int num_real_particles = ps.num_real; // Use a new variable name for clarity
-  if (num_real_particles > 0) {
-    blocks = (num_real_particles + threads - 1) / threads;
-    detect_ground_kernel<<<blocks, threads>>>(ps, global_scale, safety_margin);
+  // Explicit Plane Checks
+  // Always run if planes exist
+  if (ps.num_planes > 0 && ps.num_real > 0) {
+    blocks = (ps.num_real + threads - 1) / threads;
+    detect_boundary_kernel<<<blocks, threads>>>(ps, global_scale,
+                                                safety_margin);
     CUDA_CHECK(cudaGetLastError());
   }
 }

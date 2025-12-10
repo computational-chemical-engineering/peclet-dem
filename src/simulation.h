@@ -42,6 +42,10 @@ public:
                            float friction_dynamic);
   void set_solver_iterations(int pos_its, int vel_its);
 
+  // Periodicity
+  void enable_periodicity(bool x, bool y, bool z);
+  void add_plane(float3 point, float3 normal); // Explicit Planes
+
   // Domain Configuration
   void set_domain(float3 min, float3 max);
   std::tuple<float, float, float> get_domain_min();
@@ -59,6 +63,7 @@ public:
                   std::tuple<int, int, int> resolution);
 
   float get_max_overlap();
+  float compute_overlaps(); // Re-runs collision detection on current state
 
 private:
   ParticleSystemData ps_;
@@ -70,7 +75,7 @@ private:
   int velocity_iterations_;
 
   // Helper to re-allocate if needed or just zero out
-  void allocate_system(int num_particles);
+  // Helpers
 
   // Profiling Events
   cudaEvent_t start_event_, stop_event_;
@@ -85,4 +90,10 @@ private:
   // Periodic Helpers
   int calculate_capacity(int n_real, float3 box_size, float skin_width);
   void update_ghosts();
+
+  // Data for planes
+  std::vector<Plane> planes_host_;
+
+  // State
+  bool domain_initialized_;
 };

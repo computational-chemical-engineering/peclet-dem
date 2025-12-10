@@ -45,6 +45,7 @@ def run_study():
             half_d = domain_side / 2.0
             sim.set_domain((-half_d, -half_d, -half_d), (half_d, half_d, half_d))
             sim.set_gravity(0, 0, 0)
+            sim.enable_periodicity(True, True, True) # User requested periodic packing
             sim.set_solver_iterations(iters, 0) # Only Position Solver Used for Overlap
             
             # Init Random

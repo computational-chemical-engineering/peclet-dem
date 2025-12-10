@@ -61,6 +61,11 @@ struct BVHNode {
   int object_id;
 };
 
+struct Plane {
+  float3 point;
+  float3 normal;
+};
+
 // Trivial copyable check done in simulation.cpp if needed, but this is a view
 // struct so it's fine.
 
@@ -132,6 +137,10 @@ struct ParticleSystemData {
 
   float dt;
   float4 gravity;
+
+  // --- Static Planes ---
+  Plane *d_planes;
+  int num_planes;
 
   // --- Static/Shape Data ---
   ShapeData *d_shapes; // Array of ShapeData structures

@@ -46,6 +46,10 @@ Simulation::Simulation(int num_particles) : num_particles_(num_particles) {
   ps_.d_indices_sorted = nullptr;
   ps_.d_contacts = nullptr;
   ps_.d_contact_count = nullptr;
+  ps_.d_planes = nullptr; // Initialize plane pointer
+  ps_.d_max_overlap = nullptr;
+  ps_.d_locks = nullptr;
+  ps_.d_top_ghost = nullptr;
 
   // Initialize defaults
   gravity_ = make_float3(0, -9.8f, 0);
@@ -53,7 +57,16 @@ Simulation::Simulation(int num_particles) : num_particles_(num_particles) {
   position_iterations_ = 10;
   velocity_iterations_ = 0;
 
-  allocate_system(num_particles_);
+  domain_initialized_ = false; // Flag for first set_domain call
+
+  // Default: Periodicity disabled (until set_domain called)
+  ps_.periodic_x = false;
+  ps_.periodic_y = false;
+  ps_.periodic_z = false;
+
+  ps_.num_planes = 0;
+
+  // allocate_system removed
 
   // cudaEventCreate(&start_event_);
   // cudaEventCreate(&stop_event_);
@@ -90,7 +103,10 @@ Simulation::~Simulation() {
     free_device(ps_.d_max_overlap);
 
   free_device(ps_.d_contact_count); // Renamed from d_num_contacts
-  free_device(ps_.d_locks);         // Moved from separate if
+  if (ps_.d_planes) {
+    free_device(ps_.d_planes);
+  }
+  free_device(ps_.d_locks); // Moved from separate if
   // free_device(ps_.d_contact_lambdas); // Not Allocated
   // free_device(ps_.d_tangent_lambdas); // Not Allocated
 
@@ -129,11 +145,17 @@ Simulation::~Simulation() {
   // cudaEventDestroy(solver_stop_);
 }
 
-void Simulation::allocate_system(int num_particles) {
-  // Deprecated. All allocation moved to initialize() to handle capacity
-  // scaling.
-  num_particles_ = num_particles;
+void Simulation::enable_periodicity(bool x, bool y, bool z) {
+  if (!domain_initialized_) {
+    throw std::runtime_error(
+        "Cannot enable periodicity before setting domain via set_domain().");
+  }
+  ps_.periodic_x = x;
+  ps_.periodic_y = y;
+  ps_.periodic_z = z;
+  printf("Periodicity Configured: X=%d Y=%d Z=%d\n", x, y, z);
 }
+// Deprecated allocate_system removed.
 
 // External kernel wrappers
 // External kernel wrappers
@@ -162,11 +184,8 @@ void Simulation::initialize(int shape_type, float radius, float height,
 
   // Set Domain
   ps_.domain_min = make_float3(-5.0f, -5.0f, -5.0f);
-  ps_.domain_max = make_float3(5.0f, 5.0f, 5.0f);
-  ps_.domain_size = make_float3(10.0f, 10.0f, 10.0f);
-  ps_.periodic_x = true;
-  ps_.periodic_y = true;
-  ps_.periodic_z = true;
+  // Periodicity flags are preserved from constructor/enable_periodicity
+  // Defaults (false) or User-Set (via enable_periodicity) apply.
 
   allocate_device(ps_.d_pos, capacity * sizeof(float4));
   allocate_device(ps_.d_vel, capacity * sizeof(float4));
@@ -191,7 +210,7 @@ void Simulation::initialize(int shape_type, float radius, float height,
   allocate_device(ps_.d_delta_ang_vel, capacity * sizeof(float4));
 
   allocate_device(ps_.d_constraint_counts, capacity * sizeof(int));
-  allocate_device(ps_.d_inv_inertia, capacity * sizeof(float));
+  allocate_device(ps_.d_inv_inertia, capacity * sizeof(float4));
 
   // Collision Buffers
   // Estimate: 50 neighbors per particle
@@ -245,21 +264,25 @@ void Simulation::initialize(int shape_type, float radius, float height,
     // sphere and let scale handle size. Or use 'radius' arg? If I change this,
     // I might break assumptions. But 'params' for sphere in `sdf_sphere` is
     // `params.x`.
-    params = make_float4(1.0f, 0, 0, 0);
+    // Use radius arg for Sphere Parameters
+    params = make_float4(radius, 0, 0, 0);
     // Wait, if I change radius here, 'generate_packing_sdf' (phi=0.45) relying
     // on R=1.0 (internal) + Scale 0.5 (external) might break? No,
     // 'generate_packing_sdf' relies on scale. Let's stick to Canonical Sphere
     // R=1.0. Generate Fibonacci sphere points
-    int num_sphere_points = 500;
-    float phi = 3.14159265f * (3.0f - sqrtf(5.0f));
-    for (int i = 0; i < num_sphere_points; ++i) {
-      float y = 1.0f - (i / (float)(num_sphere_points - 1)) * 2.0f;
-      float radius = sqrtf(1.0f - y * y);
-      float theta = phi * i;
-      float x = cosf(theta) * radius;
-      float z = sinf(theta) * radius;
-      h_points.push_back(make_float4(x * 1.0f, y * 1.0f, z * 1.0f, 0));
-    }
+    // Generate Fibonacci sphere points
+    // Optimization: Skip points for Sphere to use Analytic Collision
+    // (Center-Center) int num_sphere_points = 500; float phi = 3.14159265f *
+    // (3.0f - sqrtf(5.0f)); for (int i = 0; i < num_sphere_points; ++i) {
+    //   float y = 1.0f - (i / (float)(num_sphere_points - 1)) * 2.0f;
+    //   float radius = sqrtf(1.0f - y * y);
+    //   float theta = phi * i;
+    //   float x = cosf(theta) * radius;
+    //   float z = sinf(theta) * radius;
+    //   h_points.push_back(make_float4(x * 1.0f, y * 1.0f, z * 1.0f, 0));
+    // }
+    // Points vector remains empty. ShapeManager will set num_points=0.
+    // Narrowphase will use 'is_sphere_A' branch.
   }
 
   // Create Shape via Manager
@@ -274,7 +297,10 @@ void Simulation::initialize(int shape_type, float radius, float height,
   ps_.d_shapes = shape_manager_.getDeviceShapes();
 
   printf("Simulation initialized. Seeding particles...\n");
+  // Initialize Max Overlap
+  CUDA_CHECK(cudaMemset(ps_.d_max_overlap, 0, sizeof(float)));
 
+  // 1. Initialize Particles
   std::vector<float4> h_pos(num_particles_);
   std::vector<float4> h_vel(num_particles_);
   std::vector<float4> h_quat(num_particles_);
@@ -295,8 +321,12 @@ void Simulation::initialize(int shape_type, float radius, float height,
     h_pos[i] = make_float4(x, y, z, 1.0f);
     h_vel[i] = make_float4(0, 0, 0, 0.0f);
     h_quat[i] = make_float4(0, 0, 0, 1);
-    h_scale[i] = 1.0f;
-    h_shape_ids[i] = 0;
+    if (shape_type == 2) {
+      h_scale[i] = 1.0f;
+    } else {
+      h_scale[i] = radius;
+    }
+    h_shape_ids[i] = 0; // Shape ID (will be updated by Manager)
   }
 
   // Create default inertia (1.0)
@@ -347,9 +377,15 @@ void Simulation::set_domain(float3 min, float3 max) {
   ps_.domain_min = min;
   ps_.domain_max = max;
   ps_.domain_size = make_float3(max.x - min.x, max.y - min.y, max.z - min.z);
-  ps_.periodic_x = true;
-  ps_.periodic_y = true;
-  ps_.periodic_z = true;
+
+  // On first call to set_domain, enable periodicity by default
+  if (!domain_initialized_) {
+    ps_.periodic_x = true;
+    ps_.periodic_y = true;
+    ps_.periodic_z = true;
+    domain_initialized_ = true;
+    printf("Domain Initialized: Periodicity enabled by default.\n");
+  }
 }
 
 std::tuple<float, float, float> Simulation::get_domain_min() {
@@ -373,7 +409,6 @@ void Simulation::step(float dt) {
   // Also CLEARS accumulators (d_delta_*) and contact_count
   // printf("DEBUG: Launch Integrate Predict. N=%d, dt=%f\n", ps_.num_particles,
   // dt);
-  CUDA_CHECK(cudaMemset(ps_.d_max_overlap, 0, sizeof(float)));
   launch_integrate_predict(ps_, dt, gravity_);
 
   // 1a. Generate Ghosts (Periodic)
@@ -393,7 +428,11 @@ void Simulation::step(float dt) {
   launch_narrowphase(ps_, global_scale_); // Generates d_contacts
 
   // 3. Position Solver (Projected Jacobi)
+  // We iterate parallel solver steps.
   for (int i = 0; i < position_iterations_; ++i) {
+    // Reset max overlap tracking for this iteration (to capture residual)
+    CUDA_CHECK(cudaMemset(ps_.d_max_overlap, 0, sizeof(float)));
+
     launch_position_solve(ps_);
     launch_apply_updates(ps_); // Update pos_pred, quat_pred
   }
@@ -538,10 +577,64 @@ py::array_t<float> Simulation::get_scales_numpy() {
 }
 
 float Simulation::get_max_overlap() {
-  float overlap = 0.0f;
-  CUDA_CHECK(cudaMemcpy(&overlap, ps_.d_max_overlap, sizeof(float),
+  float max_ov;
+  CUDA_CHECK(cudaMemcpy(&max_ov, ps_.d_max_overlap, sizeof(float),
                         cudaMemcpyDeviceToHost));
-  return overlap;
+  return max_ov;
+}
+
+float Simulation::compute_overlaps() {
+  // 1. Copy current State to Predict (kernels read pred)
+  CUDA_CHECK(cudaMemcpy(ps_.d_pos_pred, ps_.d_pos,
+                        num_particles_ * sizeof(float4),
+                        cudaMemcpyDeviceToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_quat_pred, ps_.d_quat,
+                        num_particles_ * sizeof(float4),
+                        cudaMemcpyDeviceToDevice));
+  // Scale is already there.
+
+  // 2. Build BVH
+  build_bvh(ps_, global_scale_);
+
+  // 3. Find Collisions
+  find_collisions(ps_, global_scale_);
+
+  // 4. Reset Max Overlap
+  CUDA_CHECK(cudaMemset(ps_.d_max_overlap, 0, sizeof(float)));
+
+  // 5. Run Narrowphase in "Compute Only" mode?
+  // Actually, we can just run it. If it generates contacts, it's fine,
+  // we just discard them. But to be safe and fast, let's just ensure
+  // narrowphase updates d_max_overlap.
+  // We need to modify narrowphase to update d_max_overlap.
+  // And maybe reset contact count if we don't want to overflow buffer?
+  CUDA_CHECK(cudaMemset(ps_.d_contact_count, 0, sizeof(int)));
+
+  launch_narrowphase(ps_, global_scale_);
+
+  return get_max_overlap();
+}
+
+void Simulation::add_plane(float3 point, float3 normal) {
+  Plane p;
+  p.point = point;
+  p.normal = normal;
+  planes_host_.push_back(p);
+
+  // Re-allocate device buffer
+  if (ps_.d_planes) {
+    free_device(ps_.d_planes);
+  }
+
+  ps_.num_planes = planes_host_.size();
+  if (ps_.num_planes > 0) {
+    allocate_device(ps_.d_planes, ps_.num_planes * sizeof(Plane));
+    CUDA_CHECK(cudaMemcpy(ps_.d_planes, planes_host_.data(),
+                          ps_.num_planes * sizeof(Plane),
+                          cudaMemcpyHostToDevice));
+  }
+  printf("Added Plane: Point(%.2f, %.2f, %.2f) Normal(%.2f, %.2f, %.2f)\n",
+         point.x, point.y, point.z, normal.x, normal.y, normal.z);
 }
 
 void Simulation::write_vtp(const std::string &filename) const {

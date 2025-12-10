@@ -130,14 +130,26 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
   float3 n = make_float3(0, 1, 0);
 
   if (idB < 0) {
-    // Ground Logic
-    // C(x) = (pA.y - radiusA) - GroundY.
-    float ground_y = ps.domain_min.y;
-    float radiusA_val =
-        sqrtf(dot_product_p(rA_vec, rA_vec)); // Approx radius from rA stored
-    // pA_w is current predicted position
-    C = (pA.y - radiusA_val) - ground_y;
-    n = make_float3(0, 1, 0);
+    // Generic Static Wall/Plane Logic
+    // Uses data stored in ContactConstraint:
+    // c.normal: Normal pointing B->A
+    // c.rB: Point on the wall/plane (Anchor)
+    // C(x) = dot(pA - pB, n) - radiusA
+
+    n = make_float3(c.normal.x, c.normal.y, c.normal.z);
+
+    // Anchor Point on Wall
+    float3 pB_anchor = make_float3(c.rB.x, c.rB.y, c.rB.z);
+
+    // Radius A
+    float radiusA_val = sqrtf(dot_product_p(rA_vec, rA_vec));
+
+    // Distance from Plane
+    float3 diff_AB =
+        make_float3(pA.x - pB_anchor.x, pA.y - pB_anchor.y, pA.z - pB_anchor.z);
+    float dist_plane = dot_product_p(diff_AB, n);
+
+    C = dist_plane - radiusA_val;
 
     if (C >= 0.0f)
       return;

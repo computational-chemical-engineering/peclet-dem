@@ -102,7 +102,8 @@ __global__ void find_collisions_kernel(ParticleSystemData ps,
       cuBQL::vec_t<float, 3>(p.x + box_r, p.y + box_r, p.z + box_r);
 
   auto collision_lambda = [&](int other_idx) -> int {
-    if (idx == other_idx)
+    // Prevent self-collision and duplicates (only store i < j)
+    if (idx >= other_idx)
       return CUBQL_CONTINUE_TRAVERSAL;
 
     // Add to list

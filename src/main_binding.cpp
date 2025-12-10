@@ -45,5 +45,17 @@ PYBIND11_MODULE(demgpu, m) {
            py::arg("resolution"),
            "Export SDF field to VTI. Resolution is (rx, ry, rz)")
       .def("get_max_overlap", &Simulation::get_max_overlap)
+      .def("compute_overlaps", &Simulation::compute_overlaps,
+           "Compute overlap of current state")
+      .def("add_plane",
+           [](Simulation &s, std::tuple<float, float, float> point,
+              std::tuple<float, float, float> normal) {
+             s.add_plane(make_float3(std::get<0>(point), std::get<1>(point),
+                                     std::get<2>(point)),
+                         make_float3(std::get<0>(normal), std::get<1>(normal),
+                                     std::get<2>(normal)));
+           })
+      .def("enable_periodicity", &Simulation::enable_periodicity, py::arg("x"),
+           py::arg("y"), py::arg("z"), "Enable periodic boundaries on axes")
       .def("get_profiling_info", &Simulation::get_profiling_info);
 }

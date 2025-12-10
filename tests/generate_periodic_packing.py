@@ -39,6 +39,7 @@ def run_periodic_growth():
     
     # Zero Gravity (Floating/Jamming)
     sim.set_gravity(0, 0, 0)
+    sim.enable_periodicity(True, True, True)
     
     # Initialize Random Positions & Orientations
     # Since we grow from 0, overlaps initially don't matter much, but good to spread.
