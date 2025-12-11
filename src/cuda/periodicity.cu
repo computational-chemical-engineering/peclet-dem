@@ -205,12 +205,17 @@ __global__ void generate_ghosts_bitmask_kernel(int *d_candidates,
         // The main solver treats [0..num_total] as particles.
         // So yes, we write to d_pos[ghost_idx].
 
-        ps.d_pos[ghost_idx] =
-            make_float4(p.x + shift.x, p.y + shift.y, p.z + shift.z, p_val.w);
+        // Fix: Use predicted position for ghosts to align with solver state
+        // The solver uses pos_pred and quat_pred.
+        float4 p_pred = ps.d_pos_pred[real_idx];
 
-        // Predictors
+        ps.d_pos[ghost_idx] = make_float4(p_val.x + shift.x, p_val.y + shift.y,
+                                          p_val.z + shift.z, p_val.w);
+
+        // Predictors (CRITICAL: Must match Solver time)
         ps.d_pos_pred[ghost_idx] =
-            make_float4(p.x + shift.x, p.y + shift.y, p.z + shift.z, p_val.w);
+            make_float4(p_pred.x + shift.x, p_pred.y + shift.y,
+                        p_pred.z + shift.z, p_pred.w);
 
         // Copy others
         ps.d_vel[ghost_idx] = ps.d_vel[real_idx];
