@@ -1,11 +1,109 @@
 #include "simulation.h"
-#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+
+#include "cuda/sdf_wrapper.h"
+#include "io/Exporter.h"
 
 namespace py = pybind11;
 
+// Helper to convert numpy array to vector of float3
+std::vector<float3> array_to_float3(py::array_t<float> arr) {
+  std::vector<float3> result;
+  auto r = arr.unchecked<2>();
+  result.reserve(r.shape(0));
+  for (ssize_t i = 0; i < r.shape(0); i++) {
+    result.push_back(make_float3(r(i, 0), r(i, 1), r(i, 2)));
+  }
+  return result;
+}
+
+// Helper to convert numpy array to vector of float4
+std::vector<float4> array_to_float4(py::array_t<float> arr) {
+  std::vector<float4> result;
+  auto r = arr.unchecked<2>();
+  result.reserve(r.shape(0));
+  for (ssize_t i = 0; i < r.shape(0); i++) {
+    result.push_back(make_float4(r(i, 0), r(i, 1), r(i, 2), r(i, 3)));
+  }
+  return result;
+}
+
+// Helper for radii (1D)
+std::vector<float> array_to_float(py::array_t<float> arr) {
+  std::vector<float> result;
+  auto r = arr.unchecked<1>();
+  result.reserve(r.shape(0));
+  for (ssize_t i = 0; i < r.shape(0); i++) {
+    result.push_back(r(i));
+  }
+  return result;
+}
+
 PYBIND11_MODULE(demgpu, m) {
   m.doc() = "DEM-GPU: XPBD Engine for Granular Dynamics on GPU";
+
+  m.def(
+      "export_lammps",
+      [](std::string filename, int step, py::array_t<float> pos_np,
+         py::array_t<float> vel_np, py::array_t<float> quats_np,
+         py::array_t<float> radii_np,
+         std::optional<std::tuple<float, float, float>> box_min,
+         std::optional<std::tuple<float, float, float>> box_max,
+         bool pbc_enabled) {
+        auto pos = array_to_float3(pos_np);
+        auto vel = array_to_float3(vel_np);
+        auto quats = array_to_float4(quats_np);
+        auto radii = array_to_float(radii_np);
+
+        float3 bmin_storage, bmax_storage;
+        float3 *bmin_ptr = nullptr;
+        float3 *bmax_ptr = nullptr;
+
+        if (box_min.has_value()) {
+          bmin_storage =
+              make_float3(std::get<0>(*box_min), std::get<1>(*box_min),
+                          std::get<2>(*box_min));
+          bmin_ptr = &bmin_storage;
+        }
+        if (box_max.has_value()) {
+          bmax_storage =
+              make_float3(std::get<0>(*box_max), std::get<1>(*box_max),
+                          std::get<2>(*box_max));
+          bmax_ptr = &bmax_storage;
+        }
+
+        export_lammps_dump(filename, step, pos, vel, quats, radii, bmin_ptr,
+                           bmax_ptr, pbc_enabled);
+      },
+      py::arg("filename"), py::arg("step"), py::arg("pos"), py::arg("vel"),
+      py::arg("quats"), py::arg("radii"), py::arg("box_min") = py::none(),
+      py::arg("box_max") = py::none(), py::arg("pbc_enabled") = false);
+
+  // SDF Wrappers
+  m.def(
+      "sdf_hollow_cylinder",
+      [](std::tuple<float, float, float> p,
+         std::tuple<float, float, float, float> params) {
+        float3 p_vec =
+            make_float3(std::get<0>(p), std::get<1>(p), std::get<2>(p));
+        float4 p_params = make_float4(std::get<0>(params), std::get<1>(params),
+                                      std::get<2>(params), std::get<3>(params));
+        return evaluate_sdf_hollow_cylinder(p_vec, p_params);
+      },
+      "Evaluate Hollow Cylinder SDF", py::arg("p"), py::arg("params"));
+
+  m.def(
+      "sdf_sphere",
+      [](std::tuple<float, float, float> p,
+         std::tuple<float, float, float, float> params) {
+        float3 p_vec =
+            make_float3(std::get<0>(p), std::get<1>(p), std::get<2>(p));
+        float4 p_params = make_float4(std::get<0>(params), std::get<1>(params),
+                                      std::get<2>(params), std::get<3>(params));
+        return evaluate_sdf_sphere(p_vec, p_params);
+      },
+      "Evaluate Sphere SDF", py::arg("p"), py::arg("params"));
 
   py::class_<Simulation>(m, "Simulation")
       .def(py::init<int>(), py::arg("num_particles") = 1000)

@@ -56,7 +56,6 @@ Simulation::Simulation(int num_particles) : num_particles_(num_particles) {
   global_scale_ = 1.0f;
   position_iterations_ = 10;
   velocity_iterations_ = 0;
-
   domain_initialized_ = false; // Flag for first set_domain call
 
   // Default: Periodicity disabled (until set_domain called)
@@ -159,8 +158,10 @@ void Simulation::enable_periodicity(bool x, bool y, bool z) {
 
 // External kernel wrappers
 // External kernel wrappers
-extern void launch_integrate_predict(ParticleSystemData ps, float dt,
-                                     float3 gravity);
+extern void launch_integrate_predict_velocity(ParticleSystemData ps, float dt,
+                                              float3 gravity);
+extern void launch_apply_velocity_and_predict_position(ParticleSystemData ps,
+                                                       float dt);
 extern void launch_apply_updates(ParticleSystemData ps);
 extern void launch_final_commit(ParticleSystemData ps, float dt);
 void launch_generate_ghosts(ParticleSystemData ps, float margin);
@@ -402,42 +403,87 @@ void Simulation::set_solver_iterations(int pos_its, int vel_its) {
 }
 
 void Simulation::step(float dt) {
-  // New Pipeline
+  // DEBUG: Inspect Particle 0 on GPU
+  // Synchronization to prevent kernel launch race conditions (Heisenbug fix)
+  // Synchronization to prevent kernel launch race conditions (Heisenbug fix)
+  // Force Rebuild Verification
+  CUDA_CHECK(cudaDeviceSynchronize());
 
-  // 1. Integration & Prediction (Gravity)
-  // Initializes pos_pred, vel_pred, quat_pred from current state + gravity * dt
-  // Also CLEARS accumulators (d_delta_*) and contact_count
-  // printf("DEBUG: Launch Integrate Predict. N=%d, dt=%f\n", ps_.num_particles,
-  // dt);
-  launch_integrate_predict(ps_, dt, gravity_);
+  // New Pipeline (Hybrid Velocity/Position)
 
-  // 1a. Generate Ghosts (Periodic)
-  float margin = 1.0f * global_scale_;
+  // 1. Predict Velocity (Gravity Only)
+  // Initializes v_pred = v_n + g*dt.
+  // Clears d_delta_vel and d_delta_pos accumulators.
+  launch_integrate_predict_velocity(ps_, dt, gravity_);
+
+  // 2. Generate Ghosts (Periodic)
+  // Uses d_pos (current) to generate ghosts?
+  // Wait, ghosts need prediction for collision?
+  // Usually we ghost based on current state.
   if (ps_.periodic_x || ps_.periodic_y || ps_.periodic_z) {
     update_ghosts();
+    // Check if d_pos_pred was preserved/resized correctly
+    // If update_ghosts reallocates, d_pos_pred might be garbage for ghosts,
+    // but REAL particles (0..N_real) must be preserved.
   }
 
-  // 2. Broadphase & Narrowphase
-  // Build BVH (Collision Detection)
+  // 3. Broadphase & Narrowphase
+  // Build BVH (Collision Detection) based on CURRENT Position (or
+  // predicted? Plan said x_n + v*dt?) For now, let's use x_n (d_pos)
+  // which is stable. build_bvh uses d_pos if we don't update d_pos_pred
+  // yet? narrowphase uses d_pos_pred! ERROR: d_pos_pred is NOT updated
+  // by predict_velocity_kernel anymore. We need d_pos_pred for collision
+  // detection! The Plan said: "Detect contacts based on current position
+  // x_n (or a speculative x_n + v*dt)." Narrowphase reads d_pos_pred. We
+  // should probably initialize d_pos_pred = d_pos + v_pred * dt * (0 or
+  // 1)? If we want "Position Solves Drift", using x_n is safer? But if
+  // we don't predict, we don't find future collisions. Let's make
+  // "Predict Velocity" ALSO Update d_pos_pred temporarily for Collision?
+  // OR: Just run a "Rough Predict" for Collision? Let's stick to the
+  // Plan: "Predict Velocity Only". Note: narrowphase.cu reads
+  // ps.d_pos_pred. If d_pos_pred is garbage/old, collision fails. FIX:
+  // predict_velocity_kernel SHOULD set d_pos_pred = d_pos + v_pred * dt
+  // (Speculative) for collision purposes. Then Re-Integration will
+  // Overwrite it with v_solved. Let's assume predict_velocity_kernel
+  // DOES update d_pos_pred (I need to check my edit). CHECK: My edit to
+  // predict_velocity_kernel REMOVED Position Prediction logic? My edit:
+  // "3. Predict Rotation" ... "d_pos_pred[idx] = ... x_pred
+  // ...". WAIT. I removed "2. Predict Position" block? Looking at my
+  // edit to integration.cu: I REPLACED "1. Predict and Clear" with
+  // "predict_velocity_kernel". Inside, I see "1. Predict Velocity". I
+  // REMOVED "2. Predict Position". So d_pos_pred is NOT set. This is a
+  // BUG in my previous step vs the requirements of Narrowphase.
+
+  // Correction: I must Restore Position Prediction in separate kernel or
+  // same? If I do it in predict_velocity, it uses "Gravity Velocity".
+  // This is "Speculative Position". Using it for collision is standard.
+  // So I WILL add it back in next step.
+  // For now, let's update the loop assuming I fix the kernel.
+
   build_bvh(ps_, global_scale_);
-
-  // Collision Detection
   find_collisions(ps_, 1.0f);
+  launch_narrowphase(ps_, global_scale_);
 
-  // Narrowphase
-  launch_narrowphase(ps_, global_scale_); // Generates d_contacts
+  // 4. Phase A: Velocity Solve
+  // Solves for d_delta_vel
+  launch_velocity_solve(ps_);
 
-  // 3. Position Solver (Projected Jacobi)
-  // We iterate parallel solver steps.
+  // 5. Apply Velocity & Re-Integrate Position
+  // v_solved = v_pred + delta_v
+  // x_pred = x_n + v_solved * dt
+  launch_apply_velocity_and_predict_position(ps_, dt);
+
+  // 6. Phase B: Position Solve (Projected Jacobi)
+  // Operates on x_pred from step 5.
   for (int i = 0; i < position_iterations_; ++i) {
-    // Reset max overlap tracking for this iteration (to capture residual)
     CUDA_CHECK(cudaMemset(ps_.d_max_overlap, 0, sizeof(float)));
-
     launch_position_solve(ps_);
-    launch_apply_updates(ps_); // Update pos_pred, quat_pred
+    launch_apply_updates(ps_);
   }
 
-  // 4. Final Commit
+  // 7. Final Commit
+  // x_n+1 = x_pred
+  // v_n+1 is NOT updated from x (it was updated in step 5).
   launch_final_commit(ps_, dt);
 }
 
@@ -484,6 +530,15 @@ void Simulation::set_positions_numpy(py::array_t<float> pos) {
   CUDA_CHECK(cudaMemcpy(ps_.d_pos_star, ps_.d_pos,
                         num_particles_ * sizeof(float4),
                         cudaMemcpyDeviceToDevice));
+
+  // Explicitly redundant copy to d_pos_pred to ensure consistency
+  CUDA_CHECK(cudaMemcpy(ps_.d_pos_pred, ps_.d_pos,
+                        num_particles_ * sizeof(float4),
+                        cudaMemcpyDeviceToDevice));
+
+  // Flag next step to synchronize
+  // force_sync_ = true;
+  // CUDA_CHECK(cudaDeviceSynchronize()); // Deferred to step() via force_sync_
 }
 
 void Simulation::set_velocities_numpy(py::array_t<float> vel) {
@@ -571,8 +626,6 @@ py::array_t<float> Simulation::get_scales_numpy() {
   float *ptr = static_cast<float *>(buf.ptr);
   CUDA_CHECK(cudaMemcpy(ptr, ps_.d_scale, num_particles_ * sizeof(float),
                         cudaMemcpyDeviceToHost));
-  printf("DEBUG: get_scales for %d particles. d_scale: %p. First val: %f\n",
-         num_particles_, ps_.d_scale, ptr[0]);
   return result;
 }
 

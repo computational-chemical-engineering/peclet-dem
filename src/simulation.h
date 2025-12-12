@@ -96,4 +96,6 @@ private:
 
   // State
   bool domain_initialized_;
+  bool force_sync_; // Flag to force synchronization on next step (e.g. after
+                    // set_positions)
 };

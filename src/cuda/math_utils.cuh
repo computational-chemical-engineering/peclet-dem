@@ -20,32 +20,32 @@ __device__ inline void atomicAddVector3(float4 *address, float3 val) {
 }
 #endif
 
-__device__ inline float3 operator+(const float3 &a, const float3 &b) {
+__host__ __device__ inline float3 operator+(const float3 &a, const float3 &b) {
   return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
 }
-__device__ inline float3 operator-(const float3 &a, const float3 &b) {
+__host__ __device__ inline float3 operator-(const float3 &a, const float3 &b) {
   return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
 }
-__device__ inline float dot(float3 a, float3 b) {
+__host__ __device__ inline float dot(float3 a, float3 b) {
   return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-__device__ inline float length(float3 v) { return sqrtf(dot(v, v)); }
+__host__ __device__ inline float length(float3 v) { return sqrtf(dot(v, v)); }
 
-__device__ inline float length(float2 v) {
+__host__ __device__ inline float length(float2 v) {
   return sqrtf(v.x * v.x + v.y * v.y);
 }
-__device__ inline float3 operator*(const float3 &a, float s) {
+__host__ __device__ inline float3 operator*(const float3 &a, float s) {
   return make_float3(a.x * s, a.y * s, a.z * s);
 }
-__device__ inline float3 operator*(float s, const float3 &a) {
+__host__ __device__ inline float3 operator*(float s, const float3 &a) {
   return make_float3(a.x * s, a.y * s, a.z * s);
 }
-__device__ inline float3 operator/(const float3 &a, float s) {
+__host__ __device__ inline float3 operator/(const float3 &a, float s) {
   float inv = 1.0f / s;
   return a * inv;
 }
-__device__ inline float3 vec_cross(float3 a, float3 b) {
+__host__ __device__ inline float3 vec_cross(float3 a, float3 b) {
   return make_float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,
                      a.x * b.y - a.y * b.x);
 }
@@ -53,13 +53,13 @@ __device__ inline float3 vec_cross(float3 a, float3 b) {
 // -----------------------------------------------------------------------------
 // Quaternion Math
 // -----------------------------------------------------------------------------
-__device__ inline float3 rotate_vector(float4 q, float3 v) {
+__host__ __device__ inline float3 rotate_vector(float4 q, float3 v) {
   float3 q_vec = make_float3(q.x, q.y, q.z);
   float3 t = 2.0f * vec_cross(q_vec, v);
   return v + q.w * t + vec_cross(q_vec, t);
 }
 
-__device__ inline float3 inv_rotate_vector(float4 q, float3 v) {
+__host__ __device__ inline float3 inv_rotate_vector(float4 q, float3 v) {
   float4 inv_q = make_float4(-q.x, -q.y, -q.z, q.w);
   return rotate_vector(inv_q, v);
 }

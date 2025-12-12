@@ -93,24 +93,15 @@ __global__ void generate_ghosts_kernel(ParticleSystemData ps, float margin) {
 // ------------------------------------------------------------------
 // 1. Predict and Clear
 // ------------------------------------------------------------------
-__global__ void predict_and_clear_kernel(ParticleSystemData ps) {
+// ------------------------------------------------------------------
+// 1a. Predict Velocity (Gravity Only)
+// ------------------------------------------------------------------
+__global__ void predict_velocity_kernel(ParticleSystemData ps) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx == 0) {
-    // printf("Predict: dt=%f, g=(%f, %f, %f)\n", ps.dt, ps.gravity.x,
-    // ps.gravity.y, ps.gravity.z);
-    // printf("Pos[0]: (%f, %f, %f)\n", ps.d_pos[0].x, ps.d_pos[0].y,
-    // ps.d_pos[0].z);
-  }
   if (idx >= ps.num_particles)
     return;
 
-  // Active check? Ghost or Real.
   float4 vel_w = ps.d_vel[idx];
-  // w component is type? (0=Real, 1=Ghost). Both need prediction?
-  // Yes, Ghosts behave like particles for now, or do they?
-  // Usually Ghost is just a geometric copy. If we integrate ghosts, they drift
-  // correctly.
-
   float inv_mass = ps.d_pos[idx].w;
 
   // 1. Predict Velocity (Gravity)
@@ -122,27 +113,89 @@ __global__ void predict_and_clear_kernel(ParticleSystemData ps) {
     v_pred.y += ps.gravity.y * ps.dt;
     v_pred.z += ps.gravity.z * ps.dt;
   }
+  // Store predicted velocity (Gravity Only)
   ps.d_vel_pred[idx] = make_float4(v_pred.x, v_pred.y, v_pred.z, vel_w.w);
 
-  // 2. Predict Position
-  float4 pos_curr = ps.d_pos[idx];
-  float3 x_pred = make_float3(pos_curr.x, pos_curr.y, pos_curr.z);
+  // 2. Predict Position (Speculative for Collision)
+  // XPBD uses x_pred = x_n + v_pred * dt for collision detection
+  float3 x_curr =
+      make_float3(ps.d_pos[idx].x, ps.d_pos[idx].y, ps.d_pos[idx].z);
+  float3 x_pred = x_curr;
 
   if (inv_mass > 0.0f) {
     x_pred.x += v_pred.x * ps.dt;
     x_pred.y += v_pred.y * ps.dt;
     x_pred.z += v_pred.z * ps.dt;
   }
+  ps.d_pos_pred[idx] =
+      make_float4(x_pred.x, x_pred.y, x_pred.z, ps.d_pos[idx].w);
+
+  // 3. Predict Quaternion (First Guess = Current)
+  ps.d_quat_pred[idx] = ps.d_quat[idx];
+  // Note: Angular prediction could go here, but q_n is usually sufficient for
+  // Broadphase/Narrowphase or we can add simple omega integration if needed.
+
+  // Clear Velocity Deltas (for Velocity Solve)
+  ps.d_delta_vel[idx] = make_float4(0, 0, 0, 0);
+  ps.d_delta_ang_vel[idx] = make_float4(0, 0, 0, 0);
+
+  // Clear Position Deltas (for later Position Solve)
+  ps.d_delta_pos[idx] = make_float4(0, 0, 0, 0);
+  ps.d_delta_quat[idx] = make_float4(0, 0, 0, 0);
+  ps.d_constraint_counts[idx] = 0;
+}
+
+// ------------------------------------------------------------------
+// 1b. Apply Velocity Solve & Predict Position (Re-Integration)
+// ------------------------------------------------------------------
+__global__ void
+apply_velocity_and_predict_position_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= ps.num_particles)
+    return;
+
+  // 1. Apply accumulated velocity impulses (from Phase A: Velocity Solve)
+  float4 v_pred_w = ps.d_vel_pred[idx]; // Currently holds v_n + g*dt
+  float4 dv = ps.d_delta_vel[idx];
+
+  // Summing up impulses (no averaging needed if atomicAdd was purely additive
+  // impulse) Logic: v_solved = v_pred + delta_v
+  float3 v_final =
+      make_float3(v_pred_w.x + dv.x, v_pred_w.y + dv.y, v_pred_w.z + dv.z);
+
+  // Update d_vel_pred with the "Solved" velocity
+  ps.d_vel_pred[idx] = make_float4(v_final.x, v_final.y, v_final.z, v_pred_w.w);
+
+  // PERSIST VELOCITY for next frame! (Key Change)
+  // We want v_{n+1} = v_{solved}
+  ps.d_vel[idx] = ps.d_vel_pred[idx];
+
+  // 2. Predict Position
+  float inv_mass = ps.d_pos[idx].w;
+  float4 pos_curr = ps.d_pos[idx];
+  float3 x_pred = make_float3(pos_curr.x, pos_curr.y, pos_curr.z);
+
+  if (inv_mass > 0.0f) {
+    x_pred.x += v_final.x * ps.dt;
+    x_pred.y += v_final.y * ps.dt;
+    x_pred.z += v_final.z * ps.dt;
+  }
   ps.d_pos_pred[idx] = make_float4(x_pred.x, x_pred.y, x_pred.z, pos_curr.w);
 
-  // 3. Predict Rotation
+  // 3. Predict Rotation (Simple Euler for now)
   float4 q_curr = ps.d_quat[idx];
-  float4 w_curr = ps.d_ang_vel[idx];
-  float3 omega = make_float3(w_curr.x, w_curr.y, w_curr.z);
+  float4 w_curr = ps.d_ang_vel[idx]; // Should include torque updates?
+  // We didn't apply torque from velocity solve yet!
+  float4 dw = ps.d_delta_ang_vel[idx];
+
+  float3 omega = make_float3(w_curr.x + dw.x, w_curr.y + dw.y, w_curr.z + dw.z);
+  // Update Angular Velocity state
+  ps.d_ang_vel[idx] = make_float4(omega.x, omega.y, omega.z, w_curr.w);
+  ps.d_ang_vel_pred[idx] = ps.d_ang_vel[idx];
 
   float4 q_pred = q_curr;
   if (inv_mass > 0.0f) {
-    // Small angle approximation or direct integrate
+    // Integrate q
     float dq_x = 0.5f * ps.dt *
                  (omega.x * q_curr.w + omega.y * q_curr.z - omega.z * q_curr.y);
     float dq_y = 0.5f * ps.dt *
@@ -169,18 +222,11 @@ __global__ void predict_and_clear_kernel(ParticleSystemData ps) {
     }
   }
   ps.d_quat_pred[idx] = q_pred;
-  ps.d_ang_vel_pred[idx] = w_curr; // No torque yet
 
-  // 4. Clear Accumulators
-  ps.d_delta_pos[idx] = make_float4(0, 0, 0, 0);
-  ps.d_delta_vel[idx] = make_float4(0, 0, 0, 0);
-  ps.d_delta_quat[idx] = make_float4(0, 0, 0, 0);
-  ps.d_delta_ang_vel[idx] = make_float4(0, 0, 0, 0);
-  ps.d_constraint_counts[idx] = 0;
-
-  // Single thread clears global counters? No, separate kernel or memset.
-  // We'll rely on launch_integrate_predict calling cudaMemset/Memcpy for scalar
-  // globals.
+  // Clear Deltas for Position Solve
+  // (We cleared them in step 1, but let's be safe or just clear
+  // d_constraint_counts) Actually, we need d_delta_pos cleared. (Done in step
+  // 1)
 }
 
 // ------------------------------------------------------------------
@@ -261,9 +307,15 @@ __global__ void final_commit_kernel(ParticleSystemData ps) {
     pos.z -= size.z;
 
   ps.d_pos[idx] = make_float4(pos.x, pos.y, pos.z, p.w);
-  ps.d_vel[idx] = ps.d_vel_pred[idx];
+
+  // UNCONDITIONAL v update from phase A (already stored in d_vel in
+  // reintegrate) We do NOT update d_vel here from x_pred! But we need to update
+  // d_vel_pred = d_vel for next step consistency? d_vel is already updated in
+  // apply_velocity_and_predict_position_kernel.
+
   ps.d_quat[idx] = ps.d_quat_pred[idx];
-  ps.d_ang_vel[idx] = ps.d_ang_vel_pred[idx];
+  // Ang vel also updated in reintegrate
+  // ps.d_ang_vel[idx] = ps.d_ang_vel_pred[idx]; // Done previously
 }
 
 // ------------------------------------------------------------------
@@ -277,18 +329,27 @@ void launch_generate_ghosts(ParticleSystemData ps, float margin) {
   CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_integrate_predict(ParticleSystemData ps, float dt, float3 gravity) {
-  // Update PS with current time step params
+void launch_integrate_predict_velocity(ParticleSystemData ps, float dt,
+                                       float3 gravity) {
   ps.dt = dt;
   ps.gravity = make_float4(gravity.x, gravity.y, gravity.z, 0);
 
   int threads = 256;
   int blocks = (ps.num_particles + threads - 1) / threads;
 
-  // Clear atomic contact counter
   CUDA_CHECK(cudaMemset(ps.d_contact_count, 0, sizeof(int)));
+  // Clear delta_vel explicitly? No, kernel does it.
 
-  predict_and_clear_kernel<<<blocks, threads>>>(ps);
+  predict_velocity_kernel<<<blocks, threads>>>(ps);
+  CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_apply_velocity_and_predict_position(ParticleSystemData ps,
+                                                float dt) {
+  ps.dt = dt;
+  int threads = 256;
+  int blocks = (ps.num_particles + threads - 1) / threads;
+  apply_velocity_and_predict_position_kernel<<<blocks, threads>>>(ps);
   CUDA_CHECK(cudaGetLastError());
 }
 

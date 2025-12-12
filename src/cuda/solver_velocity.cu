@@ -65,7 +65,8 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps) {
 
   // Activity Check
   // If dist > 0 (Speculative) AND vn > 0 (Separating) -> Inactive
-  if (c.dist > 0.0f && vn > 0.0f) {
+  // Activity Check: Only apply if approaching (vn < 0)
+  if (vn >= 0.0f) {
     return;
   }
 

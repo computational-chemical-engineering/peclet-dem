@@ -60,7 +60,9 @@ set(DEMGPU_CUDA_SRC
     src/cuda/solver_velocity.cu
     src/cuda/solver_position.cu
     src/cuda/periodicity.cu
+    src/cuda/periodicity.cu
     src/cuda/output_sdf.cu
+    src/cuda/sdf_wrapper.cu
     # Add other cuda files as they are creating
 )
 
@@ -72,6 +74,7 @@ set(DEMGPU_CPP_SRC
     src/shapes/point_sampler.cpp
     src/shapes/ShapeManager.cpp
     src/cpp/OutputGenerator.cpp
+    src/io/Exporter.cpp
 )
 
 # ---- Python Extension Module ----

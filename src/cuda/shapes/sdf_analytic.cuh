@@ -1,6 +1,6 @@
 #pragma once
+#include "../math_utils.cuh"
 #include <cuda_runtime.h>
-#include <math_functions.h>
 
 namespace dem {
 
@@ -10,7 +10,7 @@ namespace dem {
 // params.x = outer_radius (R)
 // params.y = height (h)
 // params.z = thickness (t)
-__device__ inline float sdf_hollow_cylinder(float3 p, float4 params) {
+__host__ __device__ inline float sdf_hollow_cylinder(float3 p, float4 params) {
   float r_outer = params.x;
   float h = params.y;
   float thick = params.z;
@@ -44,7 +44,7 @@ __device__ inline float sdf_hollow_cylinder(float3 p, float4 params) {
 // Analytic Sphere SDF (Example/Reference)
 // -----------------------------------------------------------------------------
 // params.x = radius
-__device__ inline float sdf_sphere(float3 p, float4 params) {
+__host__ __device__ inline float sdf_sphere(float3 p, float4 params) {
   return length(p) - params.x;
 }
 
