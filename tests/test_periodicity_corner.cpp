@@ -41,12 +41,12 @@ void test_corner_ghosts() {
   sim.step(0.0f);
 
   // 3. Verify Count
-  int n = sim.num_particles();
+  int n = sim.num_particles(true); // Include Ghosts
   std::cout << "Particles after step: " << n << std::endl;
   CHECK(n == 8);
 
   // 4. Verify Positions
-  auto py_res = sim.get_positions_numpy();
+  auto py_res = sim.get_positions_numpy(true); // Include Ghosts
   float *ptr = (float *)py_res.request().ptr;
 
   // Expected shifts:

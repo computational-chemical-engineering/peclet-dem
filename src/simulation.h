@@ -20,11 +20,15 @@ public:
   void initialize(int shape_type, float radius = 0.5f, float height = 2.0f,
                   float thickness = 0.2f);
   void step(float dt);
-  int num_particles() const { return num_particles_; }
+  int num_particles(bool include_ghosts = false) const {
+    if (include_ghosts)
+      return ps_.num_particles;
+    return num_particles_;
+  }
 
   // Helpers // Python Bindings
   // Getters (copy to host)
-  py::array_t<float> get_positions_numpy();
+  py::array_t<float> get_positions_numpy(bool include_ghosts = false);
   py::array_t<float> get_quaternions_numpy();
   py::array_t<float> get_scales_numpy();
   py::array_t<float> get_velocities_numpy(); // New

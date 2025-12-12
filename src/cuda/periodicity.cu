@@ -100,6 +100,9 @@ __global__ void generate_ghosts_bitmask_kernel(int *d_candidates,
                                                PeriodicConfig config) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   int count = *d_candidate_count;
+  if (idx == 0)
+    printf("DEBUG: Generate Kernel Start. Count=%d, Cap=%d, Top=%d\n", count,
+           ps.capacity, *ps.d_top_ghost);
   if (idx >= count)
     return;
 
@@ -115,58 +118,12 @@ __global__ void generate_ghosts_bitmask_kernel(int *d_candidates,
   float3 min_b = config.min;
   float3 max_b = config.max;
 
-  // Mask logic replaced by direct shift calculation below
-
-  // Bounds for loops based on mask
-  // If mask is -1, loop -1 to 0 (unless we wrap around?)
-  // Actually:
-  // If mask is -1 (Left), we need a ghost on the RIGHT (+1 shift).
-  // If mask is +1 (Right), we need a ghost on the LEFT (-1 shift).
-  // Wait, standard logic:
-  // If particle is at LEFT boundary (x near min), it needs a ghost at (x +
-  // size). So shift is +1. If particle is at RIGHT boundary (x near max), it
-  // needs a ghost at (x - size). So shift is -1.
-
-  // So if mask_x == -1 (Low), shift_range is {0, 1} ?
-  // No, strictly: if it is near Low, we generate High ghost.
-  // But what if it's near High? We generate Low ghost.
-
-  // Bitmask Logic from Plan:
-  // "Loop over mask... generate ghosts for permutations"
-
-  // Let's be explicit:
-  // Shifts to check: -1, 0, 1.
-  // If mask_x == -1 (Near Min), we need shift X=+1.
-  // If mask_x == 1 (Near Max), we need shift X=-1.
-  // If mask_x == 0, we need shift X=0.
-
-  // Wait. A corner particle (Near Min_X, Near Min_Y) needs:
-  // Ghost (X+1, Y0)
-  // Ghost (X0, Y+1)
-  // Ghost (X+1, Y+1)
-
-  // So we iterate ix in {0, mask_x_shift} ?
-  // Let's define `s_x` as the required shift direction.
-  // If near Min: s_x = +1.
-  // If near Max: s_x = -1.
-  // If near neither: s_x = 0.
-
   int sx = (p.x < min_b.x + skin) ? 1 : ((p.x > max_b.x - skin) ? -1 : 0);
   int sy = (p.y < min_b.y + skin) ? 1 : ((p.y > max_b.y - skin) ? -1 : 0);
   int sz = (p.z < min_b.z + skin) ? 1 : ((p.z > max_b.z - skin) ? -1 : 0);
 
-  // Now iterate. We must include 0 and `sx`.
-  // Example: sx=1. We loop i in {0, 1}.
-  // Example: sx=-1. We loop i in {-1, 0}.
-  // Example: sx=0. We loop i in {0}.
-
-  // Shifts calculated directly
-
-  // Let's act sparse.
-  // We have a set of active shift indices for X: {0} U {sx if sx!=0}
-
   int active_x[2] = {0, sx};
-  int count_x = (sx == 0) ? 1 : 2; // If sx!=0, we have 2 states (Real + Ghost)
+  int count_x = (sx == 0) ? 1 : 2;
 
   int active_y[2] = {0, sy};
   int count_y = (sy == 0) ? 1 : 2;
@@ -186,10 +143,9 @@ __global__ void generate_ghosts_bitmask_kernel(int *d_candidates,
 
         // Add Ghost
         int ghost_idx = atomicAdd(ps.d_top_ghost, 1);
-        // Capacity Check
         if (ghost_idx >= ps.capacity) {
-          atomicSub(ps.d_top_ghost, 1); // Revert? Mostly for debug.
-          return;                       // Fail gracefully-ish
+          atomicSub(ps.d_top_ghost, 1);
+          return;
         }
         // Check atomicAdd didn't overflow before?
         // Using d_top_ghost initialized to num_real is safer.
@@ -198,15 +154,7 @@ __global__ void generate_ghosts_bitmask_kernel(int *d_candidates,
                                    iz * config.size.z);
 
         // Copy & Shift
-        // Write to State (Read-Only buffers? No, ghosts are appended to end)
-        // BUT d_pos is input for this step.
-        // We should write to d_pos?
-        // Ghost Logic: Ghosts are "Appended" to the arrays.
-        // The main solver treats [0..num_total] as particles.
-        // So yes, we write to d_pos[ghost_idx].
-
-        // Fix: Use predicted position for ghosts to align with solver state
-        // The solver uses pos_pred and quat_pred.
+        // Use predicted position for ghosts to align with solver state
         float4 p_pred = ps.d_pos_pred[real_idx];
 
         ps.d_pos[ghost_idx] = make_float4(p_val.x + shift.x, p_val.y + shift.y,
@@ -230,8 +178,8 @@ __global__ void generate_ghosts_bitmask_kernel(int *d_candidates,
         ps.d_scale[ghost_idx] = ps.d_scale[real_idx];
         ps.d_shape_ids[ghost_idx] = ps.d_shape_ids[real_idx];
 
-        // Flag as Ghost? (vel.w)
-        ps.d_vel[ghost_idx].w = 1.0f; // 1 = Ghost
+        // Flag as Ghost
+        ps.d_vel[ghost_idx].w = 1.0f;
         ps.d_vel_pred[ghost_idx].w = 1.0f;
       }
     }

@@ -57,6 +57,12 @@ Simulation::Simulation(int num_particles) : num_particles_(num_particles) {
   position_iterations_ = 10;
   velocity_iterations_ = 0;
   domain_initialized_ = false; // Flag for first set_domain call
+  force_sync_ = true;          // Ensure first step is always synchronized
+
+  // Initialize Domain Defaults (prevents garbage reads)
+  ps_.domain_min = make_float3(-5.0f, -5.0f, -5.0f);
+  ps_.domain_max = make_float3(5.0f, 5.0f, 5.0f);
+  ps_.domain_size = make_float3(10.0f, 10.0f, 10.0f);
 
   // Default: Periodicity disabled (until set_domain called)
   ps_.periodic_x = false;
@@ -183,8 +189,13 @@ void Simulation::initialize(int shape_type, float radius, float height,
   ps_.num_real = num_particles_;
   ps_.num_particles = num_particles_;
 
-  // Set Domain
-  ps_.domain_min = make_float3(-5.0f, -5.0f, -5.0f);
+  // Set Domain Defaults if not already set
+  if (!domain_initialized_) {
+    ps_.domain_min = make_float3(-5.0f, -5.0f, -5.0f);
+    ps_.domain_max = make_float3(5.0f, 5.0f, 5.0f);
+    ps_.domain_size = make_float3(10.0f, 10.0f, 10.0f);
+    // Periodicity defaults (false) apply
+  }
   // Periodicity flags are preserved from constructor/enable_periodicity
   // Defaults (false) or User-Set (via enable_periodicity) apply.
 
@@ -266,7 +277,11 @@ void Simulation::initialize(int shape_type, float radius, float height,
     // I might break assumptions. But 'params' for sphere in `sdf_sphere` is
     // `params.x`.
     // Use radius arg for Sphere Parameters
-    params = make_float4(radius, 0, 0, 0);
+    // params = make_float4(radius, 0, 0, 0);
+    // FIX: Use Canonical Sphere R=1.0 so that 'scale' controls size 1:1.
+    // Previously, we set param=0.5 AND scale=0.5 -> Effective R=0.25 (Too
+    // Small).
+    params = make_float4(1.0f, 0, 0, 0);
     // Wait, if I change radius here, 'generate_packing_sdf' (phi=0.45) relying
     // on R=1.0 (internal) + Scale 0.5 (external) might break? No,
     // 'generate_packing_sdf' relies on scale. Let's stick to Canonical Sphere
@@ -406,75 +421,34 @@ void Simulation::step(float dt) {
   // DEBUG: Inspect Particle 0 on GPU
   // Synchronization to prevent kernel launch race conditions (Heisenbug fix)
   // Synchronization to prevent kernel launch race conditions (Heisenbug fix)
-  // Force Rebuild Verification
-  CUDA_CHECK(cudaDeviceSynchronize());
+  // Optimization: Only sync if flagged (e.g. after data upload)
+  if (force_sync_) {
+    CUDA_CHECK(cudaDeviceSynchronize());
+    force_sync_ = false;
+  }
 
   // New Pipeline (Hybrid Velocity/Position)
 
   // 1. Predict Velocity (Gravity Only)
-  // Initializes v_pred = v_n + g*dt.
-  // Clears d_delta_vel and d_delta_pos accumulators.
   launch_integrate_predict_velocity(ps_, dt, gravity_);
 
-  // 2. Generate Ghosts (Periodic)
-  // Uses d_pos (current) to generate ghosts?
-  // Wait, ghosts need prediction for collision?
-  // Usually we ghost based on current state.
+  // 2. Generate Ghosts
   if (ps_.periodic_x || ps_.periodic_y || ps_.periodic_z) {
     update_ghosts();
-    // Check if d_pos_pred was preserved/resized correctly
-    // If update_ghosts reallocates, d_pos_pred might be garbage for ghosts,
-    // but REAL particles (0..N_real) must be preserved.
   }
 
   // 3. Broadphase & Narrowphase
-  // Build BVH (Collision Detection) based on CURRENT Position (or
-  // predicted? Plan said x_n + v*dt?) For now, let's use x_n (d_pos)
-  // which is stable. build_bvh uses d_pos if we don't update d_pos_pred
-  // yet? narrowphase uses d_pos_pred! ERROR: d_pos_pred is NOT updated
-  // by predict_velocity_kernel anymore. We need d_pos_pred for collision
-  // detection! The Plan said: "Detect contacts based on current position
-  // x_n (or a speculative x_n + v*dt)." Narrowphase reads d_pos_pred. We
-  // should probably initialize d_pos_pred = d_pos + v_pred * dt * (0 or
-  // 1)? If we want "Position Solves Drift", using x_n is safer? But if
-  // we don't predict, we don't find future collisions. Let's make
-  // "Predict Velocity" ALSO Update d_pos_pred temporarily for Collision?
-  // OR: Just run a "Rough Predict" for Collision? Let's stick to the
-  // Plan: "Predict Velocity Only". Note: narrowphase.cu reads
-  // ps.d_pos_pred. If d_pos_pred is garbage/old, collision fails. FIX:
-  // predict_velocity_kernel SHOULD set d_pos_pred = d_pos + v_pred * dt
-  // (Speculative) for collision purposes. Then Re-Integration will
-  // Overwrite it with v_solved. Let's assume predict_velocity_kernel
-  // DOES update d_pos_pred (I need to check my edit). CHECK: My edit to
-  // predict_velocity_kernel REMOVED Position Prediction logic? My edit:
-  // "3. Predict Rotation" ... "d_pos_pred[idx] = ... x_pred
-  // ...". WAIT. I removed "2. Predict Position" block? Looking at my
-  // edit to integration.cu: I REPLACED "1. Predict and Clear" with
-  // "predict_velocity_kernel". Inside, I see "1. Predict Velocity". I
-  // REMOVED "2. Predict Position". So d_pos_pred is NOT set. This is a
-  // BUG in my previous step vs the requirements of Narrowphase.
-
-  // Correction: I must Restore Position Prediction in separate kernel or
-  // same? If I do it in predict_velocity, it uses "Gravity Velocity".
-  // This is "Speculative Position". Using it for collision is standard.
-  // So I WILL add it back in next step.
-  // For now, let's update the loop assuming I fix the kernel.
-
   build_bvh(ps_, global_scale_);
   find_collisions(ps_, 1.0f);
   launch_narrowphase(ps_, global_scale_);
 
   // 4. Phase A: Velocity Solve
-  // Solves for d_delta_vel
   launch_velocity_solve(ps_);
 
   // 5. Apply Velocity & Re-Integrate Position
-  // v_solved = v_pred + delta_v
-  // x_pred = x_n + v_solved * dt
   launch_apply_velocity_and_predict_position(ps_, dt);
 
   // 6. Phase B: Position Solve (Projected Jacobi)
-  // Operates on x_pred from step 5.
   for (int i = 0; i < position_iterations_; ++i) {
     CUDA_CHECK(cudaMemset(ps_.d_max_overlap, 0, sizeof(float)));
     launch_position_solve(ps_);
@@ -482,8 +456,6 @@ void Simulation::step(float dt) {
   }
 
   // 7. Final Commit
-  // x_n+1 = x_pred
-  // v_n+1 is NOT updated from x (it was updated in step 5).
   launch_final_commit(ps_, dt);
 }
 
@@ -537,8 +509,7 @@ void Simulation::set_positions_numpy(py::array_t<float> pos) {
                         cudaMemcpyDeviceToDevice));
 
   // Flag next step to synchronize
-  // force_sync_ = true;
-  // CUDA_CHECK(cudaDeviceSynchronize()); // Deferred to step() via force_sync_
+  force_sync_ = true;
 }
 
 void Simulation::set_velocities_numpy(py::array_t<float> vel) {
@@ -559,6 +530,7 @@ void Simulation::set_velocities_numpy(py::array_t<float> vel) {
   CUDA_CHECK(cudaMemcpy(ps_.d_vel, h_vel.data(),
                         num_particles_ * sizeof(float4),
                         cudaMemcpyHostToDevice));
+  force_sync_ = true;
 }
 
 void Simulation::set_scales_numpy(py::array_t<float> scales) {
@@ -569,17 +541,24 @@ void Simulation::set_scales_numpy(py::array_t<float> scales) {
   float *ptr = static_cast<float *>(buf.ptr);
   CUDA_CHECK(cudaMemcpy(ps_.d_scale, ptr, num_particles_ * sizeof(float),
                         cudaMemcpyHostToDevice));
+  force_sync_ = true;
 }
 
-py::array_t<float> Simulation::get_positions_numpy() {
-  std::vector<float4> h_pos(num_particles_);
-  CUDA_CHECK(cudaMemcpy(h_pos.data(), ps_.d_pos,
-                        num_particles_ * sizeof(float4),
+// -----------------------------------------------------------------------------
+// Getters
+// -----------------------------------------------------------------------------
+py::array_t<float> Simulation::get_positions_numpy(bool include_ghosts) {
+  int n = include_ghosts ? ps_.num_particles : num_particles_;
+  // The following lines are from the instruction, but seem misplaced for
+  // get_positions_numpy auto pos_ptr = get_device_ptr(ps_.d_pos); int count =
+  // 0; std::vector<float4> h_pos(capacity); // 'capacity' is not defined here
+  std::vector<float4> h_pos(n); // Keep original h_pos initialization
+  CUDA_CHECK(cudaMemcpy(h_pos.data(), ps_.d_pos, n * sizeof(float4),
                         cudaMemcpyDeviceToHost));
 
-  py::array_t<float> result({num_particles_, 3});
+  py::array_t<float> result({n, 3});
   auto r = result.mutable_unchecked<2>();
-  for (int i = 0; i < num_particles_; ++i) {
+  for (int i = 0; i < n; ++i) {
     r(i, 0) = h_pos[i].x;
     r(i, 1) = h_pos[i].y;
     r(i, 2) = h_pos[i].z;
@@ -797,13 +776,7 @@ void Simulation::update_ghosts() {
   // 2. Build Local BVH (Real particles only)
   int old_num = ps_.num_particles;
   ps_.num_particles = ps_.num_real;
-
-  // Re-use logic from step(): just update aabb?
-  // We need to run update_aabb kernels for REAL particles if they moved?
-  // Assuming this is called AFTER integration, pos_pred is valid.
-  // We do need to update AABBs for real particles to build the tree.
-  // Let's assume AABBs are handled by build_bvh call?
-  // Wait, build_bvh calls particles_to_aabb_kernel. Yes.
+  ps_.num_particles = ps_.num_real;
 
   build_bvh(ps_, global_scale_);
 
@@ -816,9 +789,6 @@ void Simulation::update_ghosts() {
 
   CUDA_CHECK(cudaMemset(ps_.d_potential_count, 0, sizeof(int)));
 
-  // Use indices_sorted or bvh_indices as scratch?
-  // d_bvh_indices is output of BVH build. We can overwrite it if we rebuild
-  // Global BVH later. Yes.
   dem::launch_find_ghost_candidates(ps_, config, ps_.d_bvh_indices,
                                     ps_.d_potential_count);
 
@@ -829,10 +799,13 @@ void Simulation::update_ghosts() {
   dem::launch_generate_ghosts_bitmask(ps_.d_bvh_indices, ps_.d_potential_count,
                                       ps_, config);
 
+  CUDA_CHECK(cudaDeviceSynchronize()); // Ensure kernel done
+
   // 5. Update Total Count
   int total = 0;
   CUDA_CHECK(
       cudaMemcpy(&total, ps_.d_top_ghost, sizeof(int), cudaMemcpyDeviceToHost));
+
   if (total > ps_.capacity) {
     printf("WARNING: Ghost buffer overflow (Req: %d, Cap: %d)\n", total,
            ps_.capacity);

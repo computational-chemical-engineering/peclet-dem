@@ -135,7 +135,10 @@ PYBIND11_MODULE(demgpu, m) {
       .def("get_domain_min", &Simulation::get_domain_min)
       .def("get_domain_max", &Simulation::get_domain_max)
       .def("step", &Simulation::step)
-      .def("get_positions", &Simulation::get_positions_numpy)
+      .def("num_particles", &Simulation::num_particles,
+           py::arg("include_ghosts") = false)
+      .def("get_positions", &Simulation::get_positions_numpy,
+           py::arg("include_ghosts") = false)
       .def("get_quaternions", &Simulation::get_quaternions_numpy)
       .def("get_scales", &Simulation::get_scales_numpy)
       .def("write_vtp", &Simulation::write_vtp, py::arg("filename"))

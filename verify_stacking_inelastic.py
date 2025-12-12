@@ -88,6 +88,8 @@ def verify_stacking_inelastic():
             
             max_overlap = sim.compute_overlaps()
             print(f"Step {i}: Max V={max_v:.4f}, Mean KE={mean_ke:.6f}, Max Overlap={max_overlap:.6f}")
+
+
             
     vels = sim.get_velocities()
     v_mag = np.linalg.norm(vels, axis=1)

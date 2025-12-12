@@ -301,10 +301,12 @@ __global__ void final_commit_kernel(ParticleSystemData ps) {
     else if (pos.y >= max_b.y)
       pos.y -= size.y;
   }
-  if (pos.z < min_b.z)
-    pos.z += size.z;
-  else if (pos.z >= max_b.z)
-    pos.z -= size.z;
+  if (ps.periodic_z) {
+    if (pos.z < min_b.z)
+      pos.z += size.z;
+    else if (pos.z >= max_b.z)
+      pos.z -= size.z;
+  }
 
   ps.d_pos[idx] = make_float4(pos.x, pos.y, pos.z, p.w);
 
