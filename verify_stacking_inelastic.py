@@ -15,9 +15,10 @@ def verify_stacking_inelastic():
     sim.initialize(0) 
     
     # Material: Restitution=0.0, Friction=0.0
-    sim.set_material_params(0.0, 0.0, 0.) 
+    sim.set_material_params(0.0, 0.0, 0.0) # Inelastic
     sim.set_gravity(0, -9.8, 0)
-    sim.set_solver_iterations(10, 100) # Pos=10, Vel=20
+    sim.set_solver_iterations(10, 20) # Pos=10, Vel=20
+    sim.set_global_scale(1.0)
     
     sim.add_plane([0, -5.0, 0], [0, 1.0, 0])
     
@@ -26,7 +27,7 @@ def verify_stacking_inelastic():
     sim.set_scales(scales)
     
     pos = []
-    spacing = 1.2
+    spacing = 2.1
     for y in range(shape[0]):
         for x in range(shape[1]):
             for z in range(shape[2]):
@@ -56,8 +57,8 @@ def verify_stacking_inelastic():
     sim.set_scales(scales)
 
     # Export Initial State
-    dt = 0.005
-    steps = 400
+    dt = 0.05
+    steps = 40
     
     import os
     output_dir = "output/stacking_inelastic"
@@ -66,9 +67,9 @@ def verify_stacking_inelastic():
     print(f"Running {steps} steps (dt={dt})...")
     
     for i in range(steps):
-        sim.step(0.005)
+        sim.step(dt)
         
-        if i % 10 == 0:
+        if i % 1 == 0:
             p = sim.get_positions()
             v = sim.get_velocities()
             # Assuming get_quaternions returns numpy array.
@@ -78,15 +79,16 @@ def verify_stacking_inelastic():
             # export_lammps(filename, step, pos, vel, quats, radii, ...)
             demgpu.export_lammps(f"{output_dir}/dump.stacking.{i}.lammps", i, p, v, q, s)
             
-        if i % 100 == 0:
-            vels = sim.get_velocities()
-            v_mag = np.linalg.norm(vels, axis=1)
-            max_v = np.max(v_mag)
-            mean_ke = 0.5 * np.mean(v_mag**2)
-            
-            max_overlap = sim.compute_overlaps()
-            print(f"Step {i}: Max V={max_v:.4f}, Mean KE={mean_ke:.6f}, Max Overlap={max_overlap:.6f}")
-
+            # Trace Particle 1
+            print(f"Step {i}: P1_y={p[1][1]:.6f}, P1_vy={v[1][1]:.6f}")
+    
+    vels = sim.get_velocities()
+    v_mag = np.linalg.norm(vels, axis=1)
+    max_v = np.max(v_mag)
+    mean_ke = 0.5 * np.mean(v_mag**2)
+    
+    max_overlap = sim.compute_overlaps()
+    print(f"Max V={max_v:.4f}, Mean KE={mean_ke:.6f}, Max Overlap={max_overlap:.6f}")
 
             
     vels = sim.get_velocities()

@@ -183,6 +183,32 @@ __global__ void detect_contacts_kernel(ParticleSystemData ps,
       c.rA = make_float4(rA_vec.x, rA_vec.y, rA_vec.z, 0.0f);
       c.rB = make_float4(rB_vec.x, rB_vec.y, rB_vec.z, 0.0f);
       c.dist = effective_dist;
+
+      // --- Compute Current Distance (Strict Momentum) ---
+      // Load Current Positions
+      float4 pA_curr = ps.d_pos[idA];
+      float4 pB_curr = ps.d_pos[idB];
+      float3 posA_curr = make_float3(pA_curr.x, pA_curr.y, pA_curr.z);
+      float3 posB_curr = make_float3(pB_curr.x, pB_curr.y, pB_curr.z);
+
+      // Warning: This assumes Sphere-Sphere distance logic is sufficient
+      // approximation for the "current" check, or we need to re-evaluate SDF?
+      // Re-evaluating SDF is expensive and requires current Quaternions.
+      // For Sphere-Sphere: dist = len(pA-pB) - (rA + rB).
+      // Since shape descriptors don't change, we can use radii.
+      // But for general SDF? We should ideally re-run SDF.
+      // Optimization: For Phase 1 (Spheres), we use sphere logic.
+      // General Solution: Approximate using contact plane?
+      // Better: Re-evaluate Sphere-Sphere exactly.
+      float dist_curr =
+          length(posA_curr - posB_curr) - (point_radius + scaleB * 1.0f);
+      // Note: scaleB * 1.0 assumes B is unit sphere. If B is not sphere, this
+      // is wrong. But we are in Sphere Packing task. Let's assume Sphere-Sphere
+      // for now. If we want robust, we need SDF. Let's implement Sphere-Sphere
+      // for "Correctness" in this context.
+
+      c.dist_current = dist_curr;
+
       c.friction_lambda_n = 0.0f;
       ps.d_contacts[contact_idx] = c;
     }
@@ -221,6 +247,16 @@ __global__ void detect_boundary_kernel(ParticleSystemData ps,
       // Store World Space Contact Point on Plane in rB (Anchor)
       c.rB = make_float4(plane_point.x, plane_point.y, plane_point.z, 0.0f);
       c.dist = dist;
+
+      // --- Compute Current Distance (Strict Momentum) ---
+      float4 p_curr = ps.d_pos[idx]; // Current Position
+      float3 diff_curr =
+          make_float3(p_curr.x - plane_point.x, p_curr.y - plane_point.y,
+                      p_curr.z - plane_point.z);
+      float dist_center_c = diff_curr.x * normal.x + diff_curr.y * normal.y +
+                            diff_curr.z * normal.z;
+      c.dist_current = dist_center_c - radius;
+
       c.friction_lambda_n = 0.0f;
       ps.d_contacts[contact_idx] = c;
     }

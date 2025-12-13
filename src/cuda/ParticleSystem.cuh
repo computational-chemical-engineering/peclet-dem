@@ -75,7 +75,10 @@ struct ContactConstraint {
   float4 normal; // .xyz = normal, .w = padding
   float4 rA;     // .xyz = vector from COM_A to contact point
   float4 rB;     // .xyz = vector from COM_B to contact point
-  float dist;    // Signed distance (Negative = Overlap, Positive = Gap)
+  float
+      dist; // Signed distance (Negative = Overlap, Positive = Gap) - PREDICTED
+  float dist_current;      // Signed distance based on CURRENT positions (Strict
+                           // Momentum)
   float friction_lambda_n; // Stored from prev frame or pos solve (for clamping)
 };
 
