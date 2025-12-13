@@ -1,3 +1,5 @@
+import sys
+sys.path.append('../build')
 import demgpu
 import numpy as np
 import time
@@ -7,31 +9,34 @@ print(f"DEBUG: demgpu loaded from: {demgpu.__file__}")
 def verify_stacking_inelastic():
     print("--- Stacking Stability Test (Inelastic e=0) ---")
     
-    sim = demgpu.Simulation(200)
+    shape = (4,1,1)
+    n = shape[0]*shape[1]*shape[2]
+    sim = demgpu.Simulation(n)
     sim.initialize(0) 
     
     # Material: Restitution=0.0, Friction=0.0
     sim.set_material_params(0.0, 0.0, 0.) 
     sim.set_gravity(0, -9.8, 0)
+    sim.set_solver_iterations(10, 100) # Pos=10, Vel=20
     
     sim.add_plane([0, -5.0, 0], [0, 1.0, 0])
     
     initial_scale = 0.5
-    scales = np.full(200, initial_scale, dtype=np.float32)
+    scales = np.full(n, initial_scale, dtype=np.float32)
     sim.set_scales(scales)
     
     pos = []
     spacing = 1.2
-    for y in range(8):
-        for x in range(5):
-            for z in range(5):
+    for y in range(shape[0]):
+        for x in range(shape[1]):
+            for z in range(shape[2]):
                 px = (x - 2) * spacing
                 pz = (z - 2) * spacing
                 py = -4.0 + y * spacing
                 pos.append([px, py, pz])
     
     sim.set_positions(np.array(pos, dtype=np.float32))
-    sim.set_velocities(np.zeros((200, 3), dtype=np.float32))
+    sim.set_velocities(np.zeros((n, 3), dtype=np.float32))
     # The following lines are added based on the provided Code Edit block.
     # Note: 'n' is not defined in the original code, assuming it should be 200.
     # 'quat' is also not defined, assuming it should be initialized or derived.
@@ -43,9 +48,6 @@ def verify_stacking_inelastic():
     # I will apply the changes as literally as possible from the "Code Edit" block,
     # assuming 'n' is 200 and 'quat' needs to be defined.
     # Given the context, 'quat' is likely an array of identity quaternions.
-    
-    # Let's define 'n' and 'quat' based on common DEMGPU usage and the context.
-    n = 200 # Number of particles
     quat = np.array([[1.0, 0.0, 0.0, 0.0]] * n, dtype=np.float32) # Identity quaternions
     
     sim.set_positions(np.array(pos, dtype=np.float32))
@@ -55,7 +57,7 @@ def verify_stacking_inelastic():
 
     # Export Initial State
     dt = 0.005
-    steps = 1000
+    steps = 400
     
     import os
     output_dir = "output/stacking_inelastic"
@@ -64,15 +66,11 @@ def verify_stacking_inelastic():
     print(f"Running {steps} steps (dt={dt})...")
     
     for i in range(steps):
-        sim.step(dt)
+        sim.step(0.005)
         
-        # Export for Ovito every 10 steps
         if i % 10 == 0:
             p = sim.get_positions()
             v = sim.get_velocities()
-            # If get_quaternions is not standard, we might need to handle it.
-            # Simulation usually has it. 
-            # Note: The binding we made accepts numpy arrays.
             # Assuming get_quaternions returns numpy array.
             q = sim.get_quaternions()
             s = sim.get_scales()
@@ -95,12 +93,68 @@ def verify_stacking_inelastic():
     v_mag = np.linalg.norm(vels, axis=1)
     final_max_v = np.max(v_mag)
     
+
     print(f"Final Max Velocity: {final_max_v:.4f}")
     
     if final_max_v < 0.2: 
         print("SUCCESS: Stack is stable (Inelastic).")
     else:
         print("FAILURE: Inelastic stack did not settle.")
+
+    # --- Final Analysis ---
+    final_pos = sim.get_positions()
+    final_scales = sim.get_scales()
+    
+    print("\n--- Final State Analysis ---")
+    
+    min_gap = float('inf')
+    min_gap_indices = (-1, -1)
+    
+    # Particle-Particle Gaps
+    for i in range(n):
+        for j in range(i + 1, n):
+            dist = np.linalg.norm(final_pos[i] - final_pos[j])
+            gap = dist - (final_scales[i] + final_scales[j])
+            
+            if gap < min_gap:
+                min_gap = gap
+                min_gap_indices = (i, j)
+
+    print(f"Minimum Particle-Particle Gap: {min_gap:.6f} between {min_gap_indices}")
+    if min_gap > 1e-4:
+        print("RESULT: SEPARATION (Particles are not touching)")
+    elif min_gap < -1e-4:
+        print("RESULT: OVERLAP (Particles are penetrating)")
+    else:
+        print("RESULT: TOUCHING (Perfect contact)")
+        
+    # Wall Gap (Plane at y = -5.0)
+    # Bottom plane normal is (0,1,0), point is (0,-5,0).
+    # Distance to plane = dot(p - plane_p, n)
+    # In this case = p.y - (-5.0) = p.y + 5.0
+    
+    min_wall_gap = float('inf')
+    min_wall_idx = -1
+    
+    for i in range(n):
+        dist_to_plane = (final_pos[i][1] - (-5.0))
+        gap = dist_to_plane - final_scales[i]
+        
+        if gap < min_wall_gap:
+            min_wall_gap = gap
+            min_wall_idx = i
+            
+    print(f"Minimum Wall Gap: {min_wall_gap:.6f} (Particle {min_wall_idx})")
+    
+    if min_wall_gap > 1e-4:
+        print("RESULT: WALL SEPARATION (Floating above floor)")
+    elif min_wall_gap < -1e-4:
+        print("RESULT: WALL OVERLAP (Sinking into floor)")
+    else:
+        print("RESULT: WALL CONTACT")
+
+    p = p.reshape((*shape, -1))
+    v = v.reshape((*shape, -1))
 
 if __name__ == "__main__":
     verify_stacking_inelastic()

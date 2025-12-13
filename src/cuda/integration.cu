@@ -223,10 +223,69 @@ apply_velocity_and_predict_position_kernel(ParticleSystemData ps) {
   }
   ps.d_quat_pred[idx] = q_pred;
 
-  // Clear Deltas for Position Solve
+  // Clear Position Deltas (for later Position Solve)
   // (We cleared them in step 1, but let's be safe or just clear
-  // d_constraint_counts) Actually, we need d_delta_pos cleared. (Done in step
-  // 1)
+  // d_constraint_counts)
+  // Actually, we must NOT clear d_delta_pos here if we want to run Phase B.
+  // But Phase B starts with predict_position? No, apply_velocity... predicts.
+}
+
+// ------------------------------------------------------------------
+// 1c. Apply Velocity Deltas (Iterative Solver Update)
+// ------------------------------------------------------------------
+__global__ void apply_velocity_deltas_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= ps.num_particles)
+    return;
+
+  // Apply Impulse
+  float4 v_pred_w = ps.d_vel_pred[idx];
+  float4 dv = ps.d_delta_vel[idx];
+
+  // Summation (Standard Impulse Solver)
+  ps.d_vel_pred[idx] = make_float4(v_pred_w.x + dv.x, v_pred_w.y + dv.y,
+                                   v_pred_w.z + dv.z, v_pred_w.w);
+
+  // Angular
+  // No, Solver reads d_ang_vel_pred.
+  // We should update d_ang_vel_pred.
+  float4 w_pred = ps.d_ang_vel_pred[idx];
+  float4 dw = ps.d_delta_ang_vel[idx];
+
+  ps.d_ang_vel_pred[idx] =
+      make_float4(w_pred.x + dw.x, w_pred.y + dw.y, w_pred.z + dw.z, w_pred.w);
+
+  // Clear Buffers for next iteration
+  ps.d_delta_vel[idx] = make_float4(0, 0, 0, 0);
+  ps.d_delta_ang_vel[idx] = make_float4(0, 0, 0, 0);
+  ps.d_constraint_counts[idx] = 0;
+}
+
+// ------------------------------------------------------------------
+// 1d. Compute Contact Counts (Pre-Pass for Min-Scaling)
+// ------------------------------------------------------------------
+__global__ void compute_contact_counts_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int num_contacts = *ps.d_contact_count;
+
+  if (idx >= num_contacts)
+    return;
+
+  // if (idx == 0) printf("ComputeCounts: num_contacts=%d\n", num_contacts);
+
+  ContactConstraint c = ps.d_contacts[idx];
+
+  // FILTER: Ignore safety margin contacts for Velocity Solve
+  if (c.dist > 0.0f)
+    return;
+
+  int idA = c.bodyA;
+  int idB = c.bodyB;
+
+  atomicAdd(ps.d_constraint_counts + idA, 1);
+  if (idB >= 0) {
+    atomicAdd(ps.d_constraint_counts + idB, 1);
+  }
 }
 
 // ------------------------------------------------------------------
@@ -353,6 +412,30 @@ void launch_apply_velocity_and_predict_position(ParticleSystemData ps,
   int blocks = (ps.num_particles + threads - 1) / threads;
   apply_velocity_and_predict_position_kernel<<<blocks, threads>>>(ps);
   CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_apply_velocity_deltas(ParticleSystemData ps) {
+  int threads = 256;
+  int blocks = (ps.num_particles + threads - 1) / threads;
+  apply_velocity_deltas_kernel<<<blocks, threads>>>(ps);
+  CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_compute_contact_counts(ParticleSystemData ps) {
+  int num_contacts;
+  CUDA_CHECK(cudaMemcpy(&num_contacts, ps.d_contact_count, sizeof(int),
+                        cudaMemcpyDeviceToHost));
+
+  // printf("HOST: num_contacts = %d\n", num_contacts);
+
+  if (num_contacts == 0)
+    return;
+
+  int threads = 256;
+  int blocks = (num_contacts + threads - 1) / threads;
+  compute_contact_counts_kernel<<<blocks, threads>>>(ps);
+  CUDA_CHECK(cudaGetLastError());
+  cudaDeviceSynchronize();
 }
 
 void launch_apply_updates(ParticleSystemData ps) {

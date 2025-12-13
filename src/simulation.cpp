@@ -169,6 +169,9 @@ extern void launch_integrate_predict_velocity(ParticleSystemData ps, float dt,
 extern void launch_apply_velocity_and_predict_position(ParticleSystemData ps,
                                                        float dt);
 extern void launch_apply_updates(ParticleSystemData ps);
+extern void launch_velocity_solve(ParticleSystemData ps);
+extern void launch_apply_velocity_deltas(ParticleSystemData ps);
+extern void launch_compute_contact_counts(ParticleSystemData ps);
 extern void launch_final_commit(ParticleSystemData ps, float dt);
 void launch_generate_ghosts(ParticleSystemData ps, float margin);
 extern void launch_narrowphase(ParticleSystemData ps, float global_scale);
@@ -443,9 +446,22 @@ void Simulation::step(float dt) {
   launch_narrowphase(ps_, global_scale_);
 
   // 4. Phase A: Velocity Solve
-  launch_velocity_solve(ps_);
+
+  // A. Pre-Pass: Count Contacts for Min-Scaling Weighting
+  // (d_constraint_counts is reused to store N for each particle)
+  CUDA_CHECK(
+      cudaMemset(ps_.d_constraint_counts, 0, ps_.num_particles * sizeof(int)));
+  launch_compute_contact_counts(ps_);
+
+  // B. Iterative Solve (Velocity-First)
+  for (int i = 0; i < velocity_iterations_; ++i) {
+    launch_velocity_solve(ps_);
+    launch_apply_velocity_deltas(ps_);
+  }
 
   // 5. Apply Velocity & Re-Integrate Position
+  // Note: d_delta_vel is now cleared. This function effectively acts as
+  // "Predict Position from v_pred".
   launch_apply_velocity_and_predict_position(ps_, dt);
 
   // 6. Phase B: Position Solve (Projected Jacobi)
