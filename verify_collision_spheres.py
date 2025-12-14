@@ -68,8 +68,8 @@ def run_collision_test():
     sim_iterations_vel = 20
     
     restitution = 1.0 # Normal Restitution
-    restitution_t = 1.0 # Tangential Restitution
-    friction = 0.0 # Enable friction/tangential interaction
+    restitution_t = 0.5 # Tangential Restitution
+    friction = 1.0 # Enable friction/tangential interaction
     
     # Collision Setup
     impact_velocity = 5.0

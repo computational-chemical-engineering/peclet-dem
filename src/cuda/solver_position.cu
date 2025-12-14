@@ -84,29 +84,6 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
   // always on line connecting centers. So we can re-compute everything
   // from pA, pB.
 
-  float3 diff = make_float3(pB.x - pA.x, pB.y - pA.y, pB.z - pA.z);
-  float dist_sq = dot_product_p(diff, diff);
-  float dist = sqrtf(dist_sq);
-
-  // Check overlap
-  // We need Radii.
-  // ps.d_scale is uniform.
-  // We assume spheres for Phase 1 logic inside this kernel?
-  // Ideally solver is generic.
-  // If generic, we must trust constraint data or have means to update
-  // it. Generic XPBD usually transforms local contact points to world
-  // using current q. We didn't store local points in ContactConstraint.
-  // We stored rA (vector from center). Let's assume rA rotates with
-  // body. But for Sphere, rA should point to other body! If we treat it
-  // as generic, we rotate rA_initial by (q_current * q_initial_inv). Too
-  // complex for Phase 1. Re-evaluating Sphere collision is cheap. BUT
-  // Plan says "Position Solver ... Input: ConstraintBuffer (Reuse!)".
-  // And "Re-evaluate Overlap: C(x) = dist - current_separation". Wait,
-  // `dist` in constraint is the *initial* overlap. `current_separation`
-  // ... If we move particles apart, `current_dist` increases. New
-  // Overlap = Initial Overlap + (Change in separation). Project delta_x
-  // to cancel New Overlap.
-
   // For Spheres:
   // C(x) = |pA - pB| - (rA + rB).
   // If C(x) >= 0 -> Separated.
@@ -154,20 +131,26 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
     if (C >= 0.0f)
       return;
   } else {
-    // Particle-Particle Logic
-    float rest_len = sqrtf(dot_product_p(rA_vec, rA_vec)) +
-                     sqrtf(dot_product_p(rB_vec, rB_vec));
-    C = dist - rest_len;
+    // Generic Linearized Constraint (Valid for Spheres, Cylinders, SDFs)
+    // C(x) = dot( (pA + rA) - (pB + rB), n )
+    // We use the stored contact normal 'n' and lever arms 'rA','rB' from
+    // Narrowphase.
+
+    n = make_float3(c.normal.x, c.normal.y, c.normal.z);
+
+    float3 pA_contact =
+        make_float3(pA.x + rA_vec.x, pA.y + rA_vec.y, pA.z + rA_vec.z);
+    float3 pB_contact =
+        make_float3(pB.x + rB_vec.x, pB.y + rB_vec.y, pB.z + rB_vec.z);
+
+    float3 separation_vec =
+        make_float3(pA_contact.x - pB_contact.x, pA_contact.y - pB_contact.y,
+                    pA_contact.z - pB_contact.z);
+
+    C = dot_product_p(separation_vec, n);
 
     if (C >= 0.0f)
-      return; // Separated
-
-    if (dist > 1e-9f) {
-      n = make_float3(-diff.x / dist, -diff.y / dist,
-                      -diff.z / dist); // B->A
-    } else {
-      n = make_float3(c.normal.x, c.normal.y, c.normal.z);
-    }
+      return; // Separated or touching
   }
 
   // Generalized Inverse Mass
@@ -246,7 +229,6 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
 
   // Body B
   if (idB >= 0) {
-    float3 n_neg = make_float3(-n.x, -n.y, -n.z);
     float3 rnB_val = cross_product_p(cur_rB, n);
     float3 dThetaB = make_float3(-rnB_val.x * invIB.x * dLambda,
                                  -rnB_val.y * invIB.y * dLambda,

@@ -62,7 +62,7 @@ def run_collision_test():
     thickness = 0.3
     
     # Simulation Params
-    dt = 0.001
+    dt = 0.00001
     duration = 2.0 # Seconds
     limit_steps = int(duration / dt)
     
