@@ -79,6 +79,7 @@ public:
 
   float get_max_overlap();
   float compute_overlaps(); // Re-runs collision detection on current state
+  int get_num_contacts();   // Returns number of contacts from last step
 
 private:
   ParticleSystemData ps_;

@@ -63,6 +63,7 @@ set(DEMGPU_CUDA_SRC
     src/cuda/periodicity.cu
     src/cuda/output_sdf.cu
     src/cuda/sdf_wrapper.cu
+    src/cuda/contact_preprocessing.cu
     # Add other cuda files as they are creating
 )
 

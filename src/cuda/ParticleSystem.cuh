@@ -80,6 +80,7 @@ struct ContactConstraint {
   float dist_current;      // Signed distance based on CURRENT positions (Strict
                            // Momentum)
   float friction_lambda_n; // Stored from prev frame or pos solve (for clamping)
+  float weight;            // Rigorous Pair Weight (1/N_pairs)
 };
 
 struct ParticleSystemData {
@@ -176,3 +177,5 @@ struct ParticleSystemData {
   float *d_tangent_lambdas;
   int *d_locks;
 };
+
+void sort_and_compute_contact_weights(ParticleSystemData &ps);

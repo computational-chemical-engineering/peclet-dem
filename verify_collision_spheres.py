@@ -68,15 +68,15 @@ def run_collision_test():
     sim_iterations_vel = 20
     
     restitution = 1.0 # Normal Restitution
-    restitution_t = 0.5 # Tangential Restitution
+    restitution_t = 0.0 # Tangential Restitution
     friction = 1.0 # Enable friction/tangential interaction
     
     # Collision Setup
     impact_velocity = 5.0
     spin_0_y = 5.0 # rad/s
-    spin_1_y = spin_0_y
+    spin_1_y = -spin_0_y
     initial_dist = 2.5*radius 
-    offset_y = 0.5    # Impact parameter to induce spin/shear?
+    offset_y = 0.0    # Impact parameter to induce spin/shear?
     
     duration = 2.0*(initial_dist-np.sqrt(4*radius**2 - offset_y**2))/(2.0*impact_velocity) # Seconds
     limit_steps = int(duration / dt) # Give some time after collision

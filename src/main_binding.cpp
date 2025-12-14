@@ -155,6 +155,8 @@ PYBIND11_MODULE(demgpu, m) {
            "Get SDF grid as numpy array (rx, ry, rz)")
       .def("export_lammps", &Simulation::export_lammps, py::arg("filename"),
            py::arg("step"), "Export LAMMPS Dump with fixed bounds")
+      .def("get_num_contacts", &Simulation::get_num_contacts,
+           "Get number of contacts")
       .def("get_max_overlap", &Simulation::get_max_overlap)
       .def("compute_overlaps", &Simulation::compute_overlaps,
            "Compute overlap of current state")

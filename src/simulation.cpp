@@ -523,10 +523,10 @@ void Simulation::step(float dt) {
 
   // A. Pre-Pass: Count Contacts for Min-Scaling Weighting
   // (d_constraint_counts is reused to store N for each particle)
-  CUDA_CHECK(
-      cudaMemset(ps_.d_constraint_counts, 0, ps_.num_particles * sizeof(int)));
-  launch_compute_contact_counts(ps_);
-  CUDA_CHECK(cudaDeviceSynchronize());
+  // A. Pre-Pass: Rigorous Contact Weighting (Pair-Sort)
+  // Replaces the old "Count Contacts" heuristic
+  sort_and_compute_contact_weights(ps_);
+  CUDA_CHECK(cudaDeviceSynchronize()); // Ensure sorting/weighting is done
 
   // B. Iterative Solve (Velocity-First)
   for (int i = 0; i < velocity_iterations_; ++i) {
@@ -787,6 +787,15 @@ float Simulation::compute_overlaps() {
   launch_narrowphase(ps_, global_scale_);
 
   return get_max_overlap();
+}
+
+int Simulation::get_num_contacts() {
+  int count = 0;
+  if (ps_.d_contact_count) {
+    CUDA_CHECK(cudaMemcpy(&count, ps_.d_contact_count, sizeof(int),
+                          cudaMemcpyDeviceToHost));
+  }
+  return count;
 }
 
 void Simulation::add_plane(float3 point, float3 normal) {

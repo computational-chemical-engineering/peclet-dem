@@ -62,8 +62,8 @@ def run_collision_test():
     thickness = 0.3
     
     # Simulation Params
-    dt = 0.00001
-    duration = 2.0 # Seconds
+    dt = 0.01
+    duration = 20.0 # Seconds
     limit_steps = int(duration / dt)
     
     # Solver
@@ -76,13 +76,11 @@ def run_collision_test():
     
     # Collision Setup
     impact_velocity = 5.0
-    spin_0_y = 5.0 # rad/s
+    spin_0_y = 0.0 # rad/s
     spin_1_y = spin_0_y
     initial_dist = 4.0*radius # Sufficient to not overlap
     offset_y = 0.0    # Impact parameter (Head-On)
     
-    duration = 2.0*(initial_dist-2.0*radius)/(2.0*impact_velocity) # Approx contact time
-    limit_steps = int(duration / dt)
 
     
     output_dir = "./output/collision_test_hollow_cylinder"
@@ -93,7 +91,7 @@ def run_collision_test():
     sim.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
     
     # Large domain, non-periodic
-    domain_size = 20.0
+    domain_size = 6.0*radius
     sim.set_domain((-domain_size, -domain_size, -domain_size), 
                    (domain_size, domain_size, domain_size))
     
@@ -281,7 +279,7 @@ def run_collision_test():
     print(f"Total KE      : {KE_init:.6f}")
     
     # Loop
-    dump_interval = int(duration / dt / 100)
+    dump_interval = int(0.1 / dt)
     if dump_interval < 1: dump_interval = 1
     
     for i in range(limit_steps):
@@ -292,11 +290,12 @@ def run_collision_test():
         if i % dump_interval == 0:
             sim.export_lammps(f"{output_dir}/dump.collision.{i}.lammps", i)
             
-            # Simple distance check
+            # Simple distance check and contact count
             p = sim.get_positions()
             d = np.linalg.norm(p[0, :3] - p[1, :3])
-            
-            print(f"Step {i}: Dist={d:.4f}")
+            num_contacts = sim.get_num_contacts()
+            _, _, KE = calculate_metrics(sim)
+            print(f"Step {i}: Dist={d:.4f}, Contacts={num_contacts}, KE={KE:.6f}")
             
     # Final Metrics
     P_final, L_final, KE_final = calculate_metrics(sim)

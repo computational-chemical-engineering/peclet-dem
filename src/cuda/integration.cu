@@ -361,7 +361,8 @@ __global__ void apply_velocity_deltas_kernel(ParticleSystemData ps) {
   // Clear Buffers for next iteration
   ps.d_delta_vel[idx] = make_float4(0, 0, 0, 0);
   ps.d_delta_ang_vel[idx] = make_float4(0, 0, 0, 0);
-  ps.d_constraint_counts[idx] = 0;
+  // ERROR FIX: Do NOT clear constraint counts here! They are needed for all
+  // iterations. ps.d_constraint_counts[idx] = 0;
 }
 
 // ------------------------------------------------------------------

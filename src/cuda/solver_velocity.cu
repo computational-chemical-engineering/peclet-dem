@@ -103,7 +103,6 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
   vPB = make_float3(vPB.x + vExpB.x, vPB.y + vExpB.y, vPB.z + vExpB.z);
 
   float3 v_rel = make_float3(vPA.x - vPB.x, vPA.y - vPB.y, vPA.z - vPB.z);
-
   float vn = dot_product(v_rel, n);
 
   // Activity Check: Only apply if approaching (vn < 0)
@@ -111,17 +110,8 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
     return;
   }
 
-  // --- MIN-SCALING WEIGHTING ---
-  int countA = ps.d_constraint_counts[idA];
-  int countB = (idB >= 0) ? ps.d_constraint_counts[idB] : 1;
-
-  if (countA == 0)
-    countA = 1;
-  if (countB == 0)
-    countB = 1;
-
-  int min_count = (countA < countB) ? countA : countB;
-  float weight = 1.0f / (float)min_count;
+  // Rigorous Weighting (Pre-computed by Pair-Sort)
+  float weight = c.weight;
 
   // Calculate Effective Mass components
   float3 invIA_vec =
