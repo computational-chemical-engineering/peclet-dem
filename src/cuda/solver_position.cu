@@ -22,8 +22,12 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
 
   // Load Contact
   ContactConstraint c = ps.d_contacts[idx];
-  // printf("Solver Pos: Contact %d: A=%d B=%d Dist=%f\n", idx, c.bodyA,
-  // c.bodyB, c.dist);
+
+  // Use Current Overlap (Strict)
+  // Only solve if currently overlapping (prevents speculative ghost forces)
+  if (c.dist_current > 0.0f) {
+    return;
+  }
 
   int idA = c.bodyA;
   int idB = c.bodyB;
