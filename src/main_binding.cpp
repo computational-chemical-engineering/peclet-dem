@@ -112,7 +112,11 @@ PYBIND11_MODULE(demgpu, m) {
            py::arg("thickness") = 0.2f)
       .def("set_positions", &Simulation::set_positions_numpy)
       .def("set_velocities", &Simulation::set_velocities_numpy)
+      .def("set_angular_velocities", &Simulation::set_angular_velocities_numpy)
       .def("get_velocities", &Simulation::get_velocities_numpy)
+      .def("get_angular_velocities", &Simulation::get_angular_velocities_numpy)
+      .def("get_inv_inertia", &Simulation::get_inv_inertia_numpy)
+      .def("get_masses", &Simulation::get_masses_numpy)
       .def("set_quaternions", &Simulation::set_quaternions_numpy)
       .def("set_scales", &Simulation::set_scales_numpy)
       .def("set_material_params", &Simulation::set_material_params,
@@ -135,6 +139,8 @@ PYBIND11_MODULE(demgpu, m) {
       .def("get_domain_min", &Simulation::get_domain_min)
       .def("get_domain_max", &Simulation::get_domain_max)
       .def("step", &Simulation::step)
+      .def("set_growth_params", &Simulation::set_growth_params, py::arg("rate"),
+           py::arg("new_factor") = -1.0f)
       .def("num_particles", &Simulation::num_particles,
            py::arg("include_ghosts") = false)
       .def("get_positions", &Simulation::get_positions_numpy,
@@ -145,6 +151,10 @@ PYBIND11_MODULE(demgpu, m) {
       .def("export_sdf", &Simulation::export_sdf, py::arg("filename"),
            py::arg("resolution"),
            "Export SDF field to VTI. Resolution is (rx, ry, rz)")
+      .def("get_sdf_grid", &Simulation::get_sdf_grid, py::arg("resolution"),
+           "Get SDF grid as numpy array (rx, ry, rz)")
+      .def("export_lammps", &Simulation::export_lammps, py::arg("filename"),
+           py::arg("step"), "Export LAMMPS Dump with fixed bounds")
       .def("get_max_overlap", &Simulation::get_max_overlap)
       .def("compute_overlaps", &Simulation::compute_overlaps,
            "Compute overlap of current state")

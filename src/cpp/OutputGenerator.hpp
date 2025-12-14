@@ -13,6 +13,9 @@ public:
   void generateAndSaveVTI(const std::string &filename, int3 resolution,
                           float3 bounds_min, float3 bounds_max);
 
+  std::vector<float> generateSDF(int3 resolution, float3 bounds_min,
+                                 float3 bounds_max);
+
 private:
   Simulation *sim_;
   float *d_grid_ping_;

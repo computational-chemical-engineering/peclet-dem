@@ -153,6 +153,14 @@ struct ParticleSystemData {
   float restitution_tangent;
   float friction_dynamic;
 
+  // --- Growth Parameters ---
+  float *d_scales;
+  float *d_target_scales; // For Growth Mode
+  float gravity_x, gravity_y, gravity_z;
+  float global_scale;
+  float growth_rate;
+  float growth_factor; // -1.0f = Inactive
+
   // --- Broadphase Data ---
   cuBQL::bvh3f bvh;
   int2 *d_potential_collisions; // Legacy?

@@ -134,4 +134,51 @@ void OutputGenerator::generateAndSaveVTI(const std::string &filename,
   std::cout << "SDF exported to " << filename << std::endl;
 }
 
+std::vector<float> OutputGenerator::generateSDF(int3 resolution,
+                                                float3 bounds_min,
+                                                float3 bounds_max) {
+  allocate(resolution);
+
+  float3 origin = bounds_min;
+  float3 domain_size =
+      make_float3(bounds_max.x - bounds_min.x, bounds_max.y - bounds_min.y,
+                  bounds_max.z - bounds_min.z);
+  float3 voxel_size =
+      make_float3(domain_size.x / resolution.x, domain_size.y / resolution.y,
+                  domain_size.z / resolution.z);
+
+  // 1. Init Grid (Ping)
+  launch_init_grid(d_grid_ping_, d_state_, resolution, origin, voxel_size);
+  cudaDeviceSynchronize();
+
+  // 2. Splat Particles (Ping)
+  ParticleSystemData ps = sim_->ps_;
+
+  launch_splat_particles(ps, d_grid_ping_, d_state_, resolution, origin,
+                         voxel_size, bounds_min, bounds_max);
+  cudaDeviceSynchronize();
+
+  // 3. Eikonal Solve Loop (Ping-Pong)
+  int iterations =
+      std::max(std::max(resolution.x, resolution.y), resolution.z) *
+      4; // Conservative
+
+  float *current_in = d_grid_ping_;
+  float *current_out = d_grid_pong_;
+
+  for (int i = 0; i < iterations; ++i) {
+    launch_eikonal_update(current_in, current_out, d_state_, resolution,
+                          voxel_size);
+    std::swap(current_in, current_out);
+  }
+
+  // 4. Download
+  size_t total_voxels = resolution.x * resolution.y * resolution.z;
+  std::vector<float> h_grid(total_voxels);
+  cudaMemcpy(h_grid.data(), current_in, total_voxels * sizeof(float),
+             cudaMemcpyDeviceToHost);
+
+  return h_grid;
+}
+
 } // namespace dem

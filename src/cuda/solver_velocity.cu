@@ -13,17 +13,18 @@ __device__ float dot_product(float3 a, float3 b) {
   return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-__global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps) {
+// Physics-Based Impulse with Restitution, Friction, and Expansion Velocity
+// ------------------------------------------------------------------
+__global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  int num_contacts = *ps.d_contact_count; // Atomic count from narrowphase
+  int num_contacts = *ps.d_contact_count;
 
   if (idx >= num_contacts)
     return;
-
   ContactConstraint c = ps.d_contacts[idx];
 
-  // FILTER: Ignore safety margin contacts for Velocity Solve
-  if (c.dist > 0.0f)
+  // STRICT MOMENTUM CONSERVATION (Current Overlap Filter)
+  if (c.dist_current > 0.0f)
     return;
 
   int idA = c.bodyA;
@@ -35,11 +36,7 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps) {
   if (idB >= 0)
     invMassB = ps.d_pos[idB].w;
 
-  // Load Current Predicted Velocities
-  // In Jacobi, we read the PREDICTED state (which contains specific gravity
-  // update and previous iterations?) If we iterate, we should read "current
-  // guess". d_vel_pred is the current guess.
-
+  // 1. Get Velocities (Linear + Angular)
   float4 vA_w = ps.d_vel_pred[idA];
   float4 wA_w = ps.d_ang_vel_pred[idA];
 
@@ -54,56 +51,79 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps) {
     wB = make_float3(wB_w_local.x, wB_w_local.y, wB_w_local.z);
   }
 
+  // Load Positions for correct lever arms
+  float4 posA_w = ps.d_pos[idA];
+  float3 posA = make_float3(posA_w.x, posA_w.y, posA_w.z);
+  float3 posB = make_float3(0, 0, 0); // Will be overwritten or unused
+
   // Contact Geometry
   float3 n = make_float3(c.normal.x, c.normal.y, c.normal.z);
   float3 rA = make_float3(c.rA.x, c.rA.y, c.rA.z);
   float3 rB = make_float3(c.rB.x, c.rB.y, c.rB.z);
 
+  // Correction for Angular Momentum Conservation:
+  // Ensure impulses are applied at a COMMON point (average of surface points).
+  // P_A = posA + rA
+  // P_B = posB + rB
+  // P_common = 0.5 * (P_A + P_B)
+  // rA_common = P_common - posA
+  // rB_common = P_common - posB
+
+  if (idB >= 0) {
+    float4 posB_w = ps.d_pos[idB];
+    posB = make_float3(posB_w.x, posB_w.y, posB_w.z);
+
+    float3 PA = make_float3(posA.x + rA.x, posA.y + rA.y, posA.z + rA.z);
+    float3 PB = make_float3(posB.x + rB.x, posB.y + rB.y, posB.z + rB.z);
+    float3 P_common = make_float3(0.5f * (PA.x + PB.x), 0.5f * (PA.y + PB.y),
+                                  0.5f * (PA.z + PB.z));
+
+    rA = make_float3(P_common.x - posA.x, P_common.y - posA.y,
+                     P_common.z - posA.z);
+    rB = make_float3(P_common.x - posB.x, P_common.y - posB.y,
+                     P_common.z - posB.z);
+  } else {
+    // Static collision (B is NULL/World)
+    // Usually rB is relative to origin(0,0,0) or contact point?
+    // In static case, rB in constraint is usually '0' relative to something or
+    // contact point itself? For now, let's assume P_B is "World Point" which
+    // matches P_A visually? Actually if B is static wall, P_B is fixed.
+    // Conservation of L for system [A + Earth] isn't tracked.
+    // So mainly important for A-B dynamic.
+  }
+
   // Relative Velocity at Contact Point
-  // v_rel = (vA + wA x rA) - (vB + wB x rB)
   float3 vPA = vA + cross_product(wA, rA);
   float3 vPB = vB + cross_product(wB, rB);
-  float3 v_rel = vPA - vPB;
+
+  // Expansion Velocity: v_surf = v + w x r + nu * r
+  float3 vExpA = make_float3(rA.x * nu, rA.y * nu, rA.z * nu);
+  float3 vExpB = make_float3(rB.x * nu, rB.y * nu, rB.z * nu);
+  vPA = make_float3(vPA.x + vExpA.x, vPA.y + vExpA.y, vPA.z + vExpA.z);
+  vPB = make_float3(vPB.x + vExpB.x, vPB.y + vExpB.y, vPB.z + vExpB.z);
+
+  float3 v_rel = make_float3(vPA.x - vPB.x, vPA.y - vPB.y, vPA.z - vPB.z);
 
   float vn = dot_product(v_rel, n);
 
-  // Activity Check
-  // If dist > 0 (Speculative) AND vn > 0 (Separating) -> Inactive
   // Activity Check: Only apply if approaching (vn < 0)
-  // Strict non-penetration: If separating (vn >= 0), do nothing.
-  // Inequality Constraint C(x) >= 0.
   if (vn >= 0.0f) {
     return;
-  }
-
-  if (idx < 5) {
-    printf("Contact %d: vn=%f, n=(%f, %f, %f), idA=%d, idB=%d\n", idx, vn, n.x,
-           n.y, n.z, idA, idB);
   }
 
   // --- MIN-SCALING WEIGHTING ---
   int countA = ps.d_constraint_counts[idA];
   int countB = (idB >= 0) ? ps.d_constraint_counts[idB] : 1;
-  // If B is wall, countB ?? Wall is singular constraint? Or infinite?
-  // User Plan: Scale = 1 / min(Na, Nb).
-  // If B is Wall (idB < 0), treat as Count=1 (Stiff interaction) -> min(Na, 1)
-  // = 1. This means Wall interaction has full weight 1.0. Correct.
 
-  // Avoid division by zero (should not happen if constraint exists)
   if (countA == 0)
     countA = 1;
   if (countB == 0)
     countB = 1;
 
   int min_count = (countA < countB) ? countA : countB;
+  float weight = 1.0f / (float)min_count;
 
-  // float weight = 1.0f / (float)min_count;
-  float weight = 1.0f; // DEBUG: Force unweighted
-
-  // Calculate Effective Mass (lambda = J / Meff)
-  // ... (No Change to Mass Calc) ...
-  // Calculate Effective Mass (lambda = J / Meff)
-  // 1 / Meff = sum( invMass + (r x n)^T I^-1 (r x n) )
+  // Calculate Effective Mass components
   float3 invIA_vec =
       make_float3(ps.d_inv_inertia[idA].x, ps.d_inv_inertia[idA].y,
                   ps.d_inv_inertia[idA].z);
@@ -123,32 +143,30 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps) {
   float wB_n = compute_generalized_inv_mass(rB, n, invMassB, invIB_vec);
   float w_total_n = wA_n + wB_n;
 
-  if (w_total_n < 1e-6f)
-    return; // Infinite mass or error
+  if (w_total_n < 1e-9f)
+    return;
 
   // ----------------------------
   // Normal Impulse (Restitution)
   // ----------------------------
-  // ... (Restitution Logic Removed for Simplicity / Robustness, usually e=0 for
-  // stacking) ... Or keep simple restitution logic? Let's use simple target:
-  float vn_target = 0.0f;
-  // If we want restitution, add it here. For stability now, 0.0 is safest.
+  // Target: v_new = -e * v_old
+  float vn_target = -ps.restitution_normal * vn;
 
-  float dV = vn_target - vn; // dV is positive (vn < 0)
-
-  // Impulse J = dV / w_total
+  float dV = vn_target - vn;
   float lambda_n = dV / w_total_n;
+  // J_n should be positive (pushing apart). dV is positive (since vn < 0).
 
-  // Clamping not needed if vn < 0 constraint checked above.
-  // (vn_target >= vn usually)
+  // Filter/Clamp? Normal Force is repulsive.
+  if (lambda_n < 0.0f)
+    lambda_n = 0.0f; // Should not happen given vn < 0 check.
 
-  // SCALE IMPULSE BY WEIGHT
+  // Scale by Weight
   float3 impulse_n =
       make_float3(n.x * lambda_n * weight, n.y * lambda_n * weight,
                   n.z * lambda_n * weight);
 
   // ----------------------------
-  // Friction (Tangential)
+  // Tangential (Friction + Restitution)
   // ----------------------------
   float3 vt_vec = v_rel - make_float3(n.x * vn, n.y * vn, n.z * vn);
   float vt_len = sqrtf(dot_product(vt_vec, vt_vec));
@@ -163,19 +181,38 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps) {
     float wB_t = compute_generalized_inv_mass(rB, t, invMassB, invIB_vec);
     float w_total_t = wA_t + wB_t;
 
-    // Target vt = 0
-    float lambda_t = -vt_len / w_total_t;
+    // USER DEFINITION FOR TANGENTIAL RESTITUTION:
+    // e_t = 1.0  -> No Friction/Change (v' = v)
+    // e_t = 0.0  -> Fully Inelastic/Stick (v' = 0)
+    // e_t = -1.0 -> Reflection (v' = -v)
+    //
+    // Target Delta v:
+    // v' = e_t * v
+    // dv = v' - v = (e_t - 1) * v
 
-    // Coulomb Clamping: |lambda_t| <= mu * lambda_n
-    float max_friction = ps.friction_dynamic * lambda_n;
-    if (lambda_t < -max_friction)
-      lambda_t = -max_friction;
-    if (lambda_t > max_friction)
-      lambda_t = max_friction;
+    float dv_t_mag = (ps.restitution_tangent - 1.0f) *
+                     vt_len; // Negative value for e_t < 1.0
 
-    // SCALE IMPULSE BY WEIGHT
-    impulse_t = make_float3(t.x * lambda_t * weight, t.y * lambda_t * weight,
-                            t.z * lambda_t * weight);
+    float lambda_t_raw = dv_t_mag / w_total_t;
+
+    // Friction Limit
+    // Use mu based on velocity heuristic?
+    float mu = (vt_len < 1e-4f)
+                   ? ps.friction_dynamic
+                   : ps.friction_dynamic; // TODO: ps.friction_static
+
+    float max_friction = mu * lambda_n;
+
+    // Clamp magnitude
+    if (lambda_t_raw < -max_friction)
+      lambda_t_raw = -max_friction;
+    if (lambda_t_raw > max_friction)
+      lambda_t_raw = max_friction; // Should not happen?
+
+    // Apply Weight
+    impulse_t =
+        make_float3(t.x * lambda_t_raw * weight, t.y * lambda_t_raw * weight,
+                    t.z * lambda_t_raw * weight);
   }
 
   // ----------------------------
@@ -209,7 +246,7 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps) {
   // as we use the pre-pass counts for weighting logic.
 }
 
-void launch_velocity_solve(ParticleSystemData ps) {
+void launch_velocity_solve(ParticleSystemData ps, float nu) {
   int num_contacts;
   CUDA_CHECK(cudaMemcpy(&num_contacts, ps.d_contact_count, sizeof(int),
                         cudaMemcpyDeviceToHost));
@@ -224,6 +261,7 @@ void launch_velocity_solve(ParticleSystemData ps) {
   // For Phase 1, start with 1 or 2 iterations?
   // Plan doesn't strictly specify iterations within the kernel, usually invoked
   // multiple times in simulation loop. Just launch logic once.
-  solve_velocity_jacobi_kernel<<<blocks, threads>>>(ps);
+  solve_velocity_jacobi_kernel<<<blocks, threads>>>(ps, nu);
   CUDA_CHECK(cudaGetLastError());
+  cudaDeviceSynchronize();
 }

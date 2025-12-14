@@ -4,6 +4,19 @@
 #include <device_launch_parameters.h>
 
 // ------------------------------------------------------------------
+// Growth Mode Kernel
+// ------------------------------------------------------------------
+__global__ void update_growth_scales_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= ps.num_particles)
+    return;
+
+  // Scale = Target * Factor
+  if (ps.growth_factor > 0.0f && ps.d_target_scales != nullptr) {
+    ps.d_scale[idx] = ps.d_target_scales[idx] * ps.growth_factor;
+  }
+}
+
 // Generate Ghosts for Periodic Boundaries (Legacy/Preserved)
 // ------------------------------------------------------------------
 __global__ void generate_ghosts_kernel(ParticleSystemData ps, float margin) {
@@ -93,8 +106,36 @@ __global__ void generate_ghosts_kernel(ParticleSystemData ps, float margin) {
 // ------------------------------------------------------------------
 // 1. Predict and Clear
 // ------------------------------------------------------------------
+
+// --- Math Helpers ---
+__device__ inline float3 cross_product(float3 a, float3 b) {
+  return make_float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,
+                     a.x * b.y - a.y * b.x);
+}
+
+__device__ inline float3 rotate_vector(float3 v, float4 q) {
+  // v' = v + 2*r x (r x v + w*v)
+  float3 r = make_float3(q.x, q.y, q.z);
+  float w = q.w;
+  float3 cross1 = cross_product(r, v);
+  // Wait, standard formula: q v q*
+  // t = 2 * cross(q.xyz, v)
+  // v' = v + q.w * t + cross(q.xyz, t)
+  // Let's use the optimized one:
+  float3 t = make_float3(2.0f * cross1.x, 2.0f * cross1.y, 2.0f * cross1.z);
+  float3 cross2 = cross_product(r, t);
+  return make_float3(v.x + w * t.x + cross2.x, v.y + w * t.y + cross2.y,
+                     v.z + w * t.z + cross2.z);
+}
+
+__device__ inline float3 rotate_vector_inverse(float3 v, float4 q) {
+  // Conjugate q: (-x, -y, -z, w)
+  float4 q_inv = make_float4(-q.x, -q.y, -q.z, q.w);
+  return rotate_vector(v, q_inv);
+}
+
 // ------------------------------------------------------------------
-// 1a. Predict Velocity (Gravity Only)
+// 1a. Predict Velocity (Gravity + Gyroscopic Term)
 // ------------------------------------------------------------------
 __global__ void predict_velocity_kernel(ParticleSystemData ps) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -104,7 +145,7 @@ __global__ void predict_velocity_kernel(ParticleSystemData ps) {
   float4 vel_w = ps.d_vel[idx];
   float inv_mass = ps.d_pos[idx].w;
 
-  // 1. Predict Velocity (Gravity)
+  // 1. Predict Linear Velocity (Gravity)
   float3 v_curr = make_float3(vel_w.x, vel_w.y, vel_w.z);
   float3 v_pred = v_curr;
 
@@ -115,6 +156,67 @@ __global__ void predict_velocity_kernel(ParticleSystemData ps) {
   }
   // Store predicted velocity (Gravity Only)
   ps.d_vel_pred[idx] = make_float4(v_pred.x, v_pred.y, v_pred.z, vel_w.w);
+
+  // 1.5 Predict Angular Velocity (Euler Equations: Gyroscopic Precession)
+  float4 ang_vel_w = ps.d_ang_vel[idx];
+  float3 w_world = make_float3(ang_vel_w.x, ang_vel_w.y, ang_vel_w.z);
+  float3 w_pred = w_world;
+
+  // Only apply for dynamic bodies
+  if (inv_mass > 0.0f) {
+    // Load Inertia
+    float4 inv_I_data = ps.d_inv_inertia[idx];
+    float3 inv_I = make_float3(inv_I_data.x, inv_I_data.y, inv_I_data.z);
+
+    // If object has finite inertia (not fixed rotation)
+    if (inv_I.x > 0.0f || inv_I.y > 0.0f || inv_I.z > 0.0f) {
+      float4 q = ps.d_quat[idx];
+
+      // World -> Body
+      float3 w_body = rotate_vector_inverse(w_world, q);
+
+      // Compute derived I_body (Handle infinite/zero components safely)
+      // Avoid division by zero if inv_I component is 0 (infinite I).
+      // If inv_I is 0, alpha component will be 0 anyway.
+      // But we need I for L = I * w.
+      // If inv_I is 0, assume I is "very large" effectively, term dominates?
+      // Actually if inv_I is 0, that axis is locked? Or Infinite?
+      // In standard RB, we set inv_I=0 for locked axes.
+      // We can approximate I = 1/inv_I. If inv_I < eps, I=?
+      // If inv_I_x is 0, then alpha_x = 0 * tau_x = 0. So w_x is constant.
+      // But we need L_x = I_x * w_x to compute tau_y/z.
+      // If I_x is infinite, L_x is infinite. Tau is infinite.
+      // This breaks 3D formulation.
+      // Assumption: Fully dynamic bodies have non-zero inv_I on all axes.
+      // If 1D/2D constraint, handle gracefully.
+
+      float3 I_body = make_float3((inv_I.x > 1e-9f) ? 1.0f / inv_I.x : 0.0f,
+                                  (inv_I.y > 1e-9f) ? 1.0f / inv_I.y : 0.0f,
+                                  (inv_I.z > 1e-9f) ? 1.0f / inv_I.z : 0.0f);
+
+      // Euler Equation: I dw/dt + w x (I w) = 0
+      // dw/dt = - I_inv * (w x (I w))
+
+      float3 L_body = make_float3(I_body.x * w_body.x, I_body.y * w_body.y,
+                                  I_body.z * w_body.z);
+      float3 w_cross_L = cross_product(w_body, L_body);
+
+      float3 alpha_body =
+          make_float3(-inv_I.x * w_cross_L.x, -inv_I.y * w_cross_L.y,
+                      -inv_I.z * w_cross_L.z);
+
+      // Semi-Implicit / Explicit Euler update
+      w_body.x += alpha_body.x * ps.dt;
+      w_body.y += alpha_body.y * ps.dt;
+      w_body.z += alpha_body.z * ps.dt;
+
+      // Body -> World
+      w_pred = rotate_vector(w_body, q);
+    }
+  }
+  // Store w_pred (Required for Solver!)
+  ps.d_ang_vel_pred[idx] =
+      make_float4(w_pred.x, w_pred.y, w_pred.z, ang_vel_w.w);
 
   // 2. Predict Position (Speculative for Collision)
   // XPBD uses x_pred = x_n + v_pred * dt for collision detection
@@ -183,15 +285,16 @@ apply_velocity_and_predict_position_kernel(ParticleSystemData ps) {
   ps.d_pos_pred[idx] = make_float4(x_pred.x, x_pred.y, x_pred.z, pos_curr.w);
 
   // 3. Predict Rotation (Simple Euler for now)
+  // 3. Predict Rotation (Simple Euler for now)
   float4 q_curr = ps.d_quat[idx];
-  float4 w_curr = ps.d_ang_vel[idx]; // Should include torque updates?
-  // We didn't apply torque from velocity solve yet!
-  float4 dw = ps.d_delta_ang_vel[idx];
 
-  float3 omega = make_float3(w_curr.x + dw.x, w_curr.y + dw.y, w_curr.z + dw.z);
-  // Update Angular Velocity state
-  ps.d_ang_vel[idx] = make_float4(omega.x, omega.y, omega.z, w_curr.w);
-  ps.d_ang_vel_pred[idx] = ps.d_ang_vel[idx];
+  // Use Solved Angular Velocity (accumulated in d_ang_vel_pred)
+  float4 w_solved = ps.d_ang_vel_pred[idx];
+  float3 omega = make_float3(w_solved.x, w_solved.y, w_solved.z);
+
+  // Update State
+  ps.d_ang_vel[idx] = make_float4(omega.x, omega.y, omega.z, w_solved.w);
+  // ps.d_ang_vel_pred[idx] is already set.
 
   float4 q_pred = q_curr;
   if (inv_mass > 0.0f) {
@@ -372,9 +475,9 @@ __global__ void final_commit_kernel(ParticleSystemData ps) {
   ps.d_pos[idx] = make_float4(pos.x, pos.y, pos.z, p.w);
 
   // UNCONDITIONAL v update from phase A (already stored in d_vel in
-  // reintegrate) We do NOT update d_vel here from x_pred! But we need to update
-  // d_vel_pred = d_vel for next step consistency? d_vel is already updated in
-  // apply_velocity_and_predict_position_kernel.
+  // reintegrate) We do NOT update d_vel here from x_pred! But we need to
+  // update d_vel_pred = d_vel for next step consistency? d_vel is already
+  // updated in apply_velocity_and_predict_position_kernel.
 
   ps.d_quat[idx] = ps.d_quat_pred[idx];
   // Ang vel also updated in reintegrate
@@ -416,6 +519,13 @@ void launch_apply_velocity_and_predict_position(ParticleSystemData ps,
   CUDA_CHECK(cudaGetLastError());
 }
 
+void launch_update_growth_scales(ParticleSystemData &ps) {
+  int threads = 256;
+  int blocks = (ps.num_particles + threads - 1) / threads;
+  update_growth_scales_kernel<<<blocks, threads>>>(ps);
+  CUDA_CHECK(cudaGetLastError());
+}
+
 void launch_apply_velocity_deltas(ParticleSystemData ps) {
   int threads = 256;
   int blocks = (ps.num_particles + threads - 1) / threads;
@@ -452,5 +562,12 @@ void launch_final_commit(ParticleSystemData ps, float dt) {
   int threads = 256;
   int blocks = (ps.num_particles + threads - 1) / threads;
   final_commit_kernel<<<blocks, threads>>>(ps);
+  CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_integration(ParticleSystemData &ps) {
+  int threads = 256;
+  int blocks = (ps.num_particles + threads - 1) / threads;
+  apply_velocity_and_predict_position_kernel<<<blocks, threads>>>(ps);
   CUDA_CHECK(cudaGetLastError());
 }

@@ -172,9 +172,8 @@ __global__ void detect_contacts_kernel(ParticleSystemData ps,
 
       // rA: Vector from Center A to Contact Point on A
       // Point on A surface = p_world - n_world * point_radius
-      // (Normal points B -> A, so we go against normal to get to surface facing
-      // B)
-      float3 rA_vec = n_world * (-point_radius);
+      // Fixed: Include the offset from Center A to the probe point p_world
+      float3 rA_vec = (p_world - posA) - n_world * point_radius;
 
       ContactConstraint c;
       c.bodyA = idA;
@@ -191,21 +190,22 @@ __global__ void detect_contacts_kernel(ParticleSystemData ps,
       float3 posA_curr = make_float3(pA_curr.x, pA_curr.y, pA_curr.z);
       float3 posB_curr = make_float3(pB_curr.x, pB_curr.y, pB_curr.z);
 
-      // Warning: This assumes Sphere-Sphere distance logic is sufficient
-      // approximation for the "current" check, or we need to re-evaluate SDF?
-      // Re-evaluating SDF is expensive and requires current Quaternions.
-      // For Sphere-Sphere: dist = len(pA-pB) - (rA + rB).
-      // Since shape descriptors don't change, we can use radii.
-      // But for general SDF? We should ideally re-run SDF.
-      // Optimization: For Phase 1 (Spheres), we use sphere logic.
-      // General Solution: Approximate using contact plane?
-      // Better: Re-evaluate Sphere-Sphere exactly.
-      float dist_curr =
-          length(posA_curr - posB_curr) - (point_radius + scaleB * 1.0f);
-      // Note: scaleB * 1.0 assumes B is unit sphere. If B is not sphere, this
-      // is wrong. But we are in Sphere Packing task. Let's assume Sphere-Sphere
-      // for now. If we want robust, we need SDF. Let's implement Sphere-Sphere
-      // for "Correctness" in this context.
+      // Robust "Current Distance" Calculation for Arbitrary Shapes
+      // We project the change in relative position onto the contact normal.
+      // dist_curr = dist_pred + dot((posA_curr - posB_curr) - (pA_pred -
+      // pB_pred), n_world) This accurately reflects how much the gap has
+      // closed/opened along the contact normal.
+
+      float3 rel_pos_pred =
+          make_float3(pA_w.x - pB_w.x, pA_w.y - pB_w.y, pA_w.z - pB_w.z);
+      float3 rel_pos_curr = posA_curr - posB_curr;
+
+      float3 delta_rel_pos = rel_pos_curr - rel_pos_pred;
+      float delta_dist = delta_rel_pos.x * n_world.x +
+                         delta_rel_pos.y * n_world.y +
+                         delta_rel_pos.z * n_world.z;
+
+      float dist_curr = effective_dist + delta_dist;
 
       c.dist_current = dist_curr;
 
@@ -224,7 +224,20 @@ __global__ void detect_boundary_kernel(ParticleSystemData ps,
 
   float4 p_w = ps.d_pos_pred[idx];
   float s = ps.d_scale[idx] * global_scale;
-  float radius = 1.0f * s;
+
+  // Load Shape to get Radius
+  int shape_id = ps.d_shape_ids[idx];
+  ShapeDescriptor desc = ps.d_shapes[shape_id];
+
+  float base_radius = desc.params.x;
+  // Fallback/Safety: If params.x is 0 (uninitialized?), default to 1.0?
+  // But initialize() sets it. If it's SDF grid (type 0), params might be
+  // bounding box? For now, consistent with simulation.cpp packing, .x is
+  // radius.
+  if (base_radius == 0.0f)
+    base_radius = 1.0f; // Minimal safety
+
+  float radius = base_radius * s;
 
   // Helper lambda for adding contact
   auto add_plane_contact = [&](float3 normal, float dist, float3 plane_point) {

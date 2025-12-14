@@ -1,5 +1,5 @@
 import sys
-sys.path.append('../build')
+sys.path.append('./build')
 import demgpu
 import numpy as np
 import time
@@ -12,12 +12,13 @@ def verify_stacking_inelastic():
     shape = (4,1,1)
     n = shape[0]*shape[1]*shape[2]
     sim = demgpu.Simulation(n)
-    sim.initialize(0) 
+    radius = 0.6
+    sim.initialize(0, radius=radius)  # Base Radius 1.0 so Scale acts as Radius 
     
     # Material: Restitution=0.0, Friction=0.0
     sim.set_material_params(0.0, 0.0, 0.0) # Inelastic
     sim.set_gravity(0, -9.8, 0)
-    sim.set_solver_iterations(10, 20) # Pos=10, Vel=20
+    sim.set_solver_iterations(10, 100) # Pos=10, Vel=20
     sim.set_global_scale(1.0)
     
     sim.add_plane([0, -5.0, 0], [0, 1.0, 0])
@@ -77,7 +78,7 @@ def verify_stacking_inelastic():
             s = sim.get_scales()
             
             # export_lammps(filename, step, pos, vel, quats, radii, ...)
-            demgpu.export_lammps(f"{output_dir}/dump.stacking.{i}.lammps", i, p, v, q, s)
+            demgpu.export_lammps(f"{output_dir}/dump.stacking.{i}.lammps", i, p, v, q, radius*s)
             
             # Trace Particle 1
             print(f"Step {i}: P1_y={p[1][1]:.6f}, P1_vy={v[1][1]:.6f}")
@@ -116,7 +117,7 @@ def verify_stacking_inelastic():
     for i in range(n):
         for j in range(i + 1, n):
             dist = np.linalg.norm(final_pos[i] - final_pos[j])
-            gap = dist - (final_scales[i] + final_scales[j])
+            gap = dist - radius*(final_scales[i] + final_scales[j])
             
             if gap < min_gap:
                 min_gap = gap
@@ -140,7 +141,7 @@ def verify_stacking_inelastic():
     
     for i in range(n):
         dist_to_plane = (final_pos[i][1] - (-5.0))
-        gap = dist_to_plane - final_scales[i]
+        gap = dist_to_plane - radius*final_scales[i]
         
         if gap < min_wall_gap:
             min_wall_gap = gap

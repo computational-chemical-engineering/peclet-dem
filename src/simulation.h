@@ -31,13 +31,17 @@ public:
   py::array_t<float> get_positions_numpy(bool include_ghosts = false);
   py::array_t<float> get_quaternions_numpy();
   py::array_t<float> get_scales_numpy();
-  py::array_t<float> get_velocities_numpy(); // New
+  py::array_t<float> get_velocities_numpy();
+  py::array_t<float> get_angular_velocities_numpy(); // New
+  py::array_t<float> get_inv_inertia_numpy();        // New
+  py::array_t<float> get_masses_numpy();             // New
 
   // Setters (copy from host)
   void set_scales_numpy(py::array_t<float> scales);
   void set_positions_numpy(py::array_t<float> pos);
   void set_velocities_numpy(py::array_t<float> vel);
-  void set_quaternions_numpy(py::array_t<float> quat); // Added
+  void set_angular_velocities_numpy(py::array_t<float> ang_vel); // Added
+  void set_quaternions_numpy(py::array_t<float> quat);           // Added
   void set_gravity(float x, float y, float z);
   void set_global_scale(float s);
 
@@ -45,6 +49,9 @@ public:
   void set_material_params(float restitution_normal, float restitution_tangent,
                            float friction_dynamic);
   void set_solver_iterations(int pos_its, int vel_its);
+
+  // Growth Mode
+  void set_growth_params(float rate, float new_factor = -1.0f);
 
   // Periodicity
   void enable_periodicity(bool x, bool y, bool z);
@@ -65,6 +72,10 @@ public:
   // Export SDF
   void export_sdf(const std::string &filename,
                   std::tuple<int, int, int> resolution);
+  py::array_t<float> get_sdf_grid(std::tuple<int, int, int> resolution);
+
+  // Export LAMMPS (Hybrid Bounds)
+  void export_lammps(const std::string &filename, int step);
 
   float get_max_overlap();
   float compute_overlaps(); // Re-runs collision detection on current state
@@ -102,4 +113,5 @@ private:
   bool domain_initialized_;
   bool force_sync_; // Flag to force synchronization on next step (e.g. after
                     // set_positions)
+  float base_radius_;
 };
