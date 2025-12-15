@@ -1,0 +1,99 @@
+
+--- Test: 2 Particles Overlap ---
+Generated 500 points for shape type 0.
+Simulation initialized. Seeding particles...
+WARNING: Particles have w=0.0 (infinite mass), forcing to 1.0
+DEBUG: Predict idx=0 inv_mass=1.000000
+DEBUG: Predict idx=1 inv_mass=1.000000
+DEBUG: Found collision: 1 and 0 (slot 0)
+DEBUG: Found collision: 0 and 1 (slot 1)
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=1.500000
+DEBUG: Inline Hit i=1 j=0 dist=1.500000
+DEBUG: Math C=-0.500000 wi=1.000000 wj=1.000000 lambda=0.249988 grad=(1.000000 0.000000 0.000000)
+DEBUG: Delta i=(0.249988 0.000000 0.000000)
+DEBUG: PosStar i=(1.749987 -0.000980 0.000000)
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=1.999975
+DEBUG: Inline Hit i=1 j=0 dist=1.999975
+DEBUG: Math C=-0.000025 wi=1.000000 wj=1.000000 lambda=0.000013 grad=(1.000000 0.000000 0.000000)
+DEBUG: Delta i=(0.000013 0.000000 0.000000)
+DEBUG: PosStar i=(1.750000 -0.000980 0.000000)
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+DEBUG: Solver small case num_contacts = 2
+DEBUG: Kernel pair idx=0 i=1 j=0
+DEBUG: Kernel pair idx=1 i=0 j=1
+DEBUG: Radii i=1.000000 j=1.000000 sum=2.000000 dist_check=2.000000
+Final Dist: 2.0000
+PASS: Pushed apart.
