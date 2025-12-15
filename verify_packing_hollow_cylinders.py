@@ -94,9 +94,7 @@ def verify_packing():
     h_unit = height / radius
     t_unit = thickness / radius
     
-    t_unit = thickness / radius
-    
-    # generate_unit_sdf_stl(r_unit, h_unit, t_unit, f"{output_dir}/hollow_cylinder_unit.stl")
+    generate_unit_sdf_stl(r_unit, h_unit, t_unit, f"{output_dir}/hollow_cylinder_unit.stl")
 
     sim = demgpu.Simulation(num_particles)
     sim.initialize(shape_type=2, radius=radius, height=height, thickness=thickness) #hollow cylinder
@@ -153,15 +151,12 @@ def verify_packing():
                         s = sim.get_scales()
                         # Calculate current Phi based on scales
                         # Phi = Sum(Vol_i) / Vol_Domain
-                        # Vol_i = Vol_Base * Scale^3
-                        # Phi = (N * Vol_Base * Mean(Scale^3)) / Vol_Domain
-                        # But simpler: Phi_Actual = Phi_Target * Mean(Scale^3)
-                        # (Because Vol_Domain is fixed for Phi_Target at Scale 1.0)
                         mean_scale3 = np.mean(s**3)
                         phi_current = phi_target * mean_scale3
                         max_ov = sim.get_max_overlap()
+                        num_contacts = sim.get_num_contacts()
                         
-                        print(f"Step {i}: Scale={np.mean(s):.4f}, Phi={phi_current:.4f}, Overlap={max_ov:.4f}")
+                        print(f"Step {i}: Scale={np.mean(s):.4f}, Phi={phi_current:.4f}, Overlap={max_ov:.4f}, Contacts={num_contacts}")
                         
                         # Stop if jammed (scale stops increasing or overlap high)
                         if max_ov > 1e-3:
