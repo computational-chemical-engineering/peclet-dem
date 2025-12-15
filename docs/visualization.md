@@ -1,6 +1,12 @@
-# Visualization with Ovito
+# Visualization Guide
 
-This guide explains how to visualize the DEM-GPU simulation results using Ovito.
+This guide explains how to visualize the DEM-GPU simulation results using **Ovito** (for particles) and **ParaView** (for fields).
+
+---
+
+# Part 1: Particle Visualization (Ovito)
+
+This section explains how to visualize the DEM-GPU simulation results using Ovito.
 
 ## 1. Prerequisites
 
@@ -18,31 +24,56 @@ This guide explains how to visualize the DEM-GPU simulation results using Ovito.
     - `x`, `y`, `z`: Position
     - `radius`: Radius
     - `vx`, `vy`, `vz`: Velocity (optional)
-    - `qw`, `qx`, `qy`, `qz`: **Orientation**
+    - `qw`, `qx`, `qy`, `qz`: **User-defined** (do not map to Orientation yet).
 
-    *Note: Ovito's "Orientation" property expects (X, Y, Z, W). Our exporter writes (W, X, Y, Z). Ovito usually auto-detects or allows re-mapping. If you see weird rotations, check the quaternion component order.* 
-    *Update: The exporter writes `qw qx qy qz`. You may need to use a "Compute Property" modifier if Ovito expects `X Y Z W`.*
+5.  **Correcting Orientation**:
+    Ovito expects the `Orientation` property to be a quaternion $(X, Y, Z, W)$. Our exporter provides components $(W, X, Y, Z)$ as separate columns. To map this correctly:
+    - Click **Add modification** -> **Compute property**.
+    - **Output property**: Select `Orientation`.
+    - **Expression**: Enter `(qx, qy, qz, qw)`.
+    *(This constructs the quaternion using the loaded scalar columns `qx`, `qy`, `qz`, and `qw`)*.
 
-## 3. Setting Particle Shape
+6.  **Setting Particle Shape**:
+    - Click **Add modifier** -> **Particle Types**.
+    - Select **Type 1**.
+    - Change "Shape" to **Mesh/User-defined**.
+    - Load `particle_shape.stl`.
+    - **Note**: The STL is a base shape ($r=1$). Ovito will automatically scale it by the `Radius` property.
 
-1.  In the pipeline editor (right panel), click **Add modifier**.
-2.  Choose **Particle Types** (or "Generate Particle Types" if not present, usually "Particle Types" is correct for type-based assignment).
-3.  Select **Type 1** in the list.
-4.  In the "Display" or "Shape" section:
-    - Change "Shape" from "Sphere" to **Mesh/User-defined**.
-    - Click "Load..." and select `particle_shape.stl`.
-5.  **Important:** The STL is a "base shape" (radius = 1). The logic relies on the `radius` particle property scaling this mesh.
-    - Ensure the "Radius" column from the dump file is mapped to the "Radius" property in Ovito.
-    - Ovito multiplies the mesh size by the particle radius automatically.
+7.  **Periodic Boundaries**:
+    - If enabled, particles wrapping around checks should appear correctly if "PBC" is detected in the file source settings.
 
-## 4. Periodic Boundaries
+---
 
-If you enabled PBC in the export:
-- The `BOX BOUNDS` in the file header tells Ovito the domain size.
-- Particles wrapping around should appear correctly if "PBC" is enabled in the file source settings (Ovito usually detects this from `pp pp pp`).
+# Part 2: Field Visualization (ParaView)
 
-## 5. Coloring
+We use **ParaView** to visualize volumetric data, such as Signed Distance Fields (SDF) or occupancy grids exported as VTI files.
 
-- Add a **Color Coding** modifier.
-- Select "Property": `Velocity Magnitude` or `radius`.
-- Adjust the colormap.
+## 1. Prerequisites
+- **ParaView** (Open Source).
+- Generated VTI files (e.g., `sdf_output.vti`).
+
+## 2. Workflow
+
+1.  **Load Data**:
+    - Open ParaView.
+    - File -> Open -> Select your `.vti` file.
+    - Click **Apply** in the Properties panel.
+
+2.  **Visualize Volume**:
+    - Change the representation dropdown (top toolbar) from "Outline" to **Volume**.
+    - **Note**: This renders the `SDF` scalar field as a density cloud. Since SDF values are signed (negative inside), you may need to adjust the "Color Map" or "Opacity Transfer Function" to clearly see the shapes.
+    - *Alternative*: Volume rendering can be tricky for SDFs. The **Iso-Surface** (Contour) method below is often clearer for seeing the exact shape boundaries.
+
+3.  **Visualize Iso-Surfaces (Zero-Level Set)**:
+    - With the VTI file selected, click **Contour** (active filter).
+    - In "Contour By", select `SDF`.
+    - In "Isosurfaces", add a value of `0.0`.
+    - Click **Apply**.
+    - This will extract the exact surface where the SDF is zero (the collision boundary).
+
+4.  **Visualize Slices**:
+    - Click **Slice**.
+    - Choose "Z Normal" (or X/Y) to see a cross-section of the field.
+    - Click **Apply**.
+    - Change "Coloring" to `SDF`.
