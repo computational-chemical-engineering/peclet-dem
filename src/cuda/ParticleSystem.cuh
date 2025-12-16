@@ -83,6 +83,18 @@ struct ContactConstraint {
   float weight;            // Rigorous Pair Weight (1/N_pairs)
 };
 
+struct ManifoldConstraint {
+  int bodyA;              // Canonical (smaller ID)
+  int bodyB;              // Larger ID
+  float4 normal_sum;      // Sum of aligned normals
+  float4 torque_armA_sum; // Sum of (rA x n_aligned)
+  float4 torque_armB_sum; // Sum of (rB x -n_aligned)
+  float4 rA_sum;          // Sum of rA
+  float4 rB_sum;          // Sum of rB
+  float dist_sum;         // Sum of dist (for average penetration)
+  int num_points;         // Number of contacts in patch
+};
+
 struct ParticleSystemData {
   // -------------------------------------------------------------------------
   // Particle Data (SoA) - Size = Capacity (Real + Ghosts)
@@ -114,9 +126,11 @@ struct ParticleSystemData {
 
   // Constraint Buffer
   ContactConstraint *d_contacts;
-  int *d_contact_count;        // Atomic counter (INT)
-  int *d_global_contact_count; // Alias if needed
-  float *d_max_overlap;        // Global atomic for max penetration
+  ManifoldConstraint *d_manifolds; // Aggregated Constraints
+  int *d_contact_count;            // Atomic counter (INT)
+  int *d_manifold_count;           // Number of manifolds
+  int *d_global_contact_count;     // Alias if needed
+  float *d_max_overlap;            // Global atomic for max penetration
 
   // Counters & Capacity
   int num_particles; // Total particles (Real + Ghosts)
@@ -128,6 +142,9 @@ struct ParticleSystemData {
   int *d_potential_count;
   int max_potential_collisions;
   int max_contacts;
+
+  // Ghost Mapping
+  int *d_real_indices; // Maps any index (Real or Ghost) to Real ID
 
   // -------------------------------------------------------------------------
   // Domain & Config
@@ -178,4 +195,4 @@ struct ParticleSystemData {
   int *d_locks;
 };
 
-void sort_and_compute_contact_weights(ParticleSystemData &ps);
+void reduce_contacts_to_manifolds(ParticleSystemData &ps);

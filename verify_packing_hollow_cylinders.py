@@ -36,25 +36,25 @@ def generate_unit_sdf_stl(radius, height, thickness, filename):
     sdf_grid = sim_unit.get_sdf_grid(resolution)
     
     # Mesh
-    import skimage.measure
-    from stl import mesh
+    # import skimage.measure
+    # from stl import mesh
     
-    verts, faces, normals, values = skimage.measure.marching_cubes(sdf_grid, level=0.0)
+    # verts, faces, normals, values = skimage.measure.marching_cubes(sdf_grid, level=0.0)
     
-    # Transform to World
-    min_b = np.array([-bound, -bound, -bound])
-    max_b = np.array([bound, bound, bound])
-    domain_size = max_b - min_b
-    voxel_size = domain_size / np.array(resolution)
+    # # Transform to World
+    # min_b = np.array([-bound, -bound, -bound])
+    # max_b = np.array([bound, bound, bound])
+    # domain_size = max_b - min_b
+    # voxel_size = domain_size / np.array(resolution)
     
-    verts_world = min_b + verts * voxel_size
+    # verts_world = min_b + verts * voxel_size
     
-    # Save STL
-    data = np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype)
-    unit_mesh = mesh.Mesh(data, remove_empty_areas=False)
-    unit_mesh.vectors = verts_world[faces]
-    unit_mesh.save(filename)
-    print(f"Unit STL saved to {filename}")
+    # # Save STL
+    # data = np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype)
+    # unit_mesh = mesh.Mesh(data, remove_empty_areas=False)
+    # unit_mesh.vectors = verts_world[faces]
+    # unit_mesh.save(filename)
+    print(f"Skipping STL generation (skimage not found).")
 
 def verify_packing():
     num_particles = 300

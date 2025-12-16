@@ -98,6 +98,10 @@ __global__ void generate_ghosts_kernel(ParticleSystemData ps, float margin) {
         ps.d_ang_vel_pred[ghost_idx] = ps.d_ang_vel[idx];
         ps.d_scale[ghost_idx] = ps.d_scale[idx];
         ps.d_shape_ids[ghost_idx] = ps.d_shape_ids[idx];
+
+        // Critical: Map Ghost Index back to Real Index for Momentum
+        // Conservation
+        ps.d_real_indices[ghost_idx] = idx;
       }
     }
   }

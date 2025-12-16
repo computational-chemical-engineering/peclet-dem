@@ -9,6 +9,14 @@
 #include <thrust/sort.h>
 
 // -----------------------------------------------------------------------------
+// Math Helpers
+// -----------------------------------------------------------------------------
+__host__ __device__ inline float3 cross_product_device(float3 a, float3 b) {
+  return make_float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,
+                     a.x * b.y - a.y * b.x);
+}
+
+// -----------------------------------------------------------------------------
 // Functors
 // -----------------------------------------------------------------------------
 
@@ -18,9 +26,17 @@ struct ContactToPairID {
   operator()(const ContactConstraint &c) const {
     int idA = c.bodyA;
     int idB = c.bodyB;
-    if (idB < 0)
-      return (unsigned long long)
-          idA; // Static/Boundary? Treat as unique "Pair" with World?
+    if (idB < 0) {
+      // Boundary/Static: idB = -1. Treat (idA, -1) as unique pair.
+      // Key = (idA << 32) | (unsigned int)(-1) ?
+      // Or just ensure it doesn't conflict.
+      // Let's use standard pair logic but handle -1.
+      // if idB < 0, it's effectively "idA" interacting with world.
+      // Canonical: idB is always "larger" if we treat -1 as MAX_INT? No.
+      // Let's treat -1 as Non-Canonical always.
+      // So Canonical = idA.
+      return ((unsigned long long)idA << 32) | 0xFFFFFFFF;
+    }
     // Canonical Pair ID: (min << 32) | max
     unsigned int u = (idA < idB) ? idA : idB;
     unsigned int v = (idA < idB) ? idB : idA;
@@ -28,216 +44,216 @@ struct ContactToPairID {
   }
 };
 
-struct ComputeHeadFlags {
-  const unsigned long long *keys;
-  __host__ __device__ ComputeHeadFlags(const unsigned long long *k) : keys(k) {}
-  __host__ __device__ int operator()(int idx) const {
-    if (idx == 0)
-      return 0;
-    return (keys[idx] != keys[idx - 1]) ? 1 : 0;
-  }
-};
-
 struct IsActiveContact {
-  __host__ __device__ int operator()(const ContactConstraint &c) const {
-    return (c.dist_current <= 0.0f) ? 1 : 0;
+  __host__ __device__ bool operator()(const ContactConstraint &c) const {
+    // Only count active overlaps for manifold generation?
+    // User plan said: "Remove artificial weighting".
+    // Also "Strict Momentum Conservation".
+    // If we include predicted contacts (gap > 0) in the manifold, they
+    // contribute "0" force usually? But for "Mass" calculation, should they
+    // contribute to stiffness? "Remove implementation of contact counting" "Sum
+    // geometric leverage" Usually we only solve for *Active* contacts. If
+    // dist_current > 0, we skip.
+    return c.dist_current <= 0.0f;
   }
 };
 
-// Functor to assign weights based on counts
-// This is done via a scatter/gather or a second pass.
-// Easier: Just use a kernel with the Run-Length limits.
-// OR: Transform-Scan?
-//
-// Strategy:
-// 1. Sort d_contacts by PairID.
-// 2. Reduce-by-key to get (UniqueIDs, Counts).
-// 3. We need to broadcast "Count" back to every contact.
-//    Since contacts are sorted, we can use a kernel that searches the unique
-//    list? No, slow. Better: inclusive_scan of counts? Standard:
-//    'thrust::reduce_by_key' outputs "Unique Keys" and "Counts". We can assume
-//    the output is aligned with the segments? No.
-//
-// Alternative: Custom Kernel "ComputeWeights" that uses the sorted nature.
-// If sorted: contacts[i] and contacts[i+1] share ID?
-//
-// Let's implement Part 1 (Sort) first, then use a custom kernel for the
-// weighting because Thrust scatter is tricky for RLE expansion without an index
-// array.
-//
-// Actually, simple kernel:
-// 1. Identify "Start of Segment" (Key[i] != Key[i-1]).
-// 2. Identify "End of Segment".
-//    This is tricky in parallel without a scan.
-//
-// Hybrid approach:
-// 1. Thrust Sort.
-// 2. Thrust ReduceByKey -> Get Counts per Group.
-// 3. Simple Kernel: Iterate *Contacts*.
-//    Find if it's a start of a group. If so, read Count corresponding to this
-//    group? No, we have two arrays.
-//
-// Best Approach for Broadcast:
-// Make an array "GroupIndex" for each contact.
-// Key = PairID.
-// Run "ReduceByKey" to get "Counts".
-// We need to map Contact -> GroupIndex -> Count.
-//
-// Actually, if we just use a custom kernel after sorting:
-// Kernel <<<N>>>:
-//   Read Key[i].
-//   Search 'left' for start, search 'right' for end? Linear search is bad if
-//   N_pair=1000.
-//
-// Better:
-// Run `reduce_by_key` to get `d_unique_keys` and `d_counts`.
-// Then use `binary_search` in the kernel? No.
-//
-// Look at `thrust::inclusive_scan` on "IsNewSegment" flags?
-// Defines `SegmentID`.
-// Then `d_counts[SegmentID]` is the count.
-// Procedure:
-// 1. Sort.
-// 2. Create `flags`: `flags[i] = (key[i] != key[i-1])`.
-// 3. Scan `flags` -> `segment_ids[i]`.
-// 4. Reduce-by-key (or just reduce `1`s) to get `counts_per_segment`.
-// 5. `weight[i] = 1.0 / counts_per_segment[segment_ids[i]]`.
-// This is rigorous and fully parallel.
+// Transform: ContactConstraint -> ManifoldConstraint
+struct ContactToManifold {
+  __host__ __device__ ManifoldConstraint
+  operator()(const ContactConstraint &c) const {
+    ManifoldConstraint m;
 
-struct IsDifferent {
-  __host__ __device__ bool operator()(const unsigned long long &a,
-                                      const unsigned long long &b) const {
-    return a != b;
+    // Canonical Normals: Always point derived from Body A to Body B (or
+    // similar) Here we assume normal points A -> B. We want to accumulate
+    // contributions for the pair (A, B). If pair is (B, A), we must flip normal
+    // and torques.
+
+    // Key Logic sorts by pair (min_id, max_id).
+    // If c.bodyA < c.bodyB: It matches the key. (Canonical)
+    // If c.bodyA > c.bodyB: It is flipped relative to key order.
+
+    // Note: The Key Generation handled (A, B) order.
+    // But the ContactConstraint 'c' still has original A and B and Normal.
+    // If we are aggregating, we must align everything to the Canonical Pair
+    // (idA < idB).
+
+    int idA = c.bodyA;
+    int idB = c.bodyB; // Could be world (-1)
+
+    // Determine Canonical IDs
+    int can_A = idA;
+    int can_B = idB;
+    bool flip = false;
+
+    if (idB >= 0 && idB < idA) {
+      can_A = idB;
+      can_B = idA;
+      flip = true;
+    }
+
+    m.bodyA = can_A; // Matches key
+    m.bodyB = can_B;
+    m.num_points = 1;
+
+    // Normal: Points A->B.
+    // If flip (we are looking at B->A contact), the normal in 'c' points A->B
+    // (original). So relative to Canonical (B, A) [i.e. NewA=B, NewB=A], The
+    // force on NewA (B) is -ForceOnA. Normal in 'c' is usually Normal on B ? Or
+    // Normal from A to B? Convention: Normal points FROM A TO B. Force on B is
+    // +Normal. Force on A is -Normal. We want Normal_Sum to be the Force
+    // Direction on Canonical Body A (can_A). Case 1: (A, B), can_A=A. Force on
+    // A is -Normal. Case 2: (B, A), can_A=B. Force on B is +Normal. So: If
+    // !flip: N_aligned = -c.normal If flip:  N_aligned = +c.normal
+
+    float3 n_vec = make_float3(c.normal.x, c.normal.y, c.normal.z);
+    float3 n_aligned;
+    if (!flip) {
+      n_aligned = make_float3(-n_vec.x, -n_vec.y, -n_vec.z);
+    } else {
+      n_aligned = n_vec;
+    }
+
+    // Torques:
+    // Torque = r x Force.
+    // Force on can_A is N_aligned.
+    // rA is vector from A's center to contact pivot.
+    // c.rA is rA (for bodyA). c.rB is rB (for bodyB).
+    // If !flip: can_A = A. Force = N_aligned. TorqueA = rA x N_aligned.
+    //           can_B = B. Force = -N_aligned. TorqueB = rB x -N_aligned.
+    // If flip:  can_A = B. Force = N_aligned (which is +Normal).
+    //           TorqueA (on B) = rB x N_aligned.
+    //           can_B = A. Force = -N_aligned. TorqueB (on A) = rA x
+    //           -N_aligned.
+
+    float3 rA = make_float3(c.rA.x, c.rA.y, c.rA.z);
+    float3 rB = make_float3(c.rB.x, c.rB.y, c.rB.z);
+
+    float3 r_can, r_other;
+    if (!flip) {
+      r_can = rA;
+      r_other = rB;
+    } else {
+      r_can = rB;
+      r_other = rA;
+    }
+
+    float3 tau_can = cross_product_device(r_can, n_aligned);
+    float3 tau_other = cross_product_device(
+        r_other, make_float3(-n_aligned.x, -n_aligned.y, -n_aligned.z));
+
+    m.normal_sum = make_float4(n_aligned.x, n_aligned.y, n_aligned.z, 0.0f);
+    m.torque_armA_sum = make_float4(tau_can.x, tau_can.y, tau_can.z, 0.0f);
+    m.torque_armB_sum =
+        make_float4(tau_other.x, tau_other.y, tau_other.z, 0.0f);
+    m.rB_sum = make_float4(rB.x, rB.y, rB.z, 0.0f);
+    m.dist_sum = c.dist_current;
+
+    return m;
   }
 };
 
-__global__ void broadcast_weights_kernel(ContactConstraint *contacts,
-                                         const int *segment_ids,
-                                         const int *segment_counts,
-                                         int num_contacts) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= num_contacts)
-    return;
+// Reducer: Sum Manifolds
+struct SumManifold {
+  __host__ __device__ ManifoldConstraint
+  operator()(const ManifoldConstraint &a, const ManifoldConstraint &b) const {
+    ManifoldConstraint res;
+    res.bodyA = a.bodyA; // Should be same
+    res.bodyB = a.bodyB;
+    res.num_points = a.num_points + b.num_points;
 
-  int seg_id = segment_ids[idx];
-  int count = segment_counts[seg_id];
+    res.normal_sum = make_float4(a.normal_sum.x + b.normal_sum.x,
+                                 a.normal_sum.y + b.normal_sum.y,
+                                 a.normal_sum.z + b.normal_sum.z, 0.0f);
 
-  // Write Weight
-  // contacts[idx] is an object. We read-modify-write.
-  // Optimization: Just write to a float* weight_ptr if we separated it?
-  // Current struct has weight inside.
-  ContactConstraint c = contacts[idx];
-  c.weight = (count > 0) ? (1.0f / (float)count) : 1.0f;
-  contacts[idx] = c;
-}
+    res.torque_armA_sum =
+        make_float4(a.torque_armA_sum.x + b.torque_armA_sum.x,
+                    a.torque_armA_sum.y + b.torque_armA_sum.y,
+                    a.torque_armA_sum.z + b.torque_armA_sum.z, 0.0f);
+
+    res.torque_armB_sum =
+        make_float4(a.torque_armB_sum.x + b.torque_armB_sum.x,
+                    a.torque_armB_sum.y + b.torque_armB_sum.y,
+                    a.torque_armB_sum.z + b.torque_armB_sum.z, 0.0f);
+
+    res.rA_sum = make_float4(a.rA_sum.x + b.rA_sum.x, a.rA_sum.y + b.rA_sum.y,
+                             a.rA_sum.z + b.rA_sum.z, 0.0f);
+    res.rB_sum = make_float4(a.rB_sum.x + b.rB_sum.x, a.rB_sum.y + b.rB_sum.y,
+                             a.rB_sum.z + b.rB_sum.z, 0.0f);
+    res.dist_sum = a.dist_sum + b.dist_sum;
+    return res;
+  }
+};
+
+// TransformAndFilter: Handles inactive contacts by returning zero-manifold
+struct TransformAndFilter {
+  __host__ __device__ ManifoldConstraint
+  operator()(const ContactConstraint &c) const {
+    if (c.dist_current > 0.0f) {
+      // Inactive
+      ManifoldConstraint m;
+      m.num_points = 0;
+      m.normal_sum = make_float4(0, 0, 0, 0);
+      m.torque_armA_sum = make_float4(0, 0, 0, 0);
+      m.torque_armB_sum = make_float4(0, 0, 0, 0);
+      m.rA_sum = make_float4(0, 0, 0, 0);
+      m.rB_sum = make_float4(0, 0, 0, 0);
+      m.dist_sum = 0.0f;
+      m.bodyA = c.bodyA;
+      m.bodyB = c.bodyB;
+      return m;
+    }
+    ContactToManifold converter;
+    return converter(c);
+  }
+};
 
 // -----------------------------------------------------------------------------
-// Wrapper
+// Main Function
 // -----------------------------------------------------------------------------
 
-void sort_and_compute_contact_weights(ParticleSystemData &ps) {
+void reduce_contacts_to_manifolds(ParticleSystemData &ps) {
   int num_contacts;
-  // We need to read the count from device (or host cache).
-  // Assuming ps.d_contact_count points to device memory:
   cudaMemcpy(&num_contacts, ps.d_contact_count, sizeof(int),
              cudaMemcpyDeviceToHost);
 
-  if (num_contacts == 0)
+  if (num_contacts == 0) {
+    cudaMemset(ps.d_manifold_count, 0, sizeof(int));
     return;
+  }
 
-  // Wrap Raw Pointers
+  // Wrap Pointers
   thrust::device_ptr<ContactConstraint> d_contacts_ptr(ps.d_contacts);
+  thrust::device_ptr<ManifoldConstraint> d_manifolds_ptr(ps.d_manifolds);
 
   // 1. Sort by PairID
-  // We need to define keys. Memory overhead: N_contacts * 8 bytes.
-  // We can allocate temporary storage.
-  // Is d_constraint_counts large enough? N_particles * 4 bytes.
-  // N_contacts can be larger than N_particles.
-  // We'll use a `thrust::device_vector` for safety/ease, cached or static if
-  // optimization needed later. For now: Local vector (allocation cost exists,
-  // but negligible for N<100k).
-
   thrust::device_vector<unsigned long long> keys(num_contacts);
 
-  // Transform Contact -> Key
+  // Create Keys
   thrust::transform(d_contacts_ptr, d_contacts_ptr + num_contacts, keys.begin(),
                     ContactToPairID());
 
-  // Sort (Code and Keys together)
+  // Sort Keys and Data
   thrust::sort_by_key(keys.begin(), keys.end(), d_contacts_ptr);
 
-  // 2. Compute Segments (SegmentID)
-  // Flags: 1 if key[i] != key[i-1]
-  thrust::device_vector<int> flags(num_contacts);
-  thrust::device_vector<unsigned long long> shifted_keys(num_contacts);
+  // 2. Reduce to Manifolds
+  // Usage: reduce_by_key(keys_in, vals_in (transformed), keys_out, vals_out)
 
-  // Shift: keys[i-1]
-  // First element is always start of segment 0.
-  // adjacent_difference logic?
-  // Custom transform:
-  // flags[i] = (i==0) ? 0 : (keys[i] != keys[i-1]) ? 1 : 0;
+  // Create Transform Iterator
+  // Use global TransformAndFilter
+  auto man_iter =
+      thrust::make_transform_iterator(d_contacts_ptr, TransformAndFilter());
 
-  // Efficient way:
-  // unique_copy count? No.
+  // Keys out
+  thrust::device_vector<unsigned long long> keys_out(num_contacts);
 
-  // Use `thrust::unique_count` logic manually:
-  // We need `segment_ids`: 0, 0, 0, 1, 1, 2, ...
-  // This is `inclusive_scan` of the flags.
+  auto end_pair = thrust::reduce_by_key(
+      keys.begin(), keys.end(), man_iter, keys_out.begin(), d_manifolds_ptr,
+      thrust::equal_to<unsigned long long>(), SumManifold());
 
-  // Generate flags
-  // keys: [A, A, B, C, C]
-  // diff: [1, 0, 1, 1, 0] (Wait, scan of this gives 1,1,2,3,3) -> Indices
-  // 0,0,1,2,2 ? We want 0-based index. Flag[0]=0. Flag[i] = (keys[i] !=
-  // keys[i-1]);
+  int num_manifolds = end_pair.second - d_manifolds_ptr;
 
-  // Let's implement 'Flag Generation' via fancy iterator or simple kernel?
-  // Simple kernel is fastest to write without complex functor chains.
-  // But we are in "Thrust" mode.
-  // `thrust::adjacent_difference`?
-
-  // Let's rely on `reduce_by_key` to get the counts,
-  // AND `inclusive_scan` on flags to get the map.
-
-  // a. Reduce By Key -> Get Counts (and unique keys, thrown away)
-  thrust::device_vector<unsigned long long> unique_keys(num_contacts);
-  thrust::device_vector<int> counts_per_segment(num_contacts);
-
-  // Transform Iterator to extract "Active" status (1 or 0)
-  auto active_iter =
-      thrust::make_transform_iterator(d_contacts_ptr, IsActiveContact());
-
-  auto end_pair =
-      thrust::reduce_by_key(keys.begin(), keys.end(), active_iter,
-                            unique_keys.begin(), counts_per_segment.begin());
-
-  int num_segments = end_pair.second - counts_per_segment.begin();
-
-  // b. Assign Segment IDs to Contacts
-  // We need an array `segment_ids[num_contacts]`.
-  // It can be generated by: `vector[i] = (keys[i] != keys[i-1])` then
-  // `inclusive_scan`. But wait, there's a simpler way?? Actually, we don't need
-  // SegmentIDs if we can just expand `counts`. `gather`? We need `segment_ids`
-  // to gather.
-
-  // Calculate Flags (Head Flags)
-  thrust::device_vector<int> head_flags(num_contacts);
-  thrust::transform(thrust::make_counting_iterator(0),
-                    thrust::make_counting_iterator(num_contacts),
-                    head_flags.begin(),
-                    ComputeHeadFlags(thrust::raw_pointer_cast(keys.data())));
-
-  // Scan to get Segment IDs
-  thrust::device_vector<int> segment_ids(num_contacts);
-  thrust::inclusive_scan(head_flags.begin(), head_flags.end(),
-                         segment_ids.begin());
-
-  // 3. Broadcast Weights
-  // Kernel to write weights
-  int threads = 256;
-  int blocks = (num_contacts + threads - 1) / threads;
-  broadcast_weights_kernel<<<blocks, threads>>>(
-      ps.d_contacts, thrust::raw_pointer_cast(segment_ids.data()),
-      thrust::raw_pointer_cast(counts_per_segment.data()), num_contacts);
-
-  cudaDeviceSynchronize();
+  // Copy count
+  cudaMemcpy(ps.d_manifold_count, &num_manifolds, sizeof(int),
+             cudaMemcpyHostToDevice);
 }

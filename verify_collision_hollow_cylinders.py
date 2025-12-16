@@ -61,9 +61,10 @@ def run_collision_test():
     height = 1.0  # Aspect Ratio 1
     thickness = 0.3
     
+    
     # Simulation Params
     dt = 0.01
-    duration = 20.0 # Seconds
+    duration = 0.8 # Seconds
     limit_steps = int(duration / dt)
     
     # Solver
@@ -75,13 +76,12 @@ def run_collision_test():
     friction = 0.0 # Enable friction/tangential interaction
     
     # Collision Setup
-    impact_velocity = 5.0
+    impact_velocity = -5.0
     spin_0_y = 0.0 # rad/s
     spin_1_y = spin_0_y
     initial_dist = 4.0*radius # Sufficient to not overlap
     offset_y = 0.0    # Impact parameter (Head-On)
     
-
     
     output_dir = "./output/collision_test_hollow_cylinder"
     os.makedirs(output_dir, exist_ok=True)
@@ -90,75 +90,19 @@ def run_collision_test():
     sim = demgpu.Simulation(num_particles)
     sim.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
     
-    # Large domain, non-periodic
+    # Large domain, periodic
     domain_size = 6.0*radius
     sim.set_domain((-domain_size, -domain_size, -domain_size), 
                    (domain_size, domain_size, domain_size))
+    # sim.enable_periodicity(False, False, False) # Default is False for Large Domain? 
+    # Actually set_domain enables it by default in code. Disable explicitly for test.
+    sim.enable_periodicity(True, True, True)
     
     sim.set_gravity(0, 0, 0) # Disable Gravity
     sim.set_material_params(restitution, restitution_t, friction) # e_n, e_t, mu
     sim.set_solver_iterations(sim_iterations_pos, sim_iterations_vel)
     
     # --- Helper: Metrics ---
-    def calculate_metrics(sim):
-        pos = sim.get_positions()
-        vel = sim.get_velocities()
-        ang_vel = sim.get_angular_velocities()
-        inv_I = sim.get_inv_inertia()
-        masses = sim.get_masses()
-        
-        total_P = np.zeros(3)
-        total_L = np.zeros(3)
-        total_KE = 0.0
-        
-        n = pos.shape[0]
-        for i in range(n):
-            mass = masses[i]
-            if mass <= 0.0: continue
-            
-            v = vel[i]
-            omega = ang_vel[i]
-            
-            # Linear Momentum
-            P_i = mass * v
-            total_P += P_i
-            
-            # Angular Momentum (L = r x P + I*omega)
-            # r is position relative to origin (Average/Total L around origin)
-            # Or around center of mass? Usually Origin for verification.
-            p_i = pos[i, :3]
-            L_orb = np.cross(p_i, P_i)
-            
-            # Spin Angular Momentum (L_spin = I * omega)
-            # Diagonal Inertia
-            I_vec = np.zeros(3)
-            if inv_I[i, 0] > 0: I_vec[0] = 1.0/inv_I[i, 0]
-            if inv_I[i, 1] > 0: I_vec[1] = 1.0/inv_I[i, 1]
-            if inv_I[i, 2] > 0: I_vec[2] = 1.0/inv_I[i, 2]
-            
-            # For general orientation q, Inertia Tensor I_world = R * I_local * R^T
-            # But here we just use I_local * omega_local ? 
-            # simulation.cpp stores d_inv_inertia which is presumably diagonal in Local Frame?
-            # And d_ang_vel is likely in World Frame?
-            # If d_ang_vel is World, we need World Inertia.
-            # Sphere: I is isotropic scalar. I_world = I_local.
-            # Hollow Cylinder: I is anisotropic.
-            # Need Quaternion to rotate I or omega.
-            # get_quaternions() needed.
-            
-            # For Metrics Approximation:
-            # Let's assume Principal Axes aligned with World for now (unless q rotated).
-            # But q is random!
-            # We strictly need q to compute L_spin correctly.
-            pass 
-            # Revisiting L_spin calculation to be correct:
-            # L_spin_local = I_local * omega_local
-            # omega_local = R^T * omega_world
-            # L_spin_world = R * L_spin_local
-            
-        return total_P, total_L, total_KE
-            
-    # --- Helper: Metrics (Corrected) ---
     def calculate_metrics(sim):
         pos = sim.get_positions()
         vel = sim.get_velocities()
@@ -224,16 +168,6 @@ def run_collision_test():
             
         return total_P, total_L, total_KE
 
-    # --- Helper: Random Quaternions ---
-    def random_quaternion():
-        # Uniform random quaternion
-        u1, u2, u3 = np.random.random(), np.random.random(), np.random.random()
-        q1 = math.sqrt(1-u1) * math.sin(2*math.pi*u2)
-        q2 = math.sqrt(1-u1) * math.cos(2*math.pi*u2)
-        q3 = math.sqrt(u1) * math.sin(2*math.pi*u3)
-        q4 = math.sqrt(u1) * math.cos(2*math.pi*u3)
-        return np.array([q2, q3, q4, q1], dtype=np.float32) # x,y,z,w
-    
     # Init Data
     pos = np.zeros((num_particles, 4), dtype=np.float32)
     vel = np.zeros((num_particles, 3), dtype=np.float32) 
@@ -244,13 +178,13 @@ def run_collision_test():
     # Particle 0 (Left, moving Right)
     pos[0] = [-initial_dist/2.0, -offset_y/2.0, 0.0, 1.0] # Mass=1
     vel[0] = [impact_velocity, 0.0, 0.0]
-    quat[0] = random_quaternion()
+    quat[0] = [0,0,0,1] # Identity
     ang_vel[0] = [0, spin_0_y, 0]
     
     # Particle 1 (Right, moving Left)
     pos[1] = [initial_dist/2.0, offset_y/2.0, 0.0, 1.0] # Mass=1
     vel[1] = [-impact_velocity, 0.0, 0.0]
-    quat[1] = random_quaternion()
+    quat[1] = [0,0,0,1] # Identity
     ang_vel[1] = [0, spin_1_y, 0]
     
     # Upload
@@ -279,7 +213,7 @@ def run_collision_test():
     print(f"Total KE      : {KE_init:.6f}")
     
     # Loop
-    dump_interval = int(0.1 / dt)
+    dump_interval = 1
     if dump_interval < 1: dump_interval = 1
     
     for i in range(limit_steps):

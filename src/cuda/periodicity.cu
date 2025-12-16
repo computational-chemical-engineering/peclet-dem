@@ -124,6 +124,9 @@ __global__ void generate_ghosts_bitmask_kernel(int *d_candidates,
         ps.d_scale[ghost_idx] = ps.d_scale[real_idx];
         ps.d_shape_ids[ghost_idx] = ps.d_shape_ids[real_idx];
 
+        // Map Ghost to Real ID
+        ps.d_real_indices[ghost_idx] = real_idx;
+
         // Flag as Ghost
         ps.d_vel[ghost_idx].w = 1.0f;
         ps.d_vel_pred[ghost_idx].w = 1.0f;

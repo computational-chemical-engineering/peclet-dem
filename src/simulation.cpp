@@ -47,6 +47,8 @@ Simulation::Simulation(int num_particles) : num_particles_(num_particles) {
   ps_.d_indices_sorted = nullptr;
   ps_.d_contacts = nullptr;
   ps_.d_contact_count = nullptr;
+  ps_.d_manifolds = nullptr;
+  ps_.d_manifold_count = nullptr;
   ps_.d_planes = nullptr; // Initialize plane pointer
   ps_.d_max_overlap = nullptr;
   ps_.d_locks = nullptr;
@@ -112,10 +114,15 @@ Simulation::~Simulation() {
     free_device(ps_.d_max_overlap);
 
   free_device(ps_.d_contact_count); // Renamed from d_num_contacts
+  if (ps_.d_manifolds)
+    free_device(ps_.d_manifolds);
+  if (ps_.d_manifold_count)
+    free_device(ps_.d_manifold_count);
   if (ps_.d_planes) {
     free_device(ps_.d_planes);
   }
   free_device(ps_.d_locks); // Moved from separate if
+  free_device(ps_.d_real_indices);
   // free_device(ps_.d_contact_lambdas); // Not Allocated
   // free_device(ps_.d_tangent_lambdas); // Not Allocated
 
@@ -256,10 +263,17 @@ void Simulation::initialize(int shape_type, float radius, float height,
   allocate_device(ps_.d_contacts, max_contacts);
   allocate_device(ps_.d_contact_count, 1 * sizeof(int));
 
+  // Manifold Buffers
+  allocate_device(ps_.d_manifolds, max_contacts);
+  allocate_device(ps_.d_manifold_count, 1 * sizeof(int));
+
   // Locks
   allocate_device(ps_.d_locks, capacity * sizeof(int));
   allocate_device(ps_.d_max_overlap, 1 * sizeof(float));
   CUDA_CHECK(cudaMemset(ps_.d_locks, 0, capacity * sizeof(int)));
+
+  // Ghost Mapping
+  allocate_device(ps_.d_real_indices, capacity);
 
   // Arrays for Shapes
   CylinderParams cyl_params;
@@ -361,8 +375,11 @@ void Simulation::initialize(int shape_type, float radius, float height,
   }
 
   std::vector<float4> h_inv_inertia(num_particles_);
+  std::vector<int> h_real_indices(
+      num_particles_); // Identity map for initial particles
   for (int i = 0; i < num_particles_; ++i) {
     h_inv_inertia[i] = make_float4(inv_I_xx, inv_I_yy, inv_I_zz, 0.0f);
+    h_real_indices[i] = i;
   }
 
   CUDA_CHECK(cudaMemcpy(ps_.d_pos, h_pos.data(),
@@ -382,6 +399,8 @@ void Simulation::initialize(int shape_type, float radius, float height,
   CUDA_CHECK(cudaMemcpy(ps_.d_inv_inertia, h_inv_inertia.data(),
                         num_particles_ * sizeof(float4),
                         cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_real_indices, h_real_indices.data(),
+                        num_particles_ * sizeof(int), cudaMemcpyHostToDevice));
 }
 
 // -----------------------------------------------------------------------------
@@ -523,9 +542,9 @@ void Simulation::step(float dt) {
 
   // A. Pre-Pass: Count Contacts for Min-Scaling Weighting
   // (d_constraint_counts is reused to store N for each particle)
-  // A. Pre-Pass: Rigorous Contact Weighting (Pair-Sort)
-  // Replaces the old "Count Contacts" heuristic
-  sort_and_compute_contact_weights(ps_);
+  // A. Pre-Pass: Rigorous Manifold Reduction
+  // Replaces the old contact weighting
+  reduce_contacts_to_manifolds(ps_);
   CUDA_CHECK(cudaDeviceSynchronize()); // Ensure sorting/weighting is done
 
   // B. Iterative Solve (Velocity-First)

@@ -13,28 +13,54 @@ __device__ float dot_product(float3 a, float3 b) {
   return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-// Physics-Based Impulse with Restitution, Friction, and Expansion Velocity
+// Manifold Velocity Solver
 // ------------------------------------------------------------------
 __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  int num_contacts = *ps.d_contact_count;
+  int num_manifolds = *ps.d_manifold_count;
 
-  if (idx >= num_contacts)
-    return;
-  ContactConstraint c = ps.d_contacts[idx];
-
-  // STRICT MOMENTUM CONSERVATION (Current Overlap Filter)
-  if (c.dist_current > 0.0f)
+  if (idx >= num_manifolds)
     return;
 
-  int idA = c.bodyA;
-  int idB = c.bodyB;
+  ManifoldConstraint m = ps.d_manifolds[idx];
+
+  // Activity Check: If num_points is 0 (filtered out), skip
+  if (m.num_points <= 0)
+    return;
+
+  int idA = m.bodyA;
+  int idB = m.bodyB;
+
+  // Deduplication for Periodic Boundaries
+  // (Real A, Ghost B) and (Real B, Ghost A) represent the same interaction.
+  // We process only if real_ID(A) <= real_ID(B).
+  // Note: Standard contacts (Real A, Real B) are sorted by ID, so A < B always
+  // holds. Planes (idB < 0) are always processed.
+  if (idB >= 0) {
+    int realA = ps.d_real_indices[idA];
+    int realB = ps.d_real_indices[idB];
+    if (realA > realB)
+      return;
+  }
 
   // Load Masses/Inertia
   float invMassA = ps.d_pos[idA].w;
   float invMassB = 0.0f;
   if (idB >= 0)
     invMassB = ps.d_pos[idB].w;
+
+  float3 invIA = make_float3(ps.d_inv_inertia[idA].x, ps.d_inv_inertia[idA].y,
+                             ps.d_inv_inertia[idA].z);
+  float3 invIB = make_float3(0, 0, 0);
+  if (idB >= 0)
+    invIB = make_float3(ps.d_inv_inertia[idB].x, ps.d_inv_inertia[idB].y,
+                        ps.d_inv_inertia[idB].z);
+
+  // Load Orientation
+  float4 qA = ps.d_quat[idA];
+  float4 qB = make_float4(0, 0, 0, 1);
+  if (idB >= 0)
+    qB = ps.d_quat[idB];
 
   // 1. Get Velocities (Linear + Angular)
   float4 vA_w = ps.d_vel_pred[idA];
@@ -45,213 +71,201 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
   float3 vB = make_float3(0, 0, 0);
   float3 wB = make_float3(0, 0, 0);
   if (idB >= 0) {
-    float4 vB_w_local = ps.d_vel_pred[idB];
-    float4 wB_w_local = ps.d_ang_vel_pred[idB];
-    vB = make_float3(vB_w_local.x, vB_w_local.y, vB_w_local.z);
-    wB = make_float3(wB_w_local.x, wB_w_local.y, wB_w_local.z);
+    float4 vB_w = ps.d_vel_pred[idB];
+    float4 wB_w = ps.d_ang_vel_pred[idB];
+    vB = make_float3(vB_w.x, vB_w.y, vB_w.z);
+    wB = make_float3(wB_w.x, wB_w.y, wB_w.z);
   }
 
-  // Load Positions for correct lever arms
-  float4 posA_w = ps.d_pos[idA];
-  float3 posA = make_float3(posA_w.x, posA_w.y, posA_w.z);
-  float3 posB = make_float3(0, 0, 0); // Will be overwritten or unused
+  // Load Geometric Sums
+  float3 N_sum = make_float3(m.normal_sum.x, m.normal_sum.y, m.normal_sum.z);
+  float3 TauA_sum = make_float3(m.torque_armA_sum.x, m.torque_armA_sum.y,
+                                m.torque_armA_sum.z);
+  float3 TauB_sum = make_float3(m.torque_armB_sum.x, m.torque_armB_sum.y,
+                                m.torque_armB_sum.z);
 
-  // Contact Geometry
-  float3 n = make_float3(c.normal.x, c.normal.y, c.normal.z);
-  float3 rA = make_float3(c.rA.x, c.rA.y, c.rA.z);
-  float3 rB = make_float3(c.rB.x, c.rB.y, c.rB.z);
+  // Reconstruct Aggregate Relative Velocity
+  float termA = dot_product(vA, N_sum) + dot_product(wA, TauA_sum);
+  float termB = dot_product(vB, make_float3(-N_sum.x, -N_sum.y, -N_sum.z)) +
+                dot_product(wB, TauB_sum);
+  float vn_agg = termA + termB;
 
-  // Correction for Angular Momentum Conservation:
-  // Ensure impulses are applied at a COMMON point (average of surface points).
-  // P_A = posA + rA
-  // P_B = posB + rB
-  // P_common = 0.5 * (P_A + P_B)
-  // rA_common = P_common - posA
-  // rB_common = P_common - posB
-
-  if (idB >= 0) {
-    float4 posB_w = ps.d_pos[idB];
-    posB = make_float3(posB_w.x, posB_w.y, posB_w.z);
-
-    float3 PA = make_float3(posA.x + rA.x, posA.y + rA.y, posA.z + rA.z);
-    float3 PB = make_float3(posB.x + rB.x, posB.y + rB.y, posB.z + rB.z);
-    float3 P_common = make_float3(0.5f * (PA.x + PB.x), 0.5f * (PA.y + PB.y),
-                                  0.5f * (PA.z + PB.z));
-
-    rA = make_float3(P_common.x - posA.x, P_common.y - posA.y,
-                     P_common.z - posA.z);
-    rB = make_float3(P_common.x - posB.x, P_common.y - posB.y,
-                     P_common.z - posB.z);
-  } else {
-    // Static collision (B is NULL/World)
-    // Usually rB is relative to origin(0,0,0) or contact point?
-    // In static case, rB in constraint is usually '0' relative to something or
-    // contact point itself? For now, let's assume P_B is "World Point" which
-    // matches P_A visually? Actually if B is static wall, P_B is fixed.
-    // Conservation of L for system [A + Earth] isn't tracked.
-    // So mainly important for A-B dynamic.
+  // Check Approaching
+  // vn_agg = (vA - vB) . N
+  // Approaching if vn_agg > 0 (e.g. A-> +5, B-> -5, N=+1 => 10)
+  // Separating if vn_agg < 0
+  if (vn_agg < 0) {
+    return; // Separating
   }
 
-  // Relative Velocity at Contact Point
-  float3 vPA = vA + cross_product(wA, rA);
-  float3 vPB = vB + cross_product(wB, rB);
-
-  // Expansion Velocity: v_surf = v + w x r + nu * r
-  float3 vExpA = make_float3(rA.x * nu, rA.y * nu, rA.z * nu);
-  float3 vExpB = make_float3(rB.x * nu, rB.y * nu, rB.z * nu);
-  vPA = make_float3(vPA.x + vExpA.x, vPA.y + vExpA.y, vPA.z + vExpA.z);
-  vPB = make_float3(vPB.x + vExpB.x, vPB.y + vExpB.y, vPB.z + vExpB.z);
-
-  float3 v_rel = make_float3(vPA.x - vPB.x, vPA.y - vPB.y, vPA.z - vPB.z);
-  float vn = dot_product(v_rel, n);
-
-  // Activity Check: Only apply if approaching (vn < 0)
-  if (vn >= 0.0f) {
-    return;
-  }
-
-  // Rigorous Weighting (Pre-computed by Pair-Sort)
-  float weight = c.weight;
-
-  // Calculate Effective Mass components
-  float3 invIA_vec =
-      make_float3(ps.d_inv_inertia[idA].x, ps.d_inv_inertia[idA].y,
-                  ps.d_inv_inertia[idA].z);
-  float3 invIB_vec = make_float3(0, 0, 0);
-  if (idB >= 0)
-    invIB_vec = make_float3(ps.d_inv_inertia[idB].x, ps.d_inv_inertia[idB].y,
-                            ps.d_inv_inertia[idB].z);
-
-  auto compute_generalized_inv_mass = [&](float3 r, float3 dir, float invM,
-                                          float3 invI) {
-    float3 rn = cross_product(r, dir);
-    return invM + rn.x * rn.x * invI.x + rn.y * rn.y * invI.y +
-           rn.z * rn.z * invI.z;
+  // Compute Effective Mass W
+  // Helper for Quad term: v^T I^-1 v
+  // I^-1_world = R I^-1_local R^T
+  // v^T R I^-1_local R^T v = (R^T v)^T I^-1_local (R^T v)
+  auto compute_generalized_inv_mass = [&](float3 tau, float3 invI_local,
+                                          float4 q) {
+    float3 tau_local = inv_rotate_vector(q, tau);
+    return tau_local.x * tau_local.x * invI_local.x +
+           tau_local.y * tau_local.y * invI_local.y +
+           tau_local.z * tau_local.z * invI_local.z;
   };
 
-  float wA_n = compute_generalized_inv_mass(rA, n, invMassA, invIA_vec);
-  float wB_n = compute_generalized_inv_mass(rB, n, invMassB, invIB_vec);
-  float w_total_n = wA_n + wB_n;
+  float wA_n = dot_product(N_sum, N_sum) * invMassA +
+               compute_generalized_inv_mass(TauA_sum, invIA, qA);
+  float wB_n = dot_product(N_sum, N_sum) * invMassB +
+               compute_generalized_inv_mass(TauB_sum, invIB, qB);
+  float w_total = wA_n + wB_n;
 
-  if (w_total_n < 1e-9f)
+  if (w_total <= 0)
     return;
 
-  // ----------------------------
-  // Normal Impulse (Restitution)
-  // ----------------------------
-  // Target: v_new = -e * v_old
-  float vn_target = -ps.restitution_normal * vn;
+  // Target: V_new = -e * V_old
+  float vn_target = -ps.restitution_normal * vn_agg;
+  float dV = vn_target - vn_agg;
+  float lambda = dV / w_total;
 
-  float dV = vn_target - vn;
-  float lambda_n = dV / w_total_n;
-  // J_n should be positive (pushing apart). dV is positive (since vn < 0).
+  // Apply Normal Impulse
+  float3 J_lin_A =
+      make_float3(N_sum.x * lambda, N_sum.y * lambda, N_sum.z * lambda);
+  float3 J_ang_A = make_float3(TauA_sum.x * lambda, TauA_sum.y * lambda,
+                               TauA_sum.z * lambda);
 
-  // Filter/Clamp? Normal Force is repulsive.
-  if (lambda_n < 0.0f)
-    lambda_n = 0.0f; // Should not happen given vn < 0 check.
+  float3 J_lin_B = make_float3(-J_lin_A.x, -J_lin_A.y, -J_lin_A.z);
+  float3 J_ang_B = make_float3(TauB_sum.x * lambda, TauB_sum.y * lambda,
+                               TauB_sum.z * lambda);
 
-  // Scale by Weight
-  float3 impulse_n =
-      make_float3(n.x * lambda_n * weight, n.y * lambda_n * weight,
-                  n.z * lambda_n * weight);
+  // Atomic Application
+  // Redirect to Real ID for Consistency (Momentum Conservation)
+  int acc_idA = ps.d_real_indices[idA];
 
-  // ----------------------------
-  // Tangential (Friction + Restitution)
-  // ----------------------------
-  float3 vt_vec = v_rel - make_float3(n.x * vn, n.y * vn, n.z * vn);
+  atomicAddVector(ps.d_delta_vel + acc_idA,
+                  make_float4(J_lin_A.x * invMassA, J_lin_A.y * invMassA,
+                              J_lin_A.z * invMassA, 0));
+
+  // Angular Update: dw = I_world^-1 * J_ang
+  // dw = R * (I_local^-1 * (R^T * J_ang))
+  auto apply_ang_impulse = [&](int id, float3 J_ang, float3 invI_local,
+                               float4 q) {
+    float3 J_local = inv_rotate_vector(q, J_ang);
+    float3 dw_local =
+        make_float3(J_local.x * invI_local.x, J_local.y * invI_local.y,
+                    J_local.z * invI_local.z);
+    float3 dw_world = rotate_vector(q, dw_local);
+    atomicAddVector(ps.d_delta_ang_vel + id,
+                    make_float4(dw_world.x, dw_world.y, dw_world.z, 0));
+  };
+
+  apply_ang_impulse(acc_idA, J_ang_A, invIA, qA);
+
+  if (idB >= 0) {
+    int acc_idB = ps.d_real_indices[idB];
+    atomicAddVector(ps.d_delta_vel + acc_idB,
+                    make_float4(J_lin_B.x * invMassB, J_lin_B.y * invMassB,
+                                J_lin_B.z * invMassB, 0));
+    apply_ang_impulse(acc_idB, J_ang_B, invIB, qB);
+  }
+
+  // -------------------------------------------------------------------------
+  // Friction (Tangential) - Approximate
+  // -------------------------------------------------------------------------
+  // Construct Representative Point and Tangent Basis
+  // Average rA, rB.
+  float N_count = (float)m.num_points;
+  float3 rA_avg = make_float3(m.rA_sum.x / N_count, m.rA_sum.y / N_count,
+                              m.rA_sum.z / N_count);
+  float3 rB_avg = make_float3(m.rB_sum.x / N_count, m.rB_sum.y / N_count,
+                              m.rB_sum.z / N_count);
+
+  // Normalized Normal Direction
+  float len_N = sqrtf(dot_product(N_sum, N_sum));
+  if (len_N < 1e-9f)
+    return;
+  float3 n = make_float3(N_sum.x / len_N, N_sum.y / len_N, N_sum.z / len_N);
+
+  // Relative Velocity at Average Point
+  // v_rel_point = (vA + wA x rA_avg) - (vB + wB x rB_avg)
+  float3 vPA = vA + cross_product(wA, rA_avg);
+  float3 vPB = vB + cross_product(wB, rB_avg);
+  float3 v_rel_point = make_float3(vPA.x - vPB.x, vPA.y - vPB.y, vPA.z - vPB.z);
+
+  // Tangent Velocity
+  float vn_point = dot_product(v_rel_point, n);
+  float3 vt_vec = make_float3(v_rel_point.x - vn_point * n.x,
+                              v_rel_point.y - vn_point * n.y,
+                              v_rel_point.z - vn_point * n.z);
   float vt_len = sqrtf(dot_product(vt_vec, vt_vec));
 
-  float3 impulse_t = make_float3(0, 0, 0);
-
-  if (vt_len > 1e-6f) {
+  if (vt_len > 1e-5f) {
     float3 t =
         make_float3(vt_vec.x / vt_len, vt_vec.y / vt_len, vt_vec.z / vt_len);
 
-    float wA_t = compute_generalized_inv_mass(rA, t, invMassA, invIA_vec);
-    float wB_t = compute_generalized_inv_mass(rB, t, invMassB, invIB_vec);
+    // Generalized Mass for Tangent
+    // J_t acting at Average Point along t
+    // Force A: t. Torque A: rA_avg x t.
+    // Force B: -t. Torque B: rB_avg x -t.
+    float3 tauA_t = cross_product(rA_avg, t);
+    float3 tauB_t = cross_product(rB_avg, make_float3(-t.x, -t.y, -t.z));
+
+    float wA_t = invMassA + compute_generalized_inv_mass(tauA_t, invIA, qA);
+    float wB_t = invMassB + compute_generalized_inv_mass(tauB_t, invIB, qB);
     float w_total_t = wA_t + wB_t;
 
-    // USER DEFINITION FOR TANGENTIAL RESTITUTION:
-    // e_t = 1.0  -> No Friction/Change (v' = v)
-    // e_t = 0.0  -> Fully Inelastic/Stick (v' = 0)
-    // e_t = -1.0 -> Reflection (v' = -v)
-    //
-    // Target Delta v:
-    // v' = e_t * v
-    // dv = v' - v = (e_t - 1) * v
+    // Target
+    float dv_t_mag =
+        (ps.restitution_tangent - 1.0f) * vt_len; // -V_old if inelastic
+    float lambda_t = dv_t_mag / w_total_t;
 
-    float dv_t_mag = (ps.restitution_tangent - 1.0f) *
-                     vt_len; // Negative value for e_t < 1.0
+    // Friction Clamp (Coulomb)
+    float max_f = ps.friction_dynamic * lambda;
+    // Note: lambda > 0 usually.
+    if (lambda_t < -max_f)
+      lambda_t = -max_f;
+    if (lambda_t > max_f)
+      lambda_t = max_f;
 
-    float lambda_t_raw = dv_t_mag / w_total_t;
+    // Apply
+    float3 J_lin_t_A =
+        make_float3(t.x * lambda_t, t.y * lambda_t, t.z * lambda_t);
+    float3 J_ang_t_A = make_float3(tauA_t.x * lambda_t, tauA_t.y * lambda_t,
+                                   tauA_t.z * lambda_t);
 
-    // Friction Limit
-    // Use mu based on velocity heuristic?
-    float mu = (vt_len < 1e-4f)
-                   ? ps.friction_dynamic
-                   : ps.friction_dynamic; // TODO: ps.friction_static
+    float3 J_lin_t_B = make_float3(-J_lin_t_A.x, -J_lin_t_A.y, -J_lin_t_A.z);
+    float3 J_ang_t_B = make_float3(tauB_t.x * lambda_t, tauB_t.y * lambda_t,
+                                   tauB_t.z * lambda_t);
 
-    float max_friction = mu * lambda_n;
+    // Map from possible Ghost ID to Real ID for Accumulation
+    int acc_idA = ps.d_real_indices[idA];
 
-    // Clamp magnitude
-    if (lambda_t_raw < -max_friction)
-      lambda_t_raw = -max_friction;
-    if (lambda_t_raw > max_friction)
-      lambda_t_raw = max_friction; // Should not happen?
+    atomicAddVector(ps.d_delta_vel + acc_idA,
+                    make_float4(J_lin_t_A.x * invMassA, J_lin_t_A.y * invMassA,
+                                J_lin_t_A.z * invMassA, 0));
 
-    // Apply Weight
-    impulse_t =
-        make_float3(t.x * lambda_t_raw * weight, t.y * lambda_t_raw * weight,
-                    t.z * lambda_t_raw * weight);
+    apply_ang_impulse(
+        acc_idA, J_ang_t_A, invIA,
+        qA); // Using original qA/invIA is correct, but accumulate to acc_idA
+
+    if (idB >= 0) {
+      int acc_idB = ps.d_real_indices[idB];
+      atomicAddVector(ps.d_delta_vel + acc_idB,
+                      make_float4(J_lin_t_B.x * invMassB,
+                                  J_lin_t_B.y * invMassB,
+                                  J_lin_t_B.z * invMassB, 0));
+      apply_ang_impulse(acc_idB, J_ang_t_B, invIB, qB);
+    }
   }
-
-  // ----------------------------
-  // Apply Impulses (Atomic)
-  // ----------------------------
-  float3 total_J = impulse_n + impulse_t;
-
-  // Body A: +J
-  float3 dvA = make_float3(total_J.x * invMassA, total_J.y * invMassA,
-                           total_J.z * invMassA);
-  float3 rxJ_A = cross_product(rA, total_J);
-  float3 dwA = make_float3(rxJ_A.x * invIA_vec.x, rxJ_A.y * invIA_vec.y,
-                           rxJ_A.z * invIA_vec.z);
-
-  atomicAddVector(ps.d_delta_vel + idA, make_float4(dvA.x, dvA.y, dvA.z, 0));
-  atomicAddVector(ps.d_delta_ang_vel + idA,
-                  make_float4(dwA.x, dwA.y, dwA.z, 0));
-
-  // Body B: -J
-  if (idB >= 0) {
-    atomicAddVector(ps.d_delta_vel + idB,
-                    make_float4(-total_J.x * invMassB, -total_J.y * invMassB,
-                                -total_J.z * invMassB, 0.0f));
-    float3 rxJ_B = cross_product(rB, total_J);
-    float3 dwB = make_float3(-rxJ_B.x * invIB_vec.x, -rxJ_B.y * invIB_vec.y,
-                             -rxJ_B.z * invIB_vec.z);
-    atomicAddVector(ps.d_delta_ang_vel + idB,
-                    make_float4(dwB.x, dwB.y, dwB.z, 0));
-  }
-  // Note: We DO NOT increment constraint counts here anymore,
-  // as we use the pre-pass counts for weighting logic.
 }
 
 void launch_velocity_solve(ParticleSystemData ps, float nu) {
-  int num_contacts;
-  CUDA_CHECK(cudaMemcpy(&num_contacts, ps.d_contact_count, sizeof(int),
+  int num_manifolds;
+  CUDA_CHECK(cudaMemcpy(&num_manifolds, ps.d_manifold_count, sizeof(int),
                         cudaMemcpyDeviceToHost));
 
-  if (num_contacts == 0)
+  if (num_manifolds == 0)
     return;
 
   int threads = 256;
-  int blocks = (num_contacts + threads - 1) / threads;
+  int blocks = (num_manifolds + threads - 1) / threads;
 
-  // We can iterate here if we want multiple Jacobi passes.
-  // For Phase 1, start with 1 or 2 iterations?
-  // Plan doesn't strictly specify iterations within the kernel, usually invoked
-  // multiple times in simulation loop. Just launch logic once.
   solve_velocity_jacobi_kernel<<<blocks, threads>>>(ps, nu);
   CUDA_CHECK(cudaGetLastError());
-  cudaDeviceSynchronize();
 }
