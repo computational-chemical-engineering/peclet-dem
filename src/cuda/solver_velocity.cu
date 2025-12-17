@@ -110,6 +110,7 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
            tau_local.z * tau_local.z * invI_local.z;
   };
 
+  // Recalculate w_n with standard Tau Sums
   float wA_n = dot_product(N_sum, N_sum) * invMassA +
                compute_generalized_inv_mass(TauA_sum, invIA, qA);
   float wB_n = dot_product(N_sum, N_sum) * invMassB +
@@ -171,10 +172,11 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
   // Construct Representative Point and Tangent Basis
   // Average rA, rB.
   float N_count = (float)m.num_points;
-  float3 rA_avg = make_float3(m.rA_sum.x / N_count, m.rA_sum.y / N_count,
-                              m.rA_sum.z / N_count);
-  float3 rB_avg = make_float3(m.rB_sum.x / N_count, m.rB_sum.y / N_count,
-                              m.rB_sum.z / N_count);
+  float inv_N = 1.0f / N_count;
+  float3 rA_avg =
+      make_float3(m.rA_sum.x * inv_N, m.rA_sum.y * inv_N, m.rA_sum.z * inv_N);
+  float3 rB_avg =
+      make_float3(m.rB_sum.x * inv_N, m.rB_sum.y * inv_N, m.rB_sum.z * inv_N);
 
   // Normalized Normal Direction
   float len_N = sqrtf(dot_product(N_sum, N_sum));

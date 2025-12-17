@@ -44,20 +44,6 @@ struct ContactToPairID {
   }
 };
 
-struct IsActiveContact {
-  __host__ __device__ bool operator()(const ContactConstraint &c) const {
-    // Only count active overlaps for manifold generation?
-    // User plan said: "Remove artificial weighting".
-    // Also "Strict Momentum Conservation".
-    // If we include predicted contacts (gap > 0) in the manifold, they
-    // contribute "0" force usually? But for "Mass" calculation, should they
-    // contribute to stiffness? "Remove implementation of contact counting" "Sum
-    // geometric leverage" Usually we only solve for *Active* contacts. If
-    // dist_current > 0, we skip.
-    return c.dist_current <= 0.0f;
-  }
-};
-
 // Transform: ContactConstraint -> ManifoldConstraint
 struct ContactToManifold {
   __host__ __device__ ManifoldConstraint
@@ -146,8 +132,8 @@ struct ContactToManifold {
     m.torque_armA_sum = make_float4(tau_can.x, tau_can.y, tau_can.z, 0.0f);
     m.torque_armB_sum =
         make_float4(tau_other.x, tau_other.y, tau_other.z, 0.0f);
-    m.rB_sum = make_float4(rB.x, rB.y, rB.z, 0.0f);
-    m.dist_sum = c.dist_current;
+    m.rA_sum = make_float4(r_can.x, r_can.y, r_can.z, 0.0f);
+    m.rB_sum = make_float4(r_other.x, r_other.y, r_other.z, 0.0f);
 
     return m;
   }
@@ -180,7 +166,6 @@ struct SumManifold {
                              a.rA_sum.z + b.rA_sum.z, 0.0f);
     res.rB_sum = make_float4(a.rB_sum.x + b.rB_sum.x, a.rB_sum.y + b.rB_sum.y,
                              a.rB_sum.z + b.rB_sum.z, 0.0f);
-    res.dist_sum = a.dist_sum + b.dist_sum;
     return res;
   }
 };
@@ -189,7 +174,7 @@ struct SumManifold {
 struct TransformAndFilter {
   __host__ __device__ ManifoldConstraint
   operator()(const ContactConstraint &c) const {
-    if (c.dist_current > 0.0f) {
+    if (c.dist > 0.0f) {
       // Inactive
       ManifoldConstraint m;
       m.num_points = 0;
@@ -198,7 +183,6 @@ struct TransformAndFilter {
       m.torque_armB_sum = make_float4(0, 0, 0, 0);
       m.rA_sum = make_float4(0, 0, 0, 0);
       m.rB_sum = make_float4(0, 0, 0, 0);
-      m.dist_sum = 0.0f;
       m.bodyA = c.bodyA;
       m.bodyB = c.bodyB;
       return m;

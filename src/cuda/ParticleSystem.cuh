@@ -72,13 +72,10 @@ struct Plane {
 struct ContactConstraint {
   int bodyA;
   int bodyB;
-  float4 normal; // .xyz = normal, .w = padding
-  float4 rA;     // .xyz = vector from COM_A to contact point
-  float4 rB;     // .xyz = vector from COM_B to contact point
-  float
-      dist; // Signed distance (Negative = Overlap, Positive = Gap) - PREDICTED
-  float dist_current;      // Signed distance based on CURRENT positions (Strict
-                           // Momentum)
+  float4 normal;           // .xyz = normal, .w = padding
+  float4 rA;               // Vector from Center A to Contact Point
+  float4 rB;               // Vector from Center B to Contact Point
+  float dist;              // Penetration distance (negative = overlap)
   float friction_lambda_n; // Stored from prev frame or pos solve (for clamping)
   float weight;            // Rigorous Pair Weight (1/N_pairs)
 };
@@ -91,7 +88,6 @@ struct ManifoldConstraint {
   float4 torque_armB_sum; // Sum of (rB x -n_aligned)
   float4 rA_sum;          // Sum of rA
   float4 rB_sum;          // Sum of rB
-  float dist_sum;         // Sum of dist (for average penetration)
   int num_points;         // Number of contacts in patch
 };
 

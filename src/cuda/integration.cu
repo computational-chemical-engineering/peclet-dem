@@ -383,10 +383,7 @@ __global__ void compute_contact_counts_kernel(ParticleSystemData ps) {
 
   ContactConstraint c = ps.d_contacts[idx];
 
-  // FILTER: Strictly Momentum Conserving (Current Overlap)
-  // Was: if (c.dist > 0.0f) return;
-  // Now:
-  if (c.dist_current > 0.0f)
+  if (c.dist > 0.0f)
     return;
 
   int idA = c.bodyA;

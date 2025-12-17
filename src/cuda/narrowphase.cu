@@ -163,17 +163,15 @@ __global__ void detect_contacts_kernel(ParticleSystemData ps,
       // Transform Normal to World: B-Local -> World
       float3 n_world = rotate_vector(qB_w, n_local);
 
-      // Contact Point on B (World) = p_world - n_world * dist
-      // where p_world is the probe point (Center of A)
-      float3 contact_pt_on_B = p_world - n_world * dist;
+      // Use Common Contact Point (Midpoint of Overlap) to ensure strict L
+      // conservation Prev forces were applied at different points (Surface A vs
+      // Surface B), creating a couple.
+      float dist_to_mean = 0.5f * (dist + point_radius);
+      float3 contact_mean = p_world - n_world * dist_to_mean;
+      // float3 contact_mean = p_world - n_world * point_radius;
 
-      // rB: Vector from Center B to Contact Point on B
-      float3 rB_vec = contact_pt_on_B - posB;
-
-      // rA: Vector from Center A to Contact Point on A
-      // Point on A surface = p_world - n_world * point_radius
-      // Fixed: Include the offset from Center A to the probe point p_world
-      float3 rA_vec = (p_world - posA) - n_world * point_radius;
+      float3 rA_vec = contact_mean - posA;
+      float3 rB_vec = contact_mean - posB;
 
       ContactConstraint c;
       c.bodyA = idA;
@@ -182,32 +180,6 @@ __global__ void detect_contacts_kernel(ParticleSystemData ps,
       c.rA = make_float4(rA_vec.x, rA_vec.y, rA_vec.z, 0.0f);
       c.rB = make_float4(rB_vec.x, rB_vec.y, rB_vec.z, 0.0f);
       c.dist = effective_dist;
-
-      // --- Compute Current Distance (Strict Momentum) ---
-      // Load Current Positions
-      float4 pA_curr = ps.d_pos[idA];
-      float4 pB_curr = ps.d_pos[idB];
-      float3 posA_curr = make_float3(pA_curr.x, pA_curr.y, pA_curr.z);
-      float3 posB_curr = make_float3(pB_curr.x, pB_curr.y, pB_curr.z);
-
-      // Robust "Current Distance" Calculation for Arbitrary Shapes
-      // We project the change in relative position onto the contact normal.
-      // dist_curr = dist_pred + dot((posA_curr - posB_curr) - (pA_pred -
-      // pB_pred), n_world) This accurately reflects how much the gap has
-      // closed/opened along the contact normal.
-
-      float3 rel_pos_pred =
-          make_float3(pA_w.x - pB_w.x, pA_w.y - pB_w.y, pA_w.z - pB_w.z);
-      float3 rel_pos_curr = posA_curr - posB_curr;
-
-      float3 delta_rel_pos = rel_pos_curr - rel_pos_pred;
-      float delta_dist = delta_rel_pos.x * n_world.x +
-                         delta_rel_pos.y * n_world.y +
-                         delta_rel_pos.z * n_world.z;
-
-      float dist_curr = effective_dist + delta_dist;
-
-      c.dist_current = dist_curr;
 
       c.friction_lambda_n = 0.0f;
       ps.d_contacts[contact_idx] = c;
@@ -260,16 +232,6 @@ __global__ void detect_boundary_kernel(ParticleSystemData ps,
       // Store World Space Contact Point on Plane in rB (Anchor)
       c.rB = make_float4(plane_point.x, plane_point.y, plane_point.z, 0.0f);
       c.dist = dist;
-
-      // --- Compute Current Distance (Strict Momentum) ---
-      float4 p_curr = ps.d_pos[idx]; // Current Position
-      float3 diff_curr =
-          make_float3(p_curr.x - plane_point.x, p_curr.y - plane_point.y,
-                      p_curr.z - plane_point.z);
-      float dist_center_c = diff_curr.x * normal.x + diff_curr.y * normal.y +
-                            diff_curr.z * normal.z;
-      c.dist_current = dist_center_c - radius;
-
       c.friction_lambda_n = 0.0f;
       ps.d_contacts[contact_idx] = c;
     }
