@@ -34,45 +34,48 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
   // Deduplication for Periodic Boundaries
   // (Real A, Ghost B) and (Real B, Ghost A) represent the same interaction.
   // We process only if real_ID(A) <= real_ID(B).
-  // Note: Standard contacts (Real A, Real B) are sorted by ID, so A < B always
-  // holds. Planes (idB < 0) are always processed.
+
+  int realA = ps.d_real_indices[idA];
+  int realB = idB; // Default for non-periodic/boundary
   if (idB >= 0) {
-    int realA = ps.d_real_indices[idA];
-    int realB = ps.d_real_indices[idB];
+    realB = ps.d_real_indices[idB];
     if (realA > realB)
       return;
   }
 
   // Load Masses/Inertia
-  float invMassA = ps.d_pos[idA].w;
+  float invMassA = ps.d_pos[realA].w;
   float invMassB = 0.0f;
-  if (idB >= 0)
-    invMassB = ps.d_pos[idB].w;
+  if (idB >= 0) // Check existence
+    invMassB = ps.d_pos[realB].w;
 
-  float3 invIA = make_float3(ps.d_inv_inertia[idA].x, ps.d_inv_inertia[idA].y,
-                             ps.d_inv_inertia[idA].z);
+  float3 invIA =
+      make_float3(ps.d_inv_inertia[realA].x, ps.d_inv_inertia[realA].y,
+                  ps.d_inv_inertia[realA].z);
   float3 invIB = make_float3(0, 0, 0);
   if (idB >= 0)
-    invIB = make_float3(ps.d_inv_inertia[idB].x, ps.d_inv_inertia[idB].y,
-                        ps.d_inv_inertia[idB].z);
+    invIB = make_float3(ps.d_inv_inertia[realB].x, ps.d_inv_inertia[realB].y,
+                        ps.d_inv_inertia[realB].z);
 
   // Load Orientation
-  float4 qA = ps.d_quat[idA];
+  // Use REAL orientation for consistency (should be identical, but safe)
+  float4 qA = ps.d_quat[realA];
   float4 qB = make_float4(0, 0, 0, 1);
   if (idB >= 0)
-    qB = ps.d_quat[idB];
+    qB = ps.d_quat[realB];
 
   // 1. Get Velocities (Linear + Angular)
-  float4 vA_w = ps.d_vel_pred[idA];
-  float4 wA_w = ps.d_ang_vel_pred[idA];
+  // CRITICAL: Read from REAL index to get latest iterative updates
+  float4 vA_w = ps.d_vel_pred[realA];
+  float4 wA_w = ps.d_ang_vel_pred[realA];
 
   float3 vA = make_float3(vA_w.x, vA_w.y, vA_w.z);
   float3 wA = make_float3(wA_w.x, wA_w.y, wA_w.z);
   float3 vB = make_float3(0, 0, 0);
   float3 wB = make_float3(0, 0, 0);
   if (idB >= 0) {
-    float4 vB_w = ps.d_vel_pred[idB];
-    float4 wB_w = ps.d_ang_vel_pred[idB];
+    float4 vB_w = ps.d_vel_pred[realB];
+    float4 wB_w = ps.d_ang_vel_pred[realB];
     vB = make_float3(vB_w.x, vB_w.y, vB_w.z);
     wB = make_float3(wB_w.x, wB_w.y, wB_w.z);
   }

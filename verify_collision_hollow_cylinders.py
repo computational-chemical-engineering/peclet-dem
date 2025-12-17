@@ -64,7 +64,7 @@ def run_collision_test():
     
     # Simulation Params
     dt = 0.01
-    duration = 0.8 # Seconds
+    duration = 10.0 # Seconds
     limit_steps = int(duration / dt)
     
     # Solver
