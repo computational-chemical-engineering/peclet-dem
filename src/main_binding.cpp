@@ -141,6 +141,9 @@ PYBIND11_MODULE(demgpu, m) {
       .def("step", &Simulation::step)
       .def("set_growth_params", &Simulation::set_growth_params, py::arg("rate"),
            py::arg("new_factor") = -1.0f)
+      .def("set_thermostat", &Simulation::set_thermostat,
+           py::arg("temperature"), py::arg("tau"), py::arg("kB") = 1.0f,
+           "Enable Berendsen thermostat. Set tau=0 to disable.")
       .def("get_growth_rate", &Simulation::get_growth_rate)
       .def("get_growth_factor", &Simulation::get_growth_factor)
       .def("num_particles", &Simulation::num_particles,

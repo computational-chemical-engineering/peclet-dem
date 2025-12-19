@@ -57,22 +57,23 @@ def generate_unit_sdf_stl(radius, height, thickness, filename):
 def verify_packing():
     num_particles = 300
     radius = 0.5
-    height = 1.0 # H/D = 1
+    height = 0.3# H/D = 1
     thickness = 0.15 # Arbitrary hollow thickness
 
-    restitution = 0.9 # Normal Restitution
+    restitution = 1.0 # Normal Restitution
     restitution_t = 1.0 # Tangential Restitution
     friction = 0.0 # Enable friction/tangential interaction
 
     T = 1.0 # Granular temperature
     dt = 0.001
-    limit_steps = int(2.0/dt)
+    limit_steps = int(3.0/dt)
     dump_interval = int(1.0/(100*dt))
-    iters = 50
+    iters = 20
 
     scale_init = 5e-2
     growth_rate_init = -math.log(scale_init)
     growth_rate = growth_rate_init
+    i_switch_cooling = 2000 # Switch to cooling after this step
 
 
     # Calculate Domain Volume
@@ -84,11 +85,11 @@ def verify_packing():
     # Higher iterations = stiffer solver, better overlap resolution
     # Smaller dt = better stability, but slower growth
 
-    output_dir = "./output/hollow_cylinder_packing"
+    output_dir = "./output/ring_packing"
     os.makedirs(output_dir, exist_ok=True)
 
     # Target: High density jam
-    phi_ref = 0.4
+    phi_ref = 0.6
     criterion_ov = 1e-3
     vol_total_ref = num_particles * vol_particle
     vol_domain_ref = vol_total_ref / phi_ref
@@ -101,7 +102,7 @@ def verify_packing():
     h_unit = height / radius
     t_unit = thickness / radius
     
-    generate_unit_sdf_stl(r_unit, h_unit, t_unit, f"{output_dir}/hollow_cylinder_unit.stl")
+    generate_unit_sdf_stl(r_unit, h_unit, t_unit, f"{output_dir}/ring_unit.stl")
 
     sim = demgpu.Simulation(num_particles)
     sim.initialize(shape_type=2, radius=radius, height=height, thickness=thickness) #hollow cylinder
@@ -126,7 +127,7 @@ def verify_packing():
     
     # Update Simulation Domain to new size
     sim.set_domain((-half_d, -half_d, -half_d), (half_d, half_d, half_d))
-    
+
     sim.set_material_params(restitution, restitution_t, friction)
     sim.set_solver_iterations(iters, iters)
 
@@ -137,8 +138,7 @@ def verify_packing():
 
     # Init Velocities
     vel = np.zeros((num_particles, 3), dtype=np.float32)
-    if T > 0.0:
-        vel[:, :3] = rng.normal(0.0, math.sqrt(T), (num_particles, 3)).astype(np.float32)
+    vel[:, :3] = rng.normal(0.0, math.sqrt(T), (num_particles, 3)).astype(np.float32)
     sim.set_velocities(vel)
 
     # Init Quaternions (Uniform Random)
@@ -151,10 +151,15 @@ def verify_packing():
     ang_vel = np.zeros((num_particles, 3), dtype=np.float32)
     sim.set_angular_velocities(ang_vel)                
     sim.set_growth_params(growth_rate, scale_init) 
+    sim.set_thermostat(T, dt)
 
     print(f"Jamming Study: Target Phi={phi_ref}, Growth Rate={growth_rate}, Steps={limit_steps}")
       
     for i in range(limit_steps):
+        if i==i_switch_cooling:
+            restitution = 0.5
+            sim.set_material_params(restitution, restitution_t, friction)
+            sim.set_thermostat(0, 1e4*dt)
         sim.step(dt)
         max_ov = sim.get_max_overlap()
         is_jammed = max_ov > criterion_ov
@@ -185,25 +190,18 @@ def verify_packing():
             # Phi = Sum(Vol_i) / Vol_Domain
             mean_scale3 = np.mean(s**3)
             phi_current = phi_ref * mean_scale3
+            vel = sim.get_velocities()
+            T_current = np.sum(vel[:, 0:3]**2) / (3*num_particles)
             
             num_contacts = sim.get_num_contacts()
             num_manifolds = sim.get_num_manifolds()
 
-            print(f"Step {i}: Scale={np.mean(s):.4f}, Growth Rate={growth_rate:.4f}, Phi={phi_current:.4f}, Overlap={max_ov}, Contacts={num_contacts}, Manifolds={num_manifolds}")
+            print(f"Step {i}: Scale={np.mean(s):.4f}, Growth Rate={growth_rate:.4f}, T={T_current:.4f}, Phi={phi_current:.4f}, Overlap={max_ov}, Contacts={num_contacts}, Manifolds={num_manifolds}")
             sim.export_lammps(f"{output_dir}/dump.jamming.{i}.lammps", i)
-    # Final Stats
-    final_ov = sim.get_max_overlap()
-    s = sim.get_scales()
-    phi_final = phi_ref * np.mean(s**3)
-    vel = sim.get_velocities()
-    T_current = np.sum(vel[:, 0:3]**2) / (3*num_particles)
     
-    print(f"FINAL: Max Random Packing Density = {phi_final:.4f}")
-    print(f"{iters:<5} {dt:<8.4f} {T:<8.4f} {T_current:<8.4f} {phi_final:<8.3f} {final_ov:<10.3f}") 
-
     # Export Final VTI
-    print(f"Generating SDF VTI for Phi={phi_final:.3f}...")
-    sim.export_sdf(f"{output_dir}/packing_hollow_cylinder_jammed.vti", (256, 256, 256))
+    print(f"Generating SDF VTI for Phi={phi_current:.3f}...")
+    sim.export_sdf(f"{output_dir}/packing_ring.vti", (256, 256, 256))
 
 if __name__ == "__main__":
     verify_packing() 

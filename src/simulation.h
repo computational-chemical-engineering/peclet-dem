@@ -52,6 +52,7 @@ public:
 
   // Growth Mode
   void set_growth_params(float rate, float new_factor = -1.0f);
+  void set_thermostat(float temperature, float tau, float kB = 1.0f);
   float get_growth_rate() const { return ps_.growth_rate; }
   float get_growth_factor() const { return ps_.growth_factor; }
 

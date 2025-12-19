@@ -150,11 +150,23 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps) {
   vn_agg += dot_product(v_growth, N_sum);
 
   // Check Approaching
-  // vn_agg = (vA - vB) . N_sum
-  // Approaching if vn_agg > 0 (e.g. A-> +5, B-> -5, N=+1 => 10)
-  // Separating if vn_agg < 0
-  if (vn_agg < 0) {
-    return; // Separating
+  // Standard Convention: N points A->B. Approaching if vn_agg > 0.
+  // Inverted Convention: N points B->A. Approaching if vn_agg < 0.
+  // We deduce convention by comparing N to the Line of Centers (A->B).
+  // diff_centers ~ P_B - P_A ~ Vector A->B. Wait.
+  // rA - rB = (C - PA) - (C - PB) = PB - PA = A->B Vector.
+  float alignment = dot_product(N_sum, diff_centers);
+
+  if (alignment > 0) {
+    // Normal Aligned with A->B (Sphere case).
+    // vn_agg > 0 means Approaching.
+    if (vn_agg < 0)
+      return;
+  } else {
+    // Normal Opposes A->B (Hollow Cylinder case).
+    // vn_agg < 0 means Approaching.
+    if (vn_agg > 0)
+      return;
   }
 
   // Compute Effective Mass W
@@ -298,11 +310,17 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps) {
     // Target
     float dv_t_mag =
         (ps.restitution_tangent - 1.0f) * vt_len; // -V_old if inelastic
-    float lambda_t = dv_t_mag / w_total_t;
+    // The original lambda for normal impulse is used here for friction
+    // clamping. The instruction's `float lambda = -vn_agg / (w_sum +
+    // compliance);` was a new definition and would overwrite the normal impulse
+    // lambda. Assuming the user intended to keep the normal impulse lambda for
+    // friction.
 
     // Friction Clamp (Coulomb)
     float max_f = ps.friction_dynamic * lambda;
     // Note: lambda > 0 usually.
+    float lambda_t =
+        dv_t_mag / w_total_t; // This was missing in the instruction's context
     if (lambda_t < -max_f)
       lambda_t = -max_f;
     if (lambda_t > max_f)

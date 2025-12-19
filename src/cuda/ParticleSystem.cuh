@@ -175,6 +175,13 @@ struct ParticleSystemData {
   float growth_rate;
   float growth_factor; // -1.0f = Inactive
 
+  // --- Thermostat Parameters ---
+  double *d_energy_sum; // [0]=Trans KE, [1]=Rot KE
+  bool thermostat_enabled;
+  float thermostat_temperature;
+  float thermostat_tau;
+  float thermostat_kB;
+
   // --- Broadphase Data ---
   cuBQL::bvh3f bvh;
   int2 *d_potential_collisions; // Legacy?

@@ -150,6 +150,8 @@ Simulation::~Simulation() {
     free_device(ps_.d_morton);
   if (ps_.d_indices_sorted)
     free_device(ps_.d_indices_sorted);
+  if (ps_.d_energy_sum)
+    free_device(ps_.d_energy_sum);
 
   // cudaEventDestroy(start_event_);
   // cudaEventDestroy(stop_event_);
@@ -189,6 +191,7 @@ extern void launch_narrowphase(ParticleSystemData ps, float global_scale);
 extern void launch_velocity_solve(ParticleSystemData ps);
 extern void launch_position_solve(ParticleSystemData ps);
 extern void launch_update_growth_scales(ParticleSystemData &ps);
+extern void launch_apply_thermostat(ParticleSystemData ps, float dt);
 void build_bvh(ParticleSystemData &ps, float global_scale);
 void find_collisions(ParticleSystemData ps, float global_scale);
 void generate_ghosts(ParticleSystemData &ps, float threshold);
@@ -225,8 +228,15 @@ void Simulation::initialize(int shape_type, float radius, float height,
   allocate_device(ps_.d_top_ghost, 1);
 
   // Initialize Growth State
+  // Initialize Growth State
   ps_.growth_rate = 0.0f;
   ps_.growth_factor = -1.0f; // Inactive
+
+  // Initialize Thermostat State
+  ps_.thermostat_enabled = false;
+  ps_.thermostat_temperature = 0.0f;
+  ps_.thermostat_tau = 0.0f;
+  ps_.thermostat_kB = 1.0f;
 
   allocate_device(ps_.d_pos_pred, capacity);
   allocate_device(ps_.d_quat_pred, capacity);
@@ -242,7 +252,9 @@ void Simulation::initialize(int shape_type, float radius, float height,
   allocate_device(ps_.d_delta_ang_vel, capacity);
 
   allocate_device(ps_.d_constraint_counts, capacity);
+  allocate_device(ps_.d_constraint_counts, capacity);
   allocate_device(ps_.d_inv_inertia, capacity);
+  allocate_device(ps_.d_energy_sum, 2); // [0]=Trans, [1]=Rot
 
   // Collision Buffers
   int max_potential =
@@ -470,9 +482,6 @@ void Simulation::set_solver_iterations(int pos_its, int vel_its) {
 void Simulation::set_growth_params(float rate, float new_factor) {
   // 1. Snapshot d_scales -> d_target_scales if activating for first time
   if (ps_.growth_factor == -1.0f) {
-    printf("Growth Mode Activated. Snapshotting current scales to target. "
-           "Rate=%.4f\n",
-           rate);
     CUDA_CHECK(cudaMemcpy(ps_.d_target_scales, ps_.d_scale,
                           ps_.num_particles * sizeof(float),
                           cudaMemcpyDeviceToDevice));
@@ -493,7 +502,17 @@ void Simulation::set_growth_params(float rate, float new_factor) {
   ps_.growth_rate = rate;
 
   // Apply immediate update
+  // Apply immediate update
   launch_update_growth_scales(ps_);
+}
+
+void Simulation::set_thermostat(float temperature, float tau, float kB) {
+  ps_.thermostat_temperature = temperature;
+  ps_.thermostat_tau = tau;
+  ps_.thermostat_kB = kB;
+  ps_.thermostat_enabled = (tau > 0.0f && temperature >= 0.0f);
+  printf("Thermostat Configured: T=%.4f, Tau=%.4f, kB=%.4e, Enabled=%d\n",
+         temperature, tau, kB, ps_.thermostat_enabled);
 }
 
 void Simulation::step(float dt) {
@@ -512,7 +531,6 @@ void Simulation::step(float dt) {
       if (ps_.growth_factor >= 1.0f) {
         ps_.growth_factor = 1.0f;
         ps_.growth_rate = 0.0f; // Stop growth
-        printf("Growth Mode Completed. Factor=1.0.\n");
       }
     }
     // Update Scales Kernel
@@ -521,6 +539,7 @@ void Simulation::step(float dt) {
 
   // New Pipeline (Hybrid Velocity/Position)
 
+  // 1. Predict Velocity (Gravity Only)
   // 1. Predict Velocity (Gravity Only)
   launch_integrate_predict_velocity(ps_, dt, gravity_);
   CUDA_CHECK(cudaDeviceSynchronize());
@@ -574,6 +593,12 @@ void Simulation::step(float dt) {
   // 7. Final Commit
   launch_final_commit(ps_, dt);
   CUDA_CHECK(cudaDeviceSynchronize());
+
+  // 3. Apply Thermostat (if enabled)
+  if (ps_.thermostat_enabled) {
+    launch_apply_thermostat(ps_, dt);
+    CUDA_CHECK(cudaDeviceSynchronize());
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -652,8 +677,8 @@ void Simulation::set_velocities_numpy(py::array_t<float> vel) {
 
 void Simulation::set_scales_numpy(py::array_t<float> scales) {
   py::buffer_info buf = scales.request();
-  if (buf.size != num_particles_) {
-    throw std::runtime_error("Scales must be size N");
+  if (buf.ndim != 1 || buf.shape[0] != num_particles_) {
+    throw std::runtime_error("Scales must be (N,)");
   }
   float *ptr = static_cast<float *>(buf.ptr);
   CUDA_CHECK(cudaMemcpy(ps_.d_scale, ptr, num_particles_ * sizeof(float),
@@ -666,10 +691,7 @@ void Simulation::set_scales_numpy(py::array_t<float> scales) {
 // -----------------------------------------------------------------------------
 py::array_t<float> Simulation::get_positions_numpy(bool include_ghosts) {
   int n = include_ghosts ? ps_.num_particles : num_particles_;
-  // The following lines are from the instruction, but seem misplaced for
-  // get_positions_numpy auto pos_ptr = get_device_ptr(ps_.d_pos); int count =
-  // 0; std::vector<float4> h_pos(capacity); // 'capacity' is not defined here
-  std::vector<float4> h_pos(n); // Keep original h_pos initialization
+  std::vector<float4> h_pos(n);
   CUDA_CHECK(cudaMemcpy(h_pos.data(), ps_.d_pos, n * sizeof(float4),
                         cudaMemcpyDeviceToHost));
 

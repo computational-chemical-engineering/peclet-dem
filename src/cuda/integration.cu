@@ -573,3 +573,137 @@ void launch_integration(ParticleSystemData &ps) {
   apply_velocity_and_predict_position_kernel<<<blocks, threads>>>(ps);
   CUDA_CHECK(cudaGetLastError());
 }
+
+// ------------------------------------------------------------------
+// Thermostat Kernels
+// ------------------------------------------------------------------
+
+__global__ void compute_energy_reduction_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= ps.num_real)
+    return; // Only Real particles count for Thermodynamics
+
+  // Translational KE
+  float4 v = ps.d_vel[idx];
+  float inv_mass = ps.d_pos[idx].w;
+  float mass = (inv_mass > 0.0f) ? 1.0f / inv_mass : 0.0f;
+
+  double ke_trans = 0.0;
+  if (mass > 0.0f) {
+    ke_trans = 0.5 * mass * (v.x * v.x + v.y * v.y + v.z * v.z);
+  }
+
+  // Rotational KE
+  double ke_rot = 0.0;
+  float4 w_world = ps.d_ang_vel[idx];
+  float4 inv_I = ps.d_inv_inertia[idx];
+
+  // Only if dynamic rotation
+  if (inv_I.x > 0.0f || inv_I.y > 0.0f || inv_I.z > 0.0f) {
+    float4 q = ps.d_quat[idx];
+    float3 w_vec = make_float3(w_world.x, w_world.y, w_world.z);
+    float3 w_body = rotate_vector_inverse(w_vec, q);
+
+    float I_x = (inv_I.x > 0.0f) ? 1.0f / inv_I.x : 0.0f;
+    float I_y = (inv_I.y > 0.0f) ? 1.0f / inv_I.y : 0.0f;
+    float I_z = (inv_I.z > 0.0f) ? 1.0f / inv_I.z : 0.0f;
+
+    ke_rot = 0.5 * (I_x * w_body.x * w_body.x + I_y * w_body.y * w_body.y +
+                    I_z * w_body.z * w_body.z);
+  }
+
+  // if (idx == 0) {
+  //   printf("REDUCE DEBUG: num_real=%d v.x=%f ke_trans=%f\n", ps.num_real,
+  //   v.x,
+  //          (float)ke_trans);
+  // }
+
+  atomicAdd(&ps.d_energy_sum[0], ke_trans);
+  atomicAdd(&ps.d_energy_sum[1], ke_rot);
+}
+
+__global__ void apply_berendsen_thermostat_kernel(ParticleSystemData ps,
+                                                  float dt) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+  // Using __shared__ to load energy based factors once per block
+  __shared__ float lambda_trans;
+  __shared__ float lambda_rot;
+
+  if (threadIdx.x == 0) {
+    double total_ke_trans = ps.d_energy_sum[0];
+    double total_ke_rot = ps.d_energy_sum[1];
+
+    // Degrees of Freedom: 3 per particle
+    double ndof = 3.0 * ps.num_real;
+
+    // Temperature: T = 2E / (3Nk_B)
+    double kB = ps.thermostat_kB;
+    double T_cur_trans = 0.0;
+    double T_cur_rot = 0.0;
+
+    if (ndof > 0 && kB > 0) {
+      T_cur_trans = (2.0 * total_ke_trans) / (ndof * kB);
+      T_cur_rot = (2.0 * total_ke_rot) / (ndof * kB);
+    }
+
+    // Berendsen Scaling Factor
+    // lambda = sqrt(1 + dt/tau * (T_target / T_curr - 1))
+    double tau = ps.thermostat_tau;
+    double T_target = ps.thermostat_temperature;
+
+    auto compute_lambda = [&](double T_curr) {
+      if (T_curr < 1e-6)
+        return 1.0;
+      double ratio = T_target / T_curr;
+      double factor = 1.0 + (dt / tau) * (ratio - 1.0);
+      if (factor < 0.0)
+        factor = 0.0;
+      return sqrt(factor);
+    };
+
+    lambda_trans = (float)compute_lambda(T_cur_trans);
+    lambda_rot = (float)compute_lambda(T_cur_rot);
+  }
+  __syncthreads();
+
+  if (idx >= ps.num_real)
+    return;
+
+  // Apply Scaling
+  float4 v = ps.d_vel[idx];
+  ps.d_vel[idx] = make_float4(v.x * lambda_trans, v.y * lambda_trans,
+                              v.z * lambda_trans, v.w);
+  ps.d_vel_pred[idx] = ps.d_vel[idx]; // Keep consistent
+
+  float4 w = ps.d_ang_vel[idx];
+  ps.d_ang_vel[idx] =
+      make_float4(w.x * lambda_rot, w.y * lambda_rot, w.z * lambda_rot, w.w);
+  ps.d_ang_vel_pred[idx] = ps.d_ang_vel[idx]; // Keep consistent
+}
+
+void launch_apply_thermostat(ParticleSystemData ps, float dt) {
+  // 1. Zero Energy Sum
+  // Note: d_energy_sum is size 2 (trans, rot)
+  CUDA_CHECK(cudaMemset(ps.d_energy_sum, 0, 2 * sizeof(double)));
+
+  // 2. Reduce Energy
+  int threads = 256;
+  int blocks = (ps.num_real + threads - 1) / threads;
+  // Ensure at least 1 block to run initialization in thread 0 if needed,
+  // but reduction kernel relies on atomicAdd to d_energy_sum which we just
+  // cleared. Actually, compute_energy_reduction_kernel has a BUG where it
+  // clears d_energy_sum[0] if idx==0! But we clear it here. We should fix
+  // compute_energy_reduction_kernel to NOT clear it if we clear it here. Or
+  // rely on it? If multiple blocks, race condition if block 0 clears while
+  // block 1 adds? YES. Race condition. So we MUST clear here and REMOVE clear
+  // from kernel. But for now, let's assume single block or launch safely. We
+  // calculate KE.
+  compute_energy_reduction_kernel<<<blocks, threads>>>(ps);
+  CUDA_CHECK(cudaGetLastError());
+
+  // 3. Apply Scaling
+  // This kernel computes lambda and applies it.
+  apply_berendsen_thermostat_kernel<<<blocks, threads>>>(ps, dt);
+  CUDA_CHECK(cudaGetLastError());
+}
