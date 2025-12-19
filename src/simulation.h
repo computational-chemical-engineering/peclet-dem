@@ -52,6 +52,8 @@ public:
 
   // Growth Mode
   void set_growth_params(float rate, float new_factor = -1.0f);
+  float get_growth_rate() const { return ps_.growth_rate; }
+  float get_growth_factor() const { return ps_.growth_factor; }
 
   // Periodicity
   void enable_periodicity(bool x, bool y, bool z);
@@ -80,6 +82,7 @@ public:
   float get_max_overlap();
   float compute_overlaps(); // Re-runs collision detection on current state
   int get_num_contacts();   // Returns number of contacts from last step
+  int get_num_manifolds();  // Returns number of manifolds from last step
 
 private:
   ParticleSystemData ps_;

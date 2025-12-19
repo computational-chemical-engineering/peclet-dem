@@ -141,6 +141,8 @@ PYBIND11_MODULE(demgpu, m) {
       .def("step", &Simulation::step)
       .def("set_growth_params", &Simulation::set_growth_params, py::arg("rate"),
            py::arg("new_factor") = -1.0f)
+      .def("get_growth_rate", &Simulation::get_growth_rate)
+      .def("get_growth_factor", &Simulation::get_growth_factor)
       .def("num_particles", &Simulation::num_particles,
            py::arg("include_ghosts") = false)
       .def("get_positions", &Simulation::get_positions_numpy,
@@ -157,6 +159,8 @@ PYBIND11_MODULE(demgpu, m) {
            py::arg("step"), "Export LAMMPS Dump with fixed bounds")
       .def("get_num_contacts", &Simulation::get_num_contacts,
            "Get number of contacts")
+      .def("get_num_manifolds", &Simulation::get_num_manifolds,
+           "Get number of manifolds")
       .def("get_max_overlap", &Simulation::get_max_overlap)
       .def("compute_overlaps", &Simulation::compute_overlaps,
            "Compute overlap of current state")

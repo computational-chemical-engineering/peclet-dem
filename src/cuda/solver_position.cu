@@ -23,9 +23,6 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
   // Load Contact
   ContactConstraint c = ps.d_contacts[idx];
 
-  if (c.dist > 0.0f)
-    return;
-
   int idA = c.bodyA;
   int idB = c.bodyB;
 
@@ -68,46 +65,41 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
   float3 pA = make_float3(pA_w.x, pA_w.y, pA_w.z);
   float3 pB = make_float3(pB_w.x, pB_w.y, pB_w.z);
 
-  // Original contact data was computed at start of narrowphase (using
-  // pos_pred then). If we iterate position solve, pos_pred changes. We
-  // should re-evaluate violation C(x).
+  // 1. Recover Vectors and Optimize Rotation (Delta Quaternion)
+  // Logic: dq = q_pred * inv(q_static). r_curr = rotate(dq, r_init).
 
-  // Re-compute Lever Arms?
-  // rA and rB in world space change if object rotates/moves.
-  // However, for small steps, using original rA/rB is often sufficient
-  // (and stable). Updating rA/rB strictly requires re-transforming local
-  // points. But we stored World rA/rB in constraint. We don't have Local
-  // rA/rB readily available in ContactConstraint struct? Narrowphase
-  // calculated them. If we want accurate XPBD, we need current rA.
-  // Approximation: Use stored rA/rB but offset by current position
-  // shift? No, rotation matters. For Phase 1 (Spheres), rA is just
-  // Radius * Normal? Normal also changes? For spheres, contact point is
-  // always on line connecting centers. So we can re-compute everything
-  // from pA, pB.
+  float4 qA_static = ps.d_quat[idA];
+  float4 qA_delta = quat_mult(qA, quat_inverse(qA_static)); // qA is d_quat_pred
 
-  // For Spheres:
-  // C(x) = |pA - pB| - (rA + rB).
-  // If C(x) >= 0 -> Separated.
+  float3 rA_vec_init = make_float3(c.rA.x, c.rA.y, c.rA.z);
+  float3 rA_curr = rotate_vector(qA_delta, rA_vec_init);
 
-  // Use Pre-calculated radii from constraint?
-  // We don't have radii in constraint. We have `c.dist` which was `|pA0
-  // - pB0|
-  // - (rA+rB)`. So `rA + rB = |pA0 - pB0| - c.dist`. Let `RestLen = |pA0
-  // - pB0|
-  // - c.dist`. Current C(x) = |pA - pB| - RestLen. Actually, `c.dist` is
-  // negative for overlap. Example: Dist = 0.9, Radii sum = 1.0. c.dist =
-  // -0.1. RestLen = 1.0. We can recover RestLen from initial positions
-  // (which we don't have here easily unless we store p_old or use
-  // constraint rA/rB). Vector rA was "Center to Contact". |rA| ~
-  // RadiusA. |rB| ~ RadiusB. So RestLen ~ |rA| + |rB|.
+  float3 rB_curr = make_float3(c.rB.x, c.rB.y, c.rB.z);
+  float3 n_curr =
+      make_float3(c.normal.x, c.normal.y, c.normal.z); // Default n_static
 
-  float3 rA_vec = make_float3(c.rA.x, c.rA.y, c.rA.z);
-  float3 rB_vec = make_float3(c.rB.x, c.rB.y, c.rB.z);
+  if (idB >= 0) {
+    float4 qB_static = ps.d_quat[idB];
+    float4 qB_delta =
+        quat_mult(qB, quat_inverse(qB_static)); // qB is d_quat_pred
+
+    rB_curr = rotate_vector(qB_delta, rB_curr);
+    n_curr = rotate_vector(qB_delta, n_curr);
+  }
+
+  // 3. Update variables
+  float3 rA_vec = rA_curr;
+  float3 rB_vec = rB_curr;
+  float3 n = n_curr;
+
   // Special Ground Handling for idB < 0
   float C = 0.0f;
-  float3 n = make_float3(0, 1, 0);
+  // float3 n = make_float3(0, 1, 0); // Removed local var declaration to use
+  // updated 'n'
 
   if (idB < 0) {
+    // n is already set to c.normal (static) above because idB < 0 block skipped
+    // rotation So n is correct for static wall.
     // Generic Static Wall/Plane Logic
     // Uses data stored in ContactConstraint:
     // c.normal: Normal pointing B->A
@@ -119,15 +111,15 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
     // Anchor Point on Wall
     float3 pB_anchor = make_float3(c.rB.x, c.rB.y, c.rB.z);
 
-    // Radius A
-    float radiusA_val = sqrtf(dot_product_p(rA_vec, rA_vec));
+    // Surface Point on A
+    float3 pA_surf =
+        make_float3(pA.x + rA_vec.x, pA.y + rA_vec.y, pA.z + rA_vec.z);
 
-    // Distance from Plane
-    float3 diff_AB =
-        make_float3(pA.x - pB_anchor.x, pA.y - pB_anchor.y, pA.z - pB_anchor.z);
-    float dist_plane = dot_product_p(diff_AB, n);
+    // Vector from Anchor to Surface A
+    float3 diff = make_float3(pA_surf.x - pB_anchor.x, pA_surf.y - pB_anchor.y,
+                              pA_surf.z - pB_anchor.z);
 
-    C = dist_plane - radiusA_val;
+    C = dot_product_p(diff, n);
 
     if (C >= 0.0f)
       return;
@@ -156,20 +148,10 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
 
   // Generalized Inverse Mass
   // w = invM + (r x n) I^-1 (r x n)
-  // Update rA, rB based on new normal?
-  // For sphere: rA = -n * radiusA.
-  // rA = n * (-radiusA).
-  // radiusA = |c.rA|.
-  // Simple: r vectors are aligned with normal for spheres (no torque
-  // from normal force really). But for stability with friction (if we
-  // added it here), or if we had off-center... Let's use computed rA/rB
-  // based on current Normal.
+  // Use the actual current lever arms (which include rotation)
 
-  float radiusA = sqrtf(dot_product_p(rA_vec, rA_vec));
-  float radiusB = sqrtf(dot_product_p(rB_vec, rB_vec));
-
-  float3 cur_rA = make_float3(n.x * -radiusA, n.y * -radiusA, n.z * -radiusA);
-  float3 cur_rB = make_float3(n.x * radiusB, n.y * radiusB, n.z * radiusB);
+  float3 cur_rA = rA_vec;
+  float3 cur_rB = rB_vec;
 
   float3 invIA = make_float3(ps.d_inv_inertia[idA].x, ps.d_inv_inertia[idA].y,
                              ps.d_inv_inertia[idA].z);

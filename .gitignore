@@ -20,7 +20,7 @@ venv/
 .venv
 
 # IDEs
-.vscode/
+# .vscode/
 .idea/
 *.swp
 *~

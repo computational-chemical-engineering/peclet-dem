@@ -15,7 +15,7 @@ __device__ float dot_product(float3 a, float3 b) {
 
 // Manifold Velocity Solver
 // ------------------------------------------------------------------
-__global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
+__global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   int num_manifolds = *ps.d_manifold_count;
 
@@ -81,11 +81,37 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
   }
 
   // Load Geometric Sums
+  // Load Geometric Sums
   float3 N_sum = make_float3(m.normal_sum.x, m.normal_sum.y, m.normal_sum.z);
   float3 TauA_sum = make_float3(m.torque_armA_sum.x, m.torque_armA_sum.y,
                                 m.torque_armA_sum.z);
   float3 TauB_sum = make_float3(m.torque_armB_sum.x, m.torque_armB_sum.y,
                                 m.torque_armB_sum.z);
+
+  // Pre-calculate Geometry (Moved Up)
+  float N_count = (float)m.num_points;
+  float inv_N = 1.0f / N_count;
+  float3 rA_avg =
+      make_float3(m.rA_sum.x * inv_N, m.rA_sum.y * inv_N, m.rA_sum.z * inv_N);
+  float3 rB_avg =
+      make_float3(m.rB_sum.x * inv_N, m.rB_sum.y * inv_N, m.rB_sum.z * inv_N);
+
+  // Normalized Normal Direction
+  float len_N = sqrtf(dot_product(N_sum, N_sum));
+  if (len_N < 1e-9f)
+    return;
+  float3 n = make_float3(N_sum.x / len_N, N_sum.y / len_N, N_sum.z / len_N);
+  float N_sq = len_N * len_N;
+
+  // Growth Velocity contribution
+  // v_growth = rate * (P_B - P_A) = rate * (rA_avg - rB_avg)
+  // (Assuming rA, rB relative to contact point, wait. rA is from A to Contact.
+  // P_B - P_A = (C - rB) - (C - rA) = rA - rB)
+  float3 diff_centers = make_float3(rA_avg.x - rB_avg.x, rA_avg.y - rB_avg.y,
+                                    rA_avg.z - rB_avg.z);
+  float3 v_growth = make_float3(ps.growth_rate * diff_centers.x,
+                                ps.growth_rate * diff_centers.y,
+                                ps.growth_rate * diff_centers.z);
 
   // Reconstruct Aggregate Relative Velocity
   float termA = dot_product(vA, N_sum) + dot_product(wA, TauA_sum);
@@ -93,8 +119,38 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
                 dot_product(wB, TauB_sum);
   float vn_agg = termA + termB;
 
+  // Add Growth Component to Normal Approach
+  // vn_agg represents (vA - vB).N
+  // We add v_growth.N
+  vn_agg += dot_product(v_growth, n) *
+            len_N; // Wait. vn_agg is sum of dots with N_sum (unnormalized).
+  // termA = vA . N_sum.
+  // So we should add dot(v_growth, N_sum).
+  // Yes. dot(v_growth, n) * len_N = dot(v_growth, N_sum).
+
+  // Wait, let's look at termA = dot(vA, N_sum).
+  // Yes, vn_agg scales with len_N.
+  // So growth correction should also scale with len_N.
+  // adding dot(v_growth, N_sum) is correct.
+  // Wait, dot(v_growth, n_norm) is real velocity magnitude.
+  // But vn_agg is "Force-like" sum? No, J_lin = N_sum * lambda.
+  // w_total is computed with N_sum too.
+  // vn_agg is used for dV.
+  // dV = vn_target - vn_agg.
+  // So vn_agg has units of Velocity * Area? No.
+  // Let's check `vn_agg`.
+  // vA dot N_sum.
+  // If N_sum is sum of normals (area weighted if many points).
+  // Yes, it scales with Number of points/Area.
+  // So we must scale `v_growth` contribution by the same factor (projection
+  // onto N_sum). So `dot_product(v_growth, N_sum)` is correct. Let's verify
+  // line 91: dot(vA, N_sum). Correct.
+
+  // Actually, wait. I will use dot_product(v_growth, N_sum) directly.
+  vn_agg += dot_product(v_growth, N_sum);
+
   // Check Approaching
-  // vn_agg = (vA - vB) . N
+  // vn_agg = (vA - vB) . N_sum
   // Approaching if vn_agg > 0 (e.g. A-> +5, B-> -5, N=+1 => 10)
   // Separating if vn_agg < 0
   if (vn_agg < 0) {
@@ -172,26 +228,50 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
   // -------------------------------------------------------------------------
   // Friction (Tangential) - Approximate
   // -------------------------------------------------------------------------
-  // Construct Representative Point and Tangent Basis
-  // Average rA, rB.
-  float N_count = (float)m.num_points;
-  float inv_N = 1.0f / N_count;
-  float3 rA_avg =
-      make_float3(m.rA_sum.x * inv_N, m.rA_sum.y * inv_N, m.rA_sum.z * inv_N);
-  float3 rB_avg =
-      make_float3(m.rB_sum.x * inv_N, m.rB_sum.y * inv_N, m.rB_sum.z * inv_N);
+  // Geometry is already pre-calculated
+  // rA_avg, rB_avg, n, len_N
 
-  // Normalized Normal Direction
-  float len_N = sqrtf(dot_product(N_sum, N_sum));
-  if (len_N < 1e-9f)
-    return;
-  float3 n = make_float3(N_sum.x / len_N, N_sum.y / len_N, N_sum.z / len_N);
+  // -------------------------------------------------------------------------
+  // Center of Pressure Correction
+  // -------------------------------------------------------------------------
+  // We want an application point r_cp such that: r_cp x N_sum = Tau_sum.
+  // The geometric mean r_avg usually fails this for asymmetric contacts.
+  // We compute a correction delta_r such that r_cp = r_avg + delta_r.
+  // delta_r = (N_sum x E_torque) / |N_sum|^2
+  // where E_torque = Tau_sum - (r_avg x N_sum)
 
-  // Relative Velocity at Average Point
-  // v_rel_point = (vA + wA x rA_avg) - (vB + wB x rB_avg)
-  float3 vPA = vA + cross_product(wA, rA_avg);
-  float3 vPB = vB + cross_product(wB, rB_avg);
-  float3 v_rel_point = make_float3(vPA.x - vPB.x, vPA.y - vPB.y, vPA.z - vPB.z);
+  // -- Body A --
+  float3 torque_from_avg_A = cross_product(rA_avg, N_sum);
+  float3 error_torque_A = make_float3(TauA_sum.x - torque_from_avg_A.x,
+                                      TauA_sum.y - torque_from_avg_A.y,
+                                      TauA_sum.z - torque_from_avg_A.z);
+  float3 delta_rA = cross_product(N_sum, error_torque_A);
+  delta_rA =
+      make_float3(delta_rA.x / N_sq, delta_rA.y / N_sq, delta_rA.z / N_sq);
+  float3 rA_cp = make_float3(rA_avg.x + delta_rA.x, rA_avg.y + delta_rA.y,
+                             rA_avg.z + delta_rA.z);
+
+  // -- Body B --
+  // Force on B is -N_sum
+  float3 neg_N_sum = make_float3(-N_sum.x, -N_sum.y, -N_sum.z);
+  float3 torque_from_avg_B = cross_product(rB_avg, neg_N_sum);
+  float3 error_torque_B = make_float3(TauB_sum.x - torque_from_avg_B.x,
+                                      TauB_sum.y - torque_from_avg_B.y,
+                                      TauB_sum.z - torque_from_avg_B.z);
+  float3 delta_rB = cross_product(neg_N_sum, error_torque_B);
+  delta_rB =
+      make_float3(delta_rB.x / N_sq, delta_rB.y / N_sq, delta_rB.z / N_sq);
+  float3 rB_cp = make_float3(rB_avg.x + delta_rB.x, rB_avg.y + delta_rB.y,
+                             rB_avg.z + delta_rB.z);
+
+  // Relative Velocity at Center of Pressure
+  // v_rel_point = (vA + wA x rA_cp) - (vB + wB x rB_cp)
+  // PLUS Growth Component
+  float3 vPA = vA + cross_product(wA, rA_cp);
+  float3 vPB = vB + cross_product(wB, rB_cp);
+  float3 v_rel_point =
+      make_float3(vPA.x - vPB.x + v_growth.x, vPA.y - vPB.y + v_growth.y,
+                  vPA.z - vPB.z + v_growth.z);
 
   // Tangent Velocity
   float vn_point = dot_product(v_rel_point, n);
@@ -205,11 +285,11 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
         make_float3(vt_vec.x / vt_len, vt_vec.y / vt_len, vt_vec.z / vt_len);
 
     // Generalized Mass for Tangent
-    // J_t acting at Average Point along t
-    // Force A: t. Torque A: rA_avg x t.
-    // Force B: -t. Torque B: rB_avg x -t.
-    float3 tauA_t = cross_product(rA_avg, t);
-    float3 tauB_t = cross_product(rB_avg, make_float3(-t.x, -t.y, -t.z));
+    // J_t acting at Center of Pressure along t
+    // Force A: t. Torque A: rA_cp x t.
+    // Force B: -t. Torque B: rB_cp x -t.
+    float3 tauA_t = cross_product(rA_cp, t);
+    float3 tauB_t = cross_product(rB_cp, make_float3(-t.x, -t.y, -t.z));
 
     float wA_t = invMassA + compute_generalized_inv_mass(tauA_t, invIA, qA);
     float wB_t = invMassB + compute_generalized_inv_mass(tauB_t, invIB, qB);
@@ -260,7 +340,7 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps, float nu) {
   }
 }
 
-void launch_velocity_solve(ParticleSystemData ps, float nu) {
+void launch_velocity_solve(ParticleSystemData ps) {
   int num_manifolds;
   CUDA_CHECK(cudaMemcpy(&num_manifolds, ps.d_manifold_count, sizeof(int),
                         cudaMemcpyDeviceToHost));
@@ -271,6 +351,6 @@ void launch_velocity_solve(ParticleSystemData ps, float nu) {
   int threads = 256;
   int blocks = (num_manifolds + threads - 1) / threads;
 
-  solve_velocity_jacobi_kernel<<<blocks, threads>>>(ps, nu);
+  solve_velocity_jacobi_kernel<<<blocks, threads>>>(ps);
   CUDA_CHECK(cudaGetLastError());
 }

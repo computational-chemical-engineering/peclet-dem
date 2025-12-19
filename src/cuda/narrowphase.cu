@@ -163,15 +163,14 @@ __global__ void detect_contacts_kernel(ParticleSystemData ps,
       // Transform Normal to World: B-Local -> World
       float3 n_world = rotate_vector(qB_w, n_local);
 
-      // Use Common Contact Point (Midpoint of Overlap) to ensure strict L
-      // conservation Prev forces were applied at different points (Surface A vs
-      // Surface B), creating a couple.
-      float dist_to_mean = 0.5f * (dist + point_radius);
-      float3 contact_mean = p_world - n_world * dist_to_mean;
-      // float3 contact_mean = p_world - n_world * point_radius;
+      // Revert to Surface Points
+      // Logic: Sphere uses point_radius to find surface. SDF returns surface
+      // point directly.
+      float3 p_surf_A = p_world - n_world * point_radius;
 
-      float3 rA_vec = contact_mean - posA;
-      float3 rB_vec = contact_mean - posB;
+      float3 rA_vec = p_surf_A - posA;
+      // p_surf_B is (p_surf_A - n * dist)
+      float3 rB_vec = (p_surf_A - n_world * effective_dist) - posB;
 
       ContactConstraint c;
       c.bodyA = idA;

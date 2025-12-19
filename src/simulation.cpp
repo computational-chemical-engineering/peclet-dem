@@ -186,7 +186,7 @@ extern void launch_compute_contact_counts(ParticleSystemData ps);
 extern void launch_final_commit(ParticleSystemData ps, float dt);
 void launch_generate_ghosts(ParticleSystemData ps, float margin);
 extern void launch_narrowphase(ParticleSystemData ps, float global_scale);
-extern void launch_velocity_solve(ParticleSystemData ps, float nu);
+extern void launch_velocity_solve(ParticleSystemData ps);
 extern void launch_position_solve(ParticleSystemData ps);
 extern void launch_update_growth_scales(ParticleSystemData &ps);
 void build_bvh(ParticleSystemData &ps, float global_scale);
@@ -289,7 +289,16 @@ void Simulation::initialize(int shape_type, float radius, float height,
     // CYLINDER (ID=2)
     params = make_float4(cyl_params.radius, cyl_params.height,
                          cyl_params.thickness, 0);
-    h_points = generate_cylinder_points(cyl_params, 0.1f);
+    // Dynamic Spacing: Ensure we capture thickness and curvature
+    // At least 4 points across thickness, and 20 around circumference
+    float min_dim = std::min(cyl_params.radius, cyl_params.thickness);
+    if (min_dim < 1e-4f)
+      min_dim = cyl_params.radius; // Safety if thickness 0
+    float spacing = std::min(cyl_params.radius * 0.3f, min_dim * 0.5f);
+    if (spacing < 1e-3f)
+      spacing = 1e-3f; // Clamp to avoid explosion
+
+    h_points = generate_cylinder_points(cyl_params, spacing);
   } else {
     // SPHERE (ID=1)
     if (type != SHAPE_ANALYTIC_SPHERE && type != SHAPE_ANALYTIC_HOLLOW_CYLINDER)
@@ -399,6 +408,10 @@ void Simulation::initialize(int shape_type, float radius, float height,
   CUDA_CHECK(cudaMemcpy(ps_.d_inv_inertia, h_inv_inertia.data(),
                         num_particles_ * sizeof(float4),
                         cudaMemcpyHostToDevice));
+
+  // Initialize Angular Velocity to 0
+  CUDA_CHECK(cudaMemset(ps_.d_ang_vel, 0, capacity * sizeof(float4)));
+  CUDA_CHECK(cudaMemset(ps_.d_ang_vel_pred, 0, capacity * sizeof(float4)));
   CUDA_CHECK(cudaMemcpy(ps_.d_real_indices, h_real_indices.data(),
                         num_particles_ * sizeof(int), cudaMemcpyHostToDevice));
 }
@@ -474,10 +487,6 @@ void Simulation::set_growth_params(float rate, float new_factor) {
     // Already active, just updating
     if (new_factor > 0.0f) {
       ps_.growth_factor = new_factor; // Restart/Jump
-      printf("Growth Mode Updated. Restarting factor to %.4f.\n", new_factor);
-    } else {
-      printf("Growth Mode Updated. Rate=%.4f (Continuing factor %.4f)\n", rate,
-             ps_.growth_factor);
     }
   }
 
@@ -497,21 +506,15 @@ void Simulation::step(float dt) {
   }
 
   // Growth Logic
-  float nu = 0.0f;
   if (ps_.growth_factor != -1.0f) {
     if (ps_.growth_rate != 0.0f) {
-      ps_.growth_factor += ps_.growth_rate * dt;
+      ps_.growth_factor *= exp(ps_.growth_rate * dt);
       if (ps_.growth_factor >= 1.0f) {
         ps_.growth_factor = 1.0f;
         ps_.growth_rate = 0.0f; // Stop growth
-        nu = 0.0f;
         printf("Growth Mode Completed. Factor=1.0.\n");
-      } else {
-        // nu = growth_rate / growth_factor
-        nu = ps_.growth_rate / ps_.growth_factor;
       }
     }
-
     // Update Scales Kernel
     launch_update_growth_scales(ps_);
   }
@@ -549,7 +552,7 @@ void Simulation::step(float dt) {
 
   // B. Iterative Solve (Velocity-First)
   for (int i = 0; i < velocity_iterations_; ++i) {
-    launch_velocity_solve(ps_, nu);
+    launch_velocity_solve(ps_);
     launch_apply_velocity_deltas(ps_);
   }
   CUDA_CHECK(cudaDeviceSynchronize());
@@ -774,6 +777,13 @@ float Simulation::get_max_overlap() {
   CUDA_CHECK(cudaMemcpy(&max_ov, ps_.d_max_overlap, sizeof(float),
                         cudaMemcpyDeviceToHost));
   return max_ov;
+}
+
+int Simulation::get_num_manifolds() {
+  int count;
+  CUDA_CHECK(cudaMemcpy(&count, ps_.d_manifold_count, sizeof(int),
+                        cudaMemcpyDeviceToHost));
+  return count;
 }
 
 float Simulation::compute_overlaps() {

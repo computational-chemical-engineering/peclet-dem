@@ -34,38 +34,50 @@ def generate_unit_sdf_stl(radius, height, thickness, filename):
     # Get SDF
     resolution = (64, 64, 64)
     sdf_grid = sim_unit.get_sdf_grid(resolution)
-    
     # Mesh
-    # import skimage.measure
-    # from stl import mesh
+    import skimage.measure
+    from stl import mesh
     
-    # verts, faces, normals, values = skimage.measure.marching_cubes(sdf_grid, level=0.0)
+    verts, faces, normals, values = skimage.measure.marching_cubes(sdf_grid, level=0.0)
     
-    # # Transform to World
-    # min_b = np.array([-bound, -bound, -bound])
-    # max_b = np.array([bound, bound, bound])
-    # domain_size = max_b - min_b
-    # voxel_size = domain_size / np.array(resolution)
+    # Transform to World
+    min_b = np.array([-bound, -bound, -bound])
+    max_b = np.array([bound, bound, bound])
+    domain_size = max_b - min_b
+    voxel_size = domain_size / np.array(resolution)
     
-    # verts_world = min_b + verts * voxel_size
+    verts_world = min_b + verts * voxel_size
     
-    # # Save STL
-    # data = np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype)
-    # unit_mesh = mesh.Mesh(data, remove_empty_areas=False)
-    # unit_mesh.vectors = verts_world[faces]
-    # unit_mesh.save(filename)
-    print(f"Skipping STL generation (skimage not found).")
+    # Save STL
+    data = np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype)
+    unit_mesh = mesh.Mesh(data, remove_empty_areas=False)
+    unit_mesh.vectors = verts_world[faces]
+    unit_mesh.save(filename)
 
 def verify_packing():
     num_particles = 300
     radius = 0.5
-    diameter = 1.0
     height = 1.0 # H/D = 1
-    thickness = 0.3 # Arbitrary hollow thickness
+    thickness = 0.15 # Arbitrary hollow thickness
+
+    restitution = 0.9 # Normal Restitution
+    restitution_t = 1.0 # Tangential Restitution
+    friction = 0.0 # Enable friction/tangential interaction
+
+    T = 1.0 # Granular temperature
+    dt = 0.001
+    limit_steps = int(2.0/dt)
+    dump_interval = int(1.0/(100*dt))
+    iters = 50
+
+    scale_init = 5e-2
+    growth_rate_init = -math.log(scale_init)
+    growth_rate = growth_rate_init
+
+
     # Calculate Domain Volume
     # V_cyl = H * pi * (R^2 - r_in^2) = H * pi * (2Rt - t^2)
-    vol_particle = math.pi * (2 * radius * thickness - thickness**2)
-    growth_rate = 1.0 # Slow growth
+    vol_particle = math.pi * height * (2 * radius * thickness - thickness**2)
 
     # Study Grid
     # stiffness (iterations) vs timestep (dt)
@@ -74,15 +86,10 @@ def verify_packing():
 
     output_dir = "./output/hollow_cylinder_packing"
     os.makedirs(output_dir, exist_ok=True)
-    iterations_list = [100]
-    dt_list = [0.0001]
-    T_gran = [0.0]
-
-    best_phi = 0.0
-    best_config = None
 
     # Target: High density jam
-    phi_ref = 0.70
+    phi_ref = 0.4
+    criterion_ov = 1e-3
     vol_total_ref = num_particles * vol_particle
     vol_domain_ref = vol_total_ref / phi_ref
     domain_side = vol_domain_ref ** (1.0/3.0)
@@ -110,78 +117,93 @@ def verify_packing():
     print(f"{'Iter':<5} {'dt':<8} {'TGran':<8} {'T':<8} {'MaxPhi':<8} {'FinalOv':<10} {'Notes'}")
     print("-" * 50)
 
-    for iters in iterations_list:
-        for dt in dt_list:
-            for T in T_gran:    
-                # Run one experiment
-                
-                # Target Loose Packing to verify rotation
-                phi_target = 0.40 
-                # Ref: 0.25 was loose. 0.7 jammed. 0.4 should flow.
-                
-                # Update Density
-                phi_ref = phi_target
-                vol_domain_ref = vol_total_ref / phi_ref
-                domain_side = vol_domain_ref ** (1.0/3.0)
-                half_d = domain_side / 2.0
-                
-                # Update Simulation Domain to new size
-                sim.set_domain((-half_d, -half_d, -half_d), (half_d, half_d, half_d))
-                
-                sim.set_material_params(0.0, 0.5, 0.0) # Friction 0.5 for rotation
-                sim.set_solver_iterations(20, 20)
-                
-                # Growth
-                growth_rate = 0.1 # Slow and stable
-                sim.set_growth_params(growth_rate, 0.05)
+    
+    # Run one experiment
+    
+    vol_domain_ref = vol_total_ref / phi_ref
+    domain_side = vol_domain_ref ** (1.0/3.0)
+    half_d = domain_side / 2.0
+    
+    # Update Simulation Domain to new size
+    sim.set_domain((-half_d, -half_d, -half_d), (half_d, half_d, half_d))
+    
+    sim.set_material_params(restitution, restitution_t, friction)
+    sim.set_solver_iterations(iters, iters)
 
-                # Init Random
-                pos = rng.uniform(-half_d, half_d, (num_particles, 4)).astype(np.float32)
-                pos[:, 3] = 1.0 # InvMass
-                sim.set_positions(pos)
-                
-                # Run
-                limit_steps = 50000 
-                
-                print(f"Jamming Study: Target Phi={phi_target}, Growth Rate={growth_rate}, Steps={limit_steps}")
-                        
-                for i in range(limit_steps):
-                    sim.step(dt)
-                    if i % 1000 == 0:
-                        s = sim.get_scales()
-                        # Calculate current Phi based on scales
-                        # Phi = Sum(Vol_i) / Vol_Domain
-                        mean_scale3 = np.mean(s**3)
-                        phi_current = phi_target * mean_scale3
-                        max_ov = sim.get_max_overlap()
-                        num_contacts = sim.get_num_contacts()
-                        
-                        print(f"Step {i}: Scale={np.mean(s):.4f}, Phi={phi_current:.4f}, Overlap={max_ov:.4f}, Contacts={num_contacts}")
-                        
-                        # Stop if jammed (scale stops increasing or overlap high)
-                        if max_ov > 1e-3:
-                            print("Jamming detected (High Overlap).")
-                            break
-                        
-                        # Export rarely
-                        if i % 2000 == 0:
-                            sim.export_lammps(f"{output_dir}/dump.jamming.{i}.lammps", i)
-                    
-                # Final Stats
-                final_ov = sim.get_max_overlap()
-                s = sim.get_scales()
-                phi_final = phi_target * np.mean(s**3)
-                
-                # Calculate T_current
-                vel = sim.get_velocities()
-                T_current = np.sum(vel[:, 0:3]**2) / (3*num_particles)
-                
-                print(f"FINAL: Max Random Packing Density = {phi_final:.4f}")
-                print(f"{iters:<5} {dt:<8.4f} {T:<8.4f} {T_current:<8.4f} {phi_final:<8.3f} {final_ov:<10.3f}") 
+    # Init Random
+    pos = rng.uniform(-half_d, half_d, (num_particles, 4)).astype(np.float32)
+    pos[:, 3] = 1.0 # InvMass
+    sim.set_positions(pos)
+
+    # Init Velocities
+    vel = np.zeros((num_particles, 3), dtype=np.float32)
+    if T > 0.0:
+        vel[:, :3] = rng.normal(0.0, math.sqrt(T), (num_particles, 3)).astype(np.float32)
+    sim.set_velocities(vel)
+
+    # Init Quaternions (Uniform Random)
+    quat = rng.normal(0.0, 1.0, (num_particles, 4)).astype(np.float32)
+    quat /= np.linalg.norm(quat, axis=1, keepdims=True)
+    sim.set_quaternions(quat)
+
+    # Init Angular Velocities (Fix: Was uninitialized garbage)
+    # C++ backend has also been patched to default to 0, but being explicit is safer.
+    ang_vel = np.zeros((num_particles, 3), dtype=np.float32)
+    sim.set_angular_velocities(ang_vel)                
+    sim.set_growth_params(growth_rate, scale_init) 
+
+    print(f"Jamming Study: Target Phi={phi_ref}, Growth Rate={growth_rate}, Steps={limit_steps}")
+      
+    for i in range(limit_steps):
+        sim.step(dt)
+        max_ov = sim.get_max_overlap()
+        is_jammed = max_ov > criterion_ov
+        if is_jammed:
+            do_iter = True
+            num_iter = 0
+            while do_iter:
+                #sim.set_solver_iterations(0, iters)
+                sim.step(0.0)
+                num_iter += 1
+                max_ov_new = sim.get_max_overlap()
+                if max_ov_new >= 0.95*max_ov and num_iter > 6:
+                    do_iter = False
+                max_ov = max_ov_new
+            is_jammed = max_ov > criterion_ov
+            if is_jammed:
+                growth_factor = sim.get_growth_factor()
+                growth_factor *= math.exp(-growth_rate*dt)
+                growth_rate *= 0.95
+                sim.set_growth_params(growth_rate, growth_factor)
+        else:
+            growth_rate = min(growth_rate*1.02, growth_rate_init)
+            growth_factor = sim.get_growth_factor()
+            sim.set_growth_params(growth_rate, growth_factor)
+        if (i % dump_interval == 0):
+            s = sim.get_scales()
+            # Calculate current Phi based on scales
+            # Phi = Sum(Vol_i) / Vol_Domain
+            mean_scale3 = np.mean(s**3)
+            phi_current = phi_ref * mean_scale3
             
-            # Export Final VTI
-            print(f"Generating SDF VTI for Phi={phi_final:.3f}...")
-            sim.export_sdf(f"{output_dir}/packing_hollow_cylinder_jammed.vti", (256, 256, 256))
+            num_contacts = sim.get_num_contacts()
+            num_manifolds = sim.get_num_manifolds()
+
+            print(f"Step {i}: Scale={np.mean(s):.4f}, Growth Rate={growth_rate:.4f}, Phi={phi_current:.4f}, Overlap={max_ov}, Contacts={num_contacts}, Manifolds={num_manifolds}")
+            sim.export_lammps(f"{output_dir}/dump.jamming.{i}.lammps", i)
+    # Final Stats
+    final_ov = sim.get_max_overlap()
+    s = sim.get_scales()
+    phi_final = phi_ref * np.mean(s**3)
+    vel = sim.get_velocities()
+    T_current = np.sum(vel[:, 0:3]**2) / (3*num_particles)
+    
+    print(f"FINAL: Max Random Packing Density = {phi_final:.4f}")
+    print(f"{iters:<5} {dt:<8.4f} {T:<8.4f} {T_current:<8.4f} {phi_final:<8.3f} {final_ov:<10.3f}") 
+
+    # Export Final VTI
+    print(f"Generating SDF VTI for Phi={phi_final:.3f}...")
+    sim.export_sdf(f"{output_dir}/packing_hollow_cylinder_jammed.vti", (256, 256, 256))
 
 if __name__ == "__main__":
     verify_packing() 

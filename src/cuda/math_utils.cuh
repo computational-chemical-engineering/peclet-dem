@@ -64,6 +64,17 @@ __host__ __device__ inline float3 inv_rotate_vector(float4 q, float3 v) {
   return rotate_vector(inv_q, v);
 }
 
+__host__ __device__ inline float4 quat_inverse(float4 q) {
+  return make_float4(-q.x, -q.y, -q.z, q.w);
+}
+
+__host__ __device__ inline float4 quat_mult(float4 q1, float4 q2) {
+  return make_float4(q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y,
+                     q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x,
+                     q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w,
+                     q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z);
+}
+
 #ifdef __CUDACC__
 __device__ inline float atomicMinFloat(float *pt, float val) {
   int *address_as_i = (int *)pt;

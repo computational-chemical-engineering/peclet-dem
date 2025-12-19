@@ -116,12 +116,36 @@ struct ContactToManifold {
     float3 rB = make_float3(c.rB.x, c.rB.y, c.rB.z);
 
     float3 r_can, r_other;
+    // Compute Midpoint Lever Arms (Centering) to ensure Unique Torque Point
+    // rA_unified = rA - 0.5 * n * dist
+    // rB_unified = rB + 0.5 * n * dist
+    // (Assuming n points A->B. In narrowphase, n points B->A? No, usually A->B.
+    // Let's check: narrowphase uses SDF on B. n = grad(dist). dist > 0 if
+    // outside. n points OUT of B. So n points B->A. dist is signed distance
+    // from B surface. If n points B->A: P_A = PosA + rA. P_B = PosB + rB. P_B =
+    // P_A - dist * n. (P_A is query on A, P_B is surface on B). Vector A->B is
+    // -dist * n. Midpoint = P_A - 0.5 * dist * n. rA_mid = rA - 0.5 * dist * n.
+    // rB_mid = rB + 0.5 * dist * n.
+
+    // Normal in constraint 'c':
+    // narrowphase: c.normal = n_world. (n_world = rotate(n_local)).
+    // n_local was grad(sdf).
+
+    float3 shift_vec =
+        make_float3(c.normal.x * c.dist * 0.5f, c.normal.y * c.dist * 0.5f,
+                    c.normal.z * c.dist * 0.5f);
+
+    float3 rA_mid =
+        make_float3(rA.x - shift_vec.x, rA.y - shift_vec.y, rA.z - shift_vec.z);
+    float3 rB_mid =
+        make_float3(rB.x + shift_vec.x, rB.y + shift_vec.y, rB.z + shift_vec.z);
+
     if (!flip) {
-      r_can = rA;
-      r_other = rB;
+      r_can = rA_mid;
+      r_other = rB_mid;
     } else {
-      r_can = rB;
-      r_other = rA;
+      r_can = rB_mid;
+      r_other = rA_mid;
     }
 
     float3 tau_can = cross_product_device(r_can, n_aligned);
