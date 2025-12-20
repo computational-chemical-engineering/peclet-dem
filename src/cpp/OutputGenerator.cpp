@@ -16,7 +16,7 @@ void launch_splat_particles(ParticleSystemData ps, float *d_grid, int *d_state,
                             int3 dims, float3 origin, float3 voxel_size,
                             float3 d_min, float3 d_max);
 void launch_eikonal_update(float *d_in, float *d_out, int *d_state, int3 dims,
-                           float3 voxel_size);
+                           float3 voxel_size, bool px, bool py, bool pz);
 
 OutputGenerator::OutputGenerator(Simulation *sim)
     : sim_(sim), d_grid_ping_(nullptr), d_grid_pong_(nullptr),
@@ -85,7 +85,8 @@ void OutputGenerator::generateAndSaveVTI(const std::string &filename,
 
   for (int i = 0; i < iterations; ++i) {
     launch_eikonal_update(current_in, current_out, d_state_, resolution,
-                          voxel_size);
+                          voxel_size, ps.periodic_x, ps.periodic_y,
+                          ps.periodic_z);
     std::swap(current_in, current_out);
   }
   // Final result is in current_in (because we swapped after LAST write to
@@ -168,7 +169,8 @@ std::vector<float> OutputGenerator::generateSDF(int3 resolution,
 
   for (int i = 0; i < iterations; ++i) {
     launch_eikonal_update(current_in, current_out, d_state_, resolution,
-                          voxel_size);
+                          voxel_size, ps.periodic_x, ps.periodic_y,
+                          ps.periodic_z);
     std::swap(current_in, current_out);
   }
 
