@@ -55,7 +55,7 @@ def generate_unit_sdf_stl(radius, height, thickness, filename):
     unit_mesh.save(filename)
 
 def verify_packing():
-    num_particles = 300
+    num_particles = 150
     radius = 0.5
     height = 0.3# H/D = 1
     thickness = 0.15 # Arbitrary hollow thickness
@@ -85,7 +85,7 @@ def verify_packing():
     # Higher iterations = stiffer solver, better overlap resolution
     # Smaller dt = better stability, but slower growth
 
-    output_dir = "./output/ring_packing"
+    output_dir = f"./output/ring_packing_N={num_particles}"
     os.makedirs(output_dir, exist_ok=True)
 
     # Target: High density jam
@@ -201,7 +201,7 @@ def verify_packing():
     
     # Export Final VTI
     print(f"Generating SDF VTI for Phi={phi_current:.3f}...")
-    sim.export_sdf(f"{output_dir}/packing_ring.vti", (256, 256, 256))
+    sim.export_sdf(f"{output_dir}/packing_ring.vti", (128, 128, 128))
 
 if __name__ == "__main__":
     verify_packing() 
