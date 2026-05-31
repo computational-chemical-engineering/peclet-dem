@@ -47,14 +47,26 @@ environment:
   → needs a fresh rebuild for the sm_120 GPU.
 - `mpi4py` is present in system Python but **not in packing's `.venv`**.
 
-Plan once unblocked (the solver already exposes the needed Python API — `set/get_positions`,
-`set_velocities`, …, `step`, `set_domain`, `enable_periodicity`):
-- [ ] Expose `tpx::halo::ParticleMigrator` (migrate + gatherGhosts) to Python (small pybind/ctypes
-      shim — also serves voronoi).
-- [ ] An mpi4py driver: each rank builds a `Simulation` over its block; per step
-      get particles → migrate + gather ghosts (transport-core) → set owned+ghost → `step()` →
-      keep owned. Host-staged (migration is infrequent; CUDA-aware MPI unavailable).
-- [ ] Validate `verify_*` (packing fraction, restitution) match single-rank across ranks.
+### Unblocked + the integration harness (done)
+- [x] **demgpu builds + runs** on the sm_120 GPU with **`-DDEMGPU_ENABLE_MPI=ON`** (the default; the
+      prebuilt `.so` was stale from another checkout). Correct call order is `initialize()` *before*
+      `set_positions()`.
+- [x] **`tpx_mpi` Python shim** (in `transport-core/python/`): exposes `ParticleMigrator` (migrate +
+      gather_ghosts) to Python/mpi4py over numpy arrays. Validated np=1,2,4.
+- [x] **mpi4py driver skeleton** `mpi/driver_distributed.py`: each rank runs a demgpu `Simulation`;
+      per step `get → migrate (tpx_mpi) → gather ghosts → set owned+ghost → step → keep owned`. Runs
+      end-to-end, particles conserved, np≥2 — the **plumbing** (demgpu + tpx_mpi + mpi4py) works.
+
+### Remaining for *physically correct* distributed packing
+- [ ] **Ghosts must be fixed (infinite mass) during the local XPBD solve** so each contact is resolved
+      consistently across ranks. demgpu stores `inv_mass` in `d_pos.w` with no per-particle setter in
+      the Python API — so the one needed solver change is a **fixed/ghost flag (or `set_inv_mass`)**:
+      gathered ghosts participate in collision detection/response but are not integrated.
+- [ ] Then validate `verify_*` (packing fraction, restitution) match single-rank across ranks.
+- [ ] Perf: avoid rebuilding the `Simulation` each step (reuse a capacity + an "active count").
+
+Note: packing already has its own MPI scaffolding (`src/mpi/communicator.cpp`, `domain.cpp`); the
+transport-core approach above can complement or supersede it.
 
 See `../../docs/ROADMAP.md` (Phase 4) and `../../cfd-gpu/doc/mpi_parallelization_status.md` for the
 Eulerian precedent.
