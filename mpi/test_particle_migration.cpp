@@ -123,12 +123,27 @@ int main(int argc, char** argv) {
     }
   }
 
+  // Ghost particles: gather copies within one interaction radius of the block boundary, so a real
+  // integration would run cuBQL broadphase locally over owned + ghost particles per rank.
+  const double rcut = 0.5;
+  std::vector<Vec<3>> gpos;
+  std::vector<char> gpay;
+  std::size_t nghost = mig.gatherGhosts(pos, payload, stride, rcut, gpos, gpay);
+  // Invariant: every received ghost image lies within rcut of this rank's block.
+  Vec<3> img;
+  for (std::size_t k = 0; k < gpos.size(); ++k)
+    if (!mig.withinRcutOfBlock(gpos[k], rank, rcut, img)) ++fail;
+  long long lg = (long long)nghost, gghost = 0;
+  MPI_Reduce(&lg, &gghost, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+
   int total = 0;
   MPI_Allreduce(&fail, &total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   if (rank == 0) {
+    std::printf("# %lld ghost particles gathered (rcut=%.2f)\n", gghost, rcut);
     if (total == 0)
-      std::printf("OK (np=%d): %lld packing particles migrate, conserve & place correctly (6 steps)\n",
-                  size, (long long)N);
+      std::printf(
+          "OK (np=%d): %lld packing particles migrate+ghost correctly over 6 steps\n", size,
+          (long long)N);
     else
       std::fprintf(stderr, "FAILED (np=%d): %d\n", size, total);
   }
