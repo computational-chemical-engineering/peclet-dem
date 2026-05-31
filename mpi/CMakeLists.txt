@@ -17,12 +17,17 @@ if(NOT EXISTS "${TPX_INCLUDE}/tpx/halo/particle_migrator.hpp")
 endif()
 
 enable_testing()
-add_executable(test_particle_migration test_particle_migration.cpp)
-target_include_directories(test_particle_migration PRIVATE ${TPX_INCLUDE})
-target_link_libraries(test_particle_migration PRIVATE MPI::MPI_CXX)
+foreach(t test_particle_migration test_dem_step)
+  add_executable(${t} ${t}.cpp)
+  target_include_directories(${t} PRIVATE ${TPX_INCLUDE})
+  target_link_libraries(${t} PRIVATE MPI::MPI_CXX)
+endforeach()
 
 foreach(np IN ITEMS 1 2 4)
   add_test(NAME particle_migration_np${np}
            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                    ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_migration> ${MPIEXEC_POSTFLAGS})
+  add_test(NAME dem_step_np${np}
+           COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                   ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_dem_step> ${MPIEXEC_POSTFLAGS})
 endforeach()

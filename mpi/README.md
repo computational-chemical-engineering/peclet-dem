@@ -31,12 +31,30 @@ which launches OpenMPI binaries as singletons).
       Each received ghost lies within `rcut` of this rank's block; rigorous correctness (vs a
       brute-force reference) is covered by transport-core's `test_ghost_particles_mpi`.
 
-## Next
+- [x] **Step 3 — distributed per-step loop (done, standalone):** `mpi/test_dem_step.cpp` runs the full
+      Lagrangian loop the real solver will follow — `migrate → gatherGhosts(rcut) → forces on owned
+      from owned+ghost → integrate` — each step, with a soft-sphere repulsion in place of XPBD/cuBQL so
+      it builds with just MPI + transport-core. Validated against a serial N-body reference: every
+      owned particle's position+velocity matches cell-for-cell over 25 steps, np=1,2,4 (bit-exact via
+      min-image separations + id-ordered force summation). This is the distributed algorithm structure;
+      what remains is swapping the toy force for packing's actual broadphase/narrowphase/XPBD.
 
-- [ ] **Per-step loop** in the actual solver: predict → migrate (ownership) → gather ghosts → local
-      broadphase/narrowphase + XPBD solve. Download/migrate/upload at the host boundary (migration is
-      infrequent; CUDA-aware MPI is unavailable on this box — host-staged, as in cfd).
-- [ ] Validate the `verify_*` scripts (packing fraction, restitution) match single-rank across ranks.
+## Next — wire into the real `Simulation`
+
+The loop above must drive packing's actual GPU solver. Two prerequisites are currently blocked in this
+environment:
+- The prebuilt `demgpu` module **fails to import** (`CUDA Error: invalid argument`, stale build path)
+  → needs a fresh rebuild for the sm_120 GPU.
+- `mpi4py` is present in system Python but **not in packing's `.venv`**.
+
+Plan once unblocked (the solver already exposes the needed Python API — `set/get_positions`,
+`set_velocities`, …, `step`, `set_domain`, `enable_periodicity`):
+- [ ] Expose `tpx::halo::ParticleMigrator` (migrate + gatherGhosts) to Python (small pybind/ctypes
+      shim — also serves voronoi).
+- [ ] An mpi4py driver: each rank builds a `Simulation` over its block; per step
+      get particles → migrate + gather ghosts (transport-core) → set owned+ghost → `step()` →
+      keep owned. Host-staged (migration is infrequent; CUDA-aware MPI unavailable).
+- [ ] Validate `verify_*` (packing fraction, restitution) match single-rank across ranks.
 
 See `../../docs/ROADMAP.md` (Phase 4) and `../../cfd-gpu/doc/mpi_parallelization_status.md` for the
 Eulerian precedent.
