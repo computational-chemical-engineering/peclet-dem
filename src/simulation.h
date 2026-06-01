@@ -65,6 +65,11 @@ public:
   float get_growth_rate() const { return ps_.growth_rate; }
   float get_growth_factor() const { return ps_.growth_factor; }
 
+  // Bind this process to a CUDA device (call BEFORE constructing/initializing on multi-GPU nodes:
+  // map MPI local rank -> GPU so each rank drives its own device). Static: affects subsequent allocs.
+  static void set_cuda_device(int device);
+  static int cuda_device_count();
+
   // Periodicity
   void enable_periodicity(bool x, bool y, bool z);
   void add_plane(float3 point, float3 normal); // Explicit Planes

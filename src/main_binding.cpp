@@ -107,6 +107,10 @@ PYBIND11_MODULE(demgpu, m) {
 
   py::class_<Simulation>(m, "Simulation")
       .def(py::init<int>(), py::arg("num_particles") = 1000)
+      .def_static("set_cuda_device", &Simulation::set_cuda_device, py::arg("device"),
+                  "Bind this process to a CUDA device (map MPI local rank -> GPU before init)")
+      .def_static("cuda_device_count", &Simulation::cuda_device_count,
+                  "Number of visible CUDA devices")
       .def("initialize", &Simulation::initialize, py::arg("shape_type"),
            py::arg("radius") = 0.5f, py::arg("height") = 2.0f,
            py::arg("thickness") = 0.2f)

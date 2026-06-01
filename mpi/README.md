@@ -119,9 +119,18 @@ are contention-bound and *not* representative of 1-rank-per-GPU scaling. The rem
 **device-resident pack** (gather/scatter kernels to cut the ~18 synchronous `cudaMemcpy`/step to ~2),
 best measured on real multi-GPU.
 
-- [ ] Remaining: cross-rank `verify_*` (packing fraction, restitution); periodic-wrap validation
-      (needs ≥2 ranks per periodic axis — a single rank gets no self-ghosts); device-resident pack +
-      reuse a fixed-capacity `Simulation` instead of rebuilding each step.
+- [x] **Cross-rank physics validated** (`mpi/verify_distributed.py`): the observables the `verify_*`
+      scripts report, for scenarios whose contacts straddle the rank split, run serially vs distributed.
+      Settling-pack observables (max pair overlap, mean/min z) match serial to ~1e-5 (np=1/2/4);
+      elastic-gas total KE matches within chaotic tolerance (~2%), with serial and distributed
+      injecting energy identically. Adds `Simulation.set_cuda_device`/`cuda_device_count` for
+      one-rank-per-GPU binding.
+- [x] **Multi-GPU testing & profiling guide:** [multi_gpu_testing.md](multi_gpu_testing.md) — device
+      binding, launch recipes, scaling/comm-fraction metrics, the Nsight/MPI profiling toolchain, and
+      the ranked optimisation backlog (device-resident pack first).
+- [ ] Remaining: periodic-wrap validation (needs ≥2 ranks per periodic axis — a single rank gets no
+      self-ghosts); device-resident pack + reuse a fixed-capacity `Simulation` instead of rebuilding
+      each step (both best measured on real multi-GPU — see the guide).
 
 Note: packing already has its own MPI scaffolding (`src/mpi/communicator.cpp`, `domain.cpp`); the
 transport-core approach above can complement or supersede it.

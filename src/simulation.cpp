@@ -434,6 +434,14 @@ void Simulation::initialize(int shape_type, float radius, float height,
 // -----------------------------------------------------------------------------
 // Parameters & Domain
 // -----------------------------------------------------------------------------
+void Simulation::set_cuda_device(int device) { CUDA_CHECK(cudaSetDevice(device)); }
+
+int Simulation::cuda_device_count() {
+  int n = 0;
+  cudaGetDeviceCount(&n);
+  return n;
+}
+
 void Simulation::set_gravity(float x, float y, float z) {
   gravity_ = make_float3(x, y, z);
 }
