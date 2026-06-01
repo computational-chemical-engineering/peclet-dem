@@ -79,6 +79,13 @@ public:
                 std::tuple<bool, bool, bool> periodic);
   // (Re)build the owner<->ghost correspondence over the current owned positions; returns ghost count.
   int mpi_build_halo(double rcut);
+  // Enable the EXACT MPI-aware step: every step() gathers ghosts (carrying REAL mass) over the halo
+  // and refreshes them from their owners after each solver iteration, so each owned particle computes
+  // its complete serial XPBD delta locally. `rcut` is the interaction radius (ghost-layer width).
+  void enable_mpi_step(double rcut) {
+    mpi_enabled_ = true;
+    mpi_rcut_ = rcut;
+  }
 #endif
 
   // Domain Configuration
@@ -137,6 +144,12 @@ private:
 
 #ifdef DEMGPU_HAVE_TPX
   std::unique_ptr<MpiParticleHalo> mpi_halo_;
+  bool mpi_enabled_ = false;
+  double mpi_rcut_ = 0.0;
+  void step_mpi(float dt);       // EXACT distributed pipeline (gather + per-iteration forward)
+  void mpi_gather_ghosts();      // build halo, fill ghost slots from owners (full state)
+  void mpi_forward4(float4 *d_field);        // owner slice -> ghost slots, verbatim float4
+  void mpi_forward_positions(float4 *d_field); // owner slice -> ghost slots, xyz+shift, .w verbatim
 #endif
 
   // State

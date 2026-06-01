@@ -185,6 +185,9 @@ PYBIND11_MODULE(demgpu, m) {
            "Set up the transport-core block decomposition over the global domain (MPI-aware step)")
       .def("mpi_build_halo", &Simulation::mpi_build_halo, py::arg("rcut"),
            "Build the owner<->ghost correspondence over current owned positions; returns ghost count")
+      .def("enable_mpi_step", &Simulation::enable_mpi_step, py::arg("rcut"),
+           "Enable the EXACT MPI-aware step: gather ghosts (real mass) + per-iteration owner->ghost "
+           "forward, so each owned particle computes its full serial XPBD delta locally")
 #endif
       .def("get_profiling_info", &Simulation::get_profiling_info);
 }

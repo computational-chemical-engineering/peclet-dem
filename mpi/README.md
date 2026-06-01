@@ -81,15 +81,27 @@ here. Each matches a serial reference cell-for-cell, np=1,2,4:
       fixed during iterations" matches its *serial* behaviour — FROZEN only approximates the boundary
       **mass split** (the owned particle takes the full correction instead of its `w_i/(w_i+w_j)` share).
 
-### EXACT scheme + remaining
-- [ ] **EXACT (physics-unchanged):** compute each cross contact once, **reverse-accumulate the ghost
-      constraint deltas to their owners** (via `ParticleHalo::reverse`) so each owner gets its
-      mass-weighted share, with a sync every `M` iterations (M-deep halo). demgpu already accumulates
-      *periodic*-ghost deltas to reals via `d_real_indices` + `d_delta_pos`; the change is to route the
-      MPI-ghost deltas cross-rank. Needs the solver to expose / cross-communicate the per-particle delta
-      accumulators inside the position-iteration loop.
-- [ ] Validate `verify_*` (packing fraction, restitution) match single-rank across ranks.
-- [ ] Perf: reuse a fixed-capacity `Simulation` + active-count instead of rebuilding each step.
+### EXACT scheme — implemented + validated (MPI-aware `step()` in C++)
+- [x] **transport-core wired into demgpu** (`-DDEMGPU_HAVE_TPX`, header-only sibling repo).
+      `src/mpi/mpi_halo.h` (`MpiParticleHalo`) wraps `tpx` BlockDecomposer + ParticleMigrator +
+      ParticleHalo with host-staged `forward_positions` (xyz + periodic image shift, `.w`=inv_mass) /
+      `forward4` / `forward_float` / `forward_int`.
+- [x] **`Simulation::step_mpi()` — the EXACT pipeline.** Enabled via `mpi_init(origin,size,gsize,
+      periodic)` + `enable_mpi_step(rcut)`. Each substep: predict velocity (owned) → **gather ghosts
+      carrying REAL mass** (`mpi_gather_ghosts`: build halo over owned, forward full state into the
+      ghost slots `[num_real, num_real+num_ghost)`, mark `d_vel.w=1`, self-map `d_real_indices`) →
+      broadphase/narrowphase over owned+ghost → velocity solve **with an owner→ghost `forward4` after
+      every iteration** → apply-velocity/predict-position + forward → position solve **with an
+      owner→ghost `forward_positions`+`forward4(quat)` after every iteration** → commit (owned kept).
+      Each owned particle therefore sees *all* its neighbours every iteration and computes its
+      **complete serial XPBD delta locally** — no constraint-delta reverse, no double-count filtering.
+- [x] **Validated vs serial** (`mpi/validate_exact.py`, same IC run serially on rank 0 and distributed):
+      np=1 **bit-exact** (`0.0`); np=2/4 agree to **mean ~5e-5, max ~4e-3** over 15 settling steps
+      (Jacobi atomic-ordering float noise at the split, not a physics error).
+- [ ] Remaining: verify `verify_*` (packing fraction, restitution) across ranks; periodic-wrap
+      validation (needs ≥2 ranks per periodic axis — a single rank gets no self-ghosts); perf
+      (device-resident pack / persistent exchange instead of per-iteration host staging; reuse a
+      fixed-capacity `Simulation` instead of rebuilding each step).
 
 Note: packing already has its own MPI scaffolding (`src/mpi/communicator.cpp`, `domain.cpp`); the
 transport-core approach above can complement or supersede it.

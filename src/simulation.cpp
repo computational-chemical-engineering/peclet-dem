@@ -519,6 +519,12 @@ void Simulation::set_thermostat(float temperature, float tau, float kB) {
 }
 
 void Simulation::step(float dt) {
+#ifdef DEMGPU_HAVE_TPX
+  if (mpi_enabled_) {
+    step_mpi(dt);
+    return;
+  }
+#endif
   // DEBUG: Inspect Particle 0 on GPU
   // Synchronization to prevent kernel launch race conditions (Heisenbug fix)
   // Optimization: Only sync if flagged (e.g. after data upload)
@@ -603,6 +609,82 @@ void Simulation::step(float dt) {
     CUDA_CHECK(cudaDeviceSynchronize());
   }
 }
+
+#ifdef DEMGPU_HAVE_TPX
+// EXACT distributed XPBD substep. Each owned particle sees all of its neighbours (owned or gathered
+// ghost, both carrying real mass) so it computes its full serial delta locally; ghost copies are
+// refreshed from their owners (cross-rank forward) after every solver iteration. The only difference
+// from step() is the gather and the per-iteration owner->ghost forwards.
+void Simulation::step_mpi(float dt) {
+  if (force_sync_) {
+    CUDA_CHECK(cudaDeviceSynchronize());
+    force_sync_ = false;
+  }
+
+  if (ps_.growth_factor != -1.0f) {
+    if (ps_.growth_rate != 0.0f) {
+      ps_.growth_factor *= exp(ps_.growth_rate * dt);
+      if (ps_.growth_factor >= 1.0f) {
+        ps_.growth_factor = 1.0f;
+        ps_.growth_rate = 0.0f;
+      }
+    }
+    launch_update_growth_scales(ps_);
+  }
+
+  // 1. Predict velocity (gravity) on the owned set (no ghosts yet -> num_particles == num_real).
+  ps_.num_particles = ps_.num_real;
+  launch_integrate_predict_velocity(ps_, dt, gravity_);
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // 2. Gather ghosts (real mass) from owners over the halo: full state into the ghost slots.
+  mpi_gather_ghosts();
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // 3. Broadphase & narrowphase over owned + ghosts (each owned sees all its neighbours).
+  build_bvh(ps_, global_scale_);
+  find_collisions(ps_, 1.0f);
+  launch_narrowphase(ps_, global_scale_);
+  reduce_contacts_to_manifolds(ps_);
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // 4. Velocity solve; refresh ghost velocities from their owners after each iteration.
+  for (int i = 0; i < velocity_iterations_; ++i) {
+    launch_velocity_solve(ps_);
+    launch_apply_velocity_deltas(ps_);
+    mpi_forward4(ps_.d_vel_pred);
+  }
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // 5. Apply velocity & predict position, then refresh ghost predicted positions.
+  launch_apply_velocity_and_predict_position(ps_, dt);
+  mpi_forward_positions(ps_.d_pos_pred);
+  mpi_forward4(ps_.d_quat_pred);
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // 6. Position solve (Projected Jacobi); refresh ghost predicted pose after each iteration.
+  for (int i = 0; i < position_iterations_; ++i) {
+    CUDA_CHECK(cudaMemset(ps_.d_max_overlap, 0, sizeof(float)));
+    launch_position_solve(ps_);
+    launch_apply_updates(ps_);
+    mpi_forward_positions(ps_.d_pos_pred);
+    mpi_forward4(ps_.d_quat_pred);
+  }
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // 7. Commit (owned results are kept; ghosts are discarded and re-gathered next substep).
+  launch_final_commit(ps_, dt);
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  if (ps_.thermostat_enabled) {
+    launch_apply_thermostat(ps_, dt);
+    CUDA_CHECK(cudaDeviceSynchronize());
+  }
+
+  // Restore the owned-only active count so getters/migration see just the reals.
+  ps_.num_particles = ps_.num_real;
+}
+#endif
 
 // -----------------------------------------------------------------------------
 // Python Bindings Helpers
@@ -746,6 +828,81 @@ int Simulation::mpi_build_halo(double rcut) {
   CUDA_CHECK(cudaMemcpy(h_pos.data(), ps_.d_pos, num_particles_ * sizeof(float4),
                         cudaMemcpyDeviceToHost));
   return mpi_halo_->build(h_pos.data(), num_particles_, rcut);
+}
+
+// owner slice [0,num_real) of d_field -> ghost slots [num_real, num_real+num_ghost), verbatim.
+void Simulation::mpi_forward4(float4 *d_field) {
+  int no = ps_.num_real, ng = mpi_halo_->num_ghost();
+  if (ng == 0)
+    return;
+  std::vector<float4> o(no), g(ng);
+  CUDA_CHECK(cudaMemcpy(o.data(), d_field, no * sizeof(float4), cudaMemcpyDeviceToHost));
+  mpi_halo_->forward4(o.data(), g.data());
+  CUDA_CHECK(cudaMemcpy(d_field + no, g.data(), ng * sizeof(float4), cudaMemcpyHostToDevice));
+}
+
+// owner slice -> ghost slots: xyz gets the periodic image shift, .w (inv_mass) carried verbatim.
+void Simulation::mpi_forward_positions(float4 *d_field) {
+  int no = ps_.num_real, ng = mpi_halo_->num_ghost();
+  if (ng == 0)
+    return;
+  std::vector<float4> o(no), g(ng);
+  CUDA_CHECK(cudaMemcpy(o.data(), d_field, no * sizeof(float4), cudaMemcpyDeviceToHost));
+  mpi_halo_->forward_positions(o.data(), g.data());
+  CUDA_CHECK(cudaMemcpy(d_field + no, g.data(), ng * sizeof(float4), cudaMemcpyHostToDevice));
+}
+
+// Build the halo over current owned positions and populate the ghost slots with the owners' full
+// per-particle state (forwarded cross-rank). Ghosts carry REAL mass (EXACT scheme). Sets
+// ps_.num_particles = num_real + num_ghost.
+void Simulation::mpi_gather_ghosts() {
+  int no = ps_.num_real;
+  std::vector<float4> hpos(no);
+  CUDA_CHECK(cudaMemcpy(hpos.data(), ps_.d_pos, no * sizeof(float4), cudaMemcpyDeviceToHost));
+  int ng = mpi_halo_->build(hpos.data(), no, mpi_rcut_);
+  if (no + ng > ps_.capacity) {
+    printf("WARNING: MPI ghost overflow (req %d, cap %d) -- clamping\n", no + ng, ps_.capacity);
+    ng = ps_.capacity - no;
+  }
+  ps_.num_particles = no + ng;
+  if (ng == 0)
+    return;
+
+  // Full per-particle state: positions (xyz+shift, .w=inv_mass), and translation-invariant fields.
+  mpi_forward_positions(ps_.d_pos);
+  mpi_forward_positions(ps_.d_pos_pred);
+  mpi_forward4(ps_.d_vel);
+  mpi_forward4(ps_.d_vel_pred);
+  mpi_forward4(ps_.d_quat);
+  mpi_forward4(ps_.d_quat_pred);
+  mpi_forward4(ps_.d_ang_vel);
+  mpi_forward4(ps_.d_ang_vel_pred);
+  mpi_forward4(ps_.d_inv_inertia);
+  {
+    std::vector<float> o(no), g(ng);
+    CUDA_CHECK(cudaMemcpy(o.data(), ps_.d_scale, no * sizeof(float), cudaMemcpyDeviceToHost));
+    mpi_halo_->forward_float(o.data(), g.data());
+    CUDA_CHECK(cudaMemcpy(ps_.d_scale + no, g.data(), ng * sizeof(float), cudaMemcpyHostToDevice));
+  }
+  {
+    std::vector<int> o(no), g(ng);
+    CUDA_CHECK(cudaMemcpy(o.data(), ps_.d_shape_ids, no * sizeof(int), cudaMemcpyDeviceToHost));
+    mpi_halo_->forward_int(o.data(), g.data());
+    CUDA_CHECK(cudaMemcpy(ps_.d_shape_ids + no, g.data(), ng * sizeof(int), cudaMemcpyHostToDevice));
+  }
+
+  // Ghost bookkeeping: mark d_vel.w = 1 (ghost type, matches the periodic-ghost convention) and
+  // self-map d_real_indices (the owning real is on another rank, so velocity-solve deltas land on the
+  // ghost slot and are discarded by the next forward).
+  std::vector<float4> gvel(ng);
+  CUDA_CHECK(cudaMemcpy(gvel.data(), ps_.d_vel + no, ng * sizeof(float4), cudaMemcpyDeviceToHost));
+  for (auto &v : gvel)
+    v.w = 1.0f;
+  CUDA_CHECK(cudaMemcpy(ps_.d_vel + no, gvel.data(), ng * sizeof(float4), cudaMemcpyHostToDevice));
+  std::vector<int> ri(ng);
+  for (int i = 0; i < ng; ++i)
+    ri[i] = no + i;
+  CUDA_CHECK(cudaMemcpy(ps_.d_real_indices + no, ri.data(), ng * sizeof(int), cudaMemcpyHostToDevice));
 }
 #endif
 
