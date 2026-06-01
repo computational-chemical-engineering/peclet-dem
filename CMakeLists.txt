@@ -98,6 +98,18 @@ target_include_directories(demgpu PRIVATE
     ${cuBQL_SOURCE_DIR} # Include cuBQL headers
 )
 
+# ---- transport-core (shared MPI/halo library, header-only) ----
+# Sibling repo providing tpx::halo::ParticleHalo / ParticleMigrator + block decomposition.
+# Used by the MPI-aware step() for per-iteration owner->ghost position forwarding.
+set(TPX_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../transport-core/include")
+if (DEMGPU_ENABLE_MPI AND EXISTS "${TPX_INCLUDE_DIR}/tpx/halo/particle_halo.hpp")
+    target_include_directories(demgpu PRIVATE ${TPX_INCLUDE_DIR})
+    target_compile_definitions(demgpu PRIVATE DEMGPU_HAVE_TPX=1)
+    message(STATUS "transport-core found: ${TPX_INCLUDE_DIR} (MPI-aware step enabled)")
+else()
+    message(STATUS "transport-core NOT found at ${TPX_INCLUDE_DIR} (MPI-aware step disabled)")
+endif()
+
 # ---- Compile Definitions / Flags ----
 if (DEMGPU_ENABLE_MPI)
     target_compile_definitions(demgpu PRIVATE DEMGPU_USE_MPI=1)

@@ -11,6 +11,10 @@ namespace dem {
 class OutputGenerator;
 }
 
+#ifdef DEMGPU_HAVE_TPX
+class MpiParticleHalo; // transport-core owner<->ghost halo (src/mpi/mpi_halo.h)
+#endif
+
 class Simulation {
 public:
   friend class dem::OutputGenerator; // Allow access to private members
@@ -65,6 +69,18 @@ public:
   void enable_periodicity(bool x, bool y, bool z);
   void add_plane(float3 point, float3 normal); // Explicit Planes
 
+#ifdef DEMGPU_HAVE_TPX
+  // --- MPI-aware step (transport-core halo) ---
+  // Set up the block decomposition over the GLOBAL domain (once). The per-block solver stays
+  // non-periodic; the halo supplies the periodic wrap. `gsize` is the ORB cell grid.
+  void mpi_init(std::tuple<double, double, double> origin,
+                std::tuple<double, double, double> size,
+                std::tuple<long, long, long> gsize,
+                std::tuple<bool, bool, bool> periodic);
+  // (Re)build the owner<->ghost correspondence over the current owned positions; returns ghost count.
+  int mpi_build_halo(double rcut);
+#endif
+
   // Domain Configuration
   void set_domain(float3 min, float3 max);
   std::tuple<float, float, float> get_domain_min();
@@ -118,6 +134,10 @@ private:
 
   // Data for planes
   std::vector<Plane> planes_host_;
+
+#ifdef DEMGPU_HAVE_TPX
+  std::unique_ptr<MpiParticleHalo> mpi_halo_;
+#endif
 
   // State
   bool domain_initialized_;

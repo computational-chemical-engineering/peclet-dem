@@ -5,6 +5,9 @@
 #include "cuda/periodicity.cuh"
 #include "io/Exporter.h"
 #include "shapes/point_sampler.h"
+#ifdef DEMGPU_HAVE_TPX
+#include "mpi/mpi_halo.h"
+#endif
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -722,6 +725,30 @@ void Simulation::set_scales_numpy(py::array_t<float> scales) {
 // -----------------------------------------------------------------------------
 // Getters
 // -----------------------------------------------------------------------------
+#ifdef DEMGPU_HAVE_TPX
+void Simulation::mpi_init(std::tuple<double, double, double> origin,
+                          std::tuple<double, double, double> size,
+                          std::tuple<long, long, long> gsize,
+                          std::tuple<bool, bool, bool> periodic) {
+  if (!mpi_halo_)
+    mpi_halo_ = std::make_unique<MpiParticleHalo>();
+  mpi_halo_->init({std::get<0>(origin), std::get<1>(origin), std::get<2>(origin)},
+                  {std::get<0>(size), std::get<1>(size), std::get<2>(size)},
+                  {std::get<0>(gsize), std::get<1>(gsize), std::get<2>(gsize)},
+                  {std::get<0>(periodic), std::get<1>(periodic), std::get<2>(periodic)});
+}
+
+int Simulation::mpi_build_halo(double rcut) {
+  if (!mpi_halo_ || !mpi_halo_->inited())
+    throw std::runtime_error("mpi_build_halo: call mpi_init() first");
+  // Download current owned positions (the first num_particles_ are real/owned).
+  std::vector<float4> h_pos(num_particles_);
+  CUDA_CHECK(cudaMemcpy(h_pos.data(), ps_.d_pos, num_particles_ * sizeof(float4),
+                        cudaMemcpyDeviceToHost));
+  return mpi_halo_->build(h_pos.data(), num_particles_, rcut);
+}
+#endif
+
 py::array_t<float> Simulation::get_positions_numpy(bool include_ghosts) {
   int n = include_ghosts ? ps_.num_particles : num_particles_;
   std::vector<float4> h_pos(n);

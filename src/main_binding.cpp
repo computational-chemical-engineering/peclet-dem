@@ -179,5 +179,12 @@ PYBIND11_MODULE(demgpu, m) {
            })
       .def("enable_periodicity", &Simulation::enable_periodicity, py::arg("x"),
            py::arg("y"), py::arg("z"), "Enable periodic boundaries on axes")
+#ifdef DEMGPU_HAVE_TPX
+      .def("mpi_init", &Simulation::mpi_init, py::arg("origin"), py::arg("size"),
+           py::arg("gsize"), py::arg("periodic"),
+           "Set up the transport-core block decomposition over the global domain (MPI-aware step)")
+      .def("mpi_build_halo", &Simulation::mpi_build_halo, py::arg("rcut"),
+           "Build the owner<->ghost correspondence over current owned positions; returns ghost count")
+#endif
       .def("get_profiling_info", &Simulation::get_profiling_info);
 }
