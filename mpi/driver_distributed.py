@@ -12,13 +12,13 @@ Run (system python3 has mpi4py + numpy; build both modules first):
     PYTHONPATH=build_sm120:../transport-core/python/build \
         mpirun -np 4 python3 mpi/driver_distributed.py
 
-STATUS: this validates the *plumbing* — demgpu + tpx_mpi + mpi4py interoperate and the
-get->migrate->ghost->set->step->extract loop runs end-to-end across ranks. It is NOT yet physically
-correct distributed packing, because ghost particles must be treated as **fixed (infinite mass)**
-during the local XPBD constraint solve so each contact is resolved consistently across ranks. demgpu
-stores inv_mass in d_pos.w and the Python API has no per-particle inv_mass setter, so the remaining
-work is a small demgpu change: a "fixed/ghost" flag (or set_inv_mass) so gathered ghosts participate
-in collision detection but are not integrated. See mpi/README.md.
+STATUS: implements the **FROZEN** scheme. Ghosts are set to inv_mass=0 (via the new demgpu
+set_inv_mass) with zero velocity, so the solver treats them as fixed collision obstacles -- they push
+owned particles but are never integrated. demgpu detects collisions once per substep and runs its
+Jacobi iterations on the fixed contact set, so "ghosts fixed during the iterations" matches its serial
+behaviour; FROZEN only approximates the boundary mass-split (owned takes the full correction).
+The EXACT scheme (reverse-accumulate ghost constraint deltas to owners via ParticleHalo, so each
+owner gets its mass-weighted share) is the next step -- see mpi/README.md.
 """
 import sys
 import numpy as np
@@ -47,9 +47,13 @@ ids = mine.astype(np.float64)
 
 
 def build_sim(n):
+    # Per-block solver: NON-periodic (periodicity is provided by the MPI ghosts), domain padded by
+    # the interaction radius so ghost images just outside the box aren't clipped/wrapped.
     s = demgpu.Simulation(num_particles=int(n))
-    s.set_domain((dmin[0], dmin[1], dmin[2]), (dmin[0] + L[0], dmin[1] + L[1], dmin[2] + L[2]))
-    s.enable_periodicity(True, True, True)
+    m = rcut + 0.5
+    s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m),
+                 (dmin[0] + L[0] + m, dmin[1] + L[1] + m, dmin[2] + L[2] + m))
+    s.enable_periodicity(False, False, False)
     s.initialize(shape_type=0, radius=radius)  # spheres
     s.set_solver_iterations(8, 0)
     return s
@@ -68,20 +72,29 @@ for step in range(5):
     gpos, gpay = mig.gather_ghosts(pos, pay, rcut)
     n_ghost = gpos.shape[0]
 
-    # 3) local Simulation over owned + ghost; ghosts appended after owned
+    # 3) local Simulation over owned + ghost (ghosts appended after owned).
+    #    FROZEN scheme: ghosts are infinite-mass (inv_mass=0) with zero velocity, so the solver
+    #    treats them as fixed collision obstacles -- they push owned particles but are never
+    #    integrated. (Physically an approximation at the boundary; the EXACT scheme reverse-
+    #    accumulates ghost deltas to owners -- see README.)
     combined_pos = np.vstack([pos, gpos]) if n_ghost else pos
-    combined_vel = np.vstack([vel, gpay[:, 0:3]]) if n_ghost else vel
+    ghost_vel = np.zeros((n_ghost, 3))
+    combined_vel = np.vstack([vel, ghost_vel]) if n_ghost else vel
+    inv_mass = np.concatenate([np.ones(n_owned), np.zeros(n_ghost)]).astype(np.float32)
     sim = build_sim(combined_pos.shape[0])
     sim.set_positions(combined_pos.astype(np.float32))
+    sim.set_inv_mass(inv_mass)  # freeze the ghosts (must come after set_positions)
     sim.set_velocities(combined_vel.astype(np.float32))
 
-    # 4) step  (NOTE: ghosts are currently integrated too — see module docstring / README)
     sim.step(0.002)
 
-    # 5) keep only owned particles' updated state
-    out_pos = np.array(sim.get_positions(False))[:n_owned].astype(np.float64)
-    out_vel = np.array(sim.get_velocities())[:n_owned].astype(np.float64)
-    pos, vel = out_pos, out_vel
+    # 4) keep only owned particles' updated state; verify the ghosts stayed frozen
+    out_pos = np.array(sim.get_positions(False))
+    if n_ghost:
+        ghost_drift = float(np.max(np.abs(out_pos[n_owned:] - gpos)))
+        assert ghost_drift < 1e-5, f"ghosts moved ({ghost_drift}) -- not frozen"
+    pos = out_pos[:n_owned].astype(np.float64)
+    vel = np.array(sim.get_velocities())[:n_owned].astype(np.float64)
 
     n_global = comm.allreduce(n_owned, MPI.SUM)
     g_ghost = comm.allreduce(n_ghost, MPI.SUM)
@@ -92,6 +105,6 @@ for step in range(5):
 n_global = comm.allreduce(pos.shape[0], MPI.SUM)
 if rank == 0:
     ok = (n_global == N)
-    print(f"{'OK' if ok else 'FAIL'} (np={size}): orchestration ran end-to-end, "
-          f"{n_global}/{N} particles conserved (plumbing; ghost-XPBD physics pending)")
+    print(f"{'OK' if ok else 'FAIL'} (np={size}): distributed FROZEN-ghost XPBD ran end-to-end, "
+          f"{n_global}/{N} particles conserved, ghosts stayed frozen")
     sys.exit(0 if ok else 1)

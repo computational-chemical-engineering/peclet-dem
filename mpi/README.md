@@ -70,13 +70,26 @@ here. Each matches a serial reference cell-for-cell, np=1,2,4:
       per step `get → migrate (tpx_mpi) → gather ghosts → set owned+ghost → step → keep owned`. Runs
       end-to-end, particles conserved, np≥2 — the **plumbing** (demgpu + tpx_mpi + mpi4py) works.
 
-### Remaining for *physically correct* distributed packing
-- [ ] **Ghosts must be fixed (infinite mass) during the local XPBD solve** so each contact is resolved
-      consistently across ranks. demgpu stores `inv_mass` in `d_pos.w` with no per-particle setter in
-      the Python API — so the one needed solver change is a **fixed/ghost flag (or `set_inv_mass`)**:
-      gathered ghosts participate in collision detection/response but are not integrated.
-- [ ] Then validate `verify_*` (packing fraction, restitution) match single-rank across ranks.
-- [ ] Perf: avoid rebuilding the `Simulation` each step (reuse a capacity + an "active count").
+### FROZEN scheme — implemented
+- [x] **`set_inv_mass` added to demgpu** (`Simulation::set_inv_mass`, `get_inv_mass`): per-particle
+      inverse mass, allowing `0` (= fixed/infinite-mass). `set_positions` forces `w=1`, so call
+      `set_inv_mass` after it. Verified a frozen particle stays put under gravity + collisions.
+- [x] **`mpi/driver_distributed.py` runs the FROZEN scheme**: gathered ghosts get `inv_mass=0` + zero
+      velocity (fixed collision obstacles), the per-block solver is non-periodic (MPI ghosts provide
+      periodicity) with a padded domain. Ghosts verified to stay frozen; particles conserved, np≥2.
+      Because demgpu detects collisions once per substep and iterates a fixed contact set, "ghosts
+      fixed during iterations" matches its *serial* behaviour — FROZEN only approximates the boundary
+      **mass split** (the owned particle takes the full correction instead of its `w_i/(w_i+w_j)` share).
+
+### EXACT scheme + remaining
+- [ ] **EXACT (physics-unchanged):** compute each cross contact once, **reverse-accumulate the ghost
+      constraint deltas to their owners** (via `ParticleHalo::reverse`) so each owner gets its
+      mass-weighted share, with a sync every `M` iterations (M-deep halo). demgpu already accumulates
+      *periodic*-ghost deltas to reals via `d_real_indices` + `d_delta_pos`; the change is to route the
+      MPI-ghost deltas cross-rank. Needs the solver to expose / cross-communicate the per-particle delta
+      accumulators inside the position-iteration loop.
+- [ ] Validate `verify_*` (packing fraction, restitution) match single-rank across ranks.
+- [ ] Perf: reuse a fixed-capacity `Simulation` + active-count instead of rebuilding each step.
 
 Note: packing already has its own MPI scaffolding (`src/mpi/communicator.cpp`, `domain.cpp`); the
 transport-core approach above can complement or supersede it.

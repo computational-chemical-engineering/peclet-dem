@@ -111,6 +111,8 @@ PYBIND11_MODULE(demgpu, m) {
            py::arg("radius") = 0.5f, py::arg("height") = 2.0f,
            py::arg("thickness") = 0.2f)
       .def("set_positions", &Simulation::set_positions_numpy)
+      .def("set_inv_mass", &Simulation::set_inv_mass_numpy)
+      .def("get_inv_mass", &Simulation::get_inv_mass_numpy)
       .def("set_velocities", &Simulation::set_velocities_numpy)
       .def("set_angular_velocities", &Simulation::set_angular_velocities_numpy)
       .def("get_velocities", &Simulation::get_velocities_numpy)

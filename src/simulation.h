@@ -35,11 +35,16 @@ public:
   py::array_t<float> get_angular_velocities_numpy(); // New
   py::array_t<float> get_inv_inertia_numpy();        // New
   py::array_t<float> get_masses_numpy();             // New
+  py::array_t<float> get_inv_mass_numpy();           // inverse mass (d_pos.w)
 
   // Setters (copy from host)
   void set_scales_numpy(py::array_t<float> scales);
   void set_positions_numpy(py::array_t<float> pos);
   void set_velocities_numpy(py::array_t<float> vel);
+  // Set per-particle inverse mass (d_pos.w). inv_mass==0 => fixed/infinite-mass
+  // (a collision obstacle that is never integrated) -- e.g. an MPI ghost frozen
+  // during the substep. Call AFTER set_positions (which forces w=1).
+  void set_inv_mass_numpy(py::array_t<float> inv_mass);
   void set_angular_velocities_numpy(py::array_t<float> ang_vel); // Added
   void set_quaternions_numpy(py::array_t<float> quat);           // Added
   void set_gravity(float x, float y, float z);

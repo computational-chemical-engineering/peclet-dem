@@ -654,6 +654,39 @@ void Simulation::set_positions_numpy(py::array_t<float> pos) {
   force_sync_ = true;
 }
 
+void Simulation::set_inv_mass_numpy(py::array_t<float> inv_mass) {
+  py::buffer_info buf = inv_mass.request();
+  if (buf.ndim != 1 || buf.shape[0] != num_particles_) {
+    throw std::runtime_error("inv_mass must be (N,)");
+  }
+  float *ptr = static_cast<float *>(buf.ptr);
+
+  // Read back current positions, overwrite .w (inverse mass), write back. Unlike
+  // set_positions this allows w==0 (fixed/infinite-mass: a frozen collision
+  // obstacle / MPI ghost). Mirror into the predicted/star copies for consistency.
+  std::vector<float4> h_pos(num_particles_);
+  CUDA_CHECK(cudaMemcpy(h_pos.data(), ps_.d_pos, num_particles_ * sizeof(float4),
+                        cudaMemcpyDeviceToHost));
+  for (int i = 0; i < num_particles_; ++i) h_pos[i].w = ptr[i];
+  CUDA_CHECK(cudaMemcpy(ps_.d_pos, h_pos.data(), num_particles_ * sizeof(float4),
+                        cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_pos_pred, ps_.d_pos, num_particles_ * sizeof(float4),
+                        cudaMemcpyDeviceToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_pos_star, ps_.d_pos, num_particles_ * sizeof(float4),
+                        cudaMemcpyDeviceToDevice));
+  force_sync_ = true;
+}
+
+py::array_t<float> Simulation::get_inv_mass_numpy() {
+  std::vector<float4> h_pos(num_particles_);
+  CUDA_CHECK(cudaMemcpy(h_pos.data(), ps_.d_pos, num_particles_ * sizeof(float4),
+                        cudaMemcpyDeviceToHost));
+  py::array_t<float> out(num_particles_);
+  float *o = static_cast<float *>(out.request().ptr);
+  for (int i = 0; i < num_particles_; ++i) o[i] = h_pos[i].w;
+  return out;
+}
+
 void Simulation::set_velocities_numpy(py::array_t<float> vel) {
   py::buffer_info buf = vel.request();
   if (buf.ndim != 2 || buf.shape[0] != num_particles_ || buf.shape[1] < 3) {
