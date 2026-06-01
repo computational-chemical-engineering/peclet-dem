@@ -656,12 +656,16 @@ void Simulation::step_mpi(float dt) {
   reduce_contacts_to_manifolds(ps_);
   CUDA_CHECK(cudaDeviceSynchronize());
 
-  // 4. Velocity solve; refresh ghost velocities from their owners every mpi_sync_every_ iterations.
+  // 4. Velocity solve; refresh ghost velocities from their owners every mpi_sync_every_ iterations
+  //    (also angular velocity when rotation is active, so boundary friction/torque stays consistent).
   for (int i = 0; i < velocity_iterations_; ++i) {
     launch_velocity_solve(ps_);
     launch_apply_velocity_deltas(ps_);
-    if ((i + 1) % mpi_sync_every_ == 0 || i == velocity_iterations_ - 1)
+    if ((i + 1) % mpi_sync_every_ == 0 || i == velocity_iterations_ - 1) {
       mpi_forward4(ps_.d_vel_pred);
+      if (mpi_forward_rotation_)
+        mpi_forward4(ps_.d_ang_vel_pred);
+    }
   }
   CUDA_CHECK(cudaDeviceSynchronize());
 

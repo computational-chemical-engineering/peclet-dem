@@ -69,18 +69,23 @@ def make_sim(n, restitution, friction, grav, planes):
 
 def run_serial(g_pos, g_vel, nsteps, **kw):
     # Rebuild the Simulation every step, mirroring the distributed driver (which must rebuild because
-    # migration changes the owned set). This keeps the comparison apples-to-apples: both carry the
-    # per-step cold-restart / float32 round-trip "rebuild artifact", so any residual difference is the
-    # genuine cross-rank (ghost/boundary) effect, not the driver. A persistent sim conserves better
-    # (e.g. KE 0.9966 vs 0.9827 here) -- see the rebuild-free item in multi_gpu_testing.md.
+    # migration changes the owned set), so the comparison isolates the cross-rank effect. CRUCIAL:
+    # carry the FULL per-particle state (quaternion + angular velocity) across the rebuild -- spheres
+    # pick up spin from off-centre collisions, and dropping it discards rotational energy (~1.4% KE).
     pos, vel = g_pos.copy(), g_vel.copy()
+    quat = ang = None
     for _ in range(nsteps):
         s = make_sim(pos.shape[0], **kw)
         s.set_positions(pos.astype(np.float32))
         s.set_velocities(vel.astype(np.float32))
+        if quat is not None:
+            s.set_quaternions(quat.astype(np.float32))
+            s.set_angular_velocities(ang.astype(np.float32))
         s.step(dt)
         pos = np.array(s.get_positions(False)).astype(np.float64)
         vel = np.array(s.get_velocities()).astype(np.float64)
+        quat = np.array(s.get_quaternions()).astype(np.float64)
+        ang = np.array(s.get_angular_velocities()).astype(np.float64)
     return pos, vel
 
 
@@ -91,22 +96,30 @@ def run_distributed(g_pos, g_vel, nsteps, **kw):
     own = np.array([mig.owner_of(tuple(p)) for p in g_pos])
     mine = np.where(own == rank)[0]
     pos, vel, idd = g_pos[mine].copy(), g_vel[mine].copy(), ids[mine].astype(np.float64)
+    quat = np.tile([0.0, 0.0, 0.0, 1.0], (mine.size, 1))
+    ang = np.zeros((mine.size, 3))
     for _ in range(nsteps):
-        pay = np.column_stack([vel, idd]) if pos.shape[0] else np.zeros((0, 4))
+        # carry FULL per-particle state through migration (vel + quaternion + angular velocity + id),
+        # otherwise rotational energy is discarded each step (see run_serial).
+        pay = (np.column_stack([vel, quat, ang, idd]) if pos.shape[0] else np.zeros((0, 11)))
         pos, pay = mig.migrate(pos, pay)
-        vel, idd = pay[:, 0:3].copy(), pay[:, 3].copy()
+        vel, quat, ang, idd = pay[:, 0:3].copy(), pay[:, 3:7].copy(), pay[:, 7:10].copy(), pay[:, 10].copy()
         n = pos.shape[0]
         if n == 0:
             raise RuntimeError(f"rank {rank} owns 0 particles -- pick N/np so every rank is non-empty")
         s = make_sim(n, **kw)
         s.set_positions(pos.astype(np.float32))
         s.set_velocities(vel.astype(np.float32))
+        s.set_quaternions(quat.astype(np.float32))
+        s.set_angular_velocities(ang.astype(np.float32))
         s.mpi_init(origin=tuple(dmin), size=tuple(L), gsize=(16, 16, 16),
                    periodic=(False, False, False))
-        s.enable_mpi_step(rcut, sync_every=1, forward_rotation=False)
+        s.enable_mpi_step(rcut, sync_every=1, forward_rotation=True)
         s.step(dt)
         pos = np.array(s.get_positions(False))[:n].astype(np.float64)
         vel = np.array(s.get_velocities())[:n].astype(np.float64)
+        quat = np.array(s.get_quaternions())[:n].astype(np.float64)
+        ang = np.array(s.get_angular_velocities())[:n].astype(np.float64)
     allp, allv, alli = comm.gather(pos, 0), comm.gather(vel, 0), comm.gather(idd, 0)
     if rank != 0:
         return None, None

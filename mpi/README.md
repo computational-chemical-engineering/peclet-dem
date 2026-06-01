@@ -125,19 +125,26 @@ best measured on real multi-GPU.
       `Simulation.set_cuda_device`/`cuda_device_count` for one-rank-per-GPU binding.
   - **Validated — quasi-static settling (the DEM packing regime):** max pair overlap, mean z, min z
     match serial to **~1e-5** (np=1/2/4); np=1 (0 ghosts) is bit-exact.
-  - **Open item — fast-elastic energy leak:** with a non-overlapping, walled, elastic (e=1) gas the
-    serial run conserves KE to 0.983 but the distributed run leaks energy at rank boundaries, growing
-    with np (np=1 **+0.0%**, np=2 **−5.1%**, np=4 **−13.8%** of KE₀). It does **not** affect the
-    settling regime above. Diagnosed: it is **not** the Jacobi constraint-count at boundaries (tested:
-    letting ghosts also query for contacts changed nothing) and **not** position-derived velocity
-    (`final_commit` keeps the velocity-solve result); the velocity comes from the velocity-solve, so
-    the leak is in the **restitution/velocity solve at boundary contacts under large relative
-    velocity**. Likely needs the boundary velocity contacts to converge symmetrically across ranks
-    (e.g. reverse-accumulate the ghost velocity impulse to its owner, or more velocity iterations /
-    a velocity-impulse exchange). **TODO: fix before claiming fast-dynamics (granular gas / impact).**
-  - **Caveat — per-step rebuild artifact:** rebuilding a `Simulation` each step (cold restart +
-    float32 round-trip) costs ~1.7% KE and ~0.1 in settled mean-z vs a persistent sim — independent of
-    np; folded into both references here. Removed by the rebuild-free sim (see the perf backlog).
+  - **Fixed — rotational-state migration bug (was mis-attributed to the boundary):** the example
+    drivers carried only `[vel,id]` through migration, dropping each particle's quaternion + angular
+    velocity. Frictionless spheres still pick up spin from off-centre collisions, so resetting it to
+    identity every step **discarded rotational energy (~1.4% KE at np=1)**. Carrying the full state
+    (`set_quaternions`/`set_angular_velocities`, and forwarding `d_ang_vel_pred` in `step_mpi`'s
+    velocity loop when `forward_rotation`) restores **np=1 to 0.0% leak** (KE 0.9966 = serial,
+    bit-exact). `verify_distributed.py` now carries full state; so should any real driver.
+  - **Open item — fast-elastic boundary leak (dense + fast only):** against a properly-conserving
+    serial reference (0.9966), a non-overlapping walled elastic (e=1) gas still leaks at the rank
+    boundary, growing with np (np=1 **+0.0%**, np=2 **−6.5%**, np=4 **−15.3%** of KE₀). It does **not**
+    affect the settling/quasi-static regime (validated to ~1e-5). Isolated by experiment: clean
+    cross-rank collisions are **exact** (2-body head-on and a 4-body Newton's-cradle chain across the
+    split both conserve KE to 1.0000); the leak needs a **dense, simultaneously-multi-contacting**
+    cluster on the split and **accumulates** over steps. It is **not** the Jacobi constraint count
+    (letting ghosts query changed nothing), **not** rotational (rotation on/off identical), **not**
+    convergence (velocity iterations 20→200 identical → a structurally *different fixed point*), and
+    **not** the rebuild. Note dense fast XPBD is non-conservative even *serially* (a dense clump loses
+    ~6% on one rank); the distributed solve adds a few % more per dense episode. Next step to pin it:
+    instrument per-contact velocity impulses serial vs distributed in a dense boundary cluster.
+    **TODO before claiming fast dynamics (granular gas / impact).**
 - [x] **Multi-GPU testing & profiling guide:** [multi_gpu_testing.md](multi_gpu_testing.md) — device
       binding, launch recipes, scaling/comm-fraction metrics, the Nsight/MPI profiling toolchain, and
       the ranked optimisation backlog (device-resident pack first).

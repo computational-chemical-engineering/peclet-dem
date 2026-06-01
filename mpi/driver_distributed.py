@@ -60,7 +60,9 @@ def build_sim(n):
 
 
 for step in range(5):
-    # payload columns: vx, vy, vz, id
+    # payload columns: vx, vy, vz, id. NB: a physically-complete driver must also carry the
+    # quaternion + angular velocity through migration (see mpi/verify_distributed.py) -- dropping
+    # rotational state discards spin energy each step. This FROZEN plumbing demo omits it for brevity.
     pay = np.column_stack([vel, ids]) if pos.shape[0] else np.zeros((0, 4))
 
     # 1) reassign ownership
