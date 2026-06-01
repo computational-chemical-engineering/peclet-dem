@@ -166,24 +166,19 @@ if rank == 0:
     print(f"np={size}: cross-rank physics vs serial reference (serial uses the same per-step rebuild "
           f"as the distributed driver, so the comparison isolates the ghost/boundary effect).\n")
 
-    # --- VALIDATION GATE: dissipative settling (the DEM packing regime) must match serial ---
     gate = []
+    # --- A: fast elastic energy conservation across the boundary (no leak at any np) ---
+    print("[VALIDATION] fast elastic, walled box -- energy conserved across the rank boundary:")
+    print(f"  serial conserves KE to {ke(rvA) / ke0:.4f}; distributed to {ke(dvA) / ke0:.4f} "
+          f"(boundary diff = {100 * (ke(rvA) - ke(dvA)) / ke0:+.2f}% of KE_init)")
+    gate.append(report("elastic KE", ke(rvA), ke(dvA), tol=0.01 * ke0))
+    # --- B: dissipative settling (the DEM packing regime) ---
     print("[VALIDATION] settling pack -- penetration & pile geometry (the DEM use case):")
     gate.append(report("max overlap", max_overlap(rpB), max_overlap(dpB), tol=0.05 * radius))
     gate.append(report("mean z", float(rpB[:, 2].mean()), float(dpB[:, 2].mean()), tol=0.02))
     gate.append(report("min z", float(rpB[:, 2].min()), float(dpB[:, 2].min()), tol=0.02))
-    print("[VALIDATION] elastic, np=1 sanity (0 ghosts => step_mpi must equal serial):")
-    gate.append(report("KE (np=1 only)", ke(rvA), ke(dvA), tol=(1.0 if size == 1 else 1e18)))
-
-    # --- DIAGNOSTIC (not a gate): fast-elastic energy conservation at the boundary ---
-    print("\n[DIAGNOSTIC] fast elastic energy conservation (non-overlapping start, walled box):")
-    print(f"  serial conserves KE to {ke(rvA) / ke0:.4f}; distributed to {ke(dvA) / ke0:.4f} "
-          f"(boundary leak = {100 * (ke(rvA) - ke(dvA)) / ke0:+.1f}% of KE_init)")
-    print("  NOTE: the distributed scheme leaks energy at rank boundaries under FAST dynamics, growing")
-    print("  with np (np=1 is exact). It does NOT affect the quasi-static settling regime above. Root")
-    print("  cause = velocity-solve restitution at the boundary; see mpi/README.md (open item).")
 
     ok = all(gate)
-    print(f"\n{'OK' if ok else 'FAIL'} (np={size}): {sum(gate)}/{len(gate)} validation observables match"
-          f" (settling regime + np=1 sanity)")
+    print(f"\n{'OK' if ok else 'FAIL'} (np={size}): {sum(gate)}/{len(gate)} cross-rank observables "
+          f"match serial (fast-elastic energy + quasi-static settling)")
     sys.exit(0 if ok else 1)

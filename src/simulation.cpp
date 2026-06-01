@@ -885,11 +885,13 @@ void Simulation::mpi_gather_ghosts() {
   if (ng == 0)
     return;
 
-  // (a) Positions (xyz + periodic image shift, .w = inv_mass) -- one MPI exchange. pos_pred == pos at
-  //     gather time, so fill it with a device-side copy (no MPI).
+  // (a) Positions (xyz + periodic image shift, .w = inv_mass). d_pos_pred is the *predicted* position
+  //     (predict_velocity already advanced owned d_pos_pred = d_pos + v*dt before this gather), so it
+  //     must be forwarded too -- NOT copied from d_pos. Copying the committed d_pos here left ghosts
+  //     one predict-step stale, corrupting boundary contact normals/impulses (a dense-cluster energy
+  //     leak). Both are forwarded with the periodic image shift applied.
   mpi_forward_positions(ps_.d_pos);
-  CUDA_CHECK(cudaMemcpy(ps_.d_pos_pred + no, ps_.d_pos + no, ng * sizeof(float4),
-                        cudaMemcpyDeviceToDevice));
+  mpi_forward_positions(ps_.d_pos_pred);
 
   // (b) All other per-particle state packed into one record -> a single MPI exchange (vs one/field).
   using GatherPack = MpiParticleHalo::GatherPack;

@@ -106,8 +106,9 @@ unavailable on this box). Done:
       `Irecv`/`Isend`/`Waitall` instead of an NBX consensus round every call (matters at scale /
       multi-node; the 19 transport-core ctests still pass).
 - [x] **Combined gather** — the substep ghost gather packs all non-position fields into one record
-      (`MpiParticleHalo::GatherPack`), so it is **2 MPI exchanges/step instead of 9**; `pos_pred` is a
-      device-side copy of `pos` (no MPI).
+      (`MpiParticleHalo::GatherPack`), so it is **3 MPI exchanges/step instead of 9** (`d_pos`,
+      `d_pos_pred`, the pack). NB: `d_pos_pred` *must* be forwarded, not copied from `d_pos` — see the
+      energy-leak fix below.
 - [x] **`sync_every` (M) knob** — `enable_mpi_step(rcut, sync_every=M)`. M=1 is EXACT (mean err ~2e-5);
       M=4 is ~36% faster at a mean boundary error ~1.7e-3 (`np=2`, 15 settling steps).
 - [x] **`forward_rotation=False`** — skips the ghost quaternion forward; **exact for spheres**
@@ -132,19 +133,19 @@ best measured on real multi-GPU.
     (`set_quaternions`/`set_angular_velocities`, and forwarding `d_ang_vel_pred` in `step_mpi`'s
     velocity loop when `forward_rotation`) restores **np=1 to 0.0% leak** (KE 0.9966 = serial,
     bit-exact). `verify_distributed.py` now carries full state; so should any real driver.
-  - **Open item — fast-elastic boundary leak (dense + fast only):** against a properly-conserving
-    serial reference (0.9966), a non-overlapping walled elastic (e=1) gas still leaks at the rank
-    boundary, growing with np (np=1 **+0.0%**, np=2 **−6.5%**, np=4 **−15.3%** of KE₀). It does **not**
-    affect the settling/quasi-static regime (validated to ~1e-5). Isolated by experiment: clean
-    cross-rank collisions are **exact** (2-body head-on and a 4-body Newton's-cradle chain across the
-    split both conserve KE to 1.0000); the leak needs a **dense, simultaneously-multi-contacting**
-    cluster on the split and **accumulates** over steps. It is **not** the Jacobi constraint count
-    (letting ghosts query changed nothing), **not** rotational (rotation on/off identical), **not**
-    convergence (velocity iterations 20→200 identical → a structurally *different fixed point*), and
-    **not** the rebuild. Note dense fast XPBD is non-conservative even *serially* (a dense clump loses
-    ~6% on one rank); the distributed solve adds a few % more per dense episode. Next step to pin it:
-    instrument per-contact velocity impulses serial vs distributed in a dense boundary cluster.
-    **TODO before claiming fast dynamics (granular gas / impact).**
+  - **FIXED — fast-elastic boundary leak (was a stale ghost `d_pos_pred`):** a non-overlapping walled
+    elastic (e=1) gas now conserves KE **identically to serial at every np** (np=1/2/4 all 0.9966 vs
+    serial 0.9966; boundary diff < 0.01%). Root cause, found by per-contact impulse instrumentation:
+    the substep gather filled the ghost **predicted** position by *copying the committed* `d_pos`
+    (`ghost d_pos_pred = ghost d_pos`) on the assumption `pos_pred == pos` at gather time. But
+    `predict_velocity` already advances `d_pos_pred = d_pos + v·dt`, so ghosts entered the solve **one
+    predict-step stale** (~`v·dt`), giving boundary contacts a slightly wrong normal/relative velocity
+    and hence a wrong impulse — small per contact, systematically dissipative, accumulating, and
+    growing with the boundary (ghost) fraction → with np. Invisible in clean 2-/4-body collisions
+    (exact) and in quasi-static settling (~1e-5); only dense+fast clusters exposed it. Fix:
+    `mpi_gather_ghosts` forwards `d_pos_pred` with the periodic shift, like `d_pos` (one extra
+    exchange/step, ~0.2 ms). This was a regression from the step7c "combined gather" optimisation.
+    `verify_distributed.py`'s fast-elastic KE is now a hard gate (passes np=1/2/4).
 - [x] **Multi-GPU testing & profiling guide:** [multi_gpu_testing.md](multi_gpu_testing.md) — device
       binding, launch recipes, scaling/comm-fraction metrics, the Nsight/MPI profiling toolchain, and
       the ranked optimisation backlog (device-resident pack first).
