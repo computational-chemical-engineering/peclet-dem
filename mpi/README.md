@@ -47,6 +47,19 @@ environment:
   → needs a fresh rebuild for the sm_120 GPU.
 - `mpi4py` is present in system Python but **not in packing's `.venv`**.
 
+### The three communication schemes (validated as standalone DEM drivers)
+All built on transport-core's persistent **`ParticleHalo`** (`build` + field-agnostic `forward` /
+`reverse(sum)`); the communication machinery lives in the core, only the toy force + integrator are
+here. Each matches a serial reference cell-for-cell, np=1,2,4:
+- [x] **A — replicate / frozen ghosts** (`test_dem_step.cpp`): import ghost state, compute boundary
+      pairs twice, integrate owned.
+- [x] **B — Newton-on** (`test_dem_scheme_b.cpp`): import ghost state, compute each pair once,
+      `reverse(force, sum)` the ghost reactions to owners, integrate owned.
+- [x] **C — force-accumulation, local ghost integration** (`test_dem_scheme_c.cpp`): compute each pair
+      once, `reverse(force)` to owners, **`forward(totalForce)` to ghosts, integrate owned + ghosts
+      locally** (no state import between rebuilds). Also checks the ghost copies stay consistent with
+      their owners. This is the scheme that maps to Voronoi conservative-flux exchange.
+
 ### Unblocked + the integration harness (done)
 - [x] **demgpu builds + runs** on the sm_120 GPU with **`-DDEMGPU_ENABLE_MPI=ON`** (the default; the
       prebuilt `.so` was stale from another checkout). Correct call order is `initialize()` *before*
