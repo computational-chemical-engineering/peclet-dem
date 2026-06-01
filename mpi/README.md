@@ -149,9 +149,18 @@ best measured on real multi-GPU.
 - [x] **Multi-GPU testing & profiling guide:** [multi_gpu_testing.md](multi_gpu_testing.md) — device
       binding, launch recipes, scaling/comm-fraction metrics, the Nsight/MPI profiling toolchain, and
       the ranked optimisation backlog (device-resident pack first).
-- [ ] Remaining: periodic-wrap validation (needs ≥2 ranks per periodic axis — a single rank gets no
-      self-ghosts); device-resident pack + reuse a fixed-capacity `Simulation` instead of rebuilding
-      each step (both best measured on real multi-GPU — see the guide).
+  - **Periodic-wrap validated** (`mpi/validate_periodic.py`): a periodic axis only works distributed
+    if it is split across ≥2 ranks (a rank never ghosts to itself), so the test makes exactly the
+    ORB-split axes periodic via the halo (X at np=2; X+Y at np=4) and walls the rest, comparing to a
+    serial reference that uses demgpu's *internal* periodicity. Deterministic **2-body** (single-axis,
+    0.6→0.8) and **corner** (diagonal X+Y, 0.707→0.8) wrap collisions resolve **exactly** (serial =
+    dist = analytic diameter); the N-body matches serial to mean ~6e-5 with periodicity adding **zero
+    error over the non-periodic baseline** (max identical at np=1/2/4). `withinRcutOfBlock` picks the
+    best periodic image per axis independently, so corner/diagonal images are handled. (Note: a clean
+    per-particle comparison needs a non-overlapping IC — stiff initial overlaps are chaotically
+    sensitive and mask the wrap signal.)
+- [ ] Remaining: device-resident pack + reuse a fixed-capacity `Simulation` instead of rebuilding each
+      step (both best measured on real multi-GPU — see the guide).
 
 Note: packing already has its own MPI scaffolding (`src/mpi/communicator.cpp`, `domain.cpp`); the
 transport-core approach above can complement or supersede it.
