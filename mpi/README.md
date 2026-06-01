@@ -119,12 +119,25 @@ are contention-bound and *not* representative of 1-rank-per-GPU scaling. The rem
 **device-resident pack** (gather/scatter kernels to cut the ~18 synchronous `cudaMemcpy`/step to ~2),
 best measured on real multi-GPU.
 
-- [x] **Cross-rank physics validated** (`mpi/verify_distributed.py`): the observables the `verify_*`
-      scripts report, for scenarios whose contacts straddle the rank split, run serially vs distributed.
-      Settling-pack observables (max pair overlap, mean/min z) match serial to ~1e-5 (np=1/2/4);
-      elastic-gas total KE matches within chaotic tolerance (~2%), with serial and distributed
-      injecting energy identically. Adds `Simulation.set_cuda_device`/`cuda_device_count` for
-      one-rank-per-GPU binding.
+- [x] **Cross-rank physics** (`mpi/verify_distributed.py`): observables the `verify_*` scripts report,
+      for contacts straddling the rank split, serial vs distributed (the serial reference uses the
+      same per-step rebuild as the distributed driver, isolating the genuine boundary effect). Adds
+      `Simulation.set_cuda_device`/`cuda_device_count` for one-rank-per-GPU binding.
+  - **Validated — quasi-static settling (the DEM packing regime):** max pair overlap, mean z, min z
+    match serial to **~1e-5** (np=1/2/4); np=1 (0 ghosts) is bit-exact.
+  - **Open item — fast-elastic energy leak:** with a non-overlapping, walled, elastic (e=1) gas the
+    serial run conserves KE to 0.983 but the distributed run leaks energy at rank boundaries, growing
+    with np (np=1 **+0.0%**, np=2 **−5.1%**, np=4 **−13.8%** of KE₀). It does **not** affect the
+    settling regime above. Diagnosed: it is **not** the Jacobi constraint-count at boundaries (tested:
+    letting ghosts also query for contacts changed nothing) and **not** position-derived velocity
+    (`final_commit` keeps the velocity-solve result); the velocity comes from the velocity-solve, so
+    the leak is in the **restitution/velocity solve at boundary contacts under large relative
+    velocity**. Likely needs the boundary velocity contacts to converge symmetrically across ranks
+    (e.g. reverse-accumulate the ghost velocity impulse to its owner, or more velocity iterations /
+    a velocity-impulse exchange). **TODO: fix before claiming fast-dynamics (granular gas / impact).**
+  - **Caveat — per-step rebuild artifact:** rebuilding a `Simulation` each step (cold restart +
+    float32 round-trip) costs ~1.7% KE and ~0.1 in settled mean-z vs a persistent sim — independent of
+    np; folded into both references here. Removed by the rebuild-free sim (see the perf backlog).
 - [x] **Multi-GPU testing & profiling guide:** [multi_gpu_testing.md](multi_gpu_testing.md) — device
       binding, launch recipes, scaling/comm-fraction metrics, the Nsight/MPI profiling toolchain, and
       the ranked optimisation backlog (device-resident pack first).
