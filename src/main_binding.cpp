@@ -186,8 +186,10 @@ PYBIND11_MODULE(demgpu, m) {
       .def("mpi_build_halo", &Simulation::mpi_build_halo, py::arg("rcut"),
            "Build the owner<->ghost correspondence over current owned positions; returns ghost count")
       .def("enable_mpi_step", &Simulation::enable_mpi_step, py::arg("rcut"),
-           "Enable the EXACT MPI-aware step: gather ghosts (real mass) + per-iteration owner->ghost "
-           "forward, so each owned particle computes its full serial XPBD delta locally")
+           py::arg("sync_every") = 1, py::arg("forward_rotation") = true,
+           "Enable the MPI-aware step: gather ghosts (real mass) + owner->ghost forward during the "
+           "solve. sync_every=1 is EXACT (refresh every iteration); M>1 refreshes every M iterations "
+           "(+last). forward_rotation=False skips ghost quaternion forwards (valid for spheres)")
 #endif
       .def("get_profiling_info", &Simulation::get_profiling_info);
 }

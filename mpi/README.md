@@ -98,10 +98,30 @@ here. Each matches a serial reference cell-for-cell, np=1,2,4:
 - [x] **Validated vs serial** (`mpi/validate_exact.py`, same IC run serially on rank 0 and distributed):
       np=1 **bit-exact** (`0.0`); np=2/4 agree to **mean ~5e-5, max ~4e-3** over 15 settling steps
       (Jacobi atomic-ordering float noise at the split, not a physics error).
-- [ ] Remaining: verify `verify_*` (packing fraction, restitution) across ranks; periodic-wrap
-      validation (needs ≥2 ranks per periodic axis — a single rank gets no self-ghosts); perf
-      (device-resident pack / persistent exchange instead of per-iteration host staging; reuse a
-      fixed-capacity `Simulation` instead of rebuilding each step).
+### Perf pass (`mpi/bench_step.py`)
+The per-step cost is dominated by the **host-staged owner→ghost exchange** (CUDA-aware MPI is
+unavailable on this box). Done:
+- [x] **Persistent direct exchange** in `tpx::halo::ParticleHalo` — after `build()` the neighbour set
+      and message sizes are fixed, so `forward`/`forwardPositions`/`reverse` now use plain
+      `Irecv`/`Isend`/`Waitall` instead of an NBX consensus round every call (matters at scale /
+      multi-node; the 19 transport-core ctests still pass).
+- [x] **Combined gather** — the substep ghost gather packs all non-position fields into one record
+      (`MpiParticleHalo::GatherPack`), so it is **2 MPI exchanges/step instead of 9**; `pos_pred` is a
+      device-side copy of `pos` (no MPI).
+- [x] **`sync_every` (M) knob** — `enable_mpi_step(rcut, sync_every=M)`. M=1 is EXACT (mean err ~2e-5);
+      M=4 is ~36% faster at a mean boundary error ~1.7e-3 (`np=2`, 15 settling steps).
+- [x] **`forward_rotation=False`** — skips the ghost quaternion forward; **exact for spheres**
+      (bit-identical validation) and ~12% faster.
+
+Indicative `np=2`, N=4000 spheres on the single dev GPU: EXACT 10.3 -> **9.0 ms/step**; M=4 **6.6 ms/step**.
+NB: on **one** GPU, `np>1` shares a single device (CUDA contexts serialise), so absolute numbers here
+are contention-bound and *not* representative of 1-rank-per-GPU scaling. The remaining lever is a
+**device-resident pack** (gather/scatter kernels to cut the ~18 synchronous `cudaMemcpy`/step to ~2),
+best measured on real multi-GPU.
+
+- [ ] Remaining: cross-rank `verify_*` (packing fraction, restitution); periodic-wrap validation
+      (needs ≥2 ranks per periodic axis — a single rank gets no self-ghosts); device-resident pack +
+      reuse a fixed-capacity `Simulation` instead of rebuilding each step.
 
 Note: packing already has its own MPI scaffolding (`src/mpi/communicator.cpp`, `domain.cpp`); the
 transport-core approach above can complement or supersede it.

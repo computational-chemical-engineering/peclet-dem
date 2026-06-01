@@ -98,6 +98,15 @@ class MpiParticleHalo {
   void forward_float(const float* owned, float* ghost) { halo_.forward(owned, ghost); }
   void forward_int(const int* owned, int* ghost) { halo_.forward(owned, ghost); }
 
+  // All non-position per-particle state packed into one record, so the substep gather is a single
+  // MPI exchange instead of one per field (latency, not bandwidth, dominates the host-staged path).
+  struct GatherPack {
+    float4 vel, vel_pred, quat, quat_pred, ang_vel, ang_vel_pred, inv_inertia;
+    float scale;
+    int shape;
+  };
+  void forward_pack(const GatherPack* owned, GatherPack* ghost) { halo_.forward(owned, ghost); }
+
  private:
   bool inited_ = false;
   int rank_ = 0, num_owned_ = 0, num_ghost_ = 0;

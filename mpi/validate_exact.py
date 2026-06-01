@@ -11,11 +11,16 @@ inter-rank split -- this isolates MPI-ghost correctness from periodic-wrap handl
 
 Run:  PYTHONPATH=build_sm120:../transport-core/python/build mpirun -np 2 python3 mpi/validate_exact.py
 """
+import os
 import sys
 import numpy as np
 from mpi4py import MPI
 import demgpu
 import tpx_mpi
+
+# M = sync_every (1 = EXACT), R = forward_rotation (1 = forward ghost quaternions). Defaults = EXACT.
+SYNC_EVERY = int(os.environ.get("M", "1"))
+FWD_ROT = bool(int(os.environ.get("R", "1")))
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
@@ -74,7 +79,7 @@ for step in range(nsteps):
     s.set_positions(pos.astype(np.float32))
     s.set_velocities(vel.astype(np.float32))
     s.mpi_init(origin=tuple(dmin), size=tuple(L), gsize=(16, 16, 16), periodic=(False, False, False))
-    s.enable_mpi_step(rcut)
+    s.enable_mpi_step(rcut, sync_every=SYNC_EVERY, forward_rotation=FWD_ROT)
     s.step(dt)
     pos = np.array(s.get_positions(False))[:n].astype(np.float64)
     vel = np.array(s.get_velocities())[:n].astype(np.float64)

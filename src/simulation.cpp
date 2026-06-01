@@ -648,27 +648,32 @@ void Simulation::step_mpi(float dt) {
   reduce_contacts_to_manifolds(ps_);
   CUDA_CHECK(cudaDeviceSynchronize());
 
-  // 4. Velocity solve; refresh ghost velocities from their owners after each iteration.
+  // 4. Velocity solve; refresh ghost velocities from their owners every mpi_sync_every_ iterations.
   for (int i = 0; i < velocity_iterations_; ++i) {
     launch_velocity_solve(ps_);
     launch_apply_velocity_deltas(ps_);
-    mpi_forward4(ps_.d_vel_pred);
+    if ((i + 1) % mpi_sync_every_ == 0 || i == velocity_iterations_ - 1)
+      mpi_forward4(ps_.d_vel_pred);
   }
   CUDA_CHECK(cudaDeviceSynchronize());
 
-  // 5. Apply velocity & predict position, then refresh ghost predicted positions.
+  // 5. Apply velocity & predict position, then refresh ghost predicted positions (+ pose if rotating).
   launch_apply_velocity_and_predict_position(ps_, dt);
   mpi_forward_positions(ps_.d_pos_pred);
-  mpi_forward4(ps_.d_quat_pred);
+  if (mpi_forward_rotation_)
+    mpi_forward4(ps_.d_quat_pred);
   CUDA_CHECK(cudaDeviceSynchronize());
 
-  // 6. Position solve (Projected Jacobi); refresh ghost predicted pose after each iteration.
+  // 6. Position solve (Projected Jacobi); refresh ghost predicted pose every mpi_sync_every_ iters.
   for (int i = 0; i < position_iterations_; ++i) {
     CUDA_CHECK(cudaMemset(ps_.d_max_overlap, 0, sizeof(float)));
     launch_position_solve(ps_);
     launch_apply_updates(ps_);
-    mpi_forward_positions(ps_.d_pos_pred);
-    mpi_forward4(ps_.d_quat_pred);
+    if ((i + 1) % mpi_sync_every_ == 0 || i == position_iterations_ - 1) {
+      mpi_forward_positions(ps_.d_pos_pred);
+      if (mpi_forward_rotation_)
+        mpi_forward4(ps_.d_quat_pred);
+    }
   }
   CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -868,41 +873,63 @@ void Simulation::mpi_gather_ghosts() {
   if (ng == 0)
     return;
 
-  // Full per-particle state: positions (xyz+shift, .w=inv_mass), and translation-invariant fields.
+  // (a) Positions (xyz + periodic image shift, .w = inv_mass) -- one MPI exchange. pos_pred == pos at
+  //     gather time, so fill it with a device-side copy (no MPI).
   mpi_forward_positions(ps_.d_pos);
-  mpi_forward_positions(ps_.d_pos_pred);
-  mpi_forward4(ps_.d_vel);
-  mpi_forward4(ps_.d_vel_pred);
-  mpi_forward4(ps_.d_quat);
-  mpi_forward4(ps_.d_quat_pred);
-  mpi_forward4(ps_.d_ang_vel);
-  mpi_forward4(ps_.d_ang_vel_pred);
-  mpi_forward4(ps_.d_inv_inertia);
-  {
-    std::vector<float> o(no), g(ng);
-    CUDA_CHECK(cudaMemcpy(o.data(), ps_.d_scale, no * sizeof(float), cudaMemcpyDeviceToHost));
-    mpi_halo_->forward_float(o.data(), g.data());
-    CUDA_CHECK(cudaMemcpy(ps_.d_scale + no, g.data(), ng * sizeof(float), cudaMemcpyHostToDevice));
-  }
-  {
-    std::vector<int> o(no), g(ng);
-    CUDA_CHECK(cudaMemcpy(o.data(), ps_.d_shape_ids, no * sizeof(int), cudaMemcpyDeviceToHost));
-    mpi_halo_->forward_int(o.data(), g.data());
-    CUDA_CHECK(cudaMemcpy(ps_.d_shape_ids + no, g.data(), ng * sizeof(int), cudaMemcpyHostToDevice));
-  }
+  CUDA_CHECK(cudaMemcpy(ps_.d_pos_pred + no, ps_.d_pos + no, ng * sizeof(float4),
+                        cudaMemcpyDeviceToDevice));
 
-  // Ghost bookkeeping: mark d_vel.w = 1 (ghost type, matches the periodic-ghost convention) and
-  // self-map d_real_indices (the owning real is on another rank, so velocity-solve deltas land on the
+  // (b) All other per-particle state packed into one record -> a single MPI exchange (vs one/field).
+  using GatherPack = MpiParticleHalo::GatherPack;
+  std::vector<float4> v(no), vp(no), q(no), qp(no), av(no), avp(no), ii(no);
+  std::vector<float> sc(no);
+  std::vector<int> sh(no);
+  CUDA_CHECK(cudaMemcpy(v.data(), ps_.d_vel, no * sizeof(float4), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(vp.data(), ps_.d_vel_pred, no * sizeof(float4), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(q.data(), ps_.d_quat, no * sizeof(float4), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(qp.data(), ps_.d_quat_pred, no * sizeof(float4), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(av.data(), ps_.d_ang_vel, no * sizeof(float4), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(avp.data(), ps_.d_ang_vel_pred, no * sizeof(float4), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(ii.data(), ps_.d_inv_inertia, no * sizeof(float4), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(sc.data(), ps_.d_scale, no * sizeof(float), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(sh.data(), ps_.d_shape_ids, no * sizeof(int), cudaMemcpyDeviceToHost));
+
+  std::vector<GatherPack> op(no), gp(ng);
+  for (int i = 0; i < no; ++i)
+    op[i] = {v[i], vp[i], q[i], qp[i], av[i], avp[i], ii[i], sc[i], sh[i]};
+  mpi_halo_->forward_pack(op.data(), gp.data());
+
+  // Unpack into the ghost slots. Mark d_vel.w = 1 (ghost type, matches the periodic-ghost convention)
+  // and self-map d_real_indices (the owning real is remote, so velocity-solve deltas land on the
   // ghost slot and are discarded by the next forward).
-  std::vector<float4> gvel(ng);
-  CUDA_CHECK(cudaMemcpy(gvel.data(), ps_.d_vel + no, ng * sizeof(float4), cudaMemcpyDeviceToHost));
-  for (auto &v : gvel)
-    v.w = 1.0f;
-  CUDA_CHECK(cudaMemcpy(ps_.d_vel + no, gvel.data(), ng * sizeof(float4), cudaMemcpyHostToDevice));
-  std::vector<int> ri(ng);
-  for (int i = 0; i < ng; ++i)
-    ri[i] = no + i;
-  CUDA_CHECK(cudaMemcpy(ps_.d_real_indices + no, ri.data(), ng * sizeof(int), cudaMemcpyHostToDevice));
+  std::vector<float4> gv(ng), gvp(ng), gq(ng), gqp(ng), gav(ng), gavp(ng), gii(ng);
+  std::vector<float> gsc(ng);
+  std::vector<int> gsh(ng), gri(ng);
+  for (int i = 0; i < ng; ++i) {
+    gv[i] = gp[i].vel;
+    gv[i].w = 1.0f;
+    gvp[i] = gp[i].vel_pred;
+    gq[i] = gp[i].quat;
+    gqp[i] = gp[i].quat_pred;
+    gav[i] = gp[i].ang_vel;
+    gavp[i] = gp[i].ang_vel_pred;
+    gii[i] = gp[i].inv_inertia;
+    gsc[i] = gp[i].scale;
+    gsh[i] = gp[i].shape;
+    gri[i] = no + i;
+  }
+  CUDA_CHECK(cudaMemcpy(ps_.d_vel + no, gv.data(), ng * sizeof(float4), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_vel_pred + no, gvp.data(), ng * sizeof(float4), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_quat + no, gq.data(), ng * sizeof(float4), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_quat_pred + no, gqp.data(), ng * sizeof(float4), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_ang_vel + no, gav.data(), ng * sizeof(float4), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_ang_vel_pred + no, gavp.data(), ng * sizeof(float4),
+                        cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_inv_inertia + no, gii.data(), ng * sizeof(float4),
+                        cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_scale + no, gsc.data(), ng * sizeof(float), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_shape_ids + no, gsh.data(), ng * sizeof(int), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(ps_.d_real_indices + no, gri.data(), ng * sizeof(int), cudaMemcpyHostToDevice));
 }
 #endif
 

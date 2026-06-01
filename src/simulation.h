@@ -79,12 +79,17 @@ public:
                 std::tuple<bool, bool, bool> periodic);
   // (Re)build the owner<->ghost correspondence over the current owned positions; returns ghost count.
   int mpi_build_halo(double rcut);
-  // Enable the EXACT MPI-aware step: every step() gathers ghosts (carrying REAL mass) over the halo
-  // and refreshes them from their owners after each solver iteration, so each owned particle computes
-  // its complete serial XPBD delta locally. `rcut` is the interaction radius (ghost-layer width).
-  void enable_mpi_step(double rcut) {
+  // Enable the MPI-aware step: every step() gathers ghosts (carrying REAL mass) over the halo and
+  // refreshes them from their owners during the solve, so each owned particle computes its serial
+  // XPBD delta locally. `rcut` is the interaction radius (ghost-layer width). `sync_every` is the
+  // owner->ghost refresh interval in solver iterations: 1 = EXACT (refresh every iteration); M>1
+  // refreshes every M iterations (+ the last), trading a small boundary error for fewer host-staged
+  // exchanges (the dominant per-step cost).
+  void enable_mpi_step(double rcut, int sync_every = 1, bool forward_rotation = true) {
     mpi_enabled_ = true;
     mpi_rcut_ = rcut;
+    mpi_sync_every_ = sync_every < 1 ? 1 : sync_every;
+    mpi_forward_rotation_ = forward_rotation;
   }
 #endif
 
@@ -146,6 +151,8 @@ private:
   std::unique_ptr<MpiParticleHalo> mpi_halo_;
   bool mpi_enabled_ = false;
   double mpi_rcut_ = 0.0;
+  int mpi_sync_every_ = 1;
+  bool mpi_forward_rotation_ = true; // forward ghost quaternions during the solve (off => spheres)
   void step_mpi(float dt);       // EXACT distributed pipeline (gather + per-iteration forward)
   void mpi_gather_ghosts();      // build halo, fill ghost slots from owners (full state)
   void mpi_forward4(float4 *d_field);        // owner slice -> ghost slots, verbatim float4
