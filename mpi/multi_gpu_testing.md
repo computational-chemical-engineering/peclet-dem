@@ -40,12 +40,23 @@ Use the system MPI, not ParaView's bundled one (it launches OpenMPI binaries as 
 the sm-matching arch (`CMAKE_CUDA_ARCHITECTURES=native`/`120` on Blackwell). mpi4py must live in the
 same Python as the `demgpu`/`tpx_mpi` modules.
 
-### 1.3 CUDA-aware MPI (optional, unlocks the biggest optimisation)
-The current exchange is **host-staged** (device→host→MPI→host→device) because the box's stock OpenMPI
-is built without CUDA support (device-pointer MPI segfaults — see the transport-core doc). With a
-CUDA-aware MPI (OpenMPI+UCX built `--with-cuda`, or a vendor MPI) the device-resident-pack path
-(§5.1) can hand device pointers straight to MPI and keep the field on the GPU. Confirm with
-`ompi_info --parsable | grep mpi_built_with_cuda_support:value`.
+### 1.3 CUDA-aware MPI — now AVAILABLE locally (unlocks the biggest optimisation)
+The stock `/usr/bin` OpenMPI is built without CUDA (device-pointer MPI segfaults). A **user-space
+CUDA-aware stack is now built** in `~/opt` (OpenMPI 5.0.7 + UCX 1.20.1, both `--with-cuda`,
+`cuda_copy`/`cuda_ipc`); device-pointer `MPI_Send`/`Recv` work (verified). See
+[`../../transport-core/docs/cuda-aware-mpi.md`](../../transport-core/docs/cuda-aware-mpi.md) for the
+full build/runtime recipe. To use it:
+
+```bash
+source ~/opt/cudampi-env.sh                 # PATH/LD_LIBRARY_PATH/OPAL_PREFIX + OMPI_MCA_pml=ucx
+cmake -S <proj> -B build_cudampi -DMPIEXEC_EXECUTABLE=$CUDAMPI_HOME/bin/mpirun  # builds vs the new MPI
+TPX_CUDA_AWARE_MPI=1 mpirun -x TPX_CUDA_AWARE_MPI -np N ./prog                  # device-pointer path
+```
+
+transport-core's `DeviceGridExchange` already has the runtime-gated device-pointer branch (gated on
+`TPX_CUDA_AWARE_MPI`, *not* `MPIX_Query_cuda_support()` which mis-reports 0 here); `test_grid_halo_cuda`
+passes on both paths at np=1/2/4. The packing particle-halo device-resident pack (§5.1) is the
+remaining piece to bring onto this path.
 
 ---
 
