@@ -128,18 +128,22 @@ larger blocks.
 
 ## 5. Optimisation backlog (ranked)
 
-### 5.1 Device-resident pack (biggest lever)
-Today each gather/forward does **separate synchronous `cudaMemcpy`s per field** (~18/step), and each
-serialises the GPU. Replace with:
-1. a **gather kernel** that packs the `sendIdx_` owned records into one contiguous **device** buffer,
-2. **one** D2H of that compact buffer (or, with CUDA-aware MPI, hand the device pointer to MPI),
-3. MPI exchange,
-4. one H2D into the contiguous ghost slots (`[num_real, num_real+num_ghost)` — already contiguous, no
-   scatter needed for the gather; per-iteration forwards write straight into the ghost slab).
+### 5.1 Device-resident pack — IMPLEMENTED (multi-GPU groundwork)
+`src/mpi/device_particle_halo.{cuh,cu}` keeps the forward fully on-device: a **gather kernel** packs
+the (flattened) `sendIdx_` owned records into a contiguous device buffer, MPI transfers it
+**device→device** (CUDA-aware), and the received ghosts land **directly** in the contiguous ghost slab
+`[num_real, num_real+num_ghost)` (no scatter); positions get a per-ghost shift kernel. Driven by
+`tpx::halo::ParticleHalo::flatten()`. Gated on env `TPX_CUDA_AWARE_MPI` in `mpi_forward4`/
+`mpi_forward_positions` (host-staging otherwise). Build demgpu against the CUDA-aware MPI (§1.3) to use
+it.
 
-This cuts ~18 `cudaMemcpy`/step to ~2 and removes the per-field GPU bubbles. With CUDA-aware MPI it
-becomes a true on-device halo (cf. `tpx::halo::DeviceGridExchange` on the Eulerian side). Expose the
-`sendIdx_` flattened list from `tpx::halo::ParticleHalo` to drive the gather kernel.
+**Validated** (`mpi/test_device_halo.cu`): device forward is **bit-identical** to the host-staged
+forward (max|d|=0) at np=2/4. **But on the single GPU it is ~2× slower** (host-staged forward4 ~0.10 ms
+vs device-resident ~0.21 ms at np=2): `cuda_ipc` between two processes on the *same* GPU has fixed
+per-transfer overhead that beats the tiny host D2H/H2D + shared-memory MPI for these small messages,
+and there is **no inter-node host-bounce to eliminate on one node**. The payoff is **real
+multi-GPU/multi-node**, where host-staging pays D2H + network + H2D and device pointers go GPU→GPU
+(NVLink / GPUDirect RDMA). So this is groundwork, kept opt-in; re-profile on multi-GPU to see the win.
 
 ### 5.2 Overlap comm with compute
 Post the ghost forward asynchronously and compute the **interior** (owned particles with no ghost

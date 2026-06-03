@@ -67,6 +67,11 @@ set(DEMGPU_CUDA_SRC
     # Add other cuda files as they are creating
 )
 
+# on-device particle halo (CUDA-aware MPI device-pointer pack); only when transport-core is present
+if (DEMGPU_ENABLE_MPI AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../transport-core/include/tpx/halo/particle_halo.hpp")
+    list(APPEND DEMGPU_CUDA_SRC src/mpi/device_particle_halo.cu)
+endif()
+
 set(DEMGPU_CPP_SRC
     src/main_binding.cpp
     src/simulation.cpp

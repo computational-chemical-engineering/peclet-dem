@@ -30,6 +30,8 @@
 #include "tpx/halo/particle_halo.hpp"
 #include "tpx/halo/particle_migrator.hpp"
 
+#include "mpi/device_particle_halo.cuh"  // on-device gather + device-pointer MPI (CUDA-aware)
+
 class MpiParticleHalo {
  public:
   // Set up the decomposition over the GLOBAL domain. `gsize` is the cell grid the ORB decomposer
@@ -66,11 +68,18 @@ class MpiParticleHalo {
     halo_.build(pv_, rcut);
     num_owned_ = n;
     num_ghost_ = static_cast<int>(halo_.numGhost());
+    // upload the flattened topology for the on-device (CUDA-aware) forward path
+    dev_.setTopology(halo_.flatten(), num_owned_, num_ghost_, halo_.comm());
     return num_ghost_;
   }
 
   int num_owned() const { return num_owned_; }
   int num_ghost() const { return num_ghost_; }
+
+  // Device-resident forwards: owned in d_field[0..num_owned), ghosts in d_field[num_owned..]. Fully
+  // on-device (gather kernel + device-pointer MPI), no host staging -- needs CUDA-aware MPI.
+  void device_forward4(float4* d_field) { dev_.forward4(d_field); }
+  void device_forward_positions(float4* d_field) { dev_.forwardPositions(d_field); }
 
   // owned positions -> ghost positions: xyz receives the periodic image shift, .w (inv_mass) verbatim.
   // `ghost` must have num_ghost() slots.
@@ -113,6 +122,7 @@ class MpiParticleHalo {
   tpx::decomp::BlockDecomposer<3> dec_;
   tpx::halo::ParticleMigrator<3> mig_;
   tpx::halo::ParticleHalo<3> halo_;
+  DeviceParticleHalo dev_;
   std::vector<tpx::Vec<3>> pv_, vo_, vg_;
   std::vector<float> fo_, fg_;
 };

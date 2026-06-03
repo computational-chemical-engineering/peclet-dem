@@ -847,11 +847,25 @@ int Simulation::mpi_build_halo(double rcut) {
   return mpi_halo_->build(h_pos.data(), num_particles_, rcut);
 }
 
+// Device-resident forward path? Gated on env TPX_CUDA_AWARE_MPI (read once) -- needs a CUDA-aware MPI
+// (see transport-core/docs/cuda-aware-mpi.md). When off, the forwards host-stage as before.
+static bool tpx_cuda_aware_mpi() {
+  static const bool v = [] {
+    const char *e = std::getenv("TPX_CUDA_AWARE_MPI");
+    return e && std::atoi(e) != 0;
+  }();
+  return v;
+}
+
 // owner slice [0,num_real) of d_field -> ghost slots [num_real, num_real+num_ghost), verbatim.
 void Simulation::mpi_forward4(float4 *d_field) {
   int no = ps_.num_real, ng = mpi_halo_->num_ghost();
   if (ng == 0)
     return;
+  if (tpx_cuda_aware_mpi()) {  // on-device gather + device-pointer MPI, no host staging
+    mpi_halo_->device_forward4(d_field);
+    return;
+  }
   std::vector<float4> o(no), g(ng);
   CUDA_CHECK(cudaMemcpy(o.data(), d_field, no * sizeof(float4), cudaMemcpyDeviceToHost));
   mpi_halo_->forward4(o.data(), g.data());
@@ -863,6 +877,10 @@ void Simulation::mpi_forward_positions(float4 *d_field) {
   int no = ps_.num_real, ng = mpi_halo_->num_ghost();
   if (ng == 0)
     return;
+  if (tpx_cuda_aware_mpi()) {  // on-device gather + shift + device-pointer MPI
+    mpi_halo_->device_forward_positions(d_field);
+    return;
+  }
   std::vector<float4> o(no), g(ng);
   CUDA_CHECK(cudaMemcpy(o.data(), d_field, no * sizeof(float4), cudaMemcpyDeviceToHost));
   mpi_halo_->forward_positions(o.data(), g.data());
