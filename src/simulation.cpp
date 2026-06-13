@@ -193,7 +193,9 @@ void launch_generate_ghosts(ParticleSystemData ps, float margin);
 extern void launch_narrowphase(ParticleSystemData ps, float global_scale);
 extern void launch_velocity_solve(ParticleSystemData ps);
 extern void launch_position_solve(ParticleSystemData ps);
-extern void launch_friction_velocity(ParticleSystemData ps);
+extern void launch_plane_load(ParticleSystemData ps);
+extern void launch_accumulate_normal_impulse(ParticleSystemData ps);
+extern void launch_contact_friction(ParticleSystemData ps);
 extern void launch_update_growth_scales(ParticleSystemData &ps);
 extern void launch_apply_thermostat(ParticleSystemData ps, float dt);
 void build_bvh(ParticleSystemData &ps, float global_scale);
@@ -603,12 +605,30 @@ void Simulation::step(float dt) {
   reduce_contacts_to_manifolds(ps_);
   CUDA_CHECK(cudaDeviceSynchronize()); // Ensure sorting/weighting is done
 
-  // B. Iterative Solve (Velocity-First)
+  // Plane (wall) friction loads are the one-shot external load (single-layer rigid faces) -- computed here
+  // from the post-gravity velocity, before the normal solve cancels the approach.
+  if (ps_.friction_dynamic > 0.0f)
+    launch_plane_load(ps_);
+
+  // B. Iterative normal (restitution) solve. When friction is on, each iteration accumulates each body-body
+  // contact's normal load (c.friction_lambda_n += the residual approach impulse) so that by the end it holds
+  // the FULL normal impulse the contact carries -- including loads propagated through a force chain.
   for (int i = 0; i < velocity_iterations_; ++i) {
+    if (ps_.friction_dynamic > 0.0f)
+      launch_accumulate_normal_impulse(ps_);
     launch_velocity_solve(ps_);
     launch_apply_velocity_deltas(ps_);
   }
   CUDA_CHECK(cudaDeviceSynchronize());
+
+  // Friction: the single dissipative friction mechanism. Per-contact Coulomb friction in the velocity solve,
+  // run once after the normal loop, bounded by the accumulated velocity-level normal impulse (the contact's
+  // full resting/chain load). No coupling to the position solve.
+  if (ps_.friction_dynamic > 0.0f) {
+    launch_contact_friction(ps_);
+    launch_apply_velocity_deltas(ps_); // friction deltas -> d_vel_pred
+    CUDA_CHECK(cudaDeviceSynchronize());
+  }
 
   // 5. Apply Velocity & Re-Integrate Position
   // Note: d_delta_vel is now cleared. This function effectively acts as
@@ -623,14 +643,6 @@ void Simulation::step(float dt) {
     launch_apply_updates(ps_);
   }
   CUDA_CHECK(cudaDeviceSynchronize());
-
-  // 6b. Fix C: friction velocity feedback (static friction for persistent contacts). The position solve
-  // accumulated the per-contact normal force (friction_lambda_n); remove the tangential relative velocity
-  // Coulomb-bounded by it. Stable (pure damping, no Delta-x/dt) and restitution-preserving. Friction only.
-  if (ps_.friction_dynamic > 0.0f) {
-    launch_friction_velocity(ps_);
-    CUDA_CHECK(cudaDeviceSynchronize());
-  }
 
   // 7. Final Commit
   launch_final_commit(ps_, dt);

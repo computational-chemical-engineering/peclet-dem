@@ -180,12 +180,6 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
 
   float dLambda = -C / (w_total + alpha_tilde);
 
-  // Accumulate the normal Lagrange multiplier (>0 for an overlap) over the position iterations -> the
-  // contact's total normal correction. Fix C reads it as the resting normal force that bounds friction in
-  // the velocity feedback (mu * friction_lambda_n / dt). Gated on friction>0 (frictionless: no write).
-  if (ps.friction_dynamic > 0.0f && dLambda > 0.0f)
-    atomicAdd(&ps.d_contacts[idx].friction_lambda_n, dLambda);
-
   // Apply Delta Position
   float3 dpA = make_float3(n.x * dLambda * invMassA, n.y * dLambda * invMassA,
                            n.z * dLambda * invMassA);
@@ -238,60 +232,8 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
   // Yes, if we added deltas, we increment.
   atomicAdd(ps.d_constraint_counts + idA, 1);
 
-  // ---- XPBD positional (static/dynamic) friction (Mueller et al. 2020) ----
-  // A Coulomb-limited tangential POSITION correction that removes the tangential relative DISPLACEMENT of
-  // the contact points since the contact formed (anchor = start-of-step state, ps.d_pos + the stored anchor
-  // lever arms c.rA/c.rB). It is bounded by mu*|dLambda| -- the normal contact force this iteration -- so it
-  // acts on PERSISTENT/resting contacts (where the velocity-solver friction is inert because its normal
-  // impulse ~ 0). Gated on friction>0, so the frictionless path is byte-identical. Applied with the same
-  // generalized-mass weighting and sign convention as the normal constraint (B negates linear + angular),
-  // and averaged by the same per-contact constraint count (we do not increment it again).
-  if (ps.friction_dynamic > 0.0f) {
-    float3 pA0 = make_float3(ps.d_pos[idA].x, ps.d_pos[idA].y, ps.d_pos[idA].z);
-    float3 dpf = make_float3((pA.x + cur_rA.x) - (pA0.x + c.rA.x),
-                             (pA.y + cur_rA.y) - (pA0.y + c.rA.y),
-                             (pA.z + cur_rA.z) - (pA0.z + c.rA.z));
-    if (idB >= 0) {
-      float3 pB0 = make_float3(ps.d_pos[idB].x, ps.d_pos[idB].y, ps.d_pos[idB].z);
-      dpf.x -= (pB.x + cur_rB.x) - (pB0.x + c.rB.x);
-      dpf.y -= (pB.y + cur_rB.y) - (pB0.y + c.rB.y);
-      dpf.z -= (pB.z + cur_rB.z) - (pB0.z + c.rB.z);
-    }
-    float dpn = dot_product_p(dpf, n);
-    float3 dpt = make_float3(dpf.x - dpn * n.x, dpf.y - dpn * n.y, dpf.z - dpn * n.z);
-    float dpt_len = sqrtf(dot_product_p(dpt, dpt));
-    if (dpt_len > 1e-8f) {
-      float3 t = make_float3(dpt.x / dpt_len, dpt.y / dpt_len, dpt.z / dpt_len);
-      float w_t = compute_w(cur_rA, t, invMassA, invIA) + compute_w(cur_rB, t, invMassB, invIB);
-      if (w_t > 1e-6f) {
-        float dLt = -dpt_len / w_t;                       // remove the tangential slip (dLt <= 0)
-        float maxf = ps.friction_dynamic * fabsf(dLambda); // Coulomb: |f| <= mu * normal force
-        if (dLt < -maxf)
-          dLt = -maxf;                                    // slip (dynamic) if over the cone, else stick
-        float3 dpA_t = make_float3(t.x * dLt * invMassA, t.y * dLt * invMassA, t.z * dLt * invMassA);
-        atomicAddVector(ps.d_delta_pos + idA, make_float4(dpA_t.x, dpA_t.y, dpA_t.z, 0));
-        float3 rnA_t = cross_product_p(cur_rA, t);
-        float3 thA = make_float3(rnA_t.x * invIA.x * dLt, rnA_t.y * invIA.y * dLt, rnA_t.z * invIA.z * dLt);
-        float4 dqA_t = make_float4(0.5f * (thA.x * qA.w + thA.y * qA.z - thA.z * qA.y),
-                                   0.5f * (thA.y * qA.w + thA.z * qA.x - thA.x * qA.z),
-                                   0.5f * (thA.z * qA.w + thA.x * qA.y - thA.y * qA.x),
-                                   0.5f * (-thA.x * qA.x - thA.y * qA.y - thA.z * qA.z));
-        atomicAddVector(ps.d_delta_quat + idA, dqA_t);
-        if (idB >= 0) {
-          float3 dpB_t = make_float3(-t.x * dLt * invMassB, -t.y * dLt * invMassB, -t.z * dLt * invMassB);
-          atomicAddVector(ps.d_delta_pos + idB, make_float4(dpB_t.x, dpB_t.y, dpB_t.z, 0));
-          float3 rnB_t = cross_product_p(cur_rB, t);
-          float3 thB = make_float3(-rnB_t.x * invIB.x * dLt, -rnB_t.y * invIB.y * dLt,
-                                   -rnB_t.z * invIB.z * dLt);
-          float4 dqB_t = make_float4(0.5f * (thB.x * qB.w + thB.y * qB.z - thB.z * qB.y),
-                                     0.5f * (thB.y * qB.w + thB.z * qB.x - thB.x * qB.z),
-                                     0.5f * (thB.z * qB.w + thB.x * qB.y - thB.y * qB.x),
-                                     0.5f * (-thB.x * qB.x - thB.y * qB.y - thB.z * qB.z));
-          atomicAddVector(ps.d_delta_quat + idB, dqB_t);
-        }
-      }
-    }
-  }
+  // (Tangential friction is NOT done here: by design the position solve does pure overlap removal and all
+  // dissipation -- including friction -- lives in the velocity solve. See launch_contact_friction.)
 
   // Track Max Overlap (Penetration = -C)
   // C is typically negative for overlap. So Penetration = -C.
@@ -318,76 +260,134 @@ void launch_position_solve(ParticleSystemData ps) {
 }
 
 // ===================================================================================================
-// Fix C: friction VELOCITY feedback -- static friction for PERSISTENT contacts.
-// A per-contact velocity impulse that removes the tangential relative velocity, Coulomb-bounded by
-// mu * (normal force), where the normal force = friction_lambda_n/dt (the accumulated normal position
-// correction of this step's position solve, ~ the resting contact load). PROVABLY STABLE at any dt: the
-// impulse only DAMPS v_t (it targets v_t -> 0 and is clamped to |v_t|/w_t), so it can never amplify -- there
-// is NO Delta-x/dt coupling (the unstable normal post-stabilization is deliberately NOT coupled to velocity).
-// Tangential only -> the velocity-solver normal/tangential RESTITUTION is untouched. Run ONCE after the
-// position loop. Gated on friction>0 (frictionless path unaffected).
+// The single dissipative friction mechanism: per-contact Coulomb friction in the VELOCITY solve.
+// Runs on the post-gravity-predict velocity, BEFORE the manifold normal solve, so the Coulomb cone is
+// bounded by the VELOCITY-LEVEL normal impulse  lambda_n = max(0, approach)/w_n  -- the clean, correctly
+// scaled normal force. For a resting contact the per-step approach is the external (gravity + growth) load,
+// so lambda_n is the load impulse and friction gives stick (mu>=tan th) / slip a=g(sin th - mu cos th); for
+// an impact lambda_n is the collisional impulse (so the same code is collisional + static friction).
+// Strictly velocity-only -- no read of / coupling to the position solve (design principle: all dissipation
+// lives in the velocity solve, the position solve does pure overlap removal). Gated on friction>0.
+//
+// Coincident plane (idB<0) contacts (a flat face on a plane) are Jacobi-averaged by their per-body count and
+// bounded by the body's aggregate plane load, so a face brakes as one clean force, not N summed impulses
+// (which would diverge). Particle-particle (idB>=0) is per-contact and momentum-conserving: equal/opposite
+// on realA/realB, deduplicated across periodic ghosts (realA>realB skipped) exactly like the manifold solver.
 // ===================================================================================================
-// Pre-pass: per body, sum friction_lambda_n and count over its plane (idB<0)
-// contacts, so the friction solve can bound by the aggregate load and average
-// coincident coplanar contacts (see solve_friction_velocity_kernel).
-__global__ void accumulate_plane_friction_kernel(ParticleSystemData ps) {
+__device__ inline float fric_w_dir(float3 r, float3 dir, float invM, float3 invI) {
+  float3 rn = cross_product_p(r, dir);
+  return invM + rn.x * rn.x * invI.x + rn.y * rn.y * invI.y + rn.z * rn.z * invI.z;
+}
+
+// Run inside the velocity-solve iteration loop: ACCUMULATE each contact's normal impulse lambda_n over the
+// iterations. Each iteration the approach is the residual the manifold normal solve has not yet cancelled,
+// so the running sum telescopes to the contact's FULL normal load -- crucially, the load propagated through a
+// FORCE CHAIN (a deep contact bearing the column above keeps seeing residual approach as the load
+// propagates over iterations). That converged per-contact impulse is the "full resting normal impulse" the
+// velocity solve carries, and the only thing that bounds friction. A periodic-ghost duplicate (realA>realB)
+// is skipped so the canonical copy owns the load.
+__global__ void accumulate_normal_impulse_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= *ps.d_contact_count)
+    return;
+  ContactConstraint c = ps.d_contacts[idx];
+  int idA = c.bodyA, idB = c.bodyB;
+  if (idB < 0)
+    return; // plane/wall contacts: single-layer rigid faces, bounded by the one-shot load (compute_plane_load)
+  int realA = ps.d_real_indices[idA];
+  int realB = ps.d_real_indices[idB];
+  if (realA > realB)
+    return;
+  float invMassA = ps.d_pos[realA].w;
+  float invMassB = ps.d_pos[realB].w;
+  float3 invIA = make_float3(ps.d_inv_inertia[realA].x, ps.d_inv_inertia[realA].y, ps.d_inv_inertia[realA].z);
+  float3 invIB = make_float3(ps.d_inv_inertia[realB].x, ps.d_inv_inertia[realB].y, ps.d_inv_inertia[realB].z);
+  float3 rA = make_float3(c.rA.x, c.rA.y, c.rA.z);
+  float3 rB = make_float3(c.rB.x, c.rB.y, c.rB.z);
+  float3 n = make_float3(c.normal.x, c.normal.y, c.normal.z);
+
+  float3 vA = make_float3(ps.d_vel_pred[realA].x, ps.d_vel_pred[realA].y, ps.d_vel_pred[realA].z);
+  float3 wA = make_float3(ps.d_ang_vel_pred[realA].x, ps.d_ang_vel_pred[realA].y, ps.d_ang_vel_pred[realA].z);
+  float3 vB = make_float3(ps.d_vel_pred[realB].x, ps.d_vel_pred[realB].y, ps.d_vel_pred[realB].z);
+  float3 wB = make_float3(ps.d_ang_vel_pred[realB].x, ps.d_ang_vel_pred[realB].y, ps.d_ang_vel_pred[realB].z);
+  float3 vAc = make_float3(vA.x + cross_product_p(wA, rA).x, vA.y + cross_product_p(wA, rA).y,
+                           vA.z + cross_product_p(wA, rA).z);
+  float3 vBc = make_float3(vB.x + cross_product_p(wB, rB).x, vB.y + cross_product_p(wB, rB).y,
+                           vB.z + cross_product_p(wB, rB).z);
+  // growth: growing particles push their contacts together (same load the normal solve sees)
+  float3 vrel = make_float3(vAc.x - vBc.x + ps.growth_rate * (rA.x - rB.x),
+                            vAc.y - vBc.y + ps.growth_rate * (rA.y - rB.y),
+                            vAc.z - vBc.z + ps.growth_rate * (rA.z - rB.z));
+  float approach = -dot_product_p(vrel, n); // approaching if > 0
+  if (approach <= 0.0f)
+    return;
+  float w_n = fric_w_dir(rA, n, invMassA, invIA) + fric_w_dir(rB, n, invMassB, invIB);
+  if (w_n > 1e-6f)
+    ps.d_contacts[idx].friction_lambda_n += approach / w_n; // accumulate the chain load over iterations
+}
+
+// Run ONCE before the velocity loop: plane (idB<0) contacts are single-layer rigid faces, so their normal
+// load is the ONE-SHOT external (gravity) load -- approach*m (linear; a flat face carries the weight as a net
+// force, not a torque) -- NOT a chain accumulation (a flat face's coplanar contacts converge poorly in the
+// manifold solve, so accumulating would re-count the residual and over-hold). The body load is the MAX over
+// the coplanar contacts; the solve averages the applied impulse by the count so the summed friction ==
+// mu*(body load). Also marks each plane contact active (c.friction_lambda_n>0) so the solve processes it.
+__global__ void compute_plane_load_kernel(ParticleSystemData ps) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= *ps.d_contact_count)
     return;
   ContactConstraint c = ps.d_contacts[idx];
   if (c.bodyB >= 0)
     return; // plane/wall contacts only
-  float fn = c.friction_lambda_n;
-  if (fn <= 0.0f)
+  int idA = c.bodyA;
+  float invMassA = ps.d_pos[idA].w;
+  if (invMassA <= 0.0f)
     return;
-  atomicAdd(&ps.d_plane_friction[c.bodyA].x, fn);
-  atomicAdd(&ps.d_plane_friction[c.bodyA].y, 1.0f);
+  float3 invIA = make_float3(ps.d_inv_inertia[idA].x, ps.d_inv_inertia[idA].y, ps.d_inv_inertia[idA].z);
+  float3 rA = make_float3(c.rA.x, c.rA.y, c.rA.z);
+  float3 n = make_float3(c.normal.x, c.normal.y, c.normal.z);
+  float3 vA = make_float3(ps.d_vel_pred[idA].x, ps.d_vel_pred[idA].y, ps.d_vel_pred[idA].z);
+  float3 wA = make_float3(ps.d_ang_vel_pred[idA].x, ps.d_ang_vel_pred[idA].y, ps.d_ang_vel_pred[idA].z);
+  float3 vAc = make_float3(vA.x + cross_product_p(wA, rA).x, vA.y + cross_product_p(wA, rA).y,
+                           vA.z + cross_product_p(wA, rA).z);
+  float approach = -dot_product_p(vAc, n); // approaching the plane if > 0
+  if (approach <= 0.0f)
+    return;
+  float w_n = fric_w_dir(rA, n, invMassA, invIA);
+  ps.d_contacts[idx].friction_lambda_n = (w_n > 1e-6f) ? approach / w_n : 0.0f; // active flag for the solve
+  atomicMaxFloat(&ps.d_plane_friction[idA].x, approach / invMassA);             // body linear load (approach*m)
+  atomicAdd(&ps.d_plane_friction[idA].y, 1.0f);
 }
 
-__global__ void solve_friction_velocity_kernel(ParticleSystemData ps) {
+// Pass 2: drive the tangential relative velocity toward zero, Coulomb-clamped by mu*lambda_n (an impulse).
+__global__ void solve_contact_friction_kernel(ParticleSystemData ps) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= *ps.d_contact_count)
     return;
   ContactConstraint c = ps.d_contacts[idx];
-  float fn = c.friction_lambda_n; // accumulated normal correction (>= 0)
-  if (fn <= 0.0f)
-    return; // no resting normal force -> no static friction here
+  float lambda_n = c.friction_lambda_n;
+  if (lambda_n <= 0.0f)
+    return; // no approach -> no normal load -> no friction (and skips deduped duplicates)
 
-  // Apply directly to bodyA/bodyB (like the position solve): bodyA is the real owner, bodyB may be a
-  // periodic ghost (its slot is discarded; the ghost's real owner gets friction from its own contact). No
-  // realA/realB remap and NO manifold-style dedup -- that dedup is for the manifold velocity solver and
-  // would wrongly skip raw contacts.
   int idA = c.bodyA, idB = c.bodyB;
-
-  float invMassA = ps.d_pos[idA].w;
-  float invMassB = (idB >= 0) ? ps.d_pos[idB].w : 0.0f;
-  float3 invIA = make_float3(ps.d_inv_inertia[idA].x, ps.d_inv_inertia[idA].y, ps.d_inv_inertia[idA].z);
+  int realA = ps.d_real_indices[idA];
+  int realB = (idB >= 0) ? ps.d_real_indices[idB] : -1;
+  float invMassA = ps.d_pos[realA].w;
+  float invMassB = (idB >= 0) ? ps.d_pos[realB].w : 0.0f;
+  float3 invIA = make_float3(ps.d_inv_inertia[realA].x, ps.d_inv_inertia[realA].y, ps.d_inv_inertia[realA].z);
   float3 invIB = make_float3(0, 0, 0);
   if (idB >= 0)
-    invIB = make_float3(ps.d_inv_inertia[idB].x, ps.d_inv_inertia[idB].y, ps.d_inv_inertia[idB].z);
-  float4 qA = ps.d_quat_pred[idA];
-  float4 qB = make_float4(0, 0, 0, 1);
-  if (idB >= 0)
-    qB = ps.d_quat_pred[idB];
-
-  // current (rotated) lever arms + normal, matching the position solve
-  float4 qA_delta = quat_mult(qA, quat_inverse(ps.d_quat[idA]));
-  float3 rA = rotate_vector(qA_delta, make_float3(c.rA.x, c.rA.y, c.rA.z));
+    invIB = make_float3(ps.d_inv_inertia[realB].x, ps.d_inv_inertia[realB].y, ps.d_inv_inertia[realB].z);
+  float3 rA = make_float3(c.rA.x, c.rA.y, c.rA.z);
   float3 rB = make_float3(c.rB.x, c.rB.y, c.rB.z);
   float3 n = make_float3(c.normal.x, c.normal.y, c.normal.z);
-  if (idB >= 0) {
-    float4 qB_delta = quat_mult(qB, quat_inverse(ps.d_quat[idB]));
-    rB = rotate_vector(qB_delta, rB);
-    n = rotate_vector(qB_delta, n);
-  }
 
-  // tangential relative velocity at the contact point
-  float3 vA = make_float3(ps.d_vel_pred[idA].x, ps.d_vel_pred[idA].y, ps.d_vel_pred[idA].z);
-  float3 wA = make_float3(ps.d_ang_vel_pred[idA].x, ps.d_ang_vel_pred[idA].y, ps.d_ang_vel_pred[idA].z);
+  float3 vA = make_float3(ps.d_vel_pred[realA].x, ps.d_vel_pred[realA].y, ps.d_vel_pred[realA].z);
+  float3 wA = make_float3(ps.d_ang_vel_pred[realA].x, ps.d_ang_vel_pred[realA].y, ps.d_ang_vel_pred[realA].z);
   float3 vB = make_float3(0, 0, 0), wB = make_float3(0, 0, 0);
   if (idB >= 0) {
-    vB = make_float3(ps.d_vel_pred[idB].x, ps.d_vel_pred[idB].y, ps.d_vel_pred[idB].z);
-    wB = make_float3(ps.d_ang_vel_pred[idB].x, ps.d_ang_vel_pred[idB].y, ps.d_ang_vel_pred[idB].z);
+    vB = make_float3(ps.d_vel_pred[realB].x, ps.d_vel_pred[realB].y, ps.d_vel_pred[realB].z);
+    wB = make_float3(ps.d_ang_vel_pred[realB].x, ps.d_ang_vel_pred[realB].y, ps.d_ang_vel_pred[realB].z);
   }
   float3 vAc = make_float3(vA.x + cross_product_p(wA, rA).x, vA.y + cross_product_p(wA, rA).y,
                            vA.z + cross_product_p(wA, rA).z);
@@ -401,7 +401,6 @@ __global__ void solve_friction_velocity_kernel(ParticleSystemData ps) {
     return;
   float3 t = make_float3(vt.x / vt_len, vt.y / vt_len, vt.z / vt_len);
 
-  // tangential generalized inverse mass
   float3 rnA = cross_product_p(rA, t), rnB = cross_product_p(rB, t);
   float w_t = invMassA + invMassB + rnA.x * rnA.x * invIA.x + rnA.y * rnA.y * invIA.y +
               rnA.z * rnA.z * invIA.z + rnB.x * rnB.x * invIB.x + rnB.y * rnB.y * invIB.y +
@@ -409,68 +408,73 @@ __global__ void solve_friction_velocity_kernel(ParticleSystemData ps) {
   if (w_t < 1e-6f)
     return;
 
-  // impulse to drive v_t -> 0, clamped to the Coulomb cone mu*(normal force = fn/dt). lt <= 0 opposes vt;
-  // |lt| <= vt_len/w_t means we can only remove v_t (never reverse it) -> stable at any dt.
-  //
-  // Coincident plane contacts (a flat face resting on a plane -> many coplanar idB<0 contacts on one body)
-  // would each apply a full-strength impulse and Jacobi-SUM to an N-fold overshoot (-> divergence). For
-  // those we (1) bound the cone by the body's AGGREGATE plane load (sum of friction_lambda_n) so the kinetic
-  // limit is mu*N_total/dt (correct), and (2) average the impulse by the plane-contact count (so the static
-  // case removes v_t once). Particle-particle (idB>=0) and single plane contacts are left byte-identical
-  // (fn_bound = fn, inv_n = 1) -> the validated sphere packing / sphere-on-plane paths are untouched.
-  float fn_bound = fn;
+  // Coulomb cone bounded by the velocity-level normal impulse (an impulse already -> no /dt). For a flat face
+  // on a plane, bound by the body's aggregate plane load and average by the coplanar count (else N parallel
+  // impulses Jacobi-sum to an N-fold overshoot). Single plane / particle-particle contacts: bound = lambda_n,
+  // inv_n = 1.
+  float bound = lambda_n;
   float inv_n = 1.0f;
   if (idB < 0) {
     float2 pf = ps.d_plane_friction[idA];
-    fn_bound = pf.x;
+    bound = pf.x;
     if (pf.y > 1.5f)
       inv_n = 1.0f / pf.y;
   }
-  float lt = -vt_len / w_t;
-  float maxf = ps.friction_dynamic * (fn_bound / ps.dt);
+  float lt = -vt_len / w_t;        // drive v_t -> 0 (lt <= 0); |lt| <= vt_len/w_t => only damps (stable)
+  float maxf = ps.friction_dynamic * bound;
   if (lt < -maxf)
     lt = -maxf; // dynamic slip if over the cone, else static stick
-  lt *= inv_n;  // Jacobi average over coincident plane contacts
-  atomicAddVector(ps.d_delta_vel + idA,
+  lt *= inv_n;
+  atomicAddVector(ps.d_delta_vel + realA,
                   make_float4(t.x * lt * invMassA, t.y * lt * invMassA, t.z * lt * invMassA, 0));
-  atomicAddVector(ps.d_delta_ang_vel + idA,
+  atomicAddVector(ps.d_delta_ang_vel + realA,
                   make_float4(rnA.x * invIA.x * lt, rnA.y * invIA.y * lt, rnA.z * invIA.z * lt, 0));
   if (idB >= 0) {
-    atomicAddVector(ps.d_delta_vel + idB,
+    atomicAddVector(ps.d_delta_vel + realB,
                     make_float4(-t.x * lt * invMassB, -t.y * lt * invMassB, -t.z * lt * invMassB, 0));
-    atomicAddVector(ps.d_delta_ang_vel + idB,
+    atomicAddVector(ps.d_delta_ang_vel + realB,
                     make_float4(-rnB.x * invIB.x * lt, -rnB.y * invIB.y * lt, -rnB.z * invIB.z * lt, 0));
   }
 }
 
-__global__ void apply_friction_velocity_kernel(ParticleSystemData ps) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= ps.num_particles)
-    return;
-  float4 dv = ps.d_delta_vel[idx], dw = ps.d_delta_ang_vel[idx];
-  float4 v = ps.d_vel[idx], w = ps.d_ang_vel[idx];
-  ps.d_vel[idx] = make_float4(v.x + dv.x, v.y + dv.y, v.z + dv.z, v.w);
-  ps.d_vel_pred[idx] = ps.d_vel[idx];
-  ps.d_ang_vel[idx] = make_float4(w.x + dw.x, w.y + dw.y, w.z + dw.z, w.w);
-  ps.d_ang_vel_pred[idx] = ps.d_ang_vel[idx];
-  ps.d_delta_vel[idx] = make_float4(0, 0, 0, 0);
-  ps.d_delta_ang_vel[idx] = make_float4(0, 0, 0, 0);
-}
-
-void launch_friction_velocity(ParticleSystemData ps) {
+// Run ONCE before the velocity loop: compute the one-shot plane (idB<0) loads from the post-gravity approach.
+void launch_plane_load(ParticleSystemData ps) {
   int threads = 256;
-  int pblocks = (ps.num_particles + threads - 1) / threads;
-  CUDA_CHECK(cudaMemset(ps.d_delta_vel, 0, ps.num_particles * sizeof(float4)));
-  CUDA_CHECK(cudaMemset(ps.d_delta_ang_vel, 0, ps.num_particles * sizeof(float4)));
   CUDA_CHECK(cudaMemset(ps.d_plane_friction, 0, ps.num_particles * sizeof(float2)));
   int num_contacts;
   CUDA_CHECK(cudaMemcpy(&num_contacts, ps.d_contact_count, sizeof(int), cudaMemcpyDeviceToHost));
   if (num_contacts > 0) {
     int cblocks = (num_contacts + threads - 1) / threads;
-    accumulate_plane_friction_kernel<<<cblocks, threads>>>(ps);
-    solve_friction_velocity_kernel<<<cblocks, threads>>>(ps);
+    compute_plane_load_kernel<<<cblocks, threads>>>(ps);
     CUDA_CHECK(cudaGetLastError());
   }
-  apply_friction_velocity_kernel<<<pblocks, threads>>>(ps);
-  CUDA_CHECK(cudaGetLastError());
+}
+
+// Called every velocity-solve iteration (alongside the manifold normal solve) to accumulate each body-body
+// contact's normal load (the force-chain load). c.friction_lambda_n is zeroed by the narrowphase.
+void launch_accumulate_normal_impulse(ParticleSystemData ps) {
+  int threads = 256;
+  int num_contacts;
+  CUDA_CHECK(cudaMemcpy(&num_contacts, ps.d_contact_count, sizeof(int), cudaMemcpyDeviceToHost));
+  if (num_contacts > 0) {
+    int cblocks = (num_contacts + threads - 1) / threads;
+    accumulate_normal_impulse_kernel<<<cblocks, threads>>>(ps);
+    CUDA_CHECK(cudaGetLastError());
+  }
+}
+
+// Run ONCE after the velocity loop: friction bounded by the per-contact normal load (body-body: the
+// accumulated chain load; plane: the one-shot body load in d_plane_friction). Accumulates the friction
+// impulse into d_delta_vel / d_delta_ang_vel; the caller applies it with launch_apply_velocity_deltas.
+void launch_contact_friction(ParticleSystemData ps) {
+  int threads = 256;
+  CUDA_CHECK(cudaMemset(ps.d_delta_vel, 0, ps.num_particles * sizeof(float4)));
+  CUDA_CHECK(cudaMemset(ps.d_delta_ang_vel, 0, ps.num_particles * sizeof(float4)));
+  int num_contacts;
+  CUDA_CHECK(cudaMemcpy(&num_contacts, ps.d_contact_count, sizeof(int), cudaMemcpyDeviceToHost));
+  if (num_contacts > 0) {
+    int cblocks = (num_contacts + threads - 1) / threads;
+    solve_contact_friction_kernel<<<cblocks, threads>>>(ps);
+    CUDA_CHECK(cudaGetLastError());
+  }
 }
