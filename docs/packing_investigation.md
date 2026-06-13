@@ -217,6 +217,69 @@ now *controllable* via a trustworthy criterion (the reference's 0.30-0.33 was ob
 under-reporting signal, so it carried unmeasured interpenetration; the fixed signal gives an honest,
 tunable density). No crash, no friction needed (frictionless).
 
+## Phase 4 — friction model analysis (how it works, why it is inert, how to fix it carefully)
+
+### How contact response is modelled
+Each step runs two solves over the once-per-step **manifolds** (a manifold = the group of contact points
+between two bodies A,B, reduced to AGGREGATE geometric sums `normal_sum`, `torque_armA/B_sum`, ...):
+
+* **Velocity solve** (`solver_velocity.cu`) — manifold-aggregate impulses for **restitution** and
+  **collisional friction**:
+  * normal relative velocity `vn_agg = (vA-vB)·N_sum (+ growth)`; **approaching ⇔ vn_agg > 0**;
+  * **normal restitution**: target `vn_target = -e_n · vn_agg`, normal impulse `λ = (vn_target - vn_agg)/w`
+    `= -(1+e_n)·vn_agg / w`  → **λ < 0 for an approaching contact**;
+  * **tangential restitution + Coulomb friction**: at the center-of-pressure, tangential rel. velocity
+    `vt`; target `dv_t = (e_t - 1)·|vt|` (a *tangential-restitution* target: `e_t=0` ⇒ stop sliding,
+    `e_t=1` ⇒ no tangential change), impulse `λ_t = dv_t/w_t`, **Coulomb-clamped** to `|λ_t| ≤ μ·(normal
+    impulse)`.
+* **Position solve** (`solver_position.cu`) — post-stabilization that removes penetration. For a *resting*
+  contact the actual normal contact FORCE lives here as the constraint's Lagrange multiplier `Δλ_n`, NOT in
+  the velocity solve.
+
+### Why friction is inert — two distinct issues
+1. **Coulomb-limit sign (and a regression I introduced).** The normal impulse `λ` is **negative** for
+   approaching contacts. The original `max_f = μ·λ` is therefore negative and the clamp is malformed. My
+   Phase-3 NaN-guard changed it to `μ·max(λ,0)`, which is **0 for every approaching contact** — i.e. it
+   *disabled* collisional friction entirely (that is why even oblique collisions now show no tangential
+   damping / no spin). The correct Coulomb limit is **`μ·|λ|`**.
+2. **No static/persistent friction (fundamental).** Even with `μ·|λ|`, the velocity-solve normal impulse
+   `λ ≈ 0` for a *resting* contact (`vn_agg ≈ 0` — there is no approach velocity to cancel). So `μ·|λ| ≈ 0`
+   ⇒ no friction. The velocity-solver friction is **collisional only**; it acts during impacts, never on
+   the persistent contacts of a packing or a pile. The normal force that should bound friction in a resting
+   contact is the *position* solver's `Δλ_n`, which the friction code never sees.
+
+### Restitution is separate and must be preserved
+Normal restitution (`e_n`, the normal impulse) and tangential restitution (`e_t`, the `dv_t` target) are
+velocity-solver mechanisms, orthogonal to the Coulomb clamp, and matter for collisional regimes (fluidized
+beds). The friction repair must change only the Coulomb *limit* and add a new persistent-friction
+mechanism — it must not alter the restitution targets or the normal/tangential impulses themselves.
+
+### Proposed fix — staged and careful
+* **Fix A (small, safe): collisional friction.** Set the Coulomb limit to `μ·|λ|` (replacing the
+  `max(λ,0)` regression). Restores impact friction (oblique-collision tangential damping, backspin) with
+  zero effect on restitution. Validate with a clean oblique-bounce / backspin test.
+* **Fix B (the real one for packing): positional (static) friction in the position solver.** The standard
+  XPBD dynamic-friction step (Müller et al. 2020, *Detailed Rigid Body Simulation with XPBD*): after the
+  normal position constraint yields `Δλ_n`, apply a tangential positional correction limited by `μ·Δλ_n`
+  that removes the tangential relative *displacement* accumulated since the contact formed (anchor = the
+  start-of-step contact point, since contacts are detected once per step). This bounds friction by the
+  actual resting contact force, so it works for persistent contacts (packing, piles), and is fully
+  decoupled from the velocity-solver restitution → fluidized-bed behaviour is untouched.
+
+### Risks / things to be careful about
+* **Manifold aggregation:** friction acts at the center-of-pressure (`rA_cp/rB_cp` already computed);
+  positional friction must use the same aggregate point, and per-point vs aggregate matters for multi-point
+  manifolds (rings).
+* **Anchors:** positional friction needs a per-contact tangential anchor and the accumulated `Δλ_n`; with
+  once-per-step detection the anchor is the contact's start-of-step position.
+* **Static vs dynamic μ:** the API exposes only `friction_dynamic`; using it as the static limit is the
+  common approximation.
+* **Growth term:** the growth separation velocity is folded into `vn_agg`/`v_rel_point`; positional
+  friction must not double-count it.
+
+Recommended order: Fix A first (one line, restores+validates collisional friction and undoes my
+regression), then Fix B (the substantive change that makes frictional *packing* — φ(μ) — possible).
+
 ## Summary
 
 "Periodic packing doesn't reach max random packing" was **not a fundamental engine defect**. Root causes,
