@@ -114,3 +114,46 @@ The engine defect is twofold and actionable:
 Planned Phase 2: (a) fix the overlap measurement so the criterion is meaningful (report the committed
 detection-time overlap; have the protocol use it), (b) trace and fix the stuck deep-overlap pairs, then
 (c) re-run the adaptive protocol and validate a clean RCP (Z≈6, overlap ≪ 1 %, isotropic g(r)).
+
+## Phase 2 — the engine is sound; the fix is a correct signal + a tuned protocol
+
+Artifact: `phase2_protocol_fixed.py` (the annealing protocol driven by a correct Python overlap signal).
+
+### Finding 2.1 — the position solver is correct
+Two spheres at 50 % overlap snap to exactly touching (`d=1.0000`) in a single step. The solver resolves
+isolated overlaps exactly; it does not "leave overlaps unresolved" as Phase 0 suggested.
+
+### Finding 2.2 — both engine overlap *queries* are wrong; the solve is fine
+Ground truth (brute-force min-image, confirmed by `pack_meter`) on a dense φ=0.68 state: true max overlap
+**0.389**. The engine reports `get_max_overlap()` = **0.035** (under, position-solver residual on the stale
+once-per-step contact list) and `compute_overlaps()` = **0.963** (over, a periodic-ghost artifact). Periodic
+vs walls packings are otherwise identical (φ_corr 0.658, Z 4.6 both), so the bad ghost overlaps corrupt the
+*measurement*, not the *solve*. The deep "stuck overlaps" of Phase 0/1 were **over-jamming defects created
+when the protocol overshoots past RCP** — driven by the under-reporting control signal — not a solver bug.
+
+### Finding 2.3 — with a correct signal + tuned protocol the engine reaches a genuine RCP
+Driving the annealing protocol (MB seed, elastic + thermostat growth, adaptive growth keyed to a
+brute-force-correct Python overlap, dissipative cooling + a final quench) with **gentle growth** (so the
+`gf³` overlap rise near jamming is slow enough for the feedback to engage) yields, for periodic monodisperse
+spheres:
+
+```
+phi = 0.632 (~RCP)   max_overlap 0.3%   KE 2e-6 (settled)   g(r) contact peak r/D = 0.992
+coordination Z vs contact gap tolerance (RCP contacts are ~touching, so a compression-only test undercounts):
+  gap +0.000: Z = 5.34       gap +0.002: Z = 6.03 (isostatic)      gap +0.005: Z = 6.28, 0 rattlers
+```
+
+φ ≈ 0.64, isostatic Z ≈ 6, contact-touching g(r), ~0 rattlers — a **textbook random close packing**.
+
+### Phase 2 conclusion
+The packing engine is fundamentally **sound**. "Periodic packing doesn't reach max density" was caused by
+(1) the broken meter (reported the design φ), (2) the broken control signal (`get_max_overlap` under-reports
+→ the adaptive growth overshoots past RCP into a collapsed/over-jammed state), and (3) growth too fast for
+the feedback to engage near jamming — not a defect in the XPBD solver. With a correct overlap signal and a
+gentle-growth + quench protocol the engine produces a genuine RCP.
+
+Remaining engine improvement (worth doing so C++/test consumers get a correct native signal, not just the
+Python driver): fix `compute_overlaps()`'s periodic-ghost over-reporting and/or make `get_max_overlap()`
+report the committed (not mid-solve-residual) overlap, then the protocol can use the engine query directly.
+Then: package the tuned protocol as a reusable entry point, run the friction sweep (φ(μ): 0.64 → 0.55), and
+re-validate the ring (hollow-cylinder) packing.
