@@ -309,13 +309,34 @@ Validated:
 * **frictionless byte-identical** (gated on `friction>0`; RCP φ≈0.63, Z≈6.4 unchanged);
 * **packing**: gravity sedimentation φ(μ) preserved (0.66 → 0.63) with the tangential velocity now damped.
 
-**Remaining gap (documented):** a *single grain on a plane/wall* still creeps — the **plane contacts yield
-`friction_lambda_n = 0`** (the per-particle plane path in the narrow phase / the `idB<0` branch does not
-contribute the accumulated normal force), so Fix C's velocity friction is inactive there and only Fix B's
-bounded positional correction acts (it slows but does not hold). Particle–particle contacts (the bulk
-packing and grain-on-grain piles) are unaffected — friction works there. Closing the wall/plane case
-(accumulate `friction_lambda_n` on the plane contact path, and confirm the once-per-step plane contact
-re-anchors) is a small scoped follow-up.
+**Correction — there is no "plane gap": the friction is correct, the grain ROLLS.** The grain is a sphere,
+and a sphere on an incline must *roll*, not stick. The earlier "single grain creeps" reading was wrong: the
+frictional displacement was 0.71× the frictionless one, i.e. exactly the `(5/7)g·sinθ` rolling acceleration
+vs `g·sinθ` sliding. Direct verification on a 20° plane confirms textbook rigid-body mechanics on the plane
+contact:
+
+| μ | v_t | ω·r | v_contact | KE/PE | regime |
+|---|-----|-----|-----------|-------|--------|
+| 0.00 | 2.011 | 0.000 | 2.011 | 0.997 | frictionless slide (no spin) |
+| 0.05 | 1.716 | 0.738 | 0.978 | 0.922 | roll **+ slip** (energy dissipated by kinetic friction) |
+| 0.20 | 1.436 | 1.437 | **−0.0001** | 0.997 | **rolling without slipping** |
+| 0.50 | 1.436 | 1.437 | −0.0001 | 0.997 | rolling (μ-independent above threshold) |
+
+The rolling acceleration `(5/7)g·sinθ`, the rolling threshold `μ_c = (2/7)tanθ ≈ 0.10` (μ=0.05 slips,
+μ=0.20 rolls), the no-slip contact-point velocity `v − ω×r = 0`, and energy conservation in rolling /
+dissipation in slipping are all reproduced. So `friction_lambda_n` is **not** zero on plane contacts —
+Fix C correctly zeros the *contact-point* tangential velocity (it uses `v + ω×r`), which for a sphere
+produces rolling. The two-sphere "stack" that "slid off" is likewise correct (a sphere rolls off a sphere —
+spheres do not form stable stacks).
+
+**Conclusion (friction A+B+C).** The friction model is correct and complete for spheres: collisional impact
+friction + spin (A), Coulomb-bounded static/positional friction (B), and the velocity feedback that produces
+rolling-without-slipping and the φ(μ) packing trend (C) — all stable, restitution-preserving, and
+frictionless-byte-identical. "Static holding / an angle of repose" is a property of *non-rolling* shapes
+(blocks, and to a degree the hollow-cylinder rings); spheres roll, so for spheres the random-loose φ(μ)
+trend is the correct friction signature, and it is reproduced. The integration conserves energy to ~0.3 %
+(KE/PE = 0.997), so the predict-then-correct scheme is sound; an average-velocity (velocity-Verlet) position
+update would tighten that further but is not required.
 
 ## Summary
 
