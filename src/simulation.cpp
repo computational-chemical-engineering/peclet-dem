@@ -254,6 +254,7 @@ void Simulation::initialize(int shape_type, float radius, float height,
   allocate_device(ps_.d_delta_vel, capacity);
   allocate_device(ps_.d_delta_quat, capacity);
   allocate_device(ps_.d_delta_ang_vel, capacity);
+  allocate_device(ps_.d_plane_friction, capacity); // Fix C plane-contact scratch
 
   allocate_device(ps_.d_constraint_counts, capacity);
   allocate_device(ps_.d_constraint_counts, capacity);
@@ -315,6 +316,13 @@ void Simulation::initialize(int shape_type, float radius, float height,
       spacing = 1e-3f; // Clamp to avoid explosion
 
     h_points = generate_cylinder_points(cyl_params, spacing);
+  } else if (shape_type == 3) {
+    // BOX / CUBE (ID=3): a cube with half-extent = radius (side = 2*radius).
+    type = SHAPE_ANALYTIC_BOX;
+    params = make_float4(radius, radius, radius, 0);
+    BoxParams box_params{radius, radius, radius};
+    float spacing = std::max(radius * 0.5f, 1e-3f); // 5x5 grid/face incl. corners
+    h_points = generate_box_points(box_params, spacing);
   } else {
     // SPHERE (ID=1)
     if (type != SHAPE_ANALYTIC_SPHERE && type != SHAPE_ANALYTIC_HOLLOW_CYLINDER)
@@ -397,6 +405,14 @@ void Simulation::initialize(int shape_type, float radius, float height,
       inv_I_yy = 1.0f / I_xx;
     if (I_zz > 1e-6f)
       inv_I_zz = 1.0f / I_zz;
+  } else if (shape_type == 3) { // Cube: I = (1/6) m L^2, L = 2*radius, m = 1
+    float L = 2.0f * base_radius_;
+    float I = (1.0f / 6.0f) * L * L;
+    if (I > 1e-6f) {
+      inv_I_xx = 1.0f / I;
+      inv_I_yy = 1.0f / I;
+      inv_I_zz = 1.0f / I;
+    }
   }
 
   std::vector<float4> h_inv_inertia(num_particles_);

@@ -119,6 +119,12 @@ struct ParticleSystemData {
   float4 *d_delta_vel;
   float4 *d_delta_ang_vel;
   int *d_constraint_counts;
+  // Per-body scratch for Fix C static friction on COINCIDENT plane (idB<0)
+  // contacts: .x = sum of friction_lambda_n over the body's plane contacts (the
+  // aggregate resting normal load), .y = count of those contacts. Lets a flat
+  // face on a plane average its many coplanar contacts (Jacobi) and clamp by the
+  // total load instead of summing N independent full-strength impulses.
+  float2 *d_plane_friction;
 
   // Constraint Buffer
   ContactConstraint *d_contacts;

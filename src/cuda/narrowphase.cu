@@ -13,6 +13,8 @@ __device__ inline float sdf_eval(float3 p, ShapeDescriptor desc) {
     return dem::sdf_sphere(p, desc.params);
   } else if (desc.type == SHAPE_ANALYTIC_HOLLOW_CYLINDER) {
     return dem::sdf_hollow_cylinder(p, desc.params);
+  } else if (desc.type == SHAPE_ANALYTIC_BOX) {
+    return dem::sdf_box(p, desc.params);
   } else if (desc.type == SHAPE_GRID_SDF) {
     // Map to UVW
     // float3 uvw = (p - desc.aabb_min) / (desc.aabb_max - desc.aabb_min);
@@ -210,8 +212,13 @@ __global__ void detect_boundary_kernel(ParticleSystemData ps,
 
   float radius = base_radius * s;
 
-  // Helper lambda for adding contact
-  auto add_plane_contact = [&](float3 normal, float dist, float3 plane_point) {
+  // Helper lambda: emit a plane contact for a surface point whose lever arm
+  // from the body centre is rA (world frame), at signed distance `dist` from the
+  // plane. rA = -normal*radius for an analytic sphere; rA = R(q)*(p_shell*s) for
+  // a point-shell shape (box/cylinder), so each corner/face point is its own
+  // contact and the position solver/friction see the true contact geometry.
+  auto add_plane_contact = [&](float3 normal, float dist, float3 plane_point,
+                               float3 rA) {
     if (dist < safety_margin) {
       if (dist < 0) {
         atomicMaxFloat(ps.d_max_overlap, -dist);
@@ -226,8 +233,7 @@ __global__ void detect_boundary_kernel(ParticleSystemData ps,
       c.bodyA = idx;
       c.bodyB = -1; // Wall/Plane
       c.normal = make_float4(normal.x, normal.y, normal.z, 0.0f);
-      c.rA = make_float4(-normal.x * radius, -normal.y * radius,
-                         -normal.z * radius, 0.0f);
+      c.rA = make_float4(rA.x, rA.y, rA.z, 0.0f);
       // Store World Space Contact Point on Plane in rB (Anchor)
       c.rB = make_float4(plane_point.x, plane_point.y, plane_point.z, 0.0f);
       c.dist = dist;
@@ -236,19 +242,40 @@ __global__ void detect_boundary_kernel(ParticleSystemData ps,
     }
   };
 
+  int num_points = desc.num_points;
+  float4 *shell = desc.d_fine_points;
+  float3 posA = make_float3(p_w.x, p_w.y, p_w.z);
+
   // Iterate over Explicit Planes
   for (int i = 0; i < ps.num_planes; ++i) {
     Plane p = ps.d_planes[i];
-    // Distance from point to plane: dot(pos - plane_point, normal)
-    float3 diff =
-        make_float3(p_w.x - p.point.x, p_w.y - p.point.y, p_w.z - p.point.z);
-    float signed_dist_center =
-        diff.x * p.normal.x + diff.y * p.normal.y + diff.z * p.normal.z;
 
-    // Surface distance
-    float dist = signed_dist_center - radius;
-
-    add_plane_contact(p.normal, dist, p.point);
+    if (num_points > 0) {
+      // Point-shell shape (box, cylinder): test each surface point against the
+      // plane in world space; the lever arm rotates with the body.
+      float4 qA = ps.d_quat_pred[idx];
+      for (int k = 0; k < num_points; ++k) {
+        float4 pl = shell[k];
+        float3 rA = rotate_vector(
+            qA, make_float3(pl.x * s, pl.y * s, pl.z * s));
+        float3 pwk = make_float3(posA.x + rA.x, posA.y + rA.y, posA.z + rA.z);
+        float3 diff = make_float3(pwk.x - p.point.x, pwk.y - p.point.y,
+                                  pwk.z - p.point.z);
+        float dist = diff.x * p.normal.x + diff.y * p.normal.y +
+                     diff.z * p.normal.z;
+        add_plane_contact(p.normal, dist, p.point, rA);
+      }
+    } else {
+      // Analytic sphere: centre distance minus radius.
+      float3 diff =
+          make_float3(p_w.x - p.point.x, p_w.y - p.point.y, p_w.z - p.point.z);
+      float signed_dist_center =
+          diff.x * p.normal.x + diff.y * p.normal.y + diff.z * p.normal.z;
+      float dist = signed_dist_center - radius;
+      float3 rA = make_float3(-p.normal.x * radius, -p.normal.y * radius,
+                              -p.normal.z * radius);
+      add_plane_contact(p.normal, dist, p.point, rA);
+    }
   }
 
   // NOTE: Automatic Box Walls are REMOVED per user request.

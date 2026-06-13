@@ -69,3 +69,42 @@ std::vector<float4> generate_cylinder_points(CylinderParams params,
 
   return points;
 }
+
+// Surface points of an axis-aligned box: each of the 6 faces sampled on a grid
+// whose endpoints land on the box edges, so the 8 corners are present (the
+// corners carry the load when the box rests/topples on a plane). Edge/corner
+// points are duplicated across adjacent faces, which is harmless.
+std::vector<float4> generate_box_points(BoxParams p, float spacing) {
+  std::vector<float4> points;
+  auto nseg = [&](float half) {
+    int n = (int)std::ceil(2.0f * half / spacing);
+    return n < 1 ? 1 : n;
+  };
+  int nx = nseg(p.hx), ny = nseg(p.hy), nz = nseg(p.hz);
+  auto lin = [](float half, int i, int n) {
+    return -half + 2.0f * half * (float)i / (float)n;
+  };
+
+  // +/- x faces (vary y,z)
+  for (int j = 0; j <= ny; ++j)
+    for (int k = 0; k <= nz; ++k) {
+      float y = lin(p.hy, j, ny), z = lin(p.hz, k, nz);
+      points.push_back({p.hx, y, z, 0.0f});
+      points.push_back({-p.hx, y, z, 0.0f});
+    }
+  // +/- y faces (vary x,z)
+  for (int i = 0; i <= nx; ++i)
+    for (int k = 0; k <= nz; ++k) {
+      float x = lin(p.hx, i, nx), z = lin(p.hz, k, nz);
+      points.push_back({x, p.hy, z, 0.0f});
+      points.push_back({x, -p.hy, z, 0.0f});
+    }
+  // +/- z faces (vary x,y)
+  for (int i = 0; i <= nx; ++i)
+    for (int j = 0; j <= ny; ++j) {
+      float x = lin(p.hx, i, nx), y = lin(p.hy, j, ny);
+      points.push_back({x, y, p.hz, 0.0f});
+      points.push_back({x, y, -p.hz, 0.0f});
+    }
+  return points;
+}

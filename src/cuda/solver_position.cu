@@ -327,6 +327,23 @@ void launch_position_solve(ParticleSystemData ps) {
 // Tangential only -> the velocity-solver normal/tangential RESTITUTION is untouched. Run ONCE after the
 // position loop. Gated on friction>0 (frictionless path unaffected).
 // ===================================================================================================
+// Pre-pass: per body, sum friction_lambda_n and count over its plane (idB<0)
+// contacts, so the friction solve can bound by the aggregate load and average
+// coincident coplanar contacts (see solve_friction_velocity_kernel).
+__global__ void accumulate_plane_friction_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= *ps.d_contact_count)
+    return;
+  ContactConstraint c = ps.d_contacts[idx];
+  if (c.bodyB >= 0)
+    return; // plane/wall contacts only
+  float fn = c.friction_lambda_n;
+  if (fn <= 0.0f)
+    return;
+  atomicAdd(&ps.d_plane_friction[c.bodyA].x, fn);
+  atomicAdd(&ps.d_plane_friction[c.bodyA].y, 1.0f);
+}
+
 __global__ void solve_friction_velocity_kernel(ParticleSystemData ps) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= *ps.d_contact_count)
@@ -394,10 +411,26 @@ __global__ void solve_friction_velocity_kernel(ParticleSystemData ps) {
 
   // impulse to drive v_t -> 0, clamped to the Coulomb cone mu*(normal force = fn/dt). lt <= 0 opposes vt;
   // |lt| <= vt_len/w_t means we can only remove v_t (never reverse it) -> stable at any dt.
+  //
+  // Coincident plane contacts (a flat face resting on a plane -> many coplanar idB<0 contacts on one body)
+  // would each apply a full-strength impulse and Jacobi-SUM to an N-fold overshoot (-> divergence). For
+  // those we (1) bound the cone by the body's AGGREGATE plane load (sum of friction_lambda_n) so the kinetic
+  // limit is mu*N_total/dt (correct), and (2) average the impulse by the plane-contact count (so the static
+  // case removes v_t once). Particle-particle (idB>=0) and single plane contacts are left byte-identical
+  // (fn_bound = fn, inv_n = 1) -> the validated sphere packing / sphere-on-plane paths are untouched.
+  float fn_bound = fn;
+  float inv_n = 1.0f;
+  if (idB < 0) {
+    float2 pf = ps.d_plane_friction[idA];
+    fn_bound = pf.x;
+    if (pf.y > 1.5f)
+      inv_n = 1.0f / pf.y;
+  }
   float lt = -vt_len / w_t;
-  float maxf = ps.friction_dynamic * (fn / ps.dt);
+  float maxf = ps.friction_dynamic * (fn_bound / ps.dt);
   if (lt < -maxf)
     lt = -maxf; // dynamic slip if over the cone, else static stick
+  lt *= inv_n;  // Jacobi average over coincident plane contacts
   atomicAddVector(ps.d_delta_vel + idA,
                   make_float4(t.x * lt * invMassA, t.y * lt * invMassA, t.z * lt * invMassA, 0));
   atomicAddVector(ps.d_delta_ang_vel + idA,
@@ -429,10 +462,12 @@ void launch_friction_velocity(ParticleSystemData ps) {
   int pblocks = (ps.num_particles + threads - 1) / threads;
   CUDA_CHECK(cudaMemset(ps.d_delta_vel, 0, ps.num_particles * sizeof(float4)));
   CUDA_CHECK(cudaMemset(ps.d_delta_ang_vel, 0, ps.num_particles * sizeof(float4)));
+  CUDA_CHECK(cudaMemset(ps.d_plane_friction, 0, ps.num_particles * sizeof(float2)));
   int num_contacts;
   CUDA_CHECK(cudaMemcpy(&num_contacts, ps.d_contact_count, sizeof(int), cudaMemcpyDeviceToHost));
   if (num_contacts > 0) {
     int cblocks = (num_contacts + threads - 1) / threads;
+    accumulate_plane_friction_kernel<<<cblocks, threads>>>(ps);
     solve_friction_velocity_kernel<<<cblocks, threads>>>(ps);
     CUDA_CHECK(cudaGetLastError());
   }

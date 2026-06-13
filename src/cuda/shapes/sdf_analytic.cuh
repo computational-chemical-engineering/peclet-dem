@@ -48,4 +48,18 @@ __host__ __device__ inline float sdf_sphere(float3 p, float4 params) {
   return length(p) - params.x;
 }
 
+// -----------------------------------------------------------------------------
+// Analytic Box / Cuboid SDF (exact)
+// -----------------------------------------------------------------------------
+// params.x,y,z = half-extents (hx, hy, hz); a cube has hx==hy==hz.
+__host__ __device__ inline float sdf_box(float3 p, float4 params) {
+  float dx = fabsf(p.x) - params.x;
+  float dy = fabsf(p.y) - params.y;
+  float dz = fabsf(p.z) - params.z;
+  float ox = fmaxf(dx, 0.0f), oy = fmaxf(dy, 0.0f), oz = fmaxf(dz, 0.0f);
+  float outside = sqrtf(ox * ox + oy * oy + oz * oz);
+  float inside = fminf(fmaxf(dx, fmaxf(dy, dz)), 0.0f);
+  return outside + inside;
+}
+
 } // namespace dem
