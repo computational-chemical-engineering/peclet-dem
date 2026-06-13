@@ -193,6 +193,7 @@ void launch_generate_ghosts(ParticleSystemData ps, float margin);
 extern void launch_narrowphase(ParticleSystemData ps, float global_scale);
 extern void launch_velocity_solve(ParticleSystemData ps);
 extern void launch_position_solve(ParticleSystemData ps);
+extern void launch_friction_velocity(ParticleSystemData ps);
 extern void launch_update_growth_scales(ParticleSystemData &ps);
 extern void launch_apply_thermostat(ParticleSystemData ps, float dt);
 void build_bvh(ParticleSystemData &ps, float global_scale);
@@ -606,6 +607,14 @@ void Simulation::step(float dt) {
     launch_apply_updates(ps_);
   }
   CUDA_CHECK(cudaDeviceSynchronize());
+
+  // 6b. Fix C: friction velocity feedback (static friction for persistent contacts). The position solve
+  // accumulated the per-contact normal force (friction_lambda_n); remove the tangential relative velocity
+  // Coulomb-bounded by it. Stable (pure damping, no Delta-x/dt) and restitution-preserving. Friction only.
+  if (ps_.friction_dynamic > 0.0f) {
+    launch_friction_velocity(ps_);
+    CUDA_CHECK(cudaDeviceSynchronize());
+  }
 
   // 7. Final Commit
   launch_final_commit(ps_, dt);

@@ -180,6 +180,12 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
 
   float dLambda = -C / (w_total + alpha_tilde);
 
+  // Accumulate the normal Lagrange multiplier (>0 for an overlap) over the position iterations -> the
+  // contact's total normal correction. Fix C reads it as the resting normal force that bounds friction in
+  // the velocity feedback (mu * friction_lambda_n / dt). Gated on friction>0 (frictionless: no write).
+  if (ps.friction_dynamic > 0.0f && dLambda > 0.0f)
+    atomicAdd(&ps.d_contacts[idx].friction_lambda_n, dLambda);
+
   // Apply Delta Position
   float3 dpA = make_float3(n.x * dLambda * invMassA, n.y * dLambda * invMassA,
                            n.z * dLambda * invMassA);
@@ -308,5 +314,128 @@ void launch_position_solve(ParticleSystemData ps) {
   int blocks = (num_contacts + threads - 1) / threads;
 
   solve_position_jacobi_kernel<<<blocks, threads>>>(ps);
+  CUDA_CHECK(cudaGetLastError());
+}
+
+// ===================================================================================================
+// Fix C: friction VELOCITY feedback -- static friction for PERSISTENT contacts.
+// A per-contact velocity impulse that removes the tangential relative velocity, Coulomb-bounded by
+// mu * (normal force), where the normal force = friction_lambda_n/dt (the accumulated normal position
+// correction of this step's position solve, ~ the resting contact load). PROVABLY STABLE at any dt: the
+// impulse only DAMPS v_t (it targets v_t -> 0 and is clamped to |v_t|/w_t), so it can never amplify -- there
+// is NO Delta-x/dt coupling (the unstable normal post-stabilization is deliberately NOT coupled to velocity).
+// Tangential only -> the velocity-solver normal/tangential RESTITUTION is untouched. Run ONCE after the
+// position loop. Gated on friction>0 (frictionless path unaffected).
+// ===================================================================================================
+__global__ void solve_friction_velocity_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= *ps.d_contact_count)
+    return;
+  ContactConstraint c = ps.d_contacts[idx];
+  float fn = c.friction_lambda_n; // accumulated normal correction (>= 0)
+  if (fn <= 0.0f)
+    return; // no resting normal force -> no static friction here
+
+  // Apply directly to bodyA/bodyB (like the position solve): bodyA is the real owner, bodyB may be a
+  // periodic ghost (its slot is discarded; the ghost's real owner gets friction from its own contact). No
+  // realA/realB remap and NO manifold-style dedup -- that dedup is for the manifold velocity solver and
+  // would wrongly skip raw contacts.
+  int idA = c.bodyA, idB = c.bodyB;
+
+  float invMassA = ps.d_pos[idA].w;
+  float invMassB = (idB >= 0) ? ps.d_pos[idB].w : 0.0f;
+  float3 invIA = make_float3(ps.d_inv_inertia[idA].x, ps.d_inv_inertia[idA].y, ps.d_inv_inertia[idA].z);
+  float3 invIB = make_float3(0, 0, 0);
+  if (idB >= 0)
+    invIB = make_float3(ps.d_inv_inertia[idB].x, ps.d_inv_inertia[idB].y, ps.d_inv_inertia[idB].z);
+  float4 qA = ps.d_quat_pred[idA];
+  float4 qB = make_float4(0, 0, 0, 1);
+  if (idB >= 0)
+    qB = ps.d_quat_pred[idB];
+
+  // current (rotated) lever arms + normal, matching the position solve
+  float4 qA_delta = quat_mult(qA, quat_inverse(ps.d_quat[idA]));
+  float3 rA = rotate_vector(qA_delta, make_float3(c.rA.x, c.rA.y, c.rA.z));
+  float3 rB = make_float3(c.rB.x, c.rB.y, c.rB.z);
+  float3 n = make_float3(c.normal.x, c.normal.y, c.normal.z);
+  if (idB >= 0) {
+    float4 qB_delta = quat_mult(qB, quat_inverse(ps.d_quat[idB]));
+    rB = rotate_vector(qB_delta, rB);
+    n = rotate_vector(qB_delta, n);
+  }
+
+  // tangential relative velocity at the contact point
+  float3 vA = make_float3(ps.d_vel_pred[idA].x, ps.d_vel_pred[idA].y, ps.d_vel_pred[idA].z);
+  float3 wA = make_float3(ps.d_ang_vel_pred[idA].x, ps.d_ang_vel_pred[idA].y, ps.d_ang_vel_pred[idA].z);
+  float3 vB = make_float3(0, 0, 0), wB = make_float3(0, 0, 0);
+  if (idB >= 0) {
+    vB = make_float3(ps.d_vel_pred[idB].x, ps.d_vel_pred[idB].y, ps.d_vel_pred[idB].z);
+    wB = make_float3(ps.d_ang_vel_pred[idB].x, ps.d_ang_vel_pred[idB].y, ps.d_ang_vel_pred[idB].z);
+  }
+  float3 vAc = make_float3(vA.x + cross_product_p(wA, rA).x, vA.y + cross_product_p(wA, rA).y,
+                           vA.z + cross_product_p(wA, rA).z);
+  float3 vBc = make_float3(vB.x + cross_product_p(wB, rB).x, vB.y + cross_product_p(wB, rB).y,
+                           vB.z + cross_product_p(wB, rB).z);
+  float3 vrel = make_float3(vAc.x - vBc.x, vAc.y - vBc.y, vAc.z - vBc.z);
+  float vn = dot_product_p(vrel, n);
+  float3 vt = make_float3(vrel.x - vn * n.x, vrel.y - vn * n.y, vrel.z - vn * n.z);
+  float vt_len = sqrtf(dot_product_p(vt, vt));
+  if (vt_len < 1e-7f)
+    return;
+  float3 t = make_float3(vt.x / vt_len, vt.y / vt_len, vt.z / vt_len);
+
+  // tangential generalized inverse mass
+  float3 rnA = cross_product_p(rA, t), rnB = cross_product_p(rB, t);
+  float w_t = invMassA + invMassB + rnA.x * rnA.x * invIA.x + rnA.y * rnA.y * invIA.y +
+              rnA.z * rnA.z * invIA.z + rnB.x * rnB.x * invIB.x + rnB.y * rnB.y * invIB.y +
+              rnB.z * rnB.z * invIB.z;
+  if (w_t < 1e-6f)
+    return;
+
+  // impulse to drive v_t -> 0, clamped to the Coulomb cone mu*(normal force = fn/dt). lt <= 0 opposes vt;
+  // |lt| <= vt_len/w_t means we can only remove v_t (never reverse it) -> stable at any dt.
+  float lt = -vt_len / w_t;
+  float maxf = ps.friction_dynamic * (fn / ps.dt);
+  if (lt < -maxf)
+    lt = -maxf; // dynamic slip if over the cone, else static stick
+  atomicAddVector(ps.d_delta_vel + idA,
+                  make_float4(t.x * lt * invMassA, t.y * lt * invMassA, t.z * lt * invMassA, 0));
+  atomicAddVector(ps.d_delta_ang_vel + idA,
+                  make_float4(rnA.x * invIA.x * lt, rnA.y * invIA.y * lt, rnA.z * invIA.z * lt, 0));
+  if (idB >= 0) {
+    atomicAddVector(ps.d_delta_vel + idB,
+                    make_float4(-t.x * lt * invMassB, -t.y * lt * invMassB, -t.z * lt * invMassB, 0));
+    atomicAddVector(ps.d_delta_ang_vel + idB,
+                    make_float4(-rnB.x * invIB.x * lt, -rnB.y * invIB.y * lt, -rnB.z * invIB.z * lt, 0));
+  }
+}
+
+__global__ void apply_friction_velocity_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= ps.num_particles)
+    return;
+  float4 dv = ps.d_delta_vel[idx], dw = ps.d_delta_ang_vel[idx];
+  float4 v = ps.d_vel[idx], w = ps.d_ang_vel[idx];
+  ps.d_vel[idx] = make_float4(v.x + dv.x, v.y + dv.y, v.z + dv.z, v.w);
+  ps.d_vel_pred[idx] = ps.d_vel[idx];
+  ps.d_ang_vel[idx] = make_float4(w.x + dw.x, w.y + dw.y, w.z + dw.z, w.w);
+  ps.d_ang_vel_pred[idx] = ps.d_ang_vel[idx];
+  ps.d_delta_vel[idx] = make_float4(0, 0, 0, 0);
+  ps.d_delta_ang_vel[idx] = make_float4(0, 0, 0, 0);
+}
+
+void launch_friction_velocity(ParticleSystemData ps) {
+  int threads = 256;
+  int pblocks = (ps.num_particles + threads - 1) / threads;
+  CUDA_CHECK(cudaMemset(ps.d_delta_vel, 0, ps.num_particles * sizeof(float4)));
+  CUDA_CHECK(cudaMemset(ps.d_delta_ang_vel, 0, ps.num_particles * sizeof(float4)));
+  int num_contacts;
+  CUDA_CHECK(cudaMemcpy(&num_contacts, ps.d_contact_count, sizeof(int), cudaMemcpyDeviceToHost));
+  if (num_contacts > 0) {
+    int cblocks = (num_contacts + threads - 1) / threads;
+    solve_friction_velocity_kernel<<<cblocks, threads>>>(ps);
+    CUDA_CHECK(cudaGetLastError());
+  }
+  apply_friction_velocity_kernel<<<pblocks, threads>>>(ps);
   CUDA_CHECK(cudaGetLastError());
 }

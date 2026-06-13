@@ -293,15 +293,29 @@ weighting and sign convention as the normal constraint, gated on `friction>0`. V
 * **gravity sedimentation φ(μ) shows the random-loose trend**: μ = 0.0/0.2/0.4/0.6 → φ = 0.654/0.638/0.619/
   0.619 (saturating), i.e. friction now demonstrably loosens the packing — the goal.
 
-**Known limitation (a real Fix C):** the engine never feeds the position correction back into velocity
-(it commits `v = v_pred` from the velocity solve only — see Finding 1.2). So positional friction holds a
-*bulk* packing (the collective network + dissipation reach a quasi-static state) but cannot arrest a
-*single* particle under sustained load: on a 20° incline a frictional sphere still slides (μ above the
-friction angle does not hold it; friction only slows it, 4.30→3.07). Completing friction for sustained
-single-contact static cases (piles holding an angle of repose, an isolated grain on a slope) needs a
-velocity-coupling step — derive a velocity contribution from the friction position correction (Δv = Δx_t/dt)
-without disturbing the Phase-A restitution. That is a more invasive, restitution-sensitive change and is
-left as a scoped follow-up; the packing goal (φ(μ)) is met without it.
+**Fix C (done, `solver_position.cu` + `simulation.cpp`): friction VELOCITY feedback.** The engine never
+fed position corrections back into velocity (it commits `v = v_pred` from the velocity solve only —
+Finding 1.2), so positional friction alone holds a *bulk* packing but cannot arrest sliding velocity.
+Fix C adds, after the position loop, a per-contact velocity impulse that drives the tangential relative
+velocity `v_t → 0`, **Coulomb-bounded by `μ·(friction_lambda_n/dt)`** — where `friction_lambda_n` is the
+per-contact normal Lagrange multiplier accumulated during the position solve (the resting contact force).
+Stability (the design constraint): the impulse targets `v_t→0` and is clamped to `|v_t|/w_t`, so it can
+only *damp* (never amplify) at any `dt` — there is **no `Δx/dt` coupling**; the unstable normal
+post-stabilization is deliberately not coupled to velocity. Tangential only → restitution untouched.
+Validated:
+* **stable** — two deeply-overlapping high-friction spheres stay bounded (`vmax≈2.1`) across `dt` from
+  0.02 down to 0.0002 (no blow-up);
+* **restitution exactly preserved** (`e_n` 0/0.5/1.0 → 0/0.5/1.0);
+* **frictionless byte-identical** (gated on `friction>0`; RCP φ≈0.63, Z≈6.4 unchanged);
+* **packing**: gravity sedimentation φ(μ) preserved (0.66 → 0.63) with the tangential velocity now damped.
+
+**Remaining gap (documented):** a *single grain on a plane/wall* still creeps — the **plane contacts yield
+`friction_lambda_n = 0`** (the per-particle plane path in the narrow phase / the `idB<0` branch does not
+contribute the accumulated normal force), so Fix C's velocity friction is inactive there and only Fix B's
+bounded positional correction acts (it slows but does not hold). Particle–particle contacts (the bulk
+packing and grain-on-grain piles) are unaffected — friction works there. Closing the wall/plane case
+(accumulate `friction_lambda_n` on the plane contact path, and confirm the once-per-step plane contact
+re-anchors) is a small scoped follow-up.
 
 ## Summary
 
