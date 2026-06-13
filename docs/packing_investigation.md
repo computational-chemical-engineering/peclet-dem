@@ -173,3 +173,34 @@ re-detection; not worth perturbing the validated step() pipeline.)
 Remaining work: package the tuned protocol as a reusable entry point (replacing the broken
 `verify_packing_spheres.py`), run the friction sweep (φ(μ): 0.64 → 0.55), and re-validate the ring
 (hollow-cylinder) packing against the RingBed reference.
+
+## Phase 3 — packaging, friction, rings
+
+### Finding 3.1 — reusable protocol (`pack.py`)
+`pack.py` packages the validated annealing protocol (`pack_spheres` + `analyze_spheres`), driven by the
+fixed native `compute_overlaps()`. Default frictionless run: φ=0.633, Z=6.01 at the contact gap, g(r) peak
+r/D=0.991 — PASS. This replaces the broken `verify_packing_spheres.py`.
+
+### Finding 3.2 — engine bug fixed: friction velocity solve produced NaN -> crash
+With friction > 0 at dense jamming the run crashed (CUDA illegal access in the BVH build): a single
+position blew up to ~1e8 while velocities stayed ~0 — a runaway position-solver correction. Cause: the
+friction velocity solve divided by the tangential generalized mass `w_total_t` **without a guard** (the
+position solver guards `w_total < 1e-6`; the friction path did not), so a degenerate tangential DOF (or a
+huge normal impulse from a deep overlap) produced an enormous angular impulse -> garbage quaternion ->
+garbage lever arm -> the runaway position correction -> NaN/Inf positions -> illegal access in the BVH.
+Fixed in `solver_velocity.cu` (guard `w_total_t`, clamp `max_f` to the non-negative normal impulse).
+Frictional jamming now completes.
+
+### Finding 3.3 — friction is otherwise non-functional (deeper, separate defect)
+Direct tests (two spheres, sliding and glancing collisions, `restitution_tangent` 0 and 1) show **no
+tangential damping and no induced spin** for any friction coefficient — the friction impulse is computed
+but has no effect on the dynamics. So the φ(μ) jamming sweep cannot be demonstrated: the annealing
+protocol reaches the same RCP (φ≈0.63, Z≈6) for µ = 0, 0.3, 0.5. Two things are needed and are a scoped
+follow-up: (a) repair the friction impulse in the velocity solve (the computed tangential impulse does not
+move the bodies), and (b) note that even when repaired this is a *collisional* (velocity-impulse) friction
+— it acts only on contacts with a normal approach velocity, so a *quasi-static* packing (persistent
+contacts, ~0 normal velocity) needs a position/force-based persistent friction to show the random-loose
+trend. The frictionless RCP (the main result) is unaffected.
+
+### Finding 3.4 — rings
+(in progress)

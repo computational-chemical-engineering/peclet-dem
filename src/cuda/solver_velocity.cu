@@ -316,11 +316,13 @@ __global__ void solve_velocity_jacobi_kernel(ParticleSystemData ps) {
     // lambda. Assuming the user intended to keep the normal impulse lambda for
     // friction.
 
-    // Friction Clamp (Coulomb)
-    float max_f = ps.friction_dynamic * lambda;
-    // Note: lambda > 0 usually.
-    float lambda_t =
-        dv_t_mag / w_total_t; // This was missing in the instruction's context
+    // Friction Clamp (Coulomb). Guard the tangential generalized mass against ~0 (a degenerate tangential
+    // DOF would make lambda_t blow up -> a huge angular impulse -> garbage quaternion -> a runaway position
+    // correction in the next position solve -> NaN/Inf positions -> illegal access in the BVH build). The
+    // position solver guards w_total the same way; the friction path was missing it. max_f uses the
+    // (repulsive, >=0) normal impulse, so clamp lambda only when it is finite and positive.
+    float max_f = ps.friction_dynamic * fmaxf(lambda, 0.0f);
+    float lambda_t = (w_total_t > 1e-6f) ? (dv_t_mag / w_total_t) : 0.0f;
     if (lambda_t < -max_f)
       lambda_t = -max_f;
     if (lambda_t > max_f)
