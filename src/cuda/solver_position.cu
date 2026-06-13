@@ -356,7 +356,23 @@ __global__ void compute_plane_load_kernel(ParticleSystemData ps) {
   float w_n = fric_w_dir(rA, n, invMassA, invIA);
   ps.d_contacts[idx].friction_lambda_n = (w_n > 1e-6f) ? approach / w_n : 0.0f; // active flag for the solve
   atomicMaxFloat(&ps.d_plane_friction[idA].x, approach / invMassA);             // body linear load (approach*m)
-  atomicAdd(&ps.d_plane_friction[idA].y, 1.0f);
+}
+
+// After the velocity loop: per real particle, count its ACTIVE friction contacts into d_plane_friction[].y.
+// The friction solve divides each impulse by this count (Jacobi mass-splitting) -- without it a particle with
+// several contacts receives the SUM of independently computed per-contact friction impulses, which
+// over-relaxes and pumps (rotational) energy until the packing blows up. Single contacts -> count 1 -> no
+// change (sphere roll / cube stick-slip untouched).
+__global__ void count_friction_contacts_kernel(ParticleSystemData ps) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= *ps.d_contact_count)
+    return;
+  ContactConstraint c = ps.d_contacts[idx];
+  if (c.friction_lambda_n <= 0.0f)
+    return; // inactive / deduplicated ghost copy
+  atomicAdd(&ps.d_plane_friction[ps.d_real_indices[c.bodyA]].y, 1.0f);
+  if (c.bodyB >= 0)
+    atomicAdd(&ps.d_plane_friction[ps.d_real_indices[c.bodyB]].y, 1.0f);
 }
 
 // Pass 2: drive the tangential relative velocity toward zero, Coulomb-clamped by mu*lambda_n (an impulse).
@@ -408,18 +424,15 @@ __global__ void solve_contact_friction_kernel(ParticleSystemData ps) {
   if (w_t < 1e-6f)
     return;
 
-  // Coulomb cone bounded by the velocity-level normal impulse (an impulse already -> no /dt). For a flat face
-  // on a plane, bound by the body's aggregate plane load and average by the coplanar count (else N parallel
-  // impulses Jacobi-sum to an N-fold overshoot). Single plane / particle-particle contacts: bound = lambda_n,
-  // inv_n = 1.
-  float bound = lambda_n;
-  float inv_n = 1.0f;
-  if (idB < 0) {
-    float2 pf = ps.d_plane_friction[idA];
-    bound = pf.x;
-    if (pf.y > 1.5f)
-      inv_n = 1.0f / pf.y;
-  }
+  // Coulomb cone bounded by the velocity-level normal impulse (an impulse already -> no /dt): body-body uses
+  // the accumulated chain load lambda_n; a flat face on a plane uses the body's aggregate plane load.
+  float bound = (idB < 0) ? ps.d_plane_friction[idA].x : lambda_n;
+  // Jacobi mass-splitting: divide by the larger of the two bodies' contact counts (symmetric -> momentum
+  // conserved), so summing the per-contact impulses over a body's contacts does not over-relax / inject
+  // energy. A body with one contact -> count 1 -> inv_n = 1 (sphere roll / cube path unchanged).
+  float nA = ps.d_plane_friction[realA].y;
+  float nB = (idB >= 0) ? ps.d_plane_friction[realB].y : 0.0f;
+  float inv_n = 1.0f / fmaxf(fmaxf(nA, nB), 1.0f);
   float lt = -vt_len / w_t;        // drive v_t -> 0 (lt <= 0); |lt| <= vt_len/w_t => only damps (stable)
   float maxf = ps.friction_dynamic * bound;
   if (lt < -maxf)
@@ -466,6 +479,22 @@ void launch_accumulate_normal_impulse(ParticleSystemData ps) {
 // Run ONCE after the velocity loop: friction bounded by the per-contact normal load (body-body: the
 // accumulated chain load; plane: the one-shot body load in d_plane_friction). Accumulates the friction
 // impulse into d_delta_vel / d_delta_ang_vel; the caller applies it with launch_apply_velocity_deltas.
+// Fill d_plane_friction[].y with the per-particle active-contact count (run ONCE after the velocity loop;
+// .x (plane load) was filled by launch_plane_load before the loop). Reused across the friction iterations.
+void launch_count_friction_contacts(ParticleSystemData ps) {
+  int threads = 256;
+  int num_contacts;
+  CUDA_CHECK(cudaMemcpy(&num_contacts, ps.d_contact_count, sizeof(int), cudaMemcpyDeviceToHost));
+  if (num_contacts > 0) {
+    int cblocks = (num_contacts + threads - 1) / threads;
+    count_friction_contacts_kernel<<<cblocks, threads>>>(ps);
+    CUDA_CHECK(cudaGetLastError());
+  }
+}
+
+// One count-averaged friction sweep: accumulates the friction impulse into d_delta_vel/d_delta_ang_vel; the
+// caller applies it with launch_apply_velocity_deltas. Iterated by the caller so the (per-sweep stable,
+// under-relaxed) friction converges to full Coulomb strength -- like the position solver iterates.
 void launch_contact_friction(ParticleSystemData ps) {
   int threads = 256;
   CUDA_CHECK(cudaMemset(ps.d_delta_vel, 0, ps.num_particles * sizeof(float4)));

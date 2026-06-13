@@ -195,6 +195,7 @@ extern void launch_velocity_solve(ParticleSystemData ps);
 extern void launch_position_solve(ParticleSystemData ps);
 extern void launch_plane_load(ParticleSystemData ps);
 extern void launch_accumulate_normal_impulse(ParticleSystemData ps);
+extern void launch_count_friction_contacts(ParticleSystemData ps);
 extern void launch_contact_friction(ParticleSystemData ps);
 extern void launch_update_growth_scales(ParticleSystemData &ps);
 extern void launch_apply_thermostat(ParticleSystemData ps, float dt);
@@ -573,6 +574,15 @@ void Simulation::step(float dt) {
     launch_update_growth_scales(ps_);
   }
 
+  // The growth velocity (growth_rate*(rA-rB)) injected into the normal and friction solves is a
+  // surface-expansion RATE -- physical only when time advances. During step(0.0) settling the particles do not
+  // move, so it would be re-injected every iteration and accumulate into a velocity blow-up (the source of the
+  // friction packing's run-to-run variance / illegal-memory crashes). Zero it for dt==0 (the growth_factor
+  // update above is already a no-op at dt==0); restored before return.
+  float saved_growth_rate = ps_.growth_rate;
+  if (dt == 0.0f)
+    ps_.growth_rate = 0.0f;
+
   // New Pipeline (Hybrid Velocity/Position)
 
   // 1. Predict Velocity (Gravity Only)
@@ -596,38 +606,41 @@ void Simulation::step(float dt) {
   launch_narrowphase(ps_, global_scale_);
   CUDA_CHECK(cudaDeviceSynchronize()); // Check Narrowphase
 
-  // 4. Phase A: Velocity Solve
-
-  // A. Pre-Pass: Count Contacts for Min-Scaling Weighting
-  // (d_constraint_counts is reused to store N for each particle)
-  // A. Pre-Pass: Rigorous Manifold Reduction
-  // Replaces the old contact weighting
-  reduce_contacts_to_manifolds(ps_);
-  CUDA_CHECK(cudaDeviceSynchronize()); // Ensure sorting/weighting is done
-
-  // Plane (wall) friction loads are the one-shot external load (single-layer rigid faces) -- computed here
-  // from the post-gravity velocity, before the normal solve cancels the approach.
-  if (ps_.friction_dynamic > 0.0f)
-    launch_plane_load(ps_);
-
-  // B. Iterative normal (restitution) solve. When friction is on, each iteration accumulates each body-body
-  // contact's normal load (c.friction_lambda_n += the residual approach impulse) so that by the end it holds
-  // the FULL normal impulse the contact carries -- including loads propagated through a force chain.
-  for (int i = 0; i < velocity_iterations_; ++i) {
-    if (ps_.friction_dynamic > 0.0f)
-      launch_accumulate_normal_impulse(ps_);
-    launch_velocity_solve(ps_);
-    launch_apply_velocity_deltas(ps_);
-  }
-  CUDA_CHECK(cudaDeviceSynchronize());
-
-  // Friction: the single dissipative friction mechanism. Per-contact Coulomb friction in the velocity solve,
-  // run once after the normal loop, bounded by the accumulated velocity-level normal impulse (the contact's
-  // full resting/chain load). No coupling to the position solve.
-  if (ps_.friction_dynamic > 0.0f) {
-    launch_contact_friction(ps_);
-    launch_apply_velocity_deltas(ps_); // friction deltas -> d_vel_pred
+  // 4. Phase A: Velocity Solve. SKIPPED for a settle step (dt==0): a settle is pure overlap removal (the
+  // position solve below), with velocities FROZEN. Running the velocity dynamics at dt==0 is meaningless and
+  // unstable -- restitution/friction/thermostat keep doing work while the particles cannot move, so velocity
+  // builds up over a settle loop and eventually diverges (the friction packing's run-to-run variance/crashes).
+  if (dt > 0.0f) {
+    // A. Rigorous Manifold Reduction (replaces the old contact weighting)
+    reduce_contacts_to_manifolds(ps_);
     CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Plane (wall) friction loads are the one-shot external load (single-layer rigid faces) -- computed here
+    // from the post-gravity velocity, before the normal solve cancels the approach.
+    if (ps_.friction_dynamic > 0.0f)
+      launch_plane_load(ps_);
+
+    // B. Iterative normal (restitution) solve. When friction is on, each iteration accumulates each body-body
+    // contact's normal load (c.friction_lambda_n += the residual approach impulse) so by the end it holds the
+    // FULL normal impulse the contact carries -- including loads propagated through a force chain.
+    for (int i = 0; i < velocity_iterations_; ++i) {
+      if (ps_.friction_dynamic > 0.0f)
+        launch_accumulate_normal_impulse(ps_);
+      launch_velocity_solve(ps_);
+      launch_apply_velocity_deltas(ps_);
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Friction: the single dissipative friction mechanism. Per-contact Coulomb friction in the velocity solve,
+    // bounded by the accumulated velocity-level normal impulse (the contact's full resting/chain load), and
+    // Jacobi count-averaged per particle so summing a body's contact impulses neither over-relaxes nor injects
+    // (rotational) energy. One sweep -> lowest variance. No coupling to the position solve.
+    if (ps_.friction_dynamic > 0.0f) {
+      launch_count_friction_contacts(ps_); // per-particle contact count
+      launch_contact_friction(ps_);
+      launch_apply_velocity_deltas(ps_); // friction deltas -> d_vel_pred
+      CUDA_CHECK(cudaDeviceSynchronize());
+    }
   }
 
   // 5. Apply Velocity & Re-Integrate Position
@@ -648,11 +661,14 @@ void Simulation::step(float dt) {
   launch_final_commit(ps_, dt);
   CUDA_CHECK(cudaDeviceSynchronize());
 
-  // 3. Apply Thermostat (if enabled)
-  if (ps_.thermostat_enabled) {
+  // 3. Apply Thermostat (if enabled). Not on a settle step (dt==0): it would inject velocity kicks while the
+  // particles cannot move -> buildup.
+  if (ps_.thermostat_enabled && dt > 0.0f) {
     launch_apply_thermostat(ps_, dt);
     CUDA_CHECK(cudaDeviceSynchronize());
   }
+
+  ps_.growth_rate = saved_growth_rate; // restore (was zeroed for dt==0 settling)
 }
 
 #ifdef DEMGPU_HAVE_TPX
