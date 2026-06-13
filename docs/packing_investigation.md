@@ -152,8 +152,24 @@ The packing engine is fundamentally **sound**. "Periodic packing doesn't reach m
 the feedback to engage near jamming — not a defect in the XPBD solver. With a correct overlap signal and a
 gentle-growth + quench protocol the engine produces a genuine RCP.
 
-Remaining engine improvement (worth doing so C++/test consumers get a correct native signal, not just the
-Python driver): fix `compute_overlaps()`'s periodic-ghost over-reporting and/or make `get_max_overlap()`
-report the committed (not mid-solve-residual) overlap, then the protocol can use the engine query directly.
-Then: package the tuned protocol as a reusable entry point, run the friction sweep (φ(μ): 0.64 → 0.55), and
-re-validate the ring (hollow-cylinder) packing.
+### Finding 2.4 — engine fix: `compute_overlaps()` now correct (ghost regeneration)
+
+`compute_overlaps()` over-reported because it copied the committed positions into the `*_pred` buffers for
+the REAL particles only and never regenerated the periodic ghosts — so the narrow phase compared committed
+real particles against **stale ghost positions** from the previous step. Fixed by regenerating the ghosts
+from the committed state (`update_ghosts()`) before detection (`src/simulation.cpp`). It now matches the
+brute-force ground truth exactly (0.458 vs 0.458, was 0.96) and does not corrupt the sim state (stepping
+continues normally afterwards; the periodicity regression test passes).
+
+Driving the annealing protocol with the **native fixed** `compute_overlaps()` (no Python crutch) reaches a
+genuine RCP: φ=0.635, Z=6.27 at the contact gap (0 rattlers), g(r) contact peak r/D=0.990. So the engine
+now exposes a correct overlap signal natively.
+
+`get_max_overlap()` is left as-is: it is the position solver's last-iteration residual (a solve-convergence
+metric), NOT the committed overlap — `compute_overlaps()` is the query protocols should use for the
+overlap criterion. (Making `get_max_overlap()` report the committed value would require a per-step
+re-detection; not worth perturbing the validated step() pipeline.)
+
+Remaining work: package the tuned protocol as a reusable entry point (replacing the broken
+`verify_packing_spheres.py`), run the friction sweep (φ(μ): 0.64 → 0.55), and re-validate the ring
+(hollow-cylinder) packing against the RingBed reference.

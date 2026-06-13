@@ -23,10 +23,22 @@ BASE = 0.5
 VOLP = (4.0 / 3.0) * math.pi * BASE ** 3
 
 
+USE_NATIVE = True  # use the engine's (now fixed) compute_overlaps(); else the Python brute-force
+
+
 def true_max_overlap(sim):
-    """Brute-force-correct max pair overlap (fraction of contact distance) on the committed state."""
+    """Max pair overlap as a fraction of the contact distance, on the committed state.
+
+    With USE_NATIVE the engine's compute_overlaps() is used (fixed to regenerate ghosts -> matches
+    brute force); it returns an ABSOLUTE penetration, normalised here by the current contact distance
+    (2*BASE*mean_scale). Otherwise a brute-force periodic min-image computation (the verified reference).
+    """
+    sc = sim.get_scales().ravel()
+    if USE_NATIVE:
+        contact = 2.0 * BASE * float(sc.mean())
+        return float(sim.compute_overlaps()) / max(contact, 1e-9)
     pos = sim.get_positions()[:, :3].astype(np.float64)
-    r = (BASE * sim.get_scales().ravel()).astype(np.float64)
+    r = (BASE * sc).astype(np.float64)
     dmin = np.array(sim.get_domain_min()); box = np.array(sim.get_domain_max()) - dmin
     wp = np.mod(pos - dmin, box)
     tree = cKDTree(wp, boxsize=box)

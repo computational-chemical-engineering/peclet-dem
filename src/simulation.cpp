@@ -1085,34 +1085,25 @@ int Simulation::get_num_manifolds() {
 }
 
 float Simulation::compute_overlaps() {
-  // 1. Copy current State to Predict (kernels read pred)
-  CUDA_CHECK(cudaMemcpy(ps_.d_pos_pred, ps_.d_pos,
-                        num_particles_ * sizeof(float4),
+  // Measure the TRUE maximum pair interpenetration on the *committed* state. The detection kernels read
+  // the *_pred buffers, so copy the committed positions/orientations there; then REGENERATE the periodic
+  // ghosts from that committed state. (The previous step()'s ghosts are stale -- left at the start-of-step
+  // positions -- and the old implementation skipped this regeneration, so a near-boundary particle was
+  // compared against a stale ghost and reported a large spurious overlap. This is the over-reporting fixed
+  // here.) Then run the same broad/narrow phase as step() and return the max penetration it records.
+  ps_.num_particles = ps_.num_real;
+  CUDA_CHECK(cudaMemcpy(ps_.d_pos_pred, ps_.d_pos, num_particles_ * sizeof(float4),
                         cudaMemcpyDeviceToDevice));
-  CUDA_CHECK(cudaMemcpy(ps_.d_quat_pred, ps_.d_quat,
-                        num_particles_ * sizeof(float4),
+  CUDA_CHECK(cudaMemcpy(ps_.d_quat_pred, ps_.d_quat, num_particles_ * sizeof(float4),
                         cudaMemcpyDeviceToDevice));
-  // Scale is already there.
-
-  // 2. Build BVH
+  if (ps_.periodic_x || ps_.periodic_y || ps_.periodic_z) {
+    update_ghosts(); // rebuild ghosts (both d_pos and d_pos_pred slots) from the committed positions
+  }
   build_bvh(ps_, global_scale_);
-
-  // 3. Find Collisions
   find_collisions(ps_, global_scale_);
-
-  // 4. Reset Max Overlap
   CUDA_CHECK(cudaMemset(ps_.d_max_overlap, 0, sizeof(float)));
-
-  // 5. Run Narrowphase in "Compute Only" mode?
-  // Actually, we can just run it. If it generates contacts, it's fine,
-  // we just discard them. But to be safe and fast, let's just ensure
-  // narrowphase updates d_max_overlap.
-  // We need to modify narrowphase to update d_max_overlap.
-  // And maybe reset contact count if we don't want to overflow buffer?
   CUDA_CHECK(cudaMemset(ps_.d_contact_count, 0, sizeof(int)));
-
   launch_narrowphase(ps_, global_scale_);
-
   return get_max_overlap();
 }
 
