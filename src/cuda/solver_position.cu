@@ -232,6 +232,61 @@ __global__ void solve_position_jacobi_kernel(ParticleSystemData ps) {
   // Yes, if we added deltas, we increment.
   atomicAdd(ps.d_constraint_counts + idA, 1);
 
+  // ---- XPBD positional (static/dynamic) friction (Mueller et al. 2020) ----
+  // A Coulomb-limited tangential POSITION correction that removes the tangential relative DISPLACEMENT of
+  // the contact points since the contact formed (anchor = start-of-step state, ps.d_pos + the stored anchor
+  // lever arms c.rA/c.rB). It is bounded by mu*|dLambda| -- the normal contact force this iteration -- so it
+  // acts on PERSISTENT/resting contacts (where the velocity-solver friction is inert because its normal
+  // impulse ~ 0). Gated on friction>0, so the frictionless path is byte-identical. Applied with the same
+  // generalized-mass weighting and sign convention as the normal constraint (B negates linear + angular),
+  // and averaged by the same per-contact constraint count (we do not increment it again).
+  if (ps.friction_dynamic > 0.0f) {
+    float3 pA0 = make_float3(ps.d_pos[idA].x, ps.d_pos[idA].y, ps.d_pos[idA].z);
+    float3 dpf = make_float3((pA.x + cur_rA.x) - (pA0.x + c.rA.x),
+                             (pA.y + cur_rA.y) - (pA0.y + c.rA.y),
+                             (pA.z + cur_rA.z) - (pA0.z + c.rA.z));
+    if (idB >= 0) {
+      float3 pB0 = make_float3(ps.d_pos[idB].x, ps.d_pos[idB].y, ps.d_pos[idB].z);
+      dpf.x -= (pB.x + cur_rB.x) - (pB0.x + c.rB.x);
+      dpf.y -= (pB.y + cur_rB.y) - (pB0.y + c.rB.y);
+      dpf.z -= (pB.z + cur_rB.z) - (pB0.z + c.rB.z);
+    }
+    float dpn = dot_product_p(dpf, n);
+    float3 dpt = make_float3(dpf.x - dpn * n.x, dpf.y - dpn * n.y, dpf.z - dpn * n.z);
+    float dpt_len = sqrtf(dot_product_p(dpt, dpt));
+    if (dpt_len > 1e-8f) {
+      float3 t = make_float3(dpt.x / dpt_len, dpt.y / dpt_len, dpt.z / dpt_len);
+      float w_t = compute_w(cur_rA, t, invMassA, invIA) + compute_w(cur_rB, t, invMassB, invIB);
+      if (w_t > 1e-6f) {
+        float dLt = -dpt_len / w_t;                       // remove the tangential slip (dLt <= 0)
+        float maxf = ps.friction_dynamic * fabsf(dLambda); // Coulomb: |f| <= mu * normal force
+        if (dLt < -maxf)
+          dLt = -maxf;                                    // slip (dynamic) if over the cone, else stick
+        float3 dpA_t = make_float3(t.x * dLt * invMassA, t.y * dLt * invMassA, t.z * dLt * invMassA);
+        atomicAddVector(ps.d_delta_pos + idA, make_float4(dpA_t.x, dpA_t.y, dpA_t.z, 0));
+        float3 rnA_t = cross_product_p(cur_rA, t);
+        float3 thA = make_float3(rnA_t.x * invIA.x * dLt, rnA_t.y * invIA.y * dLt, rnA_t.z * invIA.z * dLt);
+        float4 dqA_t = make_float4(0.5f * (thA.x * qA.w + thA.y * qA.z - thA.z * qA.y),
+                                   0.5f * (thA.y * qA.w + thA.z * qA.x - thA.x * qA.z),
+                                   0.5f * (thA.z * qA.w + thA.x * qA.y - thA.y * qA.x),
+                                   0.5f * (-thA.x * qA.x - thA.y * qA.y - thA.z * qA.z));
+        atomicAddVector(ps.d_delta_quat + idA, dqA_t);
+        if (idB >= 0) {
+          float3 dpB_t = make_float3(-t.x * dLt * invMassB, -t.y * dLt * invMassB, -t.z * dLt * invMassB);
+          atomicAddVector(ps.d_delta_pos + idB, make_float4(dpB_t.x, dpB_t.y, dpB_t.z, 0));
+          float3 rnB_t = cross_product_p(cur_rB, t);
+          float3 thB = make_float3(-rnB_t.x * invIB.x * dLt, -rnB_t.y * invIB.y * dLt,
+                                   -rnB_t.z * invIB.z * dLt);
+          float4 dqB_t = make_float4(0.5f * (thB.x * qB.w + thB.y * qB.z - thB.z * qB.y),
+                                     0.5f * (thB.y * qB.w + thB.z * qB.x - thB.x * qB.z),
+                                     0.5f * (thB.z * qB.w + thB.x * qB.y - thB.y * qB.x),
+                                     0.5f * (-thB.x * qB.x - thB.y * qB.y - thB.z * qB.z));
+          atomicAddVector(ps.d_delta_quat + idB, dqB_t);
+        }
+      }
+    }
+  }
+
   // Track Max Overlap (Penetration = -C)
   // C is typically negative for overlap. So Penetration = -C.
   // We want to track the MAXIMUM penetration.

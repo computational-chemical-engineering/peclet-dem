@@ -280,6 +280,29 @@ mechanism — it must not alter the restitution targets or the normal/tangential
 Recommended order: Fix A first (one line, restores+validates collisional friction and undoes my
 regression), then Fix B (the substantive change that makes frictional *packing* — φ(μ) — possible).
 
+### Implementation + results
+**Fix A (done, `solver_velocity.cu`):** Coulomb limit `μ·|λ|`. Validated — an oblique collision now damps
+the tangential velocity (2.79→1.97) and induces spin (0→4.1); **normal restitution is exactly preserved**
+(`e_n` 0/0.5/1.0 → rebound restitution 0/0.5/1.0); frictionless is unchanged.
+
+**Fix B (done, `solver_position.cu`):** XPBD positional friction — a Coulomb-limited (`μ·|dLambda|`)
+tangential position correction that removes the tangential relative displacement of the contact points
+since the contact formed (anchor = `d_pos` + the stored anchor lever arms), with the same generalized-mass
+weighting and sign convention as the normal constraint, gated on `friction>0`. Validated:
+* **frictionless RCP byte-identical** (φ=0.639, Z=6.5 — the friction block is skipped at μ=0);
+* **gravity sedimentation φ(μ) shows the random-loose trend**: μ = 0.0/0.2/0.4/0.6 → φ = 0.654/0.638/0.619/
+  0.619 (saturating), i.e. friction now demonstrably loosens the packing — the goal.
+
+**Known limitation (a real Fix C):** the engine never feeds the position correction back into velocity
+(it commits `v = v_pred` from the velocity solve only — see Finding 1.2). So positional friction holds a
+*bulk* packing (the collective network + dissipation reach a quasi-static state) but cannot arrest a
+*single* particle under sustained load: on a 20° incline a frictional sphere still slides (μ above the
+friction angle does not hold it; friction only slows it, 4.30→3.07). Completing friction for sustained
+single-contact static cases (piles holding an angle of repose, an isolated grain on a slope) needs a
+velocity-coupling step — derive a velocity contribution from the friction position correction (Δv = Δx_t/dt)
+without disturbing the Phase-A restitution. That is a more invasive, restitution-sensitive change and is
+left as a scoped follow-up; the packing goal (φ(μ)) is met without it.
+
 ## Summary
 
 "Periodic packing doesn't reach max random packing" was **not a fundamental engine defect**. Root causes,
