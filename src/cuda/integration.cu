@@ -261,6 +261,7 @@ apply_velocity_and_predict_position_kernel(ParticleSystemData ps) {
     return;
 
   // 1. Apply accumulated velocity impulses (from Phase A: Velocity Solve)
+  float4 v_start = ps.d_vel[idx];       // v_n: the committed velocity from the previous step (pre-gravity)
   float4 v_pred_w = ps.d_vel_pred[idx]; // Currently holds v_n + g*dt
   float4 dv = ps.d_delta_vel[idx];
 
@@ -276,15 +277,18 @@ apply_velocity_and_predict_position_kernel(ParticleSystemData ps) {
   // We want v_{n+1} = v_{solved}
   ps.d_vel[idx] = ps.d_vel_pred[idx];
 
-  // 2. Predict Position
+  // 2. Predict Position using the AVERAGE velocity (velocity-Verlet / trapezoidal): x += 1/2 (v_n +
+  // v_solved) dt. This is more accurate / energy-conserving than the leapfrog x += v_solved dt (which
+  // over-counts the gravity half-step by 1/2 g dt^2). The friction velocity feedback (Fix C) adds its own
+  // 1/2 dv dt afterwards. No extra state, no extra cost (v_n is already in d_vel here).
   float inv_mass = ps.d_pos[idx].w;
   float4 pos_curr = ps.d_pos[idx];
   float3 x_pred = make_float3(pos_curr.x, pos_curr.y, pos_curr.z);
 
   if (inv_mass > 0.0f) {
-    x_pred.x += v_final.x * ps.dt;
-    x_pred.y += v_final.y * ps.dt;
-    x_pred.z += v_final.z * ps.dt;
+    x_pred.x += 0.5f * (v_start.x + v_final.x) * ps.dt;
+    x_pred.y += 0.5f * (v_start.y + v_final.y) * ps.dt;
+    x_pred.z += 0.5f * (v_start.z + v_final.z) * ps.dt;
   }
   ps.d_pos_pred[idx] = make_float4(x_pred.x, x_pred.y, x_pred.z, pos_curr.w);
 
