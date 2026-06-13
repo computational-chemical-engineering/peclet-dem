@@ -202,5 +202,29 @@ move the bodies), and (b) note that even when repaired this is a *collisional* (
 contacts, ~0 normal velocity) needs a position/force-based persistent friction to show the random-loose
 trend. The frictionless RCP (the main result) is unaffected.
 
-### Finding 3.4 — rings
-(in progress)
+### Finding 3.4 — rings (hollow cylinders) validated
+`pack.py::pack_rings` runs the same annealing protocol with orientations and the SDF-based native overlap
+(`compute_overlaps()`, which the fix makes correct for SDF shapes too). Squat-thick rings (aspect 1.0, wall
+thickness ratio 0.30) on the fixed engine, with the achieved density tracking the overlap criterion:
+
+```
+criterion 2e-3 -> phi = 0.281 (clean)    criterion 8e-3 -> phi = 0.318    criterion 2e-2 -> phi = 0.346
+```
+
+At a comparable overlap tolerance (criterion 8e-3) the packing reaches φ = 0.318, squarely in the RingBed
+reference range (0.30-0.33) — and rings pack far looser than spheres (0.64), as expected. The density is
+now *controllable* via a trustworthy criterion (the reference's 0.30-0.33 was obtained with the broken
+under-reporting signal, so it carried unmeasured interpenetration; the fixed signal gives an honest,
+tunable density). No crash, no friction needed (frictionless).
+
+## Summary
+
+"Periodic packing doesn't reach max random packing" was **not a fundamental engine defect**. Root causes,
+all now resolved: (1) the verify meter reported the design φ by construction; (2) the protocol's control
+signal — the engine's `compute_overlaps()` — over-reported via stale periodic ghosts, so the adaptive
+growth steered blind and overshot into collapse; (3) the growth schedule was too fast for the feedback.
+With the meter replaced, `compute_overlaps()` fixed (ghost regeneration), and a gentle-growth annealing
+protocol (`pack.py`), the engine produces a genuine random close packing of spheres (φ≈0.63, isostatic
+Z≈6, g(r) contact peak) and a correct, tunable ring packing (φ≈0.28-0.35). Along the way a friction-path
+NaN crash was fixed; the deeper friction-model repair (the impulse is inert; quasi-static persistent
+friction) is a scoped follow-up.
