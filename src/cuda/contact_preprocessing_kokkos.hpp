@@ -19,15 +19,12 @@
 
 #include <cstdint>
 
+#include "dem_portable.hpp"  // F4, cross3
+
 namespace dem {
 
 using CpExec = Kokkos::DefaultExecutionSpace;
 using CpMem = CpExec::memory_space;
-
-/// Portable mirror of CUDA float4 (POD, trivially copyable).
-struct F4 {
-  float x, y, z, w;
-};
 
 /// Portable mirror of ParticleSystem.cuh ContactConstraint (the fields this reduction touches).
 struct ContactC {
@@ -52,10 +49,6 @@ struct ManifoldC {
   F4 rB_sum;
   int num_points;
 };
-
-KOKKOS_INLINE_FUNCTION F4 cross3(F4 a, F4 b) {
-  return F4{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x, 0.0f};
-}
 
 /// Canonical pair key: (min<<32)|max, or (idA<<32)|0xFFFFFFFF for a boundary (idB<0) contact.
 KOKKOS_INLINE_FUNCTION std::uint64_t pairKey(const ContactC& c) {

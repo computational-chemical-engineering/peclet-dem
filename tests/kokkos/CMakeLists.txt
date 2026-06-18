@@ -19,3 +19,8 @@ add_executable(test_contact_preprocessing test_contact_preprocessing.cpp)
 target_include_directories(test_contact_preprocessing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/cuda)
 target_link_libraries(test_contact_preprocessing PRIVATE Kokkos::kokkos)
 add_test(NAME contact_preprocessing COMMAND test_contact_preprocessing)
+
+add_executable(test_narrowphase test_narrowphase.cpp)
+target_include_directories(test_narrowphase PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/cuda)
+target_link_libraries(test_narrowphase PRIVATE Kokkos::kokkos)
+add_test(NAME narrowphase COMMAND test_narrowphase)
