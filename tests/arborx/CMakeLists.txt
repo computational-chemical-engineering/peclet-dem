@@ -23,3 +23,8 @@ add_executable(test_broadphase_arborx test_broadphase_arborx.cpp)
 target_include_directories(test_broadphase_arborx PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/cuda)
 target_link_libraries(test_broadphase_arborx PRIVATE ArborX::ArborX Kokkos::kokkos)
 add_test(NAME broadphase_arborx COMMAND test_broadphase_arborx)
+
+add_executable(test_pipeline test_pipeline.cpp)
+target_include_directories(test_pipeline PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/cuda)
+target_link_libraries(test_pipeline PRIVATE ArborX::ArborX Kokkos::kokkos)
+add_test(NAME pipeline COMMAND test_pipeline)
