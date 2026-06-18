@@ -49,3 +49,8 @@ add_executable(test_periodicity test_periodicity.cpp)
 target_include_directories(test_periodicity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/cuda)
 target_link_libraries(test_periodicity PRIVATE Kokkos::kokkos)
 add_test(NAME periodicity COMMAND test_periodicity)
+
+add_executable(test_thermostat test_thermostat.cpp)
+target_include_directories(test_thermostat PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/cuda)
+target_link_libraries(test_thermostat PRIVATE Kokkos::kokkos)
+add_test(NAME thermostat COMMAND test_thermostat)

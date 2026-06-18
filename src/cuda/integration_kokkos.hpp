@@ -173,6 +173,54 @@ inline void finalCommitKokkos(int n, V3 pos, Vf invMass, V3 posPred, V4 quat, V4
   space.fence();
 }
 
+/// Berendsen thermostat: reduce translational + rotational KE over real particles, compute the two
+/// scaling factors, and rescale linear/angular velocities. Port of compute_energy_reduction_kernel +
+/// apply_berendsen_thermostat_kernel (the scaling factors are computed on the host from the reduced
+/// energies rather than in a shared-memory kernel — same result, simpler/portable).
+struct KE2 {
+  double t = 0.0, r = 0.0;
+  KOKKOS_INLINE_FUNCTION KE2& operator+=(const KE2& o) { t += o.t; r += o.r; return *this; }
+};
+inline void applyThermostatKokkos(int numReal, V3 vel, Vf invMass, V3 angVel, V3 invInertia, V4 quat,
+                                  double kB, double tau, double Ttarget, float dt) {
+  CpExec space;
+  KE2 sum;
+  Kokkos::parallel_reduce(
+      "dem::thermo_energy", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
+      KOKKOS_LAMBDA(int i, KE2& acc) {
+        const float invM = invMass(i);
+        const F3 v = ldF3(vel, i);
+        if (invM > 0.0f) acc.t += 0.5 * (1.0 / invM) * (v.x * v.x + v.y * v.y + v.z * v.z);
+        const F3 invI = ldF3(invInertia, i);
+        if (invI.x > 0.0f || invI.y > 0.0f || invI.z > 0.0f) {
+          const F3 wb = invRotateVector(ldF4(quat, i), ldF3(angVel, i));
+          const double Ix = (invI.x > 0.0f) ? 1.0 / invI.x : 0.0;
+          const double Iy = (invI.y > 0.0f) ? 1.0 / invI.y : 0.0;
+          const double Iz = (invI.z > 0.0f) ? 1.0 / invI.z : 0.0;
+          acc.r += 0.5 * (Ix * wb.x * wb.x + Iy * wb.y * wb.y + Iz * wb.z * wb.z);
+        }
+      },
+      sum);
+
+  const double ndof = 3.0 * numReal;
+  auto lambda = [&](double ke) {
+    if (ndof <= 0 || kB <= 0) return 1.0f;
+    const double Tcur = (2.0 * ke) / (ndof * kB);
+    if (Tcur < 1e-6) return 1.0f;
+    double f = 1.0 + (dt / tau) * (Ttarget / Tcur - 1.0);
+    if (f < 0.0) f = 0.0;
+    return static_cast<float>(Kokkos::sqrt(f));
+  };
+  const float lt = lambda(sum.t), lr = lambda(sum.r);
+
+  Kokkos::parallel_for(
+      "dem::thermo_scale", Kokkos::RangePolicy<CpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
+        detail::st3(vel, i, scale3(ldF3(vel, i), lt));
+        detail::st3(angVel, i, scale3(ldF3(angVel, i), lr));
+      });
+  space.fence();
+}
+
 /// Growth mode: scale = target * factor (when active).
 inline void updateGrowthScalesKokkos(int n, Vf scale, Vf targetScale, float factor) {
   if (!(factor > 0.0f)) return;
