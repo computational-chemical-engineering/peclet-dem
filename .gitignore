@@ -1,5 +1,6 @@
 # Build directories
 build/
+build_*/
 cmake-build-debug/
 cmake-build-release/
 bin/
