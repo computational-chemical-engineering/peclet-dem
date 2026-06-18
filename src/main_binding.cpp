@@ -2,6 +2,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <Kokkos_Core.hpp>  // ArborX broad-phase backend (lifecycle managed below)
+
 #include "cuda/sdf_wrapper.h"
 #include "io/Exporter.h"
 
@@ -42,6 +44,14 @@ std::vector<float> array_to_float(py::array_t<float> arr) {
 
 PYBIND11_MODULE(demgpu, m) {
   m.doc() = "DEM-GPU: XPBD Engine for Granular Dynamics on GPU";
+
+  // The ArborX broad-phase runs on Kokkos. Initialize at import and finalize via Python atexit so
+  // Kokkos shuts down while the CUDA driver is still up (avoids cudaErrorCudartUnloading at exit).
+  // The Simulation holds no Kokkos Views (only per-call broad-phase temporaries), so this is safe.
+  if (!Kokkos::is_initialized()) Kokkos::initialize();
+  py::module_::import("atexit").attr("register")(py::cpp_function([]() {
+    if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
+  }));
 
   m.def(
       "export_lammps",

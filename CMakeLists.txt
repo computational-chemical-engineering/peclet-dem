@@ -39,23 +39,17 @@ if (DEMGPU_ENABLE_MPI)
     find_package(MPI REQUIRED)
 endif()
 
-# cuBQL
-include(FetchContent)
-FetchContent_Declare(
-  cuBQL
-  GIT_REPOSITORY https://github.com/NVIDIA/cuBQL.git
-  GIT_TAG        main 
-)
-FetchContent_MakeAvailable(cuBQL)
-message(STATUS "cuBQL source dir: ${cuBQL_SOURCE_DIR}")
-message(STATUS "cubql source dir: ${cubql_SOURCE_DIR}")
+# Broad-phase: Kokkos + ArborX (replaces cuBQL; see src/cuda/broadphase.cpp). Provide via a cluster
+# module or the suite's local install prefix (suite/tools/bootstrap_deps.sh) on CMAKE_PREFIX_PATH.
+find_package(Kokkos CONFIG REQUIRED)
+find_package(ArborX CONFIG REQUIRED)
+message(STATUS "demgpu: Kokkos ${Kokkos_VERSION} (${Kokkos_DEVICES}), ArborX ${ArborX_VERSION}")
 
 # ---- Source Collection ----
 # We explicitly list sources to avoid GLOB issues and follow the plan
 set(DEMGPU_CUDA_SRC
     src/cuda/integration.cu
-    src/cuda/broadphase.cu
-    src/cuda/solver.cu 
+    src/cuda/solver.cu
     src/cuda/narrowphase.cu
     src/cuda/solver_velocity.cu
     src/cuda/solver_position.cu
@@ -73,22 +67,30 @@ if (DEMGPU_ENABLE_MPI AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../transport-core/
 endif()
 
 set(DEMGPU_CPP_SRC
+    src/cuda/broadphase.cpp  # ArborX broad-phase (CXX TU; Kokkos launch compiler routes to nvcc)
     src/main_binding.cpp
     src/simulation.cpp
-    src/mpi/domain.cpp
-    src/mpi/communicator.cpp
     src/shapes/point_sampler.cpp
     src/shapes/ShapeManager.cpp
     src/cpp/OutputGenerator.cpp
     src/io/Exporter.cpp
 )
+# MPI-only translation units (need mpi.h); built only with MPI enabled.
+if (DEMGPU_ENABLE_MPI)
+    list(APPEND DEMGPU_CPP_SRC src/mpi/domain.cpp src/mpi/communicator.cpp)
+endif()
 
 # ---- Python Extension Module ----
-pybind11_add_module(demgpu ${DEMGPU_CPP_SRC} ${DEMGPU_CUDA_SRC})
+# NO_EXTRAS: disable pybind11's LTO — it conflicts with CUDA separable compilation once Kokkos is
+# linked (duplicate fatbinData / __cudaRegisterLinkedBinary at the device link).
+pybind11_add_module(demgpu NO_EXTRAS ${DEMGPU_CPP_SRC} ${DEMGPU_CUDA_SRC})
 
-# Ensure CUDA code uses separable compilation
+# Ensure CUDA code uses separable compilation. Disable IPO/LTO: pybind11 enables it by default, but
+# it conflicts with the CUDA device-link step once Kokkos is linked (duplicate `fatbinData` symbol /
+# lto-wrapper failure).
 set_target_properties(demgpu PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
+    INTERPROCEDURAL_OPTIMIZATION OFF
 )
 
 # Windows: produce .pyd extension automatically via pybind11; ensure no 'lib' prefix
@@ -97,10 +99,9 @@ if (WIN32)
 endif()
 
 # ---- Include Dirs ----
-target_include_directories(demgpu PRIVATE 
-    src 
+target_include_directories(demgpu PRIVATE
+    src
     src/cuda
-    ${cuBQL_SOURCE_DIR} # Include cuBQL headers
 )
 
 # ---- transport-core (shared MPI/halo library, header-only) ----
@@ -126,7 +127,7 @@ if (DEMGPU_ENABLE_MPI)
     target_link_libraries(demgpu PRIVATE MPI::MPI_CXX)
 endif()
 
-target_link_libraries(demgpu PRIVATE pybind11::module CUDA::cudart cuBQL_queries cuBQL_cuda_float3_static)
+target_link_libraries(demgpu PRIVATE pybind11::module CUDA::cudart Kokkos::kokkos ArborX::ArborX)
 
 # ---- Warnings ----
 if (MSVC)
@@ -142,8 +143,8 @@ add_executable(test_periodicity_corner
     ${DEMGPU_CUDA_SRC}
 )
 set_target_properties(test_periodicity_corner PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-target_include_directories(test_periodicity_corner PRIVATE src src/cuda ${cuBQL_SOURCE_DIR})
-target_link_libraries(test_periodicity_corner PRIVATE CUDA::cudart cuBQL_queries cuBQL_cuda_float3_static pybind11::embed)
+target_include_directories(test_periodicity_corner PRIVATE src src/cuda)
+target_link_libraries(test_periodicity_corner PRIVATE CUDA::cudart Kokkos::kokkos ArborX::ArborX pybind11::embed)
 if (DEMGPU_ENABLE_MPI)
     target_link_libraries(test_periodicity_corner PRIVATE MPI::MPI_CXX)
     target_compile_definitions(test_periodicity_corner PRIVATE DEMGPU_USE_MPI=1)

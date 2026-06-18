@@ -1,5 +1,4 @@
 #pragma once
-#include <cuBQL/bvh.h>
 #include <cuda_runtime.h>
 
 enum ShapeType {
@@ -189,8 +188,8 @@ struct ParticleSystemData {
   float thermostat_kB;
 
   // --- Broadphase Data ---
-  cuBQL::bvh3f bvh;
-  int2 *d_potential_collisions; // Legacy?
+  // (BVH now lives inside the ArborX broad-phase; no cuBQL handle stored here.)
+  int2 *d_potential_collisions; // candidate pairs (i<j) written by find_collisions
 
   // BVH Construction Buffers
   BVHNode *d_bvh_nodes;

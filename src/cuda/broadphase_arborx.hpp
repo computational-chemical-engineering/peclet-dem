@@ -27,10 +27,12 @@ using BpMem = BpExec::memory_space;
 ///   margin                 safety margin added to every box half-width (cuBQL uses 0.1*global_scale)
 ///   outPairs[maxPairs][2]  preallocated output; outCount is the (clamped) number found
 /// Returns the number of pairs found (may exceed maxPairs if the buffer is too small).
-inline int findCollisionsArborX(Kokkos::View<const float* [3], BpMem> pos,
-                                Kokkos::View<const float*, BpMem> rad, int numParticles, int numReal,
-                                float margin, Kokkos::View<int* [2], BpMem> outPairs,
-                                Kokkos::View<int, BpMem> outCount) {
+// View params are templated so callers can pass managed Views (tests) OR unmanaged Views wrapping
+// raw device buffers (the CUDA demgpu module's float4*/int2* arrays). Element types/layout must be
+// the usual (positions [N][3], radii [N], pairs [N][2], count scalar).
+template <class PosV, class RadV, class PairsV, class CountV>
+inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numReal, float margin,
+                                PairsV outPairs, CountV outCount) {
   BpExec space;
   using Box = ArborX::Box<3>;
 
