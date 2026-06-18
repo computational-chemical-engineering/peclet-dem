@@ -49,8 +49,9 @@ struct Particles {
   float frictionDynamic = 0.0f, restitutionNormal = 0.0f, skin = 0.1f;
   int positionIterations = 10, velocityIterations = 0;
 
+  // nPlanes is the plane-array CAPACITY; numPlanes (the live count) stays 0 until planes are added.
   void allocate(int cap, int maxPairs_, int maxContacts_, int nShapes, int nShell, int nPlanes) {
-    capacity = cap; maxPairs = maxPairs_; maxContacts = maxContacts_; numPlanes = nPlanes;
+    capacity = cap; maxPairs = maxPairs_; maxContacts = maxContacts_; numPlanes = 0;
     pos = V3("pos", cap); invMass = Vf("invMass", cap); quat = V4("quat", cap);
     vel = V3("vel", cap); angVel = V3("angVel", cap); invInertia = V3("invInertia", cap);
     scale = Vf("scale", cap); shapeId = Vi("shapeId", cap);

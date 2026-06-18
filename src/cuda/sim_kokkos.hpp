@@ -47,15 +47,17 @@ inline void demStep(Particles& P) {
   { auto sc = P.scale; auto rad = P.rad; float gs = P.globalScale;
     Kokkos::parallel_for("rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
                          KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; }); }
-  findCollisionsArborX(P.cpos(), P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount);
+  // Collision detection runs on the PREDICTED state (speculative positions/orientations), matching
+  // the CUDA solver — the position solve then corrects posPred against these contacts.
+  findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount);
   const int np = readInt(P.pairCount);
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
-  detectContactsKokkos(P.pairs, np, P.pos, P.quat, P.scale, P.shapeId, P.shapes, P.shell,
+  detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
                        P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
-  detectBoundaryKokkos(P.numReal, P.numPlanes, P.pos, P.quat, P.scale, P.shapeId, P.shapes, P.shell,
-                       P.planes, P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+  detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
+                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
   const int nc = readInt(P.contactCount);
 
   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount);

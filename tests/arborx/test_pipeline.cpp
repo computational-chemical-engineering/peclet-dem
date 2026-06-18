@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
       Kokkos::deep_copy(P.vel, vel); Kokkos::deep_copy(P.angVel, av);
     }
     { auto h = Kokkos::create_mirror_view(P.shapes); h(0) = ShapeDesc{SPHERE, F4{1, 0, 0, 0}, 0, 0}; Kokkos::deep_copy(P.shapes, h); }
-    { auto h = Kokkos::create_mirror_view(P.planes); h(0) = PlaneP{F3{0, 0, 0}, F3{0, 0, 1}}; Kokkos::deep_copy(P.planes, h); }
+    { auto h = Kokkos::create_mirror_view(P.planes); h(0) = PlaneP{F3{0, 0, 0}, F3{0, 0, 1}}; Kokkos::deep_copy(P.planes, h); P.numPlanes = 1; }
 
     auto fillRad = [&](int n) {
       auto pos = P.pos; auto sc = P.scale; auto rad = P.rad; float gs = P.globalScale;
