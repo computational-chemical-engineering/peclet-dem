@@ -29,3 +29,8 @@ add_executable(test_solver_velocity test_solver_velocity.cpp)
 target_include_directories(test_solver_velocity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/cuda)
 target_link_libraries(test_solver_velocity PRIVATE Kokkos::kokkos)
 add_test(NAME solver_velocity COMMAND test_solver_velocity)
+
+add_executable(test_solver_position test_solver_position.cpp)
+target_include_directories(test_solver_position PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/cuda)
+target_link_libraries(test_solver_position PRIVATE Kokkos::kokkos)
+add_test(NAME solver_position COMMAND test_solver_position)

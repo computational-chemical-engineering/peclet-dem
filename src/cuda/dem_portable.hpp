@@ -33,6 +33,16 @@ KOKKOS_INLINE_FUNCTION F4 cross3(F4 a, F4 b) {
   return F4{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x, 0.0f};
 }
 
+// Load an F3 / F4 from a multidimensional Kokkos View row (templated => no per-header duplication).
+template <class V>
+KOKKOS_INLINE_FUNCTION F3 ldF3(const V& v, int i) {
+  return F3{v(i, 0), v(i, 1), v(i, 2)};
+}
+template <class V>
+KOKKOS_INLINE_FUNCTION F4 ldF4(const V& v, int i) {
+  return F4{v(i, 0), v(i, 1), v(i, 2), v(i, 3)};
+}
+
 // --- quaternion rotate (q = {x,y,z,w}) — copy of math_utils.cuh rotate_vector/inv_rotate_vector ---
 KOKKOS_INLINE_FUNCTION F3 rotateVector(F4 q, F3 v) {
   const F3 qv{q.x, q.y, q.z};
@@ -41,6 +51,13 @@ KOKKOS_INLINE_FUNCTION F3 rotateVector(F4 q, F3 v) {
 }
 KOKKOS_INLINE_FUNCTION F3 invRotateVector(F4 q, F3 v) {
   return rotateVector(F4{-q.x, -q.y, -q.z, q.w}, v);
+}
+KOKKOS_INLINE_FUNCTION F4 quatInverse(F4 q) { return F4{-q.x, -q.y, -q.z, q.w}; }
+KOKKOS_INLINE_FUNCTION F4 quatMult(F4 a, F4 b) {
+  return F4{a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+            a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+            a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+            a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
 }
 
 // --- analytic SDFs (canonical/unit space) — copy of shapes/sdf_analytic.cuh ---
