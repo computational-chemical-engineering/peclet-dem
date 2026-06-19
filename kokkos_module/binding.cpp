@@ -48,6 +48,16 @@ PYBIND11_MODULE(demgpu_kokkos, m) {
       .def("add_plane", &KokkosSim::addPlane)
       .def("set_positions", [](KokkosSim& s, py::array_t<float> a) { s.setPositions(to_vec(a)); })
       .def("set_velocities", [](KokkosSim& s, py::array_t<float> a) { s.setVelocities(to_vec(a)); })
+      .def("set_quaternions", [](KokkosSim& s, py::array_t<float> a) { s.setQuaternions(to_vec(a)); })
+      .def("set_angular_velocities", [](KokkosSim& s, py::array_t<float> a) { s.setAngularVelocities(to_vec(a)); })
+      .def("set_inv_inertia", [](KokkosSim& s, py::array_t<float> a) { s.setInvInertia(to_vec(a)); })
+      .def("set_inv_mass", [](KokkosSim& s, py::array_t<float> a) { s.setInvMass(to_vec(a)); })
+      .def("get_angular_velocities", [](const KokkosSim& s) {
+             auto v = s.getAngularVelocities(); const int n = (int)(v.size()/3);
+             py::array_t<float> o({n,3}); std::memcpy(o.mutable_data(), v.data(), v.size()*sizeof(float)); return o; })
+      .def("get_inv_inertia", [](const KokkosSim& s) {
+             auto v = s.getInvInertia(); const int n = (int)(v.size()/3);
+             py::array_t<float> o({n,3}); std::memcpy(o.mutable_data(), v.data(), v.size()*sizeof(float)); return o; })
       .def("set_scales_uniform", &KokkosSim::setScalesUniform)
       .def("set_scales", [](KokkosSim& s, py::array_t<float> a) { s.setScales(to_vec(a)); })
       .def("set_growth_params", &KokkosSim::setGrowthParams, py::arg("rate"), py::arg("new_factor") = -1.0f)

@@ -176,6 +176,39 @@ class KokkosSim {
     for (int i = 0; i < P_.numReal && 3*i+2 < (int)v.size(); ++i) { vel(i,0)=v[3*i]; vel(i,1)=v[3*i+1]; vel(i,2)=v[3*i+2]; }
     Kokkos::deep_copy(P_.vel, vel);
   }
+  // rigid-body rotation state (the pipeline integrates the gyroscopic Euler term + quaternion already)
+  void setQuaternions(const std::vector<float>& q) {
+    auto h = Kokkos::create_mirror_view(P_.quat);
+    for (int i = 0; i < P_.numReal && 4*i+3 < (int)q.size(); ++i) { h(i,0)=q[4*i]; h(i,1)=q[4*i+1]; h(i,2)=q[4*i+2]; h(i,3)=q[4*i+3]; }
+    Kokkos::deep_copy(P_.quat, h);
+  }
+  void setAngularVelocities(const std::vector<float>& w) {
+    auto h = Kokkos::create_mirror_view(P_.angVel);
+    for (int i = 0; i < P_.numReal && 3*i+2 < (int)w.size(); ++i) { h(i,0)=w[3*i]; h(i,1)=w[3*i+1]; h(i,2)=w[3*i+2]; }
+    Kokkos::deep_copy(P_.angVel, h);
+  }
+  void setInvInertia(const std::vector<float>& ii) {
+    auto h = Kokkos::create_mirror_view(P_.invInertia);
+    for (int i = 0; i < P_.numReal && 3*i+2 < (int)ii.size(); ++i) { h(i,0)=ii[3*i]; h(i,1)=ii[3*i+1]; h(i,2)=ii[3*i+2]; }
+    Kokkos::deep_copy(P_.invInertia, h);
+  }
+  void setInvMass(const std::vector<float>& im) {
+    auto h = Kokkos::create_mirror_view(P_.invMass);
+    for (int i = 0; i < P_.numReal && i < (int)im.size(); ++i) h(i) = im[i];
+    Kokkos::deep_copy(P_.invMass, h);
+  }
+  std::vector<float> getAngularVelocities() const {
+    auto w = Kokkos::create_mirror_view(P_.angVel); Kokkos::deep_copy(w, P_.angVel);
+    std::vector<float> out((size_t)P_.numReal * 3);
+    for (int i = 0; i < P_.numReal; ++i) { out[3*i]=w(i,0); out[3*i+1]=w(i,1); out[3*i+2]=w(i,2); }
+    return out;
+  }
+  std::vector<float> getInvInertia() const {
+    auto ii = Kokkos::create_mirror_view(P_.invInertia); Kokkos::deep_copy(ii, P_.invInertia);
+    std::vector<float> out((size_t)P_.numReal * 3);
+    for (int i = 0; i < P_.numReal; ++i) { out[3*i]=ii(i,0); out[3*i+1]=ii(i,1); out[3*i+2]=ii(i,2); }
+    return out;
+  }
   // growth: factor *= exp(rate*dt) per step (capped at 1); new_factor<0 keeps/initialises (0.01 if inactive).
   void setGrowthParams(float rate, float new_factor) {
     if (P_.growthFactor == -1.0f) P_.growthFactor = (new_factor > 0.0f) ? new_factor : 0.01f;
