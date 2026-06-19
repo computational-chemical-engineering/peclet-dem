@@ -46,6 +46,7 @@ struct Particles {
   Domain domain{};
   F3 gravity{0, 0, 0};
   float dt = 1e-3f, globalScale = 1.0f, growthRate = 0.0f, growthFactor = -1.0f;
+  float thermostatTau = 0.0f, thermostatTemp = 0.0f, thermostatKB = 1.0f;  // Berendsen (tau>0 enables)
   float frictionDynamic = 0.0f, restitutionNormal = 0.0f, skin = 0.1f;
   int positionIterations = 10, velocityIterations = 0;
 

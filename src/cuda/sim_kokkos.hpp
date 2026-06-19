@@ -99,6 +99,11 @@ inline void demStep(Particles& P) {
   }
 
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
+
+  // Berendsen thermostat at the end of the step (CUDA Simulation::step), tau>0 enables.
+  if (P.thermostatTau > 0.0f && P.dt > 0.0f)
+    applyThermostatKokkos(P.numReal, P.vel, P.invMass, P.angVel, P.invInertia, P.quat,
+                          P.thermostatKB, P.thermostatTau, P.thermostatTemp, P.dt);
 }
 
 /// Host-facing facade with std::vector setters/getters (binding-agnostic).
@@ -120,6 +125,9 @@ class KokkosSim {
     P_.skin = 0.1f * P_.globalScale;
   }
   void setGravity(float gx, float gy, float gz) { P_.gravity = F3{gx, gy, gz}; }
+  void setThermostat(float temperature, float tau, float kB) {  // Berendsen; tau=0 disables
+    P_.thermostatTemp = temperature; P_.thermostatTau = tau; P_.thermostatKB = kB;
+  }
   void setSolverIterations(int pos, int vel) { P_.positionIterations = pos; P_.velocityIterations = vel; }
   void setGlobalScale(float s) { P_.globalScale = s; P_.skin = 0.1f * s; }
   void setDt(float dt) { P_.dt = dt; }

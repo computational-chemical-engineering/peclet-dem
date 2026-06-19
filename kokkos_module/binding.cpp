@@ -40,6 +40,8 @@ PYBIND11_MODULE(demgpu_kokkos, m) {
       .def("set_domain", &KokkosSim::setDomain, py::arg("lx"), py::arg("ly"), py::arg("lz"),
            py::arg("px") = true, py::arg("py") = true, py::arg("pz") = false)
       .def("set_gravity", &KokkosSim::setGravity)
+      .def("set_thermostat", &KokkosSim::setThermostat,
+           py::arg("temperature"), py::arg("tau"), py::arg("kB") = 1.0f)
       .def("set_solver_iterations", &KokkosSim::setSolverIterations, py::arg("pos"), py::arg("vel"))
       .def("set_global_scale", &KokkosSim::setGlobalScale)
       .def("set_dt", &KokkosSim::setDt)
