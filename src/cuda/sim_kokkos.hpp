@@ -11,12 +11,17 @@
 #include <cmath>
 #include <vector>
 
+#include <cstdio>
+#include <fstream>
+#include <stdexcept>
+
 #include "broadphase_arborx.hpp"
 #include "contact_preprocessing_kokkos.hpp"
 #include "integration_kokkos.hpp"
 #include "narrowphase_kokkos.hpp"
 #include "particles_kokkos.hpp"
 #include "periodicity_kokkos.hpp"
+#include "shapes_portable.hpp"
 #include "solver_friction_kokkos.hpp"
 #include "solver_position_kokkos.hpp"
 #include "solver_velocity_kokkos.hpp"
@@ -120,9 +125,67 @@ class KokkosSim {
   }
 
   void setSphereShape(float radius) {
+    initializeShape(SPHERE, radius, 0.0f, 0.0f);
+  }
+
+  // Mirror of CUDA Simulation::initialize(shape_type, radius, height, thickness): builds shape 0's
+  // descriptor + surface point shell (cylinder/box) and records the per-shape base radius and
+  // (uniform-mass=1) inverse inertia applied to every particle by setPositions. shape_type uses the
+  // dem::ShapeKind values (SPHERE=1, HOLLOW_CYLINDER=2, BOX=3).
+  void initializeShape(int shape_type, float radius, float height, float thickness) {
+    baseRadius_ = radius;
+    F4 params{radius, 0, 0, 0};
+    std::vector<F3> shell;
+
+    if (shape_type == HOLLOW_CYLINDER) {
+      params = F4{radius, height, thickness, 0};
+      // Dynamic spacing (faithful to CUDA): >=4 pts across thickness, >=20 around circumference.
+      float min_dim = std::min(radius, thickness);
+      if (min_dim < 1e-4f) min_dim = radius;  // safety if thickness 0
+      float spacing = std::min(radius * 0.3f, min_dim * 0.5f);
+      if (spacing < 1e-3f) spacing = 1e-3f;
+      shell = genCylinderShell(radius, height, thickness, spacing);
+    } else if (shape_type == BOX) {
+      // Cube with half-extent = radius (side = 2*radius).
+      params = F4{radius, radius, radius, 0};
+      float spacing = std::max(radius * 0.5f, 1e-3f);
+      shell = genBoxShell(radius, radius, radius, spacing);
+    } else {
+      shape_type = SPHERE;
+      params = F4{radius, 0, 0, 0};  // sphere: analytic single-probe, no shell
+    }
+
+    // Upload the shell (resize the View; numPoints==0 => analytic single-probe like the sphere).
+    const int nPts = static_cast<int>(shell.size());
+    if (nPts > 0) {
+      P_.shell = Kokkos::View<float* [3], CpMem>("shell", nPts);
+      auto hs = Kokkos::create_mirror_view(P_.shell);
+      for (int i = 0; i < nPts; ++i) { hs(i, 0) = shell[i].x; hs(i, 1) = shell[i].y; hs(i, 2) = shell[i].z; }
+      Kokkos::deep_copy(P_.shell, hs);
+    }
+
     auto h = Kokkos::create_mirror_view(P_.shapes);
-    h(0) = ShapeDesc{SPHERE, F4{radius, 0, 0, 0}, 0, 0};
+    h(0) = ShapeDesc{shape_type, params, 0, nPts};
     Kokkos::deep_copy(P_.shapes, h);
+
+    // Per-shape inverse inertia (mass=1), faithful to CUDA Simulation::initialize.
+    float ix = 1.0f, iy = 1.0f, iz = 1.0f;
+    if (shape_type == SPHERE) {
+      if (baseRadius_ > 0.0f) { float v = 2.5f / (baseRadius_ * baseRadius_); ix = iy = iz = v; }
+    } else if (shape_type == HOLLOW_CYLINDER) {
+      float r_out = baseRadius_, r_in = baseRadius_ - thickness;
+      if (r_in < 0) r_in = 0;
+      float term_r = r_out * r_out + r_in * r_in;
+      float I_zz = 0.5f * term_r;
+      float I_xx = (1.0f / 12.0f) * (3.0f * term_r + height * height);
+      if (I_xx > 1e-6f) { ix = 1.0f / I_xx; iy = 1.0f / I_xx; }
+      if (I_zz > 1e-6f) iz = 1.0f / I_zz;
+    } else if (shape_type == BOX) {
+      float L = 2.0f * baseRadius_;
+      float I = (1.0f / 6.0f) * L * L;
+      if (I > 1e-6f) { ix = iy = iz = 1.0f / I; }
+    }
+    defaultInvI_ = F3{ix, iy, iz};
   }
   void setDomain(float lx, float ly, float lz, bool px, bool py, bool pz) {
     P_.domain = Domain{F3{0, 0, 0}, F3{lx, ly, lz}, F3{lx, ly, lz}, px, py, pz};
@@ -164,7 +227,7 @@ class KokkosSim {
       pos(i, 0) = xyz[3*i]; pos(i, 1) = xyz[3*i+1]; pos(i, 2) = xyz[3*i+2];
       q(i, 0) = 0; q(i, 1) = 0; q(i, 2) = 0; q(i, 3) = 1;
       im(i) = 1.0f; sc(i) = 1.0f; sid(i) = 0;
-      ii(i, 0) = ii(i, 1) = ii(i, 2) = 2.5f;
+      ii(i, 0) = defaultInvI_.x; ii(i, 1) = defaultInvI_.y; ii(i, 2) = defaultInvI_.z;
       vel(i, 0) = vel(i, 1) = vel(i, 2) = 0; av(i, 0) = av(i, 1) = av(i, 2) = 0;
     }
     Kokkos::deep_copy(P_.pos, pos); Kokkos::deep_copy(P_.quat, q); Kokkos::deep_copy(P_.invMass, im);
@@ -258,10 +321,48 @@ class KokkosSim {
 
   int numParticles() const { return P_.numReal; }
   int numContacts() { return readInt(P_.contactCount); }
+  int numManifolds() { return readInt(P_.manifoldCount); }
   float maxOverlap() { float h; Kokkos::deep_copy(h, P_.maxOverlap); return h; }
+
+  // ParaView PolyData (points + Radius + Velocity), faithful to CUDA Simulation::write_vtp:
+  // Radius = scale * globalScale * baseRadius.
+  void writeVtp(const std::string& filename) const {
+    auto pos = Kokkos::create_mirror_view(P_.pos);   Kokkos::deep_copy(pos, P_.pos);
+    auto sc = Kokkos::create_mirror_view(P_.scale);  Kokkos::deep_copy(sc, P_.scale);
+    auto vel = Kokkos::create_mirror_view(P_.vel);   Kokkos::deep_copy(vel, P_.vel);
+    const int n = P_.numReal;
+
+    std::ofstream out(filename);
+    if (!out) throw std::runtime_error("Could not open file for writing: " + filename);
+    out << "<?xml version=\"1.0\"?>\n";
+    out << "<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\">\n";
+    out << "  <PolyData>\n";
+    out << "    <Piece NumberOfPoints=\"" << n << "\" NumberOfVerts=\"0\" "
+        << "NumberOfLines=\"0\" NumberOfStrips=\"0\" NumberOfPolys=\"0\">\n";
+    out << "      <Points>\n";
+    out << "        <DataArray type=\"Float32\" Name=\"Position\" NumberOfComponents=\"3\" format=\"ascii\">\n";
+    for (int i = 0; i < n; ++i) out << pos(i, 0) << " " << pos(i, 1) << " " << pos(i, 2) << " ";
+    out << "\n        </DataArray>\n";
+    out << "      </Points>\n";
+    out << "      <PointData Scalars=\"Radius\">\n";
+    out << "        <DataArray type=\"Float32\" Name=\"Radius\" NumberOfComponents=\"1\" format=\"ascii\">\n";
+    for (int i = 0; i < n; ++i) out << sc(i) * P_.globalScale * baseRadius_ << " ";
+    out << "\n        </DataArray>\n";
+    out << "        <DataArray type=\"Float32\" Name=\"Velocity\" NumberOfComponents=\"3\" format=\"ascii\">\n";
+    for (int i = 0; i < n; ++i) out << vel(i, 0) << " " << vel(i, 1) << " " << vel(i, 2) << " ";
+    out << "\n        </DataArray>\n";
+    out << "      </PointData>\n";
+    out << "    </Piece>\n";
+    out << "  </PolyData>\n";
+    out << "</VTKFile>\n";
+    out.close();
+    std::printf("Exported VTP: %s\n", filename.c_str());
+  }
 
  private:
   Particles P_;
+  float baseRadius_ = 1.0f;
+  F3 defaultInvI_{2.5f, 2.5f, 2.5f};
 };
 
 }  // namespace dem

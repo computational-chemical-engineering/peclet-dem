@@ -37,6 +37,8 @@ PYBIND11_MODULE(demgpu_kokkos, m) {
   py::class_<KokkosSim>(m, "Simulation")
       .def(py::init<int>(), py::arg("capacity"))
       .def("set_sphere_shape", &KokkosSim::setSphereShape, py::arg("radius"))
+      .def("initialize_shape", &KokkosSim::initializeShape, py::arg("shape_type"),
+           py::arg("radius"), py::arg("height") = 0.0f, py::arg("thickness") = 0.0f)
       .def("set_domain", &KokkosSim::setDomain, py::arg("lx"), py::arg("ly"), py::arg("lz"),
            py::arg("px") = true, py::arg("py") = true, py::arg("pz") = false)
       .def("set_gravity", &KokkosSim::setGravity)
@@ -82,7 +84,9 @@ PYBIND11_MODULE(demgpu_kokkos, m) {
              auto v = s.getScales(); py::array_t<float> out((py::ssize_t)v.size());
              std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(float)); return out; })
       .def("step", &KokkosSim::step, py::arg("nsteps") = 1)
+      .def("write_vtp", &KokkosSim::writeVtp, py::arg("filename"))
       .def("num_particles", &KokkosSim::numParticles)
       .def("num_contacts", &KokkosSim::numContacts)
+      .def("num_manifolds", &KokkosSim::numManifolds)
       .def("max_overlap", &KokkosSim::maxOverlap);
 }
