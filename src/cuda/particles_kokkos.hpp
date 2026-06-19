@@ -19,7 +19,7 @@ namespace dem {
 
 struct Particles {
   // --- per-particle state (size = capacity) ---
-  V3 pos; Vf invMass; V4 quat; V3 vel; V3 angVel; V3 invInertia; Vf scale; Vi shapeId;
+  V3 pos; Vf invMass; V4 quat; V3 vel; V3 angVel; V3 invInertia; Vf scale; Vf targetScale; Vi shapeId;
   V3 posPred; V4 quatPred; V3 velPred; V3 angVelPred;
   V3 deltaPos; V4 deltaQuat; V3 deltaVel; V3 deltaAngVel;
   Vi constraintCounts; Vi realIndices;
@@ -54,7 +54,7 @@ struct Particles {
     capacity = cap; maxPairs = maxPairs_; maxContacts = maxContacts_; numPlanes = 0;
     pos = V3("pos", cap); invMass = Vf("invMass", cap); quat = V4("quat", cap);
     vel = V3("vel", cap); angVel = V3("angVel", cap); invInertia = V3("invInertia", cap);
-    scale = Vf("scale", cap); shapeId = Vi("shapeId", cap);
+    scale = Vf("scale", cap); targetScale = Vf("targetScale", cap); shapeId = Vi("shapeId", cap);
     posPred = V3("posPred", cap); quatPred = V4("quatPred", cap);
     velPred = V3("velPred", cap); angVelPred = V3("angVelPred", cap);
     deltaPos = V3("deltaPos", cap); deltaQuat = V4("deltaQuat", cap);

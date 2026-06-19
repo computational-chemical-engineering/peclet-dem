@@ -43,10 +43,15 @@ PYBIND11_MODULE(demgpu_kokkos, m) {
       .def("set_solver_iterations", &KokkosSim::setSolverIterations, py::arg("pos"), py::arg("vel"))
       .def("set_global_scale", &KokkosSim::setGlobalScale)
       .def("set_dt", &KokkosSim::setDt)
-      .def("set_material_params", &KokkosSim::setMaterialParams, py::arg("restitution"), py::arg("friction"))
+      .def("set_material_params", &KokkosSim::setMaterialParams,
+           py::arg("restitution_normal"), py::arg("restitution_tangent") = 0.0f, py::arg("friction") = 0.0f)
       .def("add_plane", &KokkosSim::addPlane)
       .def("set_positions", [](KokkosSim& s, py::array_t<float> a) { s.setPositions(to_vec(a)); })
+      .def("set_velocities", [](KokkosSim& s, py::array_t<float> a) { s.setVelocities(to_vec(a)); })
       .def("set_scales_uniform", &KokkosSim::setScalesUniform)
+      .def("set_scales", [](KokkosSim& s, py::array_t<float> a) { s.setScales(to_vec(a)); })
+      .def("set_growth_params", &KokkosSim::setGrowthParams, py::arg("rate"), py::arg("new_factor") = -1.0f)
+      .def("get_growth_factor", &KokkosSim::growthFactor)
       .def("get_positions",
            [](const KokkosSim& s) {
              auto v = s.getPositions();
@@ -55,6 +60,15 @@ PYBIND11_MODULE(demgpu_kokkos, m) {
              std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(float));
              return out;
            })
+      .def("get_velocities", [](const KokkosSim& s) {
+             auto v = s.getVelocities(); const int n = (int)(v.size() / 3);
+             py::array_t<float> out({n, 3}); std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(float)); return out; })
+      .def("get_quaternions", [](const KokkosSim& s) {
+             auto v = s.getQuaternions(); const int n = (int)(v.size() / 4);
+             py::array_t<float> out({n, 4}); std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(float)); return out; })
+      .def("get_scales", [](const KokkosSim& s) {
+             auto v = s.getScales(); py::array_t<float> out((py::ssize_t)v.size());
+             std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(float)); return out; })
       .def("step", &KokkosSim::step, py::arg("nsteps") = 1)
       .def("num_particles", &KokkosSim::numParticles)
       .def("num_contacts", &KokkosSim::numContacts)

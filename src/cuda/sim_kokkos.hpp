@@ -8,6 +8,7 @@
 
 #include <Kokkos_Core.hpp>
 
+#include <cmath>
 #include <vector>
 
 #include "broadphase_arborx.hpp"
@@ -29,7 +30,13 @@ inline void demStep(Particles& P) {
   CpExec space;
   const float margin = 0.1f * P.globalScale;
 
-  if (P.growthFactor > 0.0f) updateGrowthScalesKokkos(P.numReal, P.scale, P.scale, P.growthFactor);
+  // growth ramp (faithful to CUDA Simulation::step): factor *= exp(rate*dt), capped at 1, then
+  // scale = targetScale * factor. (CUDA stores the unscaled target in d_target_scales.)
+  if (P.growthFactor != -1.0f && P.growthRate != 0.0f) {
+    P.growthFactor *= std::exp(P.growthRate * P.dt);
+    if (P.growthFactor > 1.0f) P.growthFactor = 1.0f;
+  }
+  if (P.growthFactor > 0.0f) updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
 
   predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
                         P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
@@ -116,8 +123,10 @@ class KokkosSim {
   void setSolverIterations(int pos, int vel) { P_.positionIterations = pos; P_.velocityIterations = vel; }
   void setGlobalScale(float s) { P_.globalScale = s; P_.skin = 0.1f * s; }
   void setDt(float dt) { P_.dt = dt; }
-  void setMaterialParams(float restitution, float friction) {
-    P_.restitutionNormal = restitution; P_.frictionDynamic = friction;
+  // (restitution_normal, restitution_tangent, friction) to match CUDA set_material_params; the Kokkos
+  // pipeline currently carries normal restitution + dynamic friction (tangential restitution unused).
+  void setMaterialParams(float restitution_normal, float restitution_tangent, float friction) {
+    P_.restitutionNormal = restitution_normal; P_.frictionDynamic = friction; (void)restitution_tangent;
   }
   void addPlane(float px, float py, float pz, float nx, float ny, float nz) {
     auto h = Kokkos::create_mirror_view(P_.planes);
@@ -149,12 +158,32 @@ class KokkosSim {
     Kokkos::deep_copy(P_.pos, pos); Kokkos::deep_copy(P_.quat, q); Kokkos::deep_copy(P_.invMass, im);
     Kokkos::deep_copy(P_.scale, sc); Kokkos::deep_copy(P_.invInertia, ii); Kokkos::deep_copy(P_.shapeId, sid);
     Kokkos::deep_copy(P_.vel, vel); Kokkos::deep_copy(P_.angVel, av);
+    Kokkos::deep_copy(P_.targetScale, P_.scale);  // unscaled growth target = the set scale
   }
   void setScalesUniform(float s) {
     auto sc = Kokkos::create_mirror_view(P_.scale);
     for (int i = 0; i < P_.numReal; ++i) sc(i) = s;
-    Kokkos::deep_copy(P_.scale, sc);
+    Kokkos::deep_copy(P_.scale, sc); Kokkos::deep_copy(P_.targetScale, P_.scale);
   }
+  // per-particle scales (growth target): flat [n]. scale starts at target (growth factor applies in step).
+  void setScales(const std::vector<float>& s) {
+    auto tsc = Kokkos::create_mirror_view(P_.targetScale);
+    for (int i = 0; i < P_.numReal && i < (int)s.size(); ++i) tsc(i) = s[i];
+    Kokkos::deep_copy(P_.targetScale, tsc); Kokkos::deep_copy(P_.scale, P_.targetScale);
+  }
+  void setVelocities(const std::vector<float>& v) {
+    auto vel = Kokkos::create_mirror_view(P_.vel);
+    for (int i = 0; i < P_.numReal && 3*i+2 < (int)v.size(); ++i) { vel(i,0)=v[3*i]; vel(i,1)=v[3*i+1]; vel(i,2)=v[3*i+2]; }
+    Kokkos::deep_copy(P_.vel, vel);
+  }
+  // growth: factor *= exp(rate*dt) per step (capped at 1); new_factor<0 keeps/initialises (0.01 if inactive).
+  void setGrowthParams(float rate, float new_factor) {
+    if (P_.growthFactor == -1.0f) P_.growthFactor = (new_factor > 0.0f) ? new_factor : 0.01f;
+    else if (new_factor > 0.0f) P_.growthFactor = new_factor;
+    P_.growthRate = rate;
+    if (P_.growthFactor > 0.0f) updateGrowthScalesKokkos(P_.numReal, P_.scale, P_.targetScale, P_.growthFactor);
+  }
+  float growthFactor() const { return P_.growthFactor; }
 
   std::vector<float> getPositions() const {
     auto pos = Kokkos::create_mirror_view(P_.pos);
@@ -162,6 +191,22 @@ class KokkosSim {
     std::vector<float> out(static_cast<size_t>(P_.numReal) * 3);
     for (int i = 0; i < P_.numReal; ++i) { out[3*i]=pos(i,0); out[3*i+1]=pos(i,1); out[3*i+2]=pos(i,2); }
     return out;
+  }
+  std::vector<float> getVelocities() const {
+    auto v = Kokkos::create_mirror_view(P_.vel); Kokkos::deep_copy(v, P_.vel);
+    std::vector<float> out((size_t)P_.numReal * 3);
+    for (int i = 0; i < P_.numReal; ++i) { out[3*i]=v(i,0); out[3*i+1]=v(i,1); out[3*i+2]=v(i,2); }
+    return out;
+  }
+  std::vector<float> getQuaternions() const {
+    auto q = Kokkos::create_mirror_view(P_.quat); Kokkos::deep_copy(q, P_.quat);
+    std::vector<float> out((size_t)P_.numReal * 4);
+    for (int i = 0; i < P_.numReal; ++i) { out[4*i]=q(i,0); out[4*i+1]=q(i,1); out[4*i+2]=q(i,2); out[4*i+3]=q(i,3); }
+    return out;
+  }
+  std::vector<float> getScales() const {
+    auto s = Kokkos::create_mirror_view(P_.scale); Kokkos::deep_copy(s, P_.scale);
+    return std::vector<float>(s.data(), s.data() + P_.numReal);
   }
 
   void step(int nsteps) { for (int s = 0; s < nsteps; ++s) demStep(P_); }
