@@ -84,6 +84,9 @@ PYBIND11_MODULE(demgpu_kokkos, m) {
              auto v = s.getScales(); py::array_t<float> out((py::ssize_t)v.size());
              std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(float)); return out; })
       .def("step", &KokkosSim::step, py::arg("nsteps") = 1)
+      .def("get_sdf_grid", [](KokkosSim& s, std::tuple<int, int, int> res) {
+             auto [rx, ry, rz] = res; auto g = s.getSdfGrid(rx, ry, rz);
+             return py::array_t<float>({rx, ry, rz}, g.data()); }, py::arg("resolution"))
       .def("write_vtp", &KokkosSim::writeVtp, py::arg("filename"))
       .def("num_particles", &KokkosSim::numParticles)
       .def("num_contacts", &KokkosSim::numContacts)

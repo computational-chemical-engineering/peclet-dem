@@ -19,6 +19,7 @@
 #include "contact_preprocessing_kokkos.hpp"
 #include "integration_kokkos.hpp"
 #include "narrowphase_kokkos.hpp"
+#include "output_sdf_kokkos.hpp"
 #include "particles_kokkos.hpp"
 #include "periodicity_kokkos.hpp"
 #include "shapes_portable.hpp"
@@ -318,6 +319,13 @@ class KokkosSim {
   }
 
   void step(int nsteps) { for (int s = 0; s < nsteps; ++s) demStep(P_); }
+
+  // SDF grid (get_sdf_grid): Eikonal reconstruction over the domain, flat x-fastest, negative inside solid.
+  std::vector<float> getSdfGrid(int rx, int ry, int rz) {
+    return dem::generateSdfKokkos(rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal, P_.pos, P_.quat,
+                                  P_.scale, P_.shapeId, P_.shapes, P_.domain.periodic_x, P_.domain.periodic_y,
+                                  P_.domain.periodic_z);
+  }
 
   int numParticles() const { return P_.numReal; }
   int numContacts() { return readInt(P_.contactCount); }
