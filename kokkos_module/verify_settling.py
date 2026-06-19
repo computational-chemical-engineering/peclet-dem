@@ -22,7 +22,7 @@ sim.set_global_scale(1.0)
 sim.set_dt(0.003)
 sim.set_gravity(0.0, 0.0, -9.8)
 sim.set_solver_iterations(pos=20, vel=4)
-sim.set_material_params(restitution=0.0, friction=0.5)
+sim.set_material_params(0.0, 0.0, 0.5)
 # six walls of the box (inward normals)
 sim.add_plane(0, 0, 0, 0, 0, 1)      # floor
 sim.add_plane(0, 0, L, 0, 0, -1)     # ceiling
