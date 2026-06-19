@@ -46,7 +46,11 @@ inline void demStep(Particles& P) {
     Kokkos::parallel_for("self", Kokkos::RangePolicy<CpExec>(space, 0, P.numReal),
                          KOKKOS_LAMBDA(int i) { ri(i) = i; }); }
   Kokkos::deep_copy(space, P.topGhost, P.numReal);
-  generateGhostsKokkos(P.numReal, P.capacity, P.domain, P.skin, P.pos, P.invMass, P.posPred, P.vel,
+  // periodic ghost band = max radius + margin (CUDA config.skin_width = 1.0*global_scale), NOT the small
+  // Verlet broadphase margin -- else particles farther than the Verlet skin from a periodic face are not
+  // ghosted and cross-boundary contacts are missed.
+  const float ghostBand = 1.0f * P.globalScale;
+  generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred, P.vel,
                        P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale, P.shapeId,
                        P.realIndices, P.topGhost);
   P.numParticles = readInt(P.topGhost);
