@@ -61,3 +61,13 @@ jobs:
 
       - name: Import smoke test
         run: PYTHONPATH=$PWD/build python3 -c "import dem; print('dem import OK')"
+
+      - name: Build + run Kokkos kernel unit tests (tests/kokkos)
+        run: |
+          # Kokkos-only unit suite (no ArborX / MPI): contact preprocessing, narrow-phase, the
+          # velocity/position/friction XPBD solves, integration, periodicity and the thermostat,
+          # each validated in isolation against a serial reference.
+          cmake -S tests/kokkos -B build_kokkos \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/deps-install"
+          cmake --build build_kokkos -j
+          ctest --test-dir build_kokkos --output-on-failure
