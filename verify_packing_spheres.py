@@ -1,7 +1,7 @@
 # Fixed Params
 import sys
 sys.path.append('./build')
-import demgpu
+import dem
 import numpy as np
 import time
 import math
@@ -32,7 +32,7 @@ def verify_packing():
     vol_domain_ref = vol_total_ref / phi_ref
     domain_side = vol_domain_ref ** (1.0/3.0)
 
-    sim = demgpu.Simulation(num_particles)
+    sim = dem.Simulation(num_particles)
     sim.initialize(shape_type=1, radius=radius) # Sphere
 
     half_d = domain_side / 2.0

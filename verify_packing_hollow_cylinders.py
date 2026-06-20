@@ -1,7 +1,7 @@
 # Fixed Params
 import sys
 sys.path.append('./build')
-import demgpu
+import dem
 import numpy as np
 import time
 import math
@@ -15,7 +15,7 @@ def generate_unit_sdf_stl(radius, height, thickness, filename):
     print(f"Generating Unit STL via SDF: {filename}")
     
     # 1. Create a 1-particle simulation
-    sim_unit = demgpu.Simulation(1)
+    sim_unit = dem.Simulation(1)
     # Use exact same shape params
     sim_unit.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
     
@@ -104,7 +104,7 @@ def verify_packing():
     
     generate_unit_sdf_stl(r_unit, h_unit, t_unit, f"{output_dir}/ring_unit.stl")
 
-    sim = demgpu.Simulation(num_particles)
+    sim = dem.Simulation(num_particles)
     sim.initialize(shape_type=2, radius=radius, height=height, thickness=thickness) #hollow cylinder
 
 

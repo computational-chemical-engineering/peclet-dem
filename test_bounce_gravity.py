@@ -1,4 +1,4 @@
-import demgpu
+import dem
 import numpy as np
 import time
 
@@ -6,7 +6,7 @@ def test_bounce_gravity():
     print("--- 1-Particle Gravity Bounce Test ---")
     
     # Init
-    sim = demgpu.Simulation(1)
+    sim = dem.Simulation(1)
     sim.initialize(0) # Sphere
     
     # Material: Restitution=0.5

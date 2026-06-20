@@ -1,4 +1,4 @@
-// packing-gpu — portable (Kokkos) particle SoA container: the storage the demgpu flip pivots on.
+// packing-gpu — portable (Kokkos) particle SoA container: the storage the dem flip pivots on.
 //
 // Replaces ParticleSystemData's float4* arrays with Kokkos SoA Views (backend-default layout:
 // coalesced on GPU, cache-friendly on CPU; packed .w scalars split into their own arrays). Holds the

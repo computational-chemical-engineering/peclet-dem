@@ -14,7 +14,7 @@ re-approaches the plane under gravity -> normal impulse -> mu-bounded tangential
 import math, sys
 import numpy as np
 sys.path.insert(0, "build")
-import demgpu
+import dem
 
 g, theta = 9.8, math.radians(20.0)
 tan_t = math.tan(theta)
@@ -25,7 +25,7 @@ nsteps = int(T / dt)
 
 
 def run(mu):
-    s = demgpu.Simulation(1)
+    s = dem.Simulation(1)
     s.initialize(shape_type=3, radius=H)           # cube, half-extent H
     s.set_domain((-50, -50, -2), (50, 50, 50))
     s.enable_periodicity(False, False, False)

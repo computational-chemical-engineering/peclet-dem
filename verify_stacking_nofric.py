@@ -1,11 +1,11 @@
-import demgpu
+import dem
 import numpy as np
 import time
 
 def verify_stacking_nofric():
     print("--- Stacking Stability Test (No Friction) ---")
     
-    sim = demgpu.Simulation(200)
+    sim = dem.Simulation(200)
     sim.initialize(0) 
     
     # Material: Restitution=0.5, Friction=0.0 (TESTING THIS)

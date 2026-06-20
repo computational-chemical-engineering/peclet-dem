@@ -28,7 +28,7 @@ using BpMem = BpExec::memory_space;
 ///   outPairs[maxPairs][2]  preallocated output; outCount is the (clamped) number found
 /// Returns the number of pairs found (may exceed maxPairs if the buffer is too small).
 // View params are templated so callers can pass managed Views (tests) OR unmanaged Views wrapping
-// raw device buffers (the CUDA demgpu module's float4*/int2* arrays). Element types/layout must be
+// raw device buffers (the CUDA dem module's float4*/int2* arrays). Element types/layout must be
 // the usual (positions [N][3], radii [N], pairs [N][2], count scalar).
 template <class PosV, class RadV, class PairsV, class CountV>
 inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numReal, float margin,

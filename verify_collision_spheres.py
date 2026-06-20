@@ -1,7 +1,7 @@
 
 import sys
 sys.path.append('./build')
-import demgpu
+import dem
 import numpy as np
 import math
 import os
@@ -38,7 +38,7 @@ def run_sphere_test():
     for offset in test_cases:
         print(f"\nRunning Sphere Test with Offset={offset}")
         
-        sim = demgpu.Simulation(num_particles)
+        sim = dem.Simulation(num_particles)
         sim.initialize(shape_type=1, radius=radius, height=0, thickness=0) # Sphere
         
         domain_size = 6.0*radius

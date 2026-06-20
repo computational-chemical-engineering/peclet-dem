@@ -6,12 +6,12 @@ import time
 
 # Add build to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../build'))
-import demgpu
+import dem
 
 def run_sphere_sdf_test():
     # Setup
     num_particles = 10
-    sim = demgpu.Simulation(num_particles)
+    sim = dem.Simulation(num_particles)
     sim.initialize(shape_type=1) # Sphere (ID=1)
     
     # Domain

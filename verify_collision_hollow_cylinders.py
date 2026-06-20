@@ -1,7 +1,7 @@
 
 import sys
 sys.path.append('./build')
-import demgpu
+import dem
 import numpy as np
 import time
 import math
@@ -16,7 +16,7 @@ def generate_unit_sdf_stl(radius, height, thickness, filename):
     print(f"Generating Unit STL via SDF: {filename}")
     
     # 1. Create a 1-particle simulation
-    sim_unit = demgpu.Simulation(1)
+    sim_unit = dem.Simulation(1)
     sim_unit.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
     
     # Domain large enough to contain the unit shape
@@ -87,7 +87,7 @@ def run_collision_test():
     os.makedirs(output_dir, exist_ok=True)
     
     # --- Initialize Simulation ---
-    sim = demgpu.Simulation(num_particles)
+    sim = dem.Simulation(num_particles)
     sim.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
     
     # Large domain, periodic

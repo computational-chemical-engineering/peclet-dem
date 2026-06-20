@@ -6,7 +6,7 @@ import numpy as np
 
 # Add build to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../build'))
-import demgpu
+import dem
 
 def run_cylinder_packing():
     # Parameters
@@ -35,7 +35,7 @@ def run_cylinder_packing():
     print(f"Req Domain Vol: {vol_domain:.4f} (Cube Side: {domain_side:.2f})")
     
     # Setup Sim
-    sim = demgpu.Simulation(num_particles)
+    sim = dem.Simulation(num_particles)
     # New initialize signature
     sim.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
     

@@ -1,4 +1,4 @@
-import demgpu
+import dem
 import numpy as np
 import sys
 import math
@@ -12,7 +12,7 @@ def print_state(sim, step, label):
 
 def test_center_overlap():
     print("\n=== TEST 1: Two Particles Center Overlap ===")
-    sim = demgpu.Simulation(2)
+    sim = dem.Simulation(2)
     sim.initialize(0)
     sim.set_domain((-10, -10, -10), (10, 10, 10))
     sim.set_gravity(0, 0, 0)
@@ -51,7 +51,7 @@ def test_center_overlap():
 
 def test_3_particles():
     print("\n=== TEST 2: Three Particles Linear Overlap ===")
-    sim = demgpu.Simulation(3)
+    sim = dem.Simulation(3)
     sim.initialize(0)
     sim.set_domain((-10, -10, -10), (10, 10, 10))
     sim.set_gravity(0, 0, 0)
@@ -76,7 +76,7 @@ def test_3_particles():
 
 def test_periodic_overlap():
     print("\n=== TEST 3: Periodic Overlap ===")
-    sim = demgpu.Simulation(2)
+    sim = dem.Simulation(2)
     sim.initialize(0)
     # Domain -5 to 5 (Size 10)
     sim.set_domain((-5, -5, -5), (5, 5, 5)) 

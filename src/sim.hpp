@@ -1,4 +1,4 @@
-// packing-gpu — portable (Kokkos) Simulation facade: the demgpu flip's host-facing driver.
+// packing-gpu — portable (Kokkos) Simulation facade: the dem flip's host-facing driver.
 //
 // Owns a dem::Particles SoA and runs the full XPBD DEM step by composing the ported kernels in the
 // simulation.cpp step() order. Exposes a small std::vector-based API (binding-agnostic) so a pybind
@@ -29,7 +29,7 @@
 #include "solver_position.hpp"
 #include "solver_velocity.hpp"
 
-#ifdef DEMGPU_MPI
+#ifdef DEM_MPI
 #include "mpi_halo.hpp"  // KokkosParticleHalo (gated; default module never includes it)
 #endif
 
@@ -155,7 +155,7 @@ inline float computeOverlapsKokkos(Particles& P) {
   float h; Kokkos::deep_copy(h, P.maxOverlap); return h;
 }
 
-#ifdef DEMGPU_MPI
+#ifdef DEM_MPI
 /// One distributed XPBD DEM substep (faithful port of Simulation::step_mpi). Identical to demStep
 /// EXCEPT: the periodic ghost generation is replaced by a cross-rank gather (halo.gather, ghosts
 /// carrying REAL mass), and the owners refresh their ghost copies (velPred/angVelPred, then
@@ -249,7 +249,7 @@ inline void demStepMpi(Particles& P, KokkosParticleHalo& halo, double rcut, int 
 
   P.numParticles = P.numReal;  // restore owned-only active count for getters
 }
-#endif  // DEMGPU_MPI
+#endif  // DEM_MPI
 
 /// Host-facing facade with std::vector setters/getters (binding-agnostic).
 class KokkosSim {
@@ -507,7 +507,7 @@ class KokkosSim {
     dem::writeSdfVti(filename, grid, rx, ry, rz, mn, mx);
   }
 
-#ifdef DEMGPU_MPI
+#ifdef DEM_MPI
   // Block decomposition over the GLOBAL domain (once); the per-block solver stays non-periodic, the
   // halo supplies the periodic wrap. gsize is the ORB cell grid. Mirror of Simulation::mpi_init.
   void initMpi(std::tuple<double, double, double> origin, std::tuple<double, double, double> size,
@@ -529,7 +529,7 @@ class KokkosSim {
   }
   int rank() const { return halo_.rank(); }
   int numGhost() const { return halo_.numGhost(); }
-#endif  // DEMGPU_MPI
+#endif  // DEM_MPI
 
   // SDF grid (get_sdf_grid): Eikonal reconstruction over the domain, flat x-fastest, negative inside solid.
   std::vector<float> getSdfGrid(int rx, int ry, int rz) {
@@ -582,7 +582,7 @@ class KokkosSim {
   Particles P_;
   float baseRadius_ = 1.0f;
   F3 defaultInvI_{2.5f, 2.5f, 2.5f};
-#ifdef DEMGPU_MPI
+#ifdef DEM_MPI
   KokkosParticleHalo halo_;
   double mpiRcut_ = 0.0;
   int mpiSyncEvery_ = 1;

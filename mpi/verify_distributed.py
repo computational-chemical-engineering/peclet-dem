@@ -1,4 +1,4 @@
-"""Cross-rank physics validation for the MPI-aware demgpu step.
+"""Cross-rank physics validation for the MPI-aware dem step.
 
 Where validate_exact.py checks per-particle agreement, this checks the *physical observables* the
 project's verify_*.py scripts care about, for scenarios whose contacts straddle the inter-rank split.
@@ -20,16 +20,16 @@ Run: PYTHONPATH=build_sm120:../transport-core/python/build mpirun -np 2 python3 
 import sys
 import numpy as np
 from mpi4py import MPI
-import demgpu
+import dem
 import tpx_mpi
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
 
 _loc = comm.Split_type(MPI.COMM_TYPE_SHARED)
-_ndev = demgpu.Simulation.cuda_device_count()
+_ndev = dem.Simulation.cuda_device_count()
 if _ndev > 0:
-    demgpu.Simulation.set_cuda_device(_loc.rank % _ndev)
+    dem.Simulation.set_cuda_device(_loc.rank % _ndev)
 
 dmin = [0.0, 0.0, 0.0]
 L = [8.0, 8.0, 8.0]
@@ -54,7 +54,7 @@ def grid_positions(n, seed):
 
 
 def make_sim(n, restitution, friction, grav, planes):
-    s = demgpu.Simulation(num_particles=int(n))
+    s = dem.Simulation(num_particles=int(n))
     m = rcut + 0.5
     s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m), (L[0] + m, L[1] + m, L[2] + m))
     s.enable_periodicity(False, False, False)

@@ -1,9 +1,9 @@
-"""Validate periodic-wrap handling of the MPI-aware demgpu step.
+"""Validate periodic-wrap handling of the MPI-aware dem step.
 
 A periodic axis only works distributed if it is split across >=2 ranks: a rank never ghosts to
 itself, so a single rank spanning a periodic axis loses the wrap. ORB splits axis 0 at np=2 and
 axes 0,1 at np=4, so this test makes exactly the split axes periodic (via the transport-core halo)
-and walls the rest, then compares against a serial reference that uses demgpu's *internal*
+and walls the rest, then compares against a serial reference that uses dem's *internal*
 periodicity. Agreement means the halo's periodic image ghosts reproduce true periodic interactions.
 
   serial      : one Simulation, enable_periodicity(*split) + walls on the unsplit axes.
@@ -16,15 +16,15 @@ import os
 import sys
 import numpy as np
 from mpi4py import MPI
-import demgpu
+import dem
 import tpx_mpi
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
 _loc = comm.Split_type(MPI.COMM_TYPE_SHARED)
-_nd = demgpu.Simulation.cuda_device_count()
+_nd = dem.Simulation.cuda_device_count()
 if _nd > 0:
-    demgpu.Simulation.set_cuda_device(_loc.rank % _nd)
+    dem.Simulation.set_cuda_device(_loc.rank % _nd)
 
 dmin = [0.0, 0.0, 0.0]
 L = [8.0, 8.0, 8.0]
@@ -59,14 +59,14 @@ def wall_planes():
 
 
 def make_sim(n, dist):
-    s = demgpu.Simulation(num_particles=int(n))
+    s = dem.Simulation(num_particles=int(n))
     if dist:
         # per-block solver: non-periodic, domain padded so wrap-image ghosts (just outside [0,L]) fit.
         m = rcut + 0.5
         s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m), (L[0] + m, L[1] + m, L[2] + m))
         s.enable_periodicity(False, False, False)
     else:
-        # serial reference: TRUE [0,L] domain so demgpu's internal periodicity wraps at the right box.
+        # serial reference: TRUE [0,L] domain so dem's internal periodicity wraps at the right box.
         s.set_domain((dmin[0], dmin[1], dmin[2]), (L[0], L[1], L[2]))
         s.enable_periodicity(*periodic)
     s.initialize(shape_type=1, radius=radius)

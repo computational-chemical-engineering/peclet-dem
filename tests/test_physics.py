@@ -2,7 +2,7 @@ import numpy as np
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "../build"))
-import demgpu
+import dem
 import math
 
 def run_simulation(num_particles, density_target, steps=1000):
@@ -19,7 +19,7 @@ def run_simulation(num_particles, density_target, steps=1000):
     
     print(f"Box Size L={L:.3f}")
     
-    sim = demgpu.Simulation(num_particles)
+    sim = dem.Simulation(num_particles)
     sim.set_domain(np.array([-L/2, -L/2, -L/2], dtype=np.float32), 
                    np.array([L/2, L/2, L/2], dtype=np.float32))
     
@@ -130,7 +130,7 @@ def run_simulation(num_particles, density_target, steps=1000):
 
 def test_two_particles():
     print("\n--- Test: 2 Particles Overlap ---")
-    sim = demgpu.Simulation(2)
+    sim = dem.Simulation(2)
     sim.set_domain(np.array([-10,-10,-10], dtype=np.float32), np.array([10,10,10], dtype=np.float32))
     sim.initialize(0)
     

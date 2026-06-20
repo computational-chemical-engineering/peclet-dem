@@ -6,7 +6,7 @@ import numpy as np
 
 # Add build to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../build'))
-import demgpu
+import dem
 
 def run_periodic_growth():
     # Parameters
@@ -30,7 +30,7 @@ def run_periodic_growth():
     print(f"Periodic Packing (Phi={phi}, N={num_particles})")
     print(f"Domain Side: {domain_side:.3f}")
     
-    sim = demgpu.Simulation(num_particles)
+    sim = dem.Simulation(num_particles)
     sim.initialize(shape_type=2, radius=radius_base, height=height_base, thickness=thickness_base)
     
     # Set Domain (Automatic Periodicity)

@@ -12,9 +12,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../python"))
 from export_vtp import save_to_vtp
 
 try:
-    import demgpu
+    import dem
 except ImportError as e:
-    print(f"Failed to import demgpu from {build_path}")
+    print(f"Failed to import dem from {build_path}")
     print(e)
     sys.exit(1)
 
@@ -91,7 +91,7 @@ def run_simulation(num_particles, packing_density, granular_temperature):
     SEED = 42
     rng = np.random.default_rng(seed=SEED)
 
-    sim = demgpu.Simulation(num_particles)
+    sim = dem.Simulation(num_particles)
     sim.initialize(shape_type=0) # Sphere
 
     # Scales (Polydisperse)

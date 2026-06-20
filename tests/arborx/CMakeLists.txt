@@ -1,6 +1,6 @@
 # Standalone ArborX broad-phase correctness test (Phase 2, milestone 1).
 #
-# Deliberately isolated from the main demgpu build (which fetches cuBQL and compiles the whole CUDA
+# Deliberately isolated from the main dem build (which fetches cuBQL and compiles the whole CUDA
 # module): this only needs Kokkos + ArborX, consumed via find_package against a cluster module or the
 # suite's local install prefix (suite/tools/bootstrap_deps.sh) on CMAKE_PREFIX_PATH. Build:
 #   cmake -S tests/arborx -B build_arborx -DCMAKE_PREFIX_PATH=<suite>/extern/install/<backend>

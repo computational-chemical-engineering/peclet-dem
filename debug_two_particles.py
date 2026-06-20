@@ -1,11 +1,11 @@
-import demgpu
+import dem
 import numpy as np
 
 def test_two_particle_overlap():
     print("--- 2-Particle Overlap Test ---")
     
     # Init
-    sim = demgpu.Simulation(2)
+    sim = dem.Simulation(2)
     sim.initialize(0) # Sphere
     
     # Set Params

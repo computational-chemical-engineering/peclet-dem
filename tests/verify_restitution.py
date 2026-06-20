@@ -6,11 +6,11 @@ import math
 
 # Add build path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../build")))
-import demgpu
+import dem
 
 def test_restitution():
     print("--- Test 1: Normal Restitution ---")
-    sim = demgpu.Simulation(1)
+    sim = dem.Simulation(1)
     sim.set_domain(np.array([-10,-10,-10], dtype=np.float32), np.array([10,10,10], dtype=np.float32))
     
     # Drop from y=2.0. Radius=1.0. Ground=0.0?
@@ -69,7 +69,7 @@ def test_restitution():
         print("FAIL: Restitution ratio mismatch.")
 
     print("\n--- Test 2: Tangential Friction (Spinning Ball) ---")
-    sim2 = demgpu.Simulation(1)
+    sim2 = dem.Simulation(1)
     # Ground at y=0
     sim2.set_domain(np.array([-10,0,-10], dtype=np.float32), np.array([10,20,10], dtype=np.float32))
     

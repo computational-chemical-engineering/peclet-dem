@@ -1,10 +1,10 @@
-import demgpu
+import dem
 import numpy as np
 import time
 
 def main():
     print("Initializing DEM-GPU...")
-    sim = demgpu.Simulation(1000)
+    sim = dem.Simulation(1000)
     sim.initialize()
 
     t0 = time.time() # Define t0 for the new code block

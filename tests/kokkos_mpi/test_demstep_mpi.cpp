@@ -24,7 +24,7 @@
 // (spacing < diameter, over-constrained) has an essentially unique packing -> tight position parity;
 // periodic (spacing > diameter) has cage slack -> a manifold of zero-overlap configs, so the physical
 // check is that the overlap relaxes identically and positions stay bounded (no divergence). Per-process:
-// the reference is computed once on rank 0 and broadcast. Build with -DDEMGPU_MPI.
+// the reference is computed once on rank 0 and broadcast. Build with -DDEM_MPI.
 #include <mpi.h>
 
 #include <Kokkos_Core.hpp>

@@ -1,17 +1,17 @@
 import sys
 sys.path.append('./build')
-import demgpu
+import dem
 import numpy as np
 import time
 import sys
-print(f"DEBUG: demgpu loaded from: {demgpu.__file__}")
+print(f"DEBUG: dem loaded from: {dem.__file__}")
 
 def verify_stacking_inelastic():
     print("--- Stacking Stability Test (Inelastic e=0) ---")
     
     shape = (4,1,1)
     n = shape[0]*shape[1]*shape[2]
-    sim = demgpu.Simulation(n)
+    sim = dem.Simulation(n)
     radius = 0.6
     sim.initialize(0, radius=radius)  # Base Radius 1.0 so Scale acts as Radius 
     
@@ -78,7 +78,7 @@ def verify_stacking_inelastic():
             s = sim.get_scales()
             
             # export_lammps(filename, step, pos, vel, quats, radii, ...)
-            demgpu.export_lammps(f"{output_dir}/dump.stacking.{i}.lammps", i, p, v, q, radius*s)
+            dem.export_lammps(f"{output_dir}/dump.stacking.{i}.lammps", i, p, v, q, radius*s)
             
             # Trace Particle 1
             print(f"Step {i}: P1_y={p[1][1]:.6f}, P1_vy={v[1][1]:.6f}")

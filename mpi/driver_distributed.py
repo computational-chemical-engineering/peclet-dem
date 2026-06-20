@@ -1,4 +1,4 @@
-"""Distributed packing-gpu driver skeleton: demgpu Simulation per rank, orchestrated by mpi4py +
+"""Distributed packing-gpu driver skeleton: dem Simulation per rank, orchestrated by mpi4py +
 transport-core's tpx_mpi (block decomposition + particle migration/ghosts).
 
 Per step, each rank:
@@ -6,15 +6,15 @@ Per step, each rank:
     one interaction radius -> rebuild a Simulation over owned+ghost -> step -> keep owned.
 
 Run (system python3 has mpi4py + numpy; build both modules first):
-    cmake -S . -B build_sm120 -DDEMGPU_ENABLE_MPI=ON && cmake --build build_sm120 --target demgpu -j
+    cmake -S . -B build_sm120 -DDEMGPU_ENABLE_MPI=ON && cmake --build build_sm120 --target dem -j
     cmake -S ../transport-core/python -B ../transport-core/python/build && \
         cmake --build ../transport-core/python/build -j
     PYTHONPATH=build_sm120:../transport-core/python/build \
         mpirun -np 4 python3 mpi/driver_distributed.py
 
-STATUS: implements the **FROZEN** scheme. Ghosts are set to inv_mass=0 (via the new demgpu
+STATUS: implements the **FROZEN** scheme. Ghosts are set to inv_mass=0 (via the new dem
 set_inv_mass) with zero velocity, so the solver treats them as fixed collision obstacles -- they push
-owned particles but are never integrated. demgpu detects collisions once per substep and runs its
+owned particles but are never integrated. dem detects collisions once per substep and runs its
 Jacobi iterations on the fixed contact set, so "ghosts fixed during the iterations" matches its serial
 behaviour; FROZEN only approximates the boundary mass-split (owned takes the full correction).
 The EXACT scheme (reverse-accumulate ghost constraint deltas to owners via ParticleHalo, so each
@@ -23,7 +23,7 @@ owner gets its mass-weighted share) is the next step -- see mpi/README.md.
 import sys
 import numpy as np
 from mpi4py import MPI
-import demgpu
+import dem
 import tpx_mpi
 
 comm = MPI.COMM_WORLD
@@ -49,7 +49,7 @@ ids = mine.astype(np.float64)
 def build_sim(n):
     # Per-block solver: NON-periodic (periodicity is provided by the MPI ghosts), domain padded by
     # the interaction radius so ghost images just outside the box aren't clipped/wrapped.
-    s = demgpu.Simulation(num_particles=int(n))
+    s = dem.Simulation(num_particles=int(n))
     m = rcut + 0.5
     s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m),
                  (dmin[0] + L[0] + m, dmin[1] + L[1] + m, dmin[2] + L[2] + m))

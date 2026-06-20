@@ -6,12 +6,12 @@ import numpy as np
 
 # Add build to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../build'))
-import demgpu
+import dem
 
 def run_cylinder_highres():
     # Setup
     num_particles = 1
-    sim = demgpu.Simulation(num_particles)
+    sim = dem.Simulation(num_particles)
     sim.initialize(shape_type=2) # Cylinder
     
     # Domain: Focus on the single cylinder

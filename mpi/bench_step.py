@@ -1,4 +1,4 @@
-"""Microbenchmark for the MPI-aware demgpu step. Times steady-state ms/step at the current rank count
+"""Microbenchmark for the MPI-aware dem step. Times steady-state ms/step at the current rank count
 (rebuild-free: one Simulation, fixed ownership, no migration -- isolates the step cost).
 
 Env knobs:  PI/VI = position/velocity iterations; M = sync_every (1=EXACT); R = forward_rotation (0/1).
@@ -10,7 +10,7 @@ import os
 import time
 import numpy as np
 from mpi4py import MPI
-import demgpu
+import dem
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
@@ -28,7 +28,7 @@ pos = rng.uniform(0.5, 7.5, size=(mine.size, 3)).astype(np.float32)
 vel = np.zeros((mine.size, 3), dtype=np.float32)
 
 m = rcut + 0.5
-s = demgpu.Simulation(num_particles=int(mine.size))
+s = dem.Simulation(num_particles=int(mine.size))
 s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m), (L[0] + m, L[1] + m, L[2] + m))
 s.enable_periodicity(False, False, False)
 s.initialize(shape_type=0, radius=radius)

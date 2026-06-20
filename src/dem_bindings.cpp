@@ -1,4 +1,4 @@
-// packing-gpu — pybind11 module for the Kokkos-backed DEM simulation (the canonical demgpu).
+// packing-gpu — pybind11 module for the Kokkos-backed DEM simulation (the canonical dem module).
 //
 // Exposes dem::KokkosSim (the portable Kokkos+ArborX pipeline) with
 // the essential sphere-packing API. Kokkos is initialized at import and finalized via Python atexit.
@@ -12,7 +12,7 @@
 #include <optional>
 #include <tuple>
 
-#ifdef DEMGPU_MPI
+#ifdef DEM_MPI
 #include <mpi.h>
 #endif
 
@@ -27,7 +27,7 @@ static std::vector<float> to_vec(py::array_t<float, py::array::c_style | py::arr
   return v;
 }
 
-PYBIND11_MODULE(demgpu, m) {
+PYBIND11_MODULE(dem, m) {
   m.doc() = "DEM-GPU (Kokkos + ArborX): portable XPBD granular dynamics";
 
   if (!Kokkos::is_initialized()) Kokkos::initialize();
@@ -163,8 +163,8 @@ PYBIND11_MODULE(demgpu, m) {
              d["num_manifolds"] = s.numManifolds();
              d["max_overlap"] = s.maxOverlap();
              return d; })
-#ifdef DEMGPU_MPI
-      // Gated MPI step (mirrors the CUDA demgpu MPI binding); built only with -DDEMGPU_MPI.
+#ifdef DEM_MPI
+      // Gated MPI step (mirrors the CUDA dem MPI binding); built only with -DDEM_MPI.
       .def("init_mpi",
            [](KokkosSim& s, std::tuple<double, double, double> origin,
               std::tuple<double, double, double> size, std::tuple<long, long, long> gsize,

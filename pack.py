@@ -22,7 +22,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, "build")
-import demgpu  # noqa: E402
+import dem  # noqa: E402
 
 import pack_meter  # noqa: E402
 
@@ -49,7 +49,7 @@ def pack_spheres(N=800, phi_ref=0.68, radius=0.5, friction=0.0, temperature=1.0,
     cooling_step = min(int(cooling_time / dt), int(limit_time / dt))
     rng = np.random.default_rng(seed)
 
-    s = demgpu.Simulation(N)
+    s = dem.Simulation(N)
     s.initialize(shape_type=1, radius=radius)
     s.set_domain((-half, -half, -half), (half, half, half))
     s.enable_periodicity(True, True, True)
@@ -153,7 +153,7 @@ def pack_rings(N=400, phi_ref=0.55, radius=0.5, height=1.0, thickness=0.15, temp
     cooling_step = min(int(cooling_time / dt), int(limit_time / dt))
     rng = np.random.default_rng(seed)
 
-    s = demgpu.Simulation(N)
+    s = dem.Simulation(N)
     s.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
     s.set_domain((-half, -half, -half), (half, half, half))
     s.enable_periodicity(True, True, True)

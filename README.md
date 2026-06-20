@@ -1,8 +1,8 @@
-# dem-gpu (`demgpu`)
+# dem-gpu (`dem`)
 
 Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD solver with SDF-based point-shell collision detection. Built on **Kokkos + ArborX**, so the same source runs on **CUDA, HIP (AMD/LUMI), and OpenMP** backends (selected at build time by the install prefix). Optional MPI for domain partitioning, with full pybind11 Python bindings for scripting and visualization.
 
-> The CUDA implementation was retired (2026-06): the Kokkos `demgpu` was validated against it before the CUDA sources were removed. Restore point: git tag `pre-cuda-retirement`.
+> The CUDA implementation was retired (2026-06): the Kokkos `dem` module was validated against it before the CUDA sources were removed. Restore point: git tag `pre-cuda-retirement`.
 
 ## Features
 
@@ -16,20 +16,19 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 
 ```text
 ├── CMakeLists.txt              # Build configuration (find_package Kokkos + ArborX)
-├── src
-│   ├── demgpu_bindings.cpp     # Pybind11 module entry point (the `demgpu` module)
-│   └── cuda                    # Kokkos sources (header-only, namespace dem; historical dir name)
-│       ├── sim.hpp             # KokkosSim facade + the demStep XPBD substep
-│       ├── integration.hpp     # Time integration & prediction
-│       ├── broadphase_arborx.hpp  # ArborX BVH broad-phase
-│       ├── narrowphase.hpp     # Narrow-phase point-shell-vs-SDF collision
-│       ├── solver_velocity.hpp # Velocity solver kernels
-│       ├── solver_position.hpp # Position solver kernels (XPBD overlap removal)
-│       ├── solver_friction.hpp # Coulomb friction cluster
-│       ├── output_sdf.hpp      # SDF/VTI grid generation (Eikonal)
-│       ├── shapes_portable.hpp # Analytic shapes (sphere / hollow cylinder / box)
-│       ├── io.hpp              # LAMMPS-dump + SDF-VTI export
-│       └── mpi_halo.hpp        # Distributed particle halo (transport-core), gated DEMGPU_MPI
+├── src                         # Kokkos sources (header-only, namespace dem)
+│   ├── dem_bindings.cpp        # Pybind11 module entry point (the `dem` module)
+│   ├── sim.hpp                 # KokkosSim facade + the demStep XPBD substep
+│   ├── integration.hpp         # Time integration & prediction
+│   ├── broadphase_arborx.hpp   # ArborX BVH broad-phase
+│   ├── narrowphase.hpp         # Narrow-phase point-shell-vs-SDF collision
+│   ├── solver_velocity.hpp     # Velocity solver kernels
+│   ├── solver_position.hpp     # Position solver kernels (XPBD overlap removal)
+│   ├── solver_friction.hpp     # Coulomb friction cluster
+│   ├── output_sdf.hpp          # SDF/VTI grid generation (Eikonal)
+│   ├── shapes_portable.hpp     # Analytic shapes (sphere / hollow cylinder / box)
+│   ├── io.hpp                  # LAMMPS-dump + SDF-VTI export
+│   └── mpi_halo.hpp            # Distributed particle halo (transport-core), gated DEM_MPI
 ├── tests                       # C++ unit tests: kokkos/ (kernels), arborx/, kokkos_mpi/
 ├── docs                        # Documentation
 └── *.py                        # Python verification/example scripts (verify_*.py)
@@ -43,7 +42,7 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
   `../extern/install/<backend>` (`nvidia-cuda` / `host-openmp` / `lumi-hip`). A **hard build dependency**.
 - a backend compiler: **nvcc** (CUDA) on `PATH`, **hipcc** (ROCm), or just a host C++ compiler (OpenMP)
 - **Python** >= 3.10
-- **MPI** (optional, `-DDEMGPU_MPI=ON`) — OpenMPI or MPICH
+- **MPI** (optional, `-DDEM_MPI=ON`) — OpenMPI or MPICH
 
 ## Build Instructions
 
@@ -54,10 +53,10 @@ cmake -B build -S . \
   -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda;$(python -m pybind11 --cmakedir)"
 cmake --build build -j$(nproc)
 ```
-*Swap the prefix to `../extern/install/host-openmp` for the OpenMP backend. `-DDEMGPU_MPI=ON` links MPI
+*Swap the prefix to `../extern/install/host-openmp` for the OpenMP backend. `-DDEM_MPI=ON` links MPI
 and exposes the distributed step (`init_mpi` / `enable_mpi_step` / `step_mpi`).*
 
-The compiled `demgpu.cpython-....so` is placed in `build/`; run scripts from the root with that directory on `PYTHONPATH`.
+The compiled `dem.cpython-....so` is placed in `build/`; run scripts from the root with that directory on `PYTHONPATH`.
 
 ## Running Simulations
 

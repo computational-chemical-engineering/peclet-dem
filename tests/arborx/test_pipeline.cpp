@@ -1,4 +1,4 @@
-// End-to-end smoke test of the assembled Kokkos+ArborX DEM pipeline (the demgpu flip target).
+// End-to-end smoke test of the assembled Kokkos+ArborX DEM pipeline (the dem pipeline).
 //
 // Composes EVERY ported unit on the dem::Particles SoA container in the real simulation.cpp step()
 // order — predict -> ghosts -> broad-phase(ArborX) -> narrow-phase -> contact->manifold -> velocity
@@ -6,7 +6,7 @@
 // periodic sphere packing under gravity with a ground plane. This proves the ported headers compose
 // (no cross-header conflicts) and the pipeline runs end-to-end on the active backend; it asserts the
 // state stays finite and bounded (gross-error guard). Bit-exact parity with the CUDA solver is the
-// job of verify_packing_hollow_cylinders.py once wired into demgpu.so.
+// job of verify_packing_hollow_cylinders.py once wired into dem.so.
 #include <Kokkos_Core.hpp>
 
 #include <cmath>

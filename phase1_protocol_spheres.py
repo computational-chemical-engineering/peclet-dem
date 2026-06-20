@@ -12,7 +12,7 @@ import numpy as np
 
 sys.path.insert(0, "build")
 sys.path.insert(0, ".")
-import demgpu  # noqa: E402
+import dem  # noqa: E402
 
 import pack_meter  # noqa: E402
 
@@ -30,7 +30,7 @@ def run(phi_ref=0.72, N=1000, T=1.0, dt=0.005, limit_time=6.0, iters=30, scale_i
     cooling_step = min(int(cooling_time / dt), int(limit_time / dt))
 
     rng = np.random.default_rng(seed)
-    s = demgpu.Simulation(N)
+    s = dem.Simulation(N)
     s.initialize(shape_type=1, radius=BASE)
     s.set_domain((-half, -half, -half), (half, half, half))
     s.enable_periodicity(True, True, True)

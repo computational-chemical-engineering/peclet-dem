@@ -1,4 +1,4 @@
-import demgpu
+import dem
 import numpy as np
 import time
 
@@ -6,7 +6,7 @@ def verify_stacking():
     print("--- Stacking Stability Test ---")
     
     # Init
-    sim = demgpu.Simulation(200) # Smaller number for quick test
+    sim = dem.Simulation(200) # Smaller number for quick test
     sim.initialize(0) # Sphere
     
     # Material: Restitution=0.5, Friction=0.3

@@ -3,10 +3,10 @@ import sys
 import os
 import numpy as np
 sys.path.append(os.path.join(os.path.dirname(__file__), "../build"))
-import demgpu
+import dem
 
 def test_2_particles():
-    sim = demgpu.Simulation(2)
+    sim = dem.Simulation(2)
     sim.set_domain(make_float3(0,0,0), make_float3(10,10,10))
     
     # 2 Particles overlapping

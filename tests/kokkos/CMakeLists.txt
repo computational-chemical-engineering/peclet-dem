@@ -1,5 +1,5 @@
 # Standalone portable-kernel unit tests (Phase 2). Kokkos-only (no ArborX, no cuBQL): each ported
-# compute kernel is validated in isolation before demgpu is flipped onto Kokkos. Build:
+# compute kernel is validated in isolation before dem is flipped onto Kokkos. Build:
 #   cmake -S tests/kokkos -B build_kokkos -DCMAKE_PREFIX_PATH=<suite>/extern/install/<backend>
 #   cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure
 cmake_minimum_required(VERSION 3.24)

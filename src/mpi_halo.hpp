@@ -9,11 +9,11 @@
 // locally; ghost deltas are discarded via a self-mapped realIndices).
 //
 // Faithful Kokkos port of Simulation::mpi_gather_ghosts / mpi_forward_positions / mpi_forward4. Gated
-// behind DEMGPU_MPI (mirrors cfd's CFD_MPI): the default demgpu module never
+// behind DEM_MPI (mirrors cfd's CFD_MPI): the default dem module never
 // includes this, so it stays byte-identical when the macro is off.
 #ifndef DEM_MPI_HALO_HPP
 #define DEM_MPI_HALO_HPP
-#ifdef DEMGPU_MPI
+#ifdef DEM_MPI
 
 #include <mpi.h>
 
@@ -252,5 +252,5 @@ class KokkosParticleHalo {
 
 }  // namespace dem
 
-#endif  // DEMGPU_MPI
+#endif  // DEM_MPI
 #endif  // DEM_MPI_HALO_HPP

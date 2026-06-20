@@ -15,7 +15,7 @@ from scipy.spatial import cKDTree
 
 sys.path.insert(0, "build")
 sys.path.insert(0, ".")
-import demgpu  # noqa: E402
+import dem  # noqa: E402
 
 import pack_meter  # noqa: E402
 
@@ -60,7 +60,7 @@ def run(phi_ref=0.68, N=800, T=1.0, dt=0.002, limit_time=10.0, iters=50, scale_i
     growth_rate = growth_rate_init
     cooling_step = min(int(cooling_time / dt), int(limit_time / dt))
     rng = np.random.default_rng(seed)
-    s = demgpu.Simulation(N)
+    s = dem.Simulation(N)
     s.initialize(shape_type=1, radius=BASE)
     s.set_domain((-half, -half, -half), (half, half, half))
     s.enable_periodicity(True, True, True)

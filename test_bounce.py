@@ -1,11 +1,11 @@
-import demgpu
+import dem
 import numpy as np
 
 def test_bounce():
     print("--- 2-Particle Bounce Test (Velocity Solver) ---")
     
     # Init
-    sim = demgpu.Simulation(2)
+    sim = dem.Simulation(2)
     sim.initialize(0, 1.0, 0, 0) # Sphere, Radius 1.0
     
     # Set Params: Elastic Bounce (e=1.0)

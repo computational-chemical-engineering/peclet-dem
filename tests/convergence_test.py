@@ -9,7 +9,7 @@ build_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../build')
 sys.path.append(build_path)
 sys.path.append(os.path.join(os.path.dirname(__file__), "../python"))
 
-import demgpu
+import dem
 
 # Numba overlap check (copied from verify_flexible.py)
 try:
@@ -74,7 +74,7 @@ def run_convergence_test():
     SEED = 42
     rng = np.random.default_rng(seed=SEED)
 
-    sim = demgpu.Simulation(num_particles)
+    sim = dem.Simulation(num_particles)
     sim.initialize(shape_type=0)
 
     scales = rng.uniform(0.99, 1.01, num_particles).astype(np.float32)

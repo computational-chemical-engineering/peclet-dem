@@ -6,7 +6,7 @@ import math
 
 # Add build to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../build'))
-import demgpu
+import dem
 
 def run_packing_sdf():
     # Parameters
@@ -25,7 +25,7 @@ def run_packing_sdf():
     print(f"Num Particles: {num_particles}")
     
     # Simulation Setup
-    sim = demgpu.Simulation(num_particles) # Exact count
+    sim = dem.Simulation(num_particles) # Exact count
     sim.initialize(shape_type=1) # Sphere
     
     half_d = domain_size / 2.0

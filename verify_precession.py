@@ -5,7 +5,7 @@ import math
 
 # Adjust path to find the shared library
 sys.path.append(os.path.join(os.path.dirname(__file__), "build"))
-import demgpu
+import dem
 
 def verify_precession():
     # Setup
@@ -17,7 +17,7 @@ def verify_precession():
     num_steps = 5000 # 0.5 seconds
     
     # Init Simulation
-    sim = demgpu.Simulation(1)
+    sim = dem.Simulation(1)
     sim.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
     
     # Domain (Arbitrary, no boundaries needed for free flight)

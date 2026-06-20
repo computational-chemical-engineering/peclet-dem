@@ -6,7 +6,7 @@ import numpy as np
 
 # Add build to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../build'))
-import demgpu
+import dem
 
 def run_study():
     # Fixed Params
@@ -39,7 +39,7 @@ def run_study():
             vol_domain_ref = vol_total_ref / phi_ref
             domain_side = vol_domain_ref ** (1.0/3.0)
             
-            sim = demgpu.Simulation(num_particles)
+            sim = dem.Simulation(num_particles)
             sim.initialize(shape_type=1, radius=radius) # Sphere
             
             half_d = domain_side / 2.0

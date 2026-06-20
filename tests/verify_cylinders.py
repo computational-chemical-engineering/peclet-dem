@@ -4,12 +4,12 @@ import sys
 import numpy as np
 sys.path.append(os.path.join(os.path.dirname(__file__), '../build'))
 
-import demgpu
+import dem
 
 def run_cylinder_test():
     # 1. Setup
     num_particles = 100
-    sim = demgpu.Simulation(num_particles)
+    sim = dem.Simulation(num_particles)
     
     # Initialize with ShapeType 1 (Hollow Cylinder)
     sim.initialize(shape_type=1)

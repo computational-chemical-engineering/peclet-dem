@@ -11,7 +11,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, "build")
-import demgpu  # noqa: E402
+import dem  # noqa: E402
 
 import pack_meter  # noqa: E402
 
@@ -23,7 +23,7 @@ def run(phi_design, N=2000, dt=0.01, rate=2.0, iters=50, settle=600, seed=42, re
     vol_total = N * VOL_P
     side = (vol_total / phi_design) ** (1.0 / 3.0)
     half = side / 2.0
-    sim = demgpu.Simulation(N)
+    sim = dem.Simulation(N)
     sim.initialize(shape_type=1, radius=BASE_R)
     sim.set_domain((-half, -half, -half), (half, half, half))
     sim.enable_periodicity(True, True, True)

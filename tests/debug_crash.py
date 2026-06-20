@@ -10,12 +10,12 @@ sys.path.append(build_path)
 print(f"Loading from {build_path}")
 sys.stdout.flush()
 
-import demgpu
-print("Imported demgpu.")
+import dem
+print("Imported dem.")
 sys.stdout.flush()
 
 try:
-    sim = demgpu.Simulation(100)
+    sim = dem.Simulation(100)
     print("Constructor ok.")
     sys.stdout.flush()
 except Exception as e:

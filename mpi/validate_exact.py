@@ -1,4 +1,4 @@
-"""Validate the EXACT MPI-aware demgpu step against a serial reference.
+"""Validate the EXACT MPI-aware dem step against a serial reference.
 
 Same initial condition is run two ways and compared by particle id:
   * reference : rank 0 runs all N particles in one Simulation with the ordinary serial step().
@@ -15,7 +15,7 @@ import os
 import sys
 import numpy as np
 from mpi4py import MPI
-import demgpu
+import dem
 import tpx_mpi
 
 # M = sync_every (1 = EXACT), R = forward_rotation (1 = forward ghost quaternions). Defaults = EXACT.
@@ -39,7 +39,7 @@ g_vel = np.zeros((N, 3))
 
 
 def make_sim(n):
-    s = demgpu.Simulation(num_particles=int(n))
+    s = dem.Simulation(num_particles=int(n))
     m = rcut + 0.5
     s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m), (L[0] + m, L[1] + m, L[2] + m))
     s.enable_periodicity(False, False, False)

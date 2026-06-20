@@ -2,7 +2,7 @@ import numpy as np
 from skimage import measure
 from stl import mesh
 
-import demgpu
+import dem
 
 def hollow_cylinder_sdf_wrapper(x, y, z):
     # This wrapper function is called by the grid generator.
@@ -32,7 +32,7 @@ def hollow_cylinder_sdf_wrapper(x, y, z):
     # However, for 128^3 it might take a few seconds. Acceptable for offline tool.
     
     for i in range(len(xf)):
-        res[i] = demgpu.sdf_hollow_cylinder((xf[i], yf[i], zf[i]), params)
+        res[i] = dem.sdf_hollow_cylinder((xf[i], yf[i], zf[i]), params)
         
     return res.reshape(shape)
 
