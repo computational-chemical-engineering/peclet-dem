@@ -43,3 +43,12 @@ if(DEM_MPI)
   target_link_libraries(dem PRIVATE MPI::MPI_CXX)
   message(STATUS "dem: distributed step ENABLED (MPI)")
 endif()
+
+# --- pip / scikit-build-core install rule -------------------------------------------------------
+# `pip install .` (driven by pyproject.toml) builds against a Kokkos+ArborX prefix on
+# CMAKE_PREFIX_PATH and installs the extension as a top-level `dem` module. The rule is inert for a
+# plain `cmake --build` (no `cmake --install`), so the developer workflow is unchanged. SKBUILD is set
+# by scikit-build-core; SKBUILD_PROJECT_NAME-style guards keep it from interfering elsewhere.
+if(DEFINED SKBUILD)
+  install(TARGETS dem LIBRARY DESTINATION . COMPONENT python)
+endif()

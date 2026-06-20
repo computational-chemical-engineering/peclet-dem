@@ -1,0 +1,40 @@
+# Python packaging for the `dem` (dem-gpu) XPBD DEM module.
+#
+# `pip install .` builds the Kokkos + ArborX extension via scikit-build-core and installs it as a
+# top-level `dem` module. The Kokkos/ArborX prefix is NOT pulled from PyPI (it is GPU-arch / MPI-ABI /
+# ROCm-version specific): point the build at a prefix you bootstrapped once with
+# ../tools/bootstrap_deps.sh by exporting CMAKE_PREFIX_PATH. The backend (Serial / OpenMP / CUDA /
+# HIP) is whatever that prefix was built for — that is how one source serves every environment.
+#
+#   # CPU / multicore (OpenMP) build:
+#   CMAKE_PREFIX_PATH=/path/to/extern/install/host-openmp pip install .
+#
+#   # NVIDIA GPU (Snellius) — put nvcc on PATH first:
+#   CMAKE_PREFIX_PATH=/path/to/extern/install/nvidia-cuda pip install .
+#
+#   # add the distributed (MPI) step:
+#   CMAKE_PREFIX_PATH=... pip install . --config-settings=cmake.define.DEM_MPI=ON
+#
+# See ../docs/DEPLOYMENT.md for the full environment matrix and HPC/container recipes.
+
+[build-system]
+requires = ["scikit-build-core>=0.8", "pybind11>=2.11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "dem-gpu"
+version = "0.1.0"
+description = "Performance-portable XPBD Discrete Element Method (Kokkos + ArborX)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.20"]
+
+[project.urls]
+Homepage = "https://github.com/computational-chemical-engineering/dem"
+
+[tool.scikit-build]
+minimum-version = "0.8"
+cmake.version = ">=3.24"
+# The C++ extension is installed by the CMake `install(TARGETS dem ...)` rule (guarded by SKBUILD).
+wheel.install-dir = "."
+sdist.include = ["src", "mpi", "CMakeLists.txt", "README.md"]
