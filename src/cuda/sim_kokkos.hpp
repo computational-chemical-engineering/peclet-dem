@@ -18,6 +18,7 @@
 #include "broadphase_arborx.hpp"
 #include "contact_preprocessing_kokkos.hpp"
 #include "integration_kokkos.hpp"
+#include "io_kokkos.hpp"
 #include "narrowphase_kokkos.hpp"
 #include "output_sdf_kokkos.hpp"
 #include "particles_kokkos.hpp"
@@ -118,6 +119,39 @@ inline void demStep(Particles& P) {
   if (P.thermostatTau > 0.0f && P.dt > 0.0f)
     applyThermostatKokkos(P.numReal, P.vel, P.invMass, P.angVel, P.invInertia, P.quat,
                           P.thermostatKB, P.thermostatTau, P.thermostatTemp, P.dt);
+}
+
+/// Max pair interpenetration on the *committed* state (faithful to CUDA Simulation::compute_overlaps):
+/// copy committed pos/quat into the predicted buffers, regenerate the periodic ghosts from that state, then
+/// run the same broad/narrow phase as demStep and return the recorded max overlap. No solve.
+inline float computeOverlapsKokkos(Particles& P) {
+  CpExec space;
+  const float margin = 0.1f * P.globalScale;
+  P.numParticles = P.numReal;
+  Kokkos::deep_copy(P.posPred, P.pos);
+  Kokkos::deep_copy(P.quatPred, P.quat);
+  { auto ri = P.realIndices;
+    Kokkos::parallel_for("self", Kokkos::RangePolicy<CpExec>(space, 0, P.numReal),
+                         KOKKOS_LAMBDA(int i) { ri(i) = i; }); }
+  Kokkos::deep_copy(space, P.topGhost, P.numReal);
+  const float ghostBand = 1.0f * P.globalScale;
+  generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred, P.vel,
+                       P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale, P.shapeId,
+                       P.realIndices, P.topGhost);
+  P.numParticles = readInt(P.topGhost);
+  { auto sc = P.scale; auto rad = P.rad; float gs = P.globalScale;
+    Kokkos::parallel_for("rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
+                         KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; }); }
+  findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount);
+  const int np = readInt(P.pairCount);
+  Kokkos::deep_copy(space, P.contactCount, 0);
+  Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
+  detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
+                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+  detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
+                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+  P.numParticles = P.numReal;
+  float h; Kokkos::deep_copy(h, P.maxOverlap); return h;
 }
 
 #ifdef DEMGPU_KOKKOS_MPI
@@ -292,6 +326,17 @@ class KokkosSim {
     P_.domain = Domain{F3{0, 0, 0}, F3{lx, ly, lz}, F3{lx, ly, lz}, px, py, pz};
     P_.skin = 0.1f * P_.globalScale;
   }
+  // CUDA Simulation::set_domain(min, max): arbitrary origin; keeps the current periodicity flags.
+  void setDomainMinMax(F3 mn, F3 mx) {
+    P_.domain = Domain{mn, mx, F3{mx.x - mn.x, mx.y - mn.y, mx.z - mn.z},
+                       P_.domain.periodic_x, P_.domain.periodic_y, P_.domain.periodic_z};
+    P_.skin = 0.1f * P_.globalScale;
+  }
+  void enablePeriodicity(bool x, bool y, bool z) {
+    P_.domain.periodic_x = x; P_.domain.periodic_y = y; P_.domain.periodic_z = z;
+  }
+  std::tuple<float, float, float> getDomainMin() const { return {P_.domain.min.x, P_.domain.min.y, P_.domain.min.z}; }
+  std::tuple<float, float, float> getDomainMax() const { return {P_.domain.max.x, P_.domain.max.y, P_.domain.max.z}; }
   void setGravity(float gx, float gy, float gz) { P_.gravity = F3{gx, gy, gz}; }
   void setThermostat(float temperature, float tau, float kB) {  // Berendsen; tau=0 disables
     P_.thermostatTemp = temperature; P_.thermostatTau = tau; P_.thermostatKB = kB;
@@ -393,6 +438,14 @@ class KokkosSim {
     if (P_.growthFactor > 0.0f) updateGrowthScalesKokkos(P_.numReal, P_.scale, P_.targetScale, P_.growthFactor);
   }
   float growthFactor() const { return P_.growthFactor; }
+  float getGrowthRate() const { return P_.growthRate; }
+  // per-particle mass = 1/invMass (0 for fixed/infinite-mass particles), CUDA Simulation::get_masses.
+  std::vector<float> getMasses() const {
+    auto im = Kokkos::create_mirror_view(P_.invMass); Kokkos::deep_copy(im, P_.invMass);
+    std::vector<float> out(P_.numReal);
+    for (int i = 0; i < P_.numReal; ++i) out[i] = (im(i) > 0.0f) ? (1.0f / im(i)) : 0.0f;
+    return out;
+  }
 
   std::vector<float> getPositions() const {
     auto pos = Kokkos::create_mirror_view(P_.pos);
@@ -419,6 +472,28 @@ class KokkosSim {
   }
 
   void step(int nsteps) { for (int s = 0; s < nsteps; ++s) demStep(P_); }
+
+  // Max pair interpenetration on the current committed state (CUDA Simulation::compute_overlaps).
+  float computeOverlaps() { return computeOverlapsKokkos(P_); }
+
+  // LAMMPS "dump custom" of the current committed state (CUDA Simulation::export_lammps). Radius =
+  // scale*globalScale*baseRadius; bounds computed from the particle AABBs.
+  void exportLammps(const std::string& filename, int step) const {
+    const std::vector<float> pos = getPositions(), vel = getVelocities(), quat = getQuaternions();
+    auto sc = Kokkos::create_mirror_view(P_.scale); Kokkos::deep_copy(sc, P_.scale);
+    std::vector<float> radii(P_.numReal);
+    for (int i = 0; i < P_.numReal; ++i) radii[i] = sc(i) * P_.globalScale * baseRadius_;
+    const bool pbc = P_.domain.periodic_x || P_.domain.periodic_y || P_.domain.periodic_z;
+    dem::writeLammpsDump(filename, step, pos, vel, quat, radii, nullptr, nullptr, pbc);
+  }
+
+  // SDF field over the domain -> ImageData VTI (CUDA Simulation::export_sdf).
+  void exportSdf(const std::string& filename, int rx, int ry, int rz) {
+    const std::vector<float> grid = getSdfGrid(rx, ry, rz);
+    const float mn[3] = {P_.domain.min.x, P_.domain.min.y, P_.domain.min.z};
+    const float mx[3] = {P_.domain.max.x, P_.domain.max.y, P_.domain.max.z};
+    dem::writeSdfVti(filename, grid, rx, ry, rz, mn, mx);
+  }
 
 #ifdef DEMGPU_KOKKOS_MPI
   // Block decomposition over the GLOBAL domain (once); the per-block solver stays non-periodic, the
