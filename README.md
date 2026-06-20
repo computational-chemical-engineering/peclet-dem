@@ -1,6 +1,8 @@
-# dem-gpu
+# dem-gpu (`demgpu`)
 
-GPU-accelerated Discrete Element Method (DEM) particle simulation prototype. combines a custom CUDA XPBD solver with SDF-based point-shell collision detection. Supports optional MPI for domain partitioning and features full Python bindings via pybind11 for easy scripting and visualization.
+Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD solver with SDF-based point-shell collision detection. Built on **Kokkos + ArborX**, so the same source runs on **CUDA, HIP (AMD/LUMI), and OpenMP** backends (selected at build time by the install prefix). Optional MPI for domain partitioning, with full pybind11 Python bindings for scripting and visualization.
+
+> The CUDA implementation was retired (2026-06): the Kokkos `demgpu` was validated against it before the CUDA sources were removed. Restore point: git tag `pre-cuda-retirement`.
 
 ## Features
 
@@ -13,55 +15,49 @@ GPU-accelerated Discrete Element Method (DEM) particle simulation prototype. com
 ## Folder Structure
 
 ```text
-├── CMakeLists.txt              # Build configuration
+├── CMakeLists.txt              # Build configuration (find_package Kokkos + ArborX)
 ├── src
-│   ├── main_binding.cpp        # Pybind11 module entry point
-│   ├── simulation.cpp          # Core Simulation class implementation
-│   ├── cuda                    # CUDA Kernels
-│   │   ├── integration.cu      # Time integration & prediction
-│   │   ├── broadphase.cu       # BVH construction & traversal (cuBQL)
-│   │   ├── narrowphase.cu      # Narrowphase collision detection
-│   │   ├── solver_velocity.cu  # Velocity solver kernels
-│   │   ├── solver_position.cu  # Position solver kernels
-│   │   └── output_sdf.cu       # SDF/VTI grid generation
-│   ├── shapes                  # Shape utilities
-│   │   ├── ShapeManager.cpp    # GPU shape data management
-│   │   └── point_sampler.cpp   # Point generation for shells
-│   └── io
-│       └── Exporter.cpp        # File export (LAMMPS, etc.)
-├── python                      # Python utilities
-├── tests                       # C++ Unit Tests
+│   ├── demgpu_bindings.cpp     # Pybind11 module entry point (the `demgpu` module)
+│   └── cuda                    # Kokkos sources (header-only, namespace dem; historical dir name)
+│       ├── sim.hpp             # KokkosSim facade + the demStep XPBD substep
+│       ├── integration.hpp     # Time integration & prediction
+│       ├── broadphase_arborx.hpp  # ArborX BVH broad-phase
+│       ├── narrowphase.hpp     # Narrow-phase point-shell-vs-SDF collision
+│       ├── solver_velocity.hpp # Velocity solver kernels
+│       ├── solver_position.hpp # Position solver kernels (XPBD overlap removal)
+│       ├── solver_friction.hpp # Coulomb friction cluster
+│       ├── output_sdf.hpp      # SDF/VTI grid generation (Eikonal)
+│       ├── shapes_portable.hpp # Analytic shapes (sphere / hollow cylinder / box)
+│       ├── io.hpp              # LAMMPS-dump + SDF-VTI export
+│       └── mpi_halo.hpp        # Distributed particle halo (transport-core), gated DEMGPU_MPI
+├── tests                       # C++ unit tests: kokkos/ (kernels), arborx/, kokkos_mpi/
 ├── docs                        # Documentation
-│   └── visualization.md        # Detailed visualization guide
-└── *.py                        # Python verification/example scripts
+└── *.py                        # Python verification/example scripts (verify_*.py)
 ```
 
 ## Prerequisites
 
-- **Linux** (Recommended) or Windows
+- **Linux**
 - **CMake** >= 3.24
-- **CUDA Toolkit** (11.0+) & Compatible Driver
+- **Kokkos 5.x + ArborX** (C++20) + **pybind11** — provisioned by `../tools/bootstrap_deps.sh` into
+  `../extern/install/<backend>` (`nvidia-cuda` / `host-openmp` / `lumi-hip`). A **hard build dependency**.
+- a backend compiler: **nvcc** (CUDA) on `PATH`, **hipcc** (ROCm), or just a host C++ compiler (OpenMP)
 - **Python** >= 3.10
-- **Pybind11** (Usually installed via pip or system package)
-- **MPI** (Optional) - OpenMPI or MPICH
+- **MPI** (optional, `-DDEMGPU_MPI=ON`) — OpenMPI or MPICH
 
 ## Build Instructions
 
-### 1. Setup Environment
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install pybind11 numpy
-```
-
-### 2. Configure & Build
-```bash
-cmake -B build -S . -DDEMGPU_ENABLE_MPI=OFF
+python -m venv .venv && source .venv/bin/activate && pip install pybind11 numpy
+export PATH=/usr/local/cuda-13.2/bin:$PATH        # if building the CUDA backend
+cmake -B build -S . \
+  -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda;$(python -m pybind11 --cmakedir)"
 cmake --build build -j$(nproc)
 ```
-*Note: Set `-DDEMGPU_ENABLE_MPI=ON` to enable MPI support.*
+*Swap the prefix to `../extern/install/host-openmp` for the OpenMP backend. `-DDEMGPU_MPI=ON` links MPI
+and exposes the distributed step (`init_mpi` / `enable_mpi_step` / `step_mpi`).*
 
-The compiled shared library (`demgpu.cpython-....so`) will be placed in the `build/` directory (or root depending on configuration). Ensure this file is accessible or simpler, run scripts from the root with the build directory in `PYTHONPATH`.
+The compiled `demgpu.cpython-....so` is placed in `build/`; run scripts from the root with that directory on `PYTHONPATH`.
 
 ## Running Simulations
 
