@@ -27,6 +27,10 @@
 #include "solver_position_kokkos.hpp"
 #include "solver_velocity_kokkos.hpp"
 
+#ifdef DEMGPU_KOKKOS_MPI
+#include "mpi_halo_kokkos.hpp"  // KokkosParticleHalo (gated; default module never includes it)
+#endif
+
 namespace dem {
 
 inline int readInt(Kokkos::View<int, CpMem> v) { int h; Kokkos::deep_copy(h, v); return h; }
@@ -115,6 +119,94 @@ inline void demStep(Particles& P) {
     applyThermostatKokkos(P.numReal, P.vel, P.invMass, P.angVel, P.invInertia, P.quat,
                           P.thermostatKB, P.thermostatTau, P.thermostatTemp, P.dt);
 }
+
+#ifdef DEMGPU_KOKKOS_MPI
+/// One distributed XPBD DEM substep (faithful port of Simulation::step_mpi). Identical to demStep
+/// EXCEPT: the periodic ghost generation is replaced by a cross-rank gather (halo.gather, ghosts
+/// carrying REAL mass), and the owners refresh their ghost copies (velPred/angVelPred, then
+/// posPred/quatPred) every `syncEvery` solver iterations (and the last). Each owned particle thus
+/// sees all its neighbours -- owned or ghost -- and computes its full serial delta locally; the
+/// ghost deltas land on self-mapped slots and are discarded. Mirrors the CUDA distributed scheme,
+/// which (like step_mpi) carries NO body-body friction passes -- the velocity solve is pure normal
+/// restitution. `forwardRotation`=false (spheres) skips the angular/quaternion forwards.
+inline void demStepMpi(Particles& P, KokkosParticleHalo& halo, double rcut, int syncEvery,
+                       bool forwardRotation) {
+  CpExec space;
+  const float margin = 0.1f * P.globalScale;
+
+  if (P.growthFactor != -1.0f && P.growthRate != 0.0f) {
+    P.growthFactor *= std::exp(P.growthRate * P.dt);
+    if (P.growthFactor > 1.0f) P.growthFactor = 1.0f;
+  }
+  if (P.growthFactor > 0.0f) updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
+
+  // 1. Predict velocity on the owned set (no ghosts yet -> numParticles == numReal).
+  P.numParticles = P.numReal;
+  predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
+                        P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
+                        P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt);
+
+  // 2. Gather ghosts (real mass) from owners over the halo: full state into the ghost slots; sets
+  //    P.numParticles = numReal + numGhost and self-maps realIndices.
+  halo.gather(P, rcut);
+
+  { auto sc = P.scale; auto rad = P.rad; float gs = P.globalScale;
+    Kokkos::parallel_for("rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
+                         KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; }); }
+
+  // 3. Broad/narrow phase + manifold reduction over owned + ghosts.
+  findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount);
+  const int np = readInt(P.pairCount);
+
+  Kokkos::deep_copy(space, P.contactCount, 0);
+  Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
+  detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
+                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+  detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
+                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+  const int nc = readInt(P.contactCount);
+
+  reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount);
+  const int nm = readInt(P.manifoldCount);
+
+  // 4. Velocity solve (normal restitution); refresh ghost velocities every syncEvery iters (+ last).
+  for (int it = 0; it < P.velocityIterations; ++it) {
+    solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                        P.realIndices, P.growthRate, P.restitutionNormal, P.deltaVel, P.deltaAngVel);
+    applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
+    if ((it + 1) % syncEvery == 0 || it == P.velocityIterations - 1) {
+      halo.forward(P.velPred);
+      if (forwardRotation) halo.forward(P.angVelPred);
+    }
+  }
+
+  // 5. Apply velocity & predict position, then refresh ghost predicted positions (+ pose if rotating).
+  applyVelocityAndPredictPositionKokkos(P.numParticles, P.pos, P.invMass, P.vel, P.quat, P.velPred,
+                                        P.angVelPred, P.posPred, P.quatPred, P.angVel, P.dt);
+  halo.forwardPositions(P.posPred);
+  if (forwardRotation) halo.forward4(P.quatPred);
+
+  // 6. Position solve (Projected Jacobi); refresh ghost predicted pose every syncEvery iters (+ last).
+  for (int it = 0; it < P.positionIterations; ++it) {
+    solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
+                        P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
+    applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel, P.constraintCounts);
+    if ((it + 1) % syncEvery == 0 || it == P.positionIterations - 1) {
+      halo.forwardPositions(P.posPred);
+      if (forwardRotation) halo.forward4(P.quatPred);
+    }
+  }
+
+  // 7. Commit (owned results kept; ghosts discarded, re-gathered next substep).
+  finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
+
+  if (P.thermostatTau > 0.0f && P.dt > 0.0f)
+    applyThermostatKokkos(P.numReal, P.vel, P.invMass, P.angVel, P.invInertia, P.quat,
+                          P.thermostatKB, P.thermostatTau, P.thermostatTemp, P.dt);
+
+  P.numParticles = P.numReal;  // restore owned-only active count for getters
+}
+#endif  // DEMGPU_KOKKOS_MPI
 
 /// Host-facing facade with std::vector setters/getters (binding-agnostic).
 class KokkosSim {
@@ -320,6 +412,30 @@ class KokkosSim {
 
   void step(int nsteps) { for (int s = 0; s < nsteps; ++s) demStep(P_); }
 
+#ifdef DEMGPU_KOKKOS_MPI
+  // Block decomposition over the GLOBAL domain (once); the per-block solver stays non-periodic, the
+  // halo supplies the periodic wrap. gsize is the ORB cell grid. Mirror of Simulation::mpi_init.
+  void initMpi(std::tuple<double, double, double> origin, std::tuple<double, double, double> size,
+               std::tuple<long, long, long> gsize, std::tuple<bool, bool, bool> periodic,
+               MPI_Comm comm) {
+    halo_.initMpi({std::get<0>(origin), std::get<1>(origin), std::get<2>(origin)},
+                  {std::get<0>(size), std::get<1>(size), std::get<2>(size)},
+                  {std::get<0>(gsize), std::get<1>(gsize), std::get<2>(gsize)},
+                  {std::get<0>(periodic), std::get<1>(periodic), std::get<2>(periodic)}, comm);
+  }
+  // Enable the distributed step. rcut is the ghost-band width (default = 1.0*globalScale, the periodic
+  // skin used by the single-GPU path); sync_every is the owner->ghost refresh interval (1 = EXACT).
+  void enableMpiStep(double rcut, int sync_every = 1, bool forward_rotation = true) {
+    mpiRcut_ = rcut; mpiSyncEvery_ = sync_every < 1 ? 1 : sync_every; mpiForwardRotation_ = forward_rotation;
+  }
+  void stepMpi(int nsteps) {
+    const double rcut = (mpiRcut_ > 0.0) ? mpiRcut_ : 1.0 * P_.globalScale;
+    for (int s = 0; s < nsteps; ++s) demStepMpi(P_, halo_, rcut, mpiSyncEvery_, mpiForwardRotation_);
+  }
+  int rank() const { return halo_.rank(); }
+  int numGhost() const { return halo_.numGhost(); }
+#endif  // DEMGPU_KOKKOS_MPI
+
   // SDF grid (get_sdf_grid): Eikonal reconstruction over the domain, flat x-fastest, negative inside solid.
   std::vector<float> getSdfGrid(int rx, int ry, int rz) {
     return dem::generateSdfKokkos(rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal, P_.pos, P_.quat,
@@ -371,6 +487,12 @@ class KokkosSim {
   Particles P_;
   float baseRadius_ = 1.0f;
   F3 defaultInvI_{2.5f, 2.5f, 2.5f};
+#ifdef DEMGPU_KOKKOS_MPI
+  KokkosParticleHalo halo_;
+  double mpiRcut_ = 0.0;
+  int mpiSyncEvery_ = 1;
+  bool mpiForwardRotation_ = true;
+#endif
 };
 
 }  // namespace dem
