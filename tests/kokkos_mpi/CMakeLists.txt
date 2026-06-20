@@ -34,6 +34,11 @@ foreach(t demstep_mpi)
   target_compile_definitions(test_${t} PRIVATE DEMGPU_KOKKOS_MPI)
   target_link_libraries(test_${t} PRIVATE ArborX::ArborX Kokkos::kokkos MPI::MPI_CXX)
   foreach(np 1 2 4)
-    add_test(NAME ${t}_np${np} COMMAND ${MPIEXEC_EXECUTABLE} -np ${np} $<TARGET_FILE:test_${t}>)
+    # closed (non-periodic) box + fully-periodic lattice (the periodic case exercises the local
+    # periodic self-ghosts on undecomposed axes, e.g. z of the np=4 2x2x1 ORB layout).
+    add_test(NAME ${t}_closed_np${np}
+             COMMAND ${MPIEXEC_EXECUTABLE} -np ${np} $<TARGET_FILE:test_${t}> closed)
+    add_test(NAME ${t}_periodic_np${np}
+             COMMAND ${MPIEXEC_EXECUTABLE} -np ${np} $<TARGET_FILE:test_${t}> periodic)
   endforeach()
 endforeach()

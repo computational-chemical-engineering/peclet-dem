@@ -20,6 +20,8 @@
 #include <Kokkos_Core.hpp>
 
 #include <array>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "tpx/common/types.hpp"
@@ -149,10 +151,22 @@ class KokkosParticleHalo {
     Kokkos::deep_copy(hpos, P.pos);
     std::vector<tpx::Vec<3>> pv(static_cast<std::size_t>(no));
     for (int i = 0; i < no; ++i) pv[i] = tpx::Vec<3>{hpos(i, 0), hpos(i, 1), hpos(i, 2)};
-    halo_.build(pv, rcut);
+    // includePeriodicSelf: a rank that owns a full (undecomposed) periodic axis -- a "x1" ORB axis
+    // (e.g. z of a 2x2x1 layout) or np=1 -- is its own periodic image on that axis, so the periodic
+    // neighbours are local self-ghosts the cross-rank exchange never makes. This supplies them.
+    halo_.build(pv, rcut, /*includePeriodicSelf=*/true);
     dev_.init(halo_);
-    int ng = static_cast<int>(halo_.numGhost());
-    if (no + ng > P.capacity) ng = P.capacity - no;  // clamp (size capacity with ghost headroom)
+    const int ng = static_cast<int>(halo_.numGhost());
+    // The halo topology (forward / device self-gather) writes ALL ng ghost slots [no, no+ng); the
+    // Particles SoA must have room for them. Silently truncating ng here would leave the halo writing
+    // past the truncated count -> out-of-bounds SoA writes (memory corruption, not a clean drop). So
+    // require adequate capacity and fail loudly instead. Size Simulation capacity for the worst-case
+    // ghost band (a fully periodic box at rcut needs a thick boundary layer of ghosts).
+    if (no + ng > P.capacity)
+      throw std::runtime_error(
+          "KokkosParticleHalo::gather: ghost overflow -- need capacity >= " + std::to_string(no + ng) +
+          " (numReal=" + std::to_string(no) + " + numGhost=" + std::to_string(ng) + "), have " +
+          std::to_string(P.capacity) + "; increase the Simulation capacity.");
     numGhost_ = ng;
     P.numParticles = no + ng;
 

@@ -129,6 +129,14 @@ inline void demStep(Particles& P) {
 /// ghost deltas land on self-mapped slots and are discarded. Mirrors the CUDA distributed scheme,
 /// which (like step_mpi) carries NO body-body friction passes -- the velocity solve is pure normal
 /// restitution. `forwardRotation`=false (spheres) skips the angular/quaternion forwards.
+///
+/// PERIODICITY: cross-rank ghosts supply the wrap on DECOMPOSED axes; LOCAL periodic self-ghosts
+/// (KokkosParticleHalo build with includePeriodicSelf) supply it on UNDECOMPOSED periodic axes (a "x1"
+/// ORB axis, e.g. z of a 2x2x1 layout, or np=1). Correct for any layout, including np=1 fully periodic
+/// (it matches the single-GPU demStep to ~roundoff). CAPACITY: a periodic box needs a thick ghost
+/// boundary layer -- a fully periodic box at this rcut needs ~no + (boundary layer) ghost slots, well
+/// above the no*2 the closed case wants -- so size the Simulation capacity for the worst-case ghost
+/// band; gather() throws on overflow rather than corrupting the SoA.
 inline void demStepMpi(Particles& P, KokkosParticleHalo& halo, double rcut, int syncEvery,
                        bool forwardRotation) {
   CpExec space;
