@@ -1,16 +1,17 @@
-// packing-gpu — portable (Kokkos) owner<->ghost particle halo for the distributed XPBD step.
-//
-// Kokkos counterpart of src/mpi/mpi_halo.h (MpiParticleHalo): a thin wrapper over transport-core's
-// tpx::halo::ParticleHalo<3> (host topology, periodic image shift) + DeviceParticleHaloKokkos<3>
-// (on-device gather/scatter + host-staged MPI). Rebuilt each substep from the owned positions; it
-// gathers ghost copies of the owners' FULL state into the Particles SoA ghost slots and refreshes
-// them owner->ghost during the velocity/position solves -- the EXACT distributed scheme (ghosts carry
-// REAL mass; every owned particle sees all its neighbours so it computes its full serial XPBD delta
-// locally; ghost deltas are discarded via a self-mapped realIndices).
-//
-// Faithful Kokkos port of Simulation::mpi_gather_ghosts / mpi_forward_positions / mpi_forward4. Gated
-// behind DEM_MPI (mirrors cfd's CFD_MPI): the default dem module never
-// includes this, so it stays byte-identical when the macro is off.
+/// @file
+/// @brief dem — portable (Kokkos) owner<->ghost particle halo for the distributed XPBD step.
+///
+/// Kokkos counterpart of src/mpi/mpi_halo.h (MpiParticleHalo): a thin wrapper over transport-core's
+/// tpx::halo::ParticleHalo<3> (host topology, periodic image shift) + DeviceParticleHaloKokkos<3>
+/// (on-device gather/scatter + host-staged MPI). Rebuilt each substep from the owned positions; it
+/// gathers ghost copies of the owners' FULL state into the Particles SoA ghost slots and refreshes
+/// them owner->ghost during the velocity/position solves -- the EXACT distributed scheme (ghosts carry
+/// REAL mass; every owned particle sees all its neighbours so it computes its full serial XPBD delta
+/// locally; ghost deltas are discarded via a self-mapped realIndices).
+///
+/// Faithful Kokkos port of Simulation::mpi_gather_ghosts / mpi_forward_positions / mpi_forward4. Gated
+/// behind DEM_MPI (mirrors cfd's CFD_MPI): the default dem module never
+/// includes this, so it stays byte-identical when the macro is off.
 #ifndef DEM_MPI_HALO_HPP
 #define DEM_MPI_HALO_HPP
 #ifdef DEM_MPI

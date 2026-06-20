@@ -32,3 +32,7 @@ venv/
 dist/
 .cache/
 output/
+
+# Generated Doxygen output (built in CI, published to Pages)
+docs/html/
+docs/latex/

@@ -1,9 +1,10 @@
-// packing-gpu — portable (host) surface-shell point generators for the analytic shapes.
-//
-// Faithful copy of shapes/point_sampler.cpp (generate_cylinder_points / generate_box_points), but
-// emitting dem::F3 instead of CUDA float4 so the Kokkos module can build the point shell without the
-// CUDA vector_types.h dependency. The point math (spacing, ceil counts, cos/sin sampling, cap annulus,
-// box faces incl. edges/corners) is byte-for-byte the same so the generated shells match the CUDA path.
+/// @file
+/// @brief dem — portable (host) surface-shell point generators for the analytic shapes.
+///
+/// Faithful copy of shapes/point_sampler.cpp (generate_cylinder_points / generate_box_points), but
+/// emitting dem::F3 instead of CUDA float4 so the Kokkos module can build the point shell without the
+/// CUDA vector_types.h dependency. The point math (spacing, ceil counts, cos/sin sampling, cap annulus,
+/// box faces incl. edges/corners) is byte-for-byte the same so the generated shells match the CUDA path.
 #ifndef DEM_SHAPES_PORTABLE_HPP
 #define DEM_SHAPES_PORTABLE_HPP
 

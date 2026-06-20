@@ -1,12 +1,13 @@
-// packing-gpu — portable (ArborX) broad-phase, the Kokkos-native replacement for the CUDA-only
-// cuBQL broad-phase in broadphase.cu.
-//
-// Same semantics as find_collisions(): build axis-aligned bounding boxes (half-width radius+margin)
-// over ALL particles, then for each REAL particle query the BVH for overlapping boxes and emit the
-// candidate pairs (i,j) with i<j into a preallocated buffer guarded by an atomic counter. An
-// AABB-overlap broad-phase, identical in criterion to cuBQL's fixedBoxQuery, so it yields the same
-// candidate set. Decoupled from ParticleSystemData (plain Kokkos Views) so it builds and is tested
-// standalone before being wired into the solver; runs on whatever backend Kokkos was built for.
+/// @file
+/// @brief dem — portable (ArborX) broad-phase, the Kokkos-native replacement for the CUDA-only
+/// cuBQL broad-phase in broadphase.cu.
+///
+/// Same semantics as find_collisions(): build axis-aligned bounding boxes (half-width radius+margin)
+/// over ALL particles, then for each REAL particle query the BVH for overlapping boxes and emit the
+/// candidate pairs (i,j) with i<j into a preallocated buffer guarded by an atomic counter. An
+/// AABB-overlap broad-phase, identical in criterion to cuBQL's fixedBoxQuery, so it yields the same
+/// candidate set. Decoupled from ParticleSystemData (plain Kokkos Views) so it builds and is tested
+/// standalone before being wired into the solver; runs on whatever backend Kokkos was built for.
 #ifndef DEM_BROADPHASE_ARBORX_HPP
 #define DEM_BROADPHASE_ARBORX_HPP
 

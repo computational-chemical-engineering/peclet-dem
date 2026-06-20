@@ -1,11 +1,12 @@
-// packing-gpu — portable (Kokkos) narrow-phase: SDF point-shell collision + boundary planes.
-//
-// Kokkos port of detect_contacts_kernel / detect_boundary_kernel (narrowphase.cu) over the particle
-// SoA expressed as Kokkos Views (positions/quaternions as View<float*[3]>/[4], scales/shape-ids as
-// View<float*>/<int*> — backend-default layout, so coalesced on GPU and cache-friendly on CPU). The
-// per-point math is a faithful copy of the CUDA kernels (same scale/global_scale handling, same
-// central-difference normal, same contact geometry) so results match. Analytic shapes only for now;
-// grid-SDF (texture) returns +inf (dem::sdfEval), as in the CUDA placeholder.
+/// @file
+/// @brief dem — portable (Kokkos) narrow-phase: SDF point-shell collision + boundary planes.
+///
+/// Kokkos port of detect_contacts_kernel / detect_boundary_kernel (narrowphase.cu) over the particle
+/// SoA expressed as Kokkos Views (positions/quaternions as View<float*[3]>/[4], scales/shape-ids as
+/// View<float*>/<int*> — backend-default layout, so coalesced on GPU and cache-friendly on CPU). The
+/// per-point math is a faithful copy of the CUDA kernels (same scale/global_scale handling, same
+/// central-difference normal, same contact geometry) so results match. Analytic shapes only for now;
+/// grid-SDF (texture) returns +inf (dem::sdfEval), as in the CUDA placeholder.
 #ifndef DEM_NARROWPHASE_HPP
 #define DEM_NARROWPHASE_HPP
 

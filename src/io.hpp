@@ -1,7 +1,8 @@
-// packing-gpu — portable (CUDA-free) I/O helpers for the Kokkos dem module: a LAMMPS dump writer and
-// a scalar-SDF VTI writer. Operate on flat std::vector<float> host arrays (no CUDA vector_types), so they
-// compile on every Kokkos backend. Faithful to the CUDA io/Exporter.cpp LAMMPS format and Simulation::
-// export_sdf VTI convention.
+/// @file
+/// @brief dem — portable (CUDA-free) I/O helpers for the Kokkos dem module: a LAMMPS dump writer and
+/// a scalar-SDF VTI writer. Operate on flat std::vector<float> host arrays (no CUDA vector_types), so they
+/// compile on every Kokkos backend. Faithful to the CUDA io/Exporter.cpp LAMMPS format and Simulation::
+/// export_sdf VTI convention.
 #ifndef DEM_IO_HPP
 #define DEM_IO_HPP
 

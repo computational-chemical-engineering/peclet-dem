@@ -1,10 +1,11 @@
-// packing-gpu — portable (Kokkos) time integration kernels (integration.cu).
-//
-// The per-particle element-wise steps of the XPBD step over the particle SoA Views: velocity predict
-// (gravity + gyroscopic Euler term), re-integration (apply velocity deltas, trapezoidal position
-// predict, quaternion integrate+normalize), iterative delta apply, Jacobi count-averaged update,
-// final commit with periodic wrap, contact-count pre-pass, and growth-scale update. Faithful copies
-// of the CUDA kernels. Ghost generation and the thermostat are separate units.
+/// @file
+/// @brief dem — portable (Kokkos) time integration kernels (integration.cu).
+///
+/// The per-particle element-wise steps of the XPBD step over the particle SoA Views: velocity predict
+/// (gravity + gyroscopic Euler term), re-integration (apply velocity deltas, trapezoidal position
+/// predict, quaternion integrate+normalize), iterative delta apply, Jacobi count-averaged update,
+/// final commit with periodic wrap, contact-count pre-pass, and growth-scale update. Faithful copies
+/// of the CUDA kernels. Ghost generation and the thermostat are separate units.
 #ifndef DEM_INTEGRATION_HPP
 #define DEM_INTEGRATION_HPP
 

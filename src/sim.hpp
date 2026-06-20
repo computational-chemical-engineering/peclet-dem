@@ -1,8 +1,9 @@
-// packing-gpu — portable (Kokkos) Simulation facade: the dem flip's host-facing driver.
-//
-// Owns a dem::Particles SoA and runs the full XPBD DEM step by composing the ported kernels in the
-// simulation.cpp step() order. Exposes a small std::vector-based API (binding-agnostic) so a pybind
-// module can drive it from Python (set/get arrays, step). Sphere shapes + analytic planes for now.
+/// @file
+/// @brief dem — portable (Kokkos) Simulation facade: the dem flip's host-facing driver.
+///
+/// Owns a dem::Particles SoA and runs the full XPBD DEM step by composing the ported kernels in the
+/// simulation.cpp step() order. Exposes a small std::vector-based API (binding-agnostic) so a pybind
+/// module can drive it from Python (set/get arrays, step). Sphere shapes + analytic planes for now.
 #ifndef DEM_SIM_HPP
 #define DEM_SIM_HPP
 

@@ -1,16 +1,17 @@
-// packing-gpu — portable (Kokkos) contact->manifold reduction, replacing the thrust-based
-// reduce_contacts_to_manifolds() in contact_preprocessing.cu.
-//
-// Same pipeline: key each contact by its canonical pair, group by key, and within a group sum the
-// aligned normals / torque arms / lever arms and count the points. thrust::sort_by_key +
-// reduce_by_key become Kokkos::Experimental::sort_by_key + a scan-based segmented reduction (atomic
-// accumulation), so no thrust/cub. The per-contact math (ContactToManifold / TransformAndFilter) is
-// reused verbatim as KOKKOS_INLINE_FUNCTION and is shared with the host reference in the test.
-//
-// One intentional change vs the thrust version: a manifold's (bodyA,bodyB) is decoded determinist
-// -ically from the pair key (canonical min/max, or (idA,-1) for boundary), rather than taken from
-// the first contact of an unstably-sorted run. The summed quantities are commutative, so they are
-// unaffected. Decoupled from ParticleSystemData (portable POD mirrors) for standalone validation.
+/// @file
+/// @brief dem — portable (Kokkos) contact->manifold reduction, replacing the thrust-based
+/// reduce_contacts_to_manifolds() in contact_preprocessing.cu.
+///
+/// Same pipeline: key each contact by its canonical pair, group by key, and within a group sum the
+/// aligned normals / torque arms / lever arms and count the points. thrust::sort_by_key +
+/// reduce_by_key become Kokkos::Experimental::sort_by_key + a scan-based segmented reduction (atomic
+/// accumulation), so no thrust/cub. The per-contact math (ContactToManifold / TransformAndFilter) is
+/// reused verbatim as KOKKOS_INLINE_FUNCTION and is shared with the host reference in the test.
+///
+/// One intentional change vs the thrust version: a manifold's (bodyA,bodyB) is decoded determinist
+/// -ically from the pair key (canonical min/max, or (idA,-1) for boundary), rather than taken from
+/// the first contact of an unstably-sorted run. The summed quantities are commutative, so they are
+/// unaffected. Decoupled from ParticleSystemData (portable POD mirrors) for standalone validation.
 #ifndef DEM_CONTACT_PREPROCESSING_HPP
 #define DEM_CONTACT_PREPROCESSING_HPP
 

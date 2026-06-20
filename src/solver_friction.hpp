@@ -1,14 +1,15 @@
-// packing-gpu — portable (Kokkos) Coulomb friction cluster (the single dissipative friction path).
-//
-// Kokkos port of the four friction kernels in solver_position.cu. Friction lives in the velocity
-// solve (all dissipation there; the position solve does pure overlap removal):
-//   computePlaneLoad   (once, before the velocity loop) — plane (idB<0) one-shot normal load.
-//   accumulateNormalImpulse (each velocity iteration)   — body-body force-chain normal load.
-//   countFrictionContacts (once, after the loop)        — per-body active-contact count (Jacobi split).
-//   solveContactFriction (friction sweep)               — tangential impulse, Coulomb-clamped by the
-//                                                         normal load, count-averaged.
-// Faithful copy of the CUDA math over the SoA Views; the contact's friction_lambda_n is read/written
-// in place (per-contact, no cross-thread race). See packing-velocity-position-split for the design.
+/// @file
+/// @brief dem — portable (Kokkos) Coulomb friction cluster (the single dissipative friction path).
+///
+/// Kokkos port of the four friction kernels in solver_position.cu. Friction lives in the velocity
+/// solve (all dissipation there; the position solve does pure overlap removal):
+///   computePlaneLoad   (once, before the velocity loop) — plane (idB<0) one-shot normal load.
+///   accumulateNormalImpulse (each velocity iteration)   — body-body force-chain normal load.
+///   countFrictionContacts (once, after the loop)        — per-body active-contact count (Jacobi split).
+///   solveContactFriction (friction sweep)               — tangential impulse, Coulomb-clamped by the
+///                                                         normal load, count-averaged.
+/// Faithful copy of the CUDA math over the SoA Views; the contact's friction_lambda_n is read/written
+/// in place (per-contact, no cross-thread race). See packing-velocity-position-split for the design.
 #ifndef DEM_SOLVER_FRICTION_HPP
 #define DEM_SOLVER_FRICTION_HPP
 

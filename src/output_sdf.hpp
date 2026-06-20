@@ -1,12 +1,13 @@
-// packing-gpu — portable (Kokkos) SDF-grid reconstruction: the get_sdf_grid pipeline.
-//
-// Kokkos port of output_sdf.cu (init_grid + splat_particles + Jacobi-Eikonal solve). For each grid voxel:
-// (1) init to +inf (100), (2) SPLAT — every particle writes the EXACT transformed analytic SDF over its
-// AABB band via atomic-min (and marks those cells fixed), (3) EIKONAL — a Jacobi fast-iterative-method
-// propagates the (positive) distance into the far field, periodic-wrapped. A faithful copy of the CUDA
-// kernels (same band, same bounding radius, same quadratic solve, same max(res)*4 iteration cap), over the
-// Kokkos particle SoA + the ported analytic SDFs. Deterministic (atomic-min + Jacobi) -> matches CUDA for
-// the same particle configuration. Runs on any Kokkos backend.
+/// @file
+/// @brief dem — portable (Kokkos) SDF-grid reconstruction: the get_sdf_grid pipeline.
+///
+/// Kokkos port of output_sdf.cu (init_grid + splat_particles + Jacobi-Eikonal solve). For each grid voxel:
+/// (1) init to +inf (100), (2) SPLAT — every particle writes the EXACT transformed analytic SDF over its
+/// AABB band via atomic-min (and marks those cells fixed), (3) EIKONAL — a Jacobi fast-iterative-method
+/// propagates the (positive) distance into the far field, periodic-wrapped. A faithful copy of the CUDA
+/// kernels (same band, same bounding radius, same quadratic solve, same max(res)*4 iteration cap), over the
+/// Kokkos particle SoA + the ported analytic SDFs. Deterministic (atomic-min + Jacobi) -> matches CUDA for
+/// the same particle configuration. Runs on any Kokkos backend.
 #ifndef DEM_OUTPUT_SDF_HPP
 #define DEM_OUTPUT_SDF_HPP
 

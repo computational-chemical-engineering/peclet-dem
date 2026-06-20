@@ -1,9 +1,10 @@
-// packing-gpu — portable POD types + math + analytic SDFs shared by the Kokkos kernel ports.
-//
-// Replaces the CUDA-only float3/float4 vector types and the __host__/__device__ helpers in
-// math_utils.cuh / shapes/sdf_analytic.cuh with backend-agnostic equivalents (KOKKOS_INLINE_FUNCTION,
-// usable on host and any Kokkos backend). The math is a faithful copy of the CUDA versions so ports
-// reproduce the existing behaviour exactly.
+/// @file
+/// @brief dem — portable POD types + math + analytic SDFs shared by the Kokkos kernel ports.
+///
+/// Replaces the CUDA-only float3/float4 vector types and the __host__/__device__ helpers in
+/// math_utils.cuh / shapes/sdf_analytic.cuh with backend-agnostic equivalents (KOKKOS_INLINE_FUNCTION,
+/// usable on host and any Kokkos backend). The math is a faithful copy of the CUDA versions so ports
+/// reproduce the existing behaviour exactly.
 #ifndef DEM_PORTABLE_HPP
 #define DEM_PORTABLE_HPP
 

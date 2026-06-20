@@ -1,10 +1,11 @@
-// packing-gpu — portable (Kokkos) manifold velocity solve (normal restitution impulse).
-//
-// Kokkos port of solve_velocity_jacobi_kernel (solver_velocity.cu): one thread per manifold computes
-// the aggregate normal impulse (with growth-velocity term and restitution) and atomically scatters
-// the linear/angular velocity deltas onto the two bodies' REAL indices. Faithful copy of the CUDA
-// math; runs on the particle SoA expressed as Kokkos Views. Friction is a separate per-contact pass
-// (solver_position) and is not done here, matching the original.
+/// @file
+/// @brief dem — portable (Kokkos) manifold velocity solve (normal restitution impulse).
+///
+/// Kokkos port of solve_velocity_jacobi_kernel (solver_velocity.cu): one thread per manifold computes
+/// the aggregate normal impulse (with growth-velocity term and restitution) and atomically scatters
+/// the linear/angular velocity deltas onto the two bodies' REAL indices. Faithful copy of the CUDA
+/// math; runs on the particle SoA expressed as Kokkos Views. Friction is a separate per-contact pass
+/// (solver_position) and is not done here, matching the original.
 #ifndef DEM_SOLVER_VELOCITY_HPP
 #define DEM_SOLVER_VELOCITY_HPP
 

@@ -1,11 +1,12 @@
-// packing-gpu — portable (Kokkos) particle SoA container: the storage the dem flip pivots on.
-//
-// Replaces ParticleSystemData's float4* arrays with Kokkos SoA Views (backend-default layout:
-// coalesced on GPU, cache-friendly on CPU; packed .w scalars split into their own arrays). Holds the
-// per-particle state, the predicted/delta buffers, the collision/contact/manifold buffers, the
-// atomic counters (rank-0 Views), and the static shape/plane data — everything the ported kernels
-// (broadphase_arborx / narrowphase / contact_preprocessing / solver_* / integration / periodicity)
-// operate on. allocate() sizes them for a given capacity.
+/// @file
+/// @brief dem — portable (Kokkos) particle SoA container: the storage the dem flip pivots on.
+///
+/// Replaces ParticleSystemData's float4* arrays with Kokkos SoA Views (backend-default layout:
+/// coalesced on GPU, cache-friendly on CPU; packed .w scalars split into their own arrays). Holds the
+/// per-particle state, the predicted/delta buffers, the collision/contact/manifold buffers, the
+/// atomic counters (rank-0 Views), and the static shape/plane data — everything the ported kernels
+/// (broadphase_arborx / narrowphase / contact_preprocessing / solver_* / integration / periodicity)
+/// operate on. allocate() sizes them for a given capacity.
 #ifndef DEM_PARTICLES_HPP
 #define DEM_PARTICLES_HPP
 

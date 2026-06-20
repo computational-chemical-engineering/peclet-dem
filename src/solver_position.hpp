@@ -1,10 +1,11 @@
-// packing-gpu — portable (Kokkos) XPBD position solve (pure overlap removal).
-//
-// Kokkos port of solve_position_jacobi_kernel (solver_position.cu): one thread per contact evaluates
-// the linearized non-penetration constraint C(x) (using the delta-rotated lever arms / normal),
-// computes the XPBD position correction, and atomically scatters delta_pos / delta_quat and bumps the
-// per-body constraint count (the caller averages by it). Faithful copy of the CUDA math over the SoA
-// Views. Friction is a separate cluster (ported separately); the position solve does overlap only.
+/// @file
+/// @brief dem — portable (Kokkos) XPBD position solve (pure overlap removal).
+///
+/// Kokkos port of solve_position_jacobi_kernel (solver_position.cu): one thread per contact evaluates
+/// the linearized non-penetration constraint C(x) (using the delta-rotated lever arms / normal),
+/// computes the XPBD position correction, and atomically scatters delta_pos / delta_quat and bumps the
+/// per-body constraint count (the caller averages by it). Faithful copy of the CUDA math over the SoA
+/// Views. Friction is a separate cluster (ported separately); the position solve does overlap only.
 #ifndef DEM_SOLVER_POSITION_HPP
 #define DEM_SOLVER_POSITION_HPP
 

@@ -1,7 +1,8 @@
-// packing-gpu — pybind11 module for the Kokkos-backed DEM simulation (the canonical dem module).
-//
-// Exposes dem::KokkosSim (the portable Kokkos+ArborX pipeline) with
-// the essential sphere-packing API. Kokkos is initialized at import and finalized via Python atexit.
+/// @file
+/// @brief pybind11 module `dem` — the Kokkos + ArborX XPBD granular-dynamics simulation.
+///
+/// Exposes dem::KokkosSim (the portable Kokkos+ArborX pipeline) with the essential sphere-packing API.
+/// Kokkos is initialized at import and finalized via Python atexit.
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>

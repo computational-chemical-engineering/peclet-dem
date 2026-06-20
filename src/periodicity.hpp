@@ -1,10 +1,11 @@
-// packing-gpu — portable (Kokkos) periodic ghost generation (periodicity.cu / integration.cu).
-//
-// Per real particle near a periodic face, emit shifted ghost copies into atomically-allocated slots
-// past num_real, copying the full per-particle state and mapping each ghost back to its real owner
-// (real_indices) for momentum conservation. Faithful port of generate_ghosts_bitmask_kernel; ghost
-// positions use the predicted state to align with the solver. Decoupled from any BVH (the CUDA
-// candidate pre-pass was just an optimization; the boundary test is inlined here).
+/// @file
+/// @brief dem — portable (Kokkos) periodic ghost generation (periodicity.cu / integration.cu).
+///
+/// Per real particle near a periodic face, emit shifted ghost copies into atomically-allocated slots
+/// past num_real, copying the full per-particle state and mapping each ghost back to its real owner
+/// (real_indices) for momentum conservation. Faithful port of generate_ghosts_bitmask_kernel; ghost
+/// positions use the predicted state to align with the solver. Decoupled from any BVH (the CUDA
+/// candidate pre-pass was just an optimization; the boundary test is inlined here).
 #ifndef DEM_PERIODICITY_HPP
 #define DEM_PERIODICITY_HPP
 
