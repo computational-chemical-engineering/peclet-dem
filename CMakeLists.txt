@@ -29,7 +29,7 @@ message(STATUS "demgpu: Kokkos ${Kokkos_VERSION} (${Kokkos_DEVICES}), ArborX ${A
 
 # NO_EXTRAS: pybind LTO does not mix with the nvcc launch-compiler objects.
 pybind11_add_module(demgpu NO_EXTRAS src/demgpu_bindings.cpp)
-target_include_directories(demgpu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda)
+target_include_directories(demgpu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(demgpu PRIVATE ArborX::ArborX Kokkos::kokkos)
 
 if(DEMGPU_MPI)

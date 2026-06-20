@@ -1,7 +1,7 @@
 # packing-gpu — distributed (MPI) Kokkos demStep test (the last suite Kokkos-migration piece).
 #
 # Standalone find_package project (like tests/kokkos + tests/arborx, and cfd's tests/kokkos_mpi):
-# Kokkos + ArborX + MPI + the header-only transport-core + the demgpu Kokkos headers (src/cuda). The
+# Kokkos + ArborX + MPI + the header-only transport-core + the demgpu Kokkos headers (src/). The
 # distributed demStep is gated behind DEMGPU_MPI (the default demgpu module never defines
 # it -> byte-identical single-GPU). Build:
 #   cmake -S tests/kokkos_mpi -B build_kmpi \
@@ -30,7 +30,7 @@ enable_testing()
 foreach(t demstep_mpi)
   add_executable(test_${t} test_${t}.cpp)
   target_include_directories(test_${t} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/cuda ${TPX_DIR}/include)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${TPX_DIR}/include)
   target_compile_definitions(test_${t} PRIVATE DEMGPU_MPI)
   target_link_libraries(test_${t} PRIVATE ArborX::ArborX Kokkos::kokkos MPI::MPI_CXX)
   foreach(np 1 2 4)

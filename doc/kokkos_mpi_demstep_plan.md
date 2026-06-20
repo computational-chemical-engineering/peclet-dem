@@ -19,7 +19,7 @@ the CUDA `DEMGPU_ENABLE_MPI`); the single-GPU `demgpu_kokkos` module must stay b
 - `tpx::halo::ParticleMigrator<3>` (`particle_migrator.hpp`) for re-assigning particles to owning ranks
   (packing barely migrates — particles stay in the box — so the per-step work is the GHOST GATHER, not
   migration; build the halo over the current owned positions each step like the CUDA does).
-- The Kokkos `Particles` SoA (`src/cuda/particles_kokkos.hpp`) already has **ghost slots** (`capacity >
+- The Kokkos `Particles` SoA (`src/particles.hpp`) already has **ghost slots** (`capacity >
   numReal`); `demStep` already runs broad/narrow/solve over `numParticles = numReal + numGhost`. The
   single-GPU periodic ghost generation (`generateGhostsKokkos`, `periodicity_kokkos.hpp`) fills those slots —
   **the MPI gather REPLACES that call**.
@@ -51,7 +51,7 @@ REAL mass — so it computes its full serial delta locally; ghosts are refreshed
 
 ## Kokkos integration (the concrete edits)
 
-- New gated header `src/cuda/mpi_halo_kokkos.hpp`: a `KokkosParticleHalo` wrapping `ParticleHalo<3>` +
+- New gated header `src/mpi_halo.hpp`: a `KokkosParticleHalo` wrapping `ParticleHalo<3>` +
   `DeviceParticleHaloKokkos<3>`, with: `init(origin,size,gsize,periodic,comm)`; `gather(Particles&)` that
   downloads owned positions to host, `halo.build`, `dev.init`, packs owned `Particles` fields → `View<GatherPack>`,
   `dev.forward`, unpacks into ghost slots; `forwardPositions(V3 posPred)` = `dev.forward` of the position +
