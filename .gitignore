@@ -1,6 +1,8 @@
-# Build directories
+# Build directories + logs
 build/
 build_*/
+build_log*.txt
+*.log
 cmake-build-debug/
 cmake-build-release/
 bin/

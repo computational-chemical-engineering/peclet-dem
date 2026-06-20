@@ -1,9 +1,9 @@
-# packing-gpu — MPI integration (transport-core)
+# dem — MPI integration (transport-core)
 
 MPI block-parallelism for the DEM/XPBD solver on the shared `transport-core` library (sibling repo
-`../../transport-core`), mirroring the approach validated for `cfd-gpu`. The Lagrangian counterpart to
-cfd's grid halo is **particle migration** (reassign particles to their owning rank) + **ghost
-particles** (copies within one interaction radius of a block boundary, so each rank's cuBQL broadphase
+`../../transport-core`), mirroring the approach validated for `sdflow`. The Lagrangian counterpart to
+the Eulerian grid halo is **particle migration** (reassign particles to their owning rank) + **ghost
+particles** (copies within one interaction radius of a block boundary, so each rank's ArborX broadphase
 runs locally).
 
 Standalone (decoupled from the main `demgpu` CUDA/pybind build — host C++ + MPI + header-only
@@ -165,5 +165,5 @@ best measured on real multi-GPU.
 Note: packing already has its own MPI scaffolding (`src/mpi/communicator.cpp`, `domain.cpp`); the
 transport-core approach above can complement or supersede it.
 
-See `../../docs/ROADMAP.md` (Phase 4) and `../../cfd-gpu/doc/mpi_parallelization_status.md` for the
+See `../../docs/ROADMAP.md` (Phase 4) and `../../sdflow/doc/mpi_parallelization_status.md` for the
 Eulerian precedent.
