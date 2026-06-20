@@ -14,13 +14,13 @@
 #include <vector>
 
 #include "broadphase_arborx.hpp"
-#include "contact_preprocessing_kokkos.hpp"
-#include "integration_kokkos.hpp"
-#include "narrowphase_kokkos.hpp"
-#include "particles_kokkos.hpp"
-#include "periodicity_kokkos.hpp"
-#include "solver_position_kokkos.hpp"
-#include "solver_velocity_kokkos.hpp"
+#include "contact_preprocessing.hpp"
+#include "integration.hpp"
+#include "narrowphase.hpp"
+#include "particles.hpp"
+#include "periodicity.hpp"
+#include "solver_position.hpp"
+#include "solver_velocity.hpp"
 
 using namespace dem;
 

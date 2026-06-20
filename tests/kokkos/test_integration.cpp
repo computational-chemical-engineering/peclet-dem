@@ -11,7 +11,7 @@
 #include <random>
 #include <vector>
 
-#include "integration_kokkos.hpp"
+#include "integration.hpp"
 
 using namespace dem;
 

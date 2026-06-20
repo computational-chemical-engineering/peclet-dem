@@ -13,7 +13,7 @@
 #include <random>
 #include <vector>
 
-#include "narrowphase_kokkos.hpp"
+#include "narrowphase.hpp"
 
 using namespace dem;
 

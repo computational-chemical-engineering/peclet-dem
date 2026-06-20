@@ -1,6 +1,6 @@
-// packing-gpu — pybind11 module for the Kokkos-backed DEM simulation (demgpu_kokkos).
+// packing-gpu — pybind11 module for the Kokkos-backed DEM simulation (the canonical demgpu).
 //
-// Additive to the CUDA demgpu.so: exposes dem::KokkosSim (the portable Kokkos+ArborX pipeline) with
+// Exposes dem::KokkosSim (the portable Kokkos+ArborX pipeline) with
 // the essential sphere-packing API. Kokkos is initialized at import and finalized via Python atexit.
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -12,11 +12,11 @@
 #include <optional>
 #include <tuple>
 
-#ifdef DEMGPU_KOKKOS_MPI
+#ifdef DEMGPU_MPI
 #include <mpi.h>
 #endif
 
-#include "sim_kokkos.hpp"
+#include "sim.hpp"
 
 namespace py = pybind11;
 using dem::KokkosSim;
@@ -27,7 +27,7 @@ static std::vector<float> to_vec(py::array_t<float, py::array::c_style | py::arr
   return v;
 }
 
-PYBIND11_MODULE(demgpu_kokkos, m) {
+PYBIND11_MODULE(demgpu, m) {
   m.doc() = "DEM-GPU (Kokkos + ArborX): portable XPBD granular dynamics";
 
   if (!Kokkos::is_initialized()) Kokkos::initialize();
@@ -35,11 +35,13 @@ PYBIND11_MODULE(demgpu_kokkos, m) {
   // up (avoids cudaErrorCudartUnloading), but the caller must release Simulation objects (their
   // Kokkos Views) BEFORE interpreter exit — `del sim; gc.collect()` — or use finalize() explicitly,
   // otherwise a View would be freed after finalize. m.finalize() exposes it for deterministic teardown.
-  m.def("finalize", []() { if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize(); });
-  auto atexit = py::module_::import("atexit");
-  atexit.attr("register")(py::cpp_function([]() {
+  // Release every live Simulation's Kokkos Views, THEN finalize (so callers need not del+gc manually).
+  auto shutdown = []() {
+    KokkosSim::releaseAll();
     if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
-  }));
+  };
+  m.def("finalize", shutdown);
+  py::module_::import("atexit").attr("register")(py::cpp_function(shutdown));
   m.attr("execution_space") = py::str(Kokkos::DefaultExecutionSpace::name());
 
   py::class_<KokkosSim>(m, "Simulation")
@@ -71,7 +73,33 @@ PYBIND11_MODULE(demgpu_kokkos, m) {
       .def("set_material_params", &KokkosSim::setMaterialParams,
            py::arg("restitution_normal"), py::arg("restitution_tangent") = 0.0f, py::arg("friction") = 0.0f)
       .def("add_plane", &KokkosSim::addPlane)
-      .def("set_positions", [](KokkosSim& s, py::array_t<float> a) { s.setPositions(to_vec(a)); })
+      // CUDA-API overload: add_plane(point, normal) as 3-sequences.
+      .def("add_plane",
+           [](KokkosSim& s, std::tuple<float, float, float> p, std::tuple<float, float, float> n) {
+             s.addPlane(std::get<0>(p), std::get<1>(p), std::get<2>(p),
+                        std::get<0>(n), std::get<1>(n), std::get<2>(n));
+           },
+           py::arg("point"), py::arg("normal"))
+      // Accepts (N,3) or (N,4) like CUDA set_positions; column 3 (if present) is inv_mass (w==0 -> 1.0).
+      .def("set_positions",
+           [](KokkosSim& s, py::array_t<float, py::array::c_style | py::array::forcecast> a) {
+             auto b = a.request();
+             if (b.ndim == 2 && (b.shape[1] == 3 || b.shape[1] == 4)) {
+               const int n = (int)b.shape[0], k = (int)b.shape[1];
+               const float* p = static_cast<const float*>(b.ptr);
+               std::vector<float> xyz((size_t)n * 3), im;
+               const bool hasMass = (k == 4);
+               if (hasMass) im.resize(n);
+               for (int i = 0; i < n; ++i) {
+                 xyz[3 * i] = p[k * i]; xyz[3 * i + 1] = p[k * i + 1]; xyz[3 * i + 2] = p[k * i + 2];
+                 if (hasMass) { float w = p[k * i + 3]; im[i] = (w == 0.0f) ? 1.0f : w; }
+               }
+               s.setPositions(xyz);
+               if (hasMass) s.setInvMass(im);
+             } else {
+               s.setPositions(to_vec(a));  // flat [n*3] fallback
+             }
+           })
       .def("set_velocities", [](KokkosSim& s, py::array_t<float> a) { s.setVelocities(to_vec(a)); })
       .def("set_quaternions", [](KokkosSim& s, py::array_t<float> a) { s.setQuaternions(to_vec(a)); })
       .def("set_angular_velocities", [](KokkosSim& s, py::array_t<float> a) { s.setAngularVelocities(to_vec(a)); })
@@ -108,7 +136,7 @@ PYBIND11_MODULE(demgpu_kokkos, m) {
       .def("get_scales", [](const KokkosSim& s) {
              auto v = s.getScales(); py::array_t<float> out((py::ssize_t)v.size());
              std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(float)); return out; })
-      .def("step", &KokkosSim::step, py::arg("nsteps") = 1)
+      .def("step", &KokkosSim::step, py::arg("dt") = 0.0f)
       .def("get_sdf_grid", [](KokkosSim& s, std::tuple<int, int, int> res) {
              auto [rx, ry, rz] = res; auto g = s.getSdfGrid(rx, ry, rz);
              return py::array_t<float>({rx, ry, rz}, g.data()); }, py::arg("resolution"))
@@ -135,8 +163,8 @@ PYBIND11_MODULE(demgpu_kokkos, m) {
              d["num_manifolds"] = s.numManifolds();
              d["max_overlap"] = s.maxOverlap();
              return d; })
-#ifdef DEMGPU_KOKKOS_MPI
-      // Gated MPI step (mirrors the CUDA demgpu MPI binding); built only with -DDEMGPU_KOKKOS_MPI.
+#ifdef DEMGPU_MPI
+      // Gated MPI step (mirrors the CUDA demgpu MPI binding); built only with -DDEMGPU_MPI.
       .def("init_mpi",
            [](KokkosSim& s, std::tuple<double, double, double> origin,
               std::tuple<double, double, double> size, std::tuple<long, long, long> gsize,

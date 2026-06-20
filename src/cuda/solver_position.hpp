@@ -5,12 +5,12 @@
 // computes the XPBD position correction, and atomically scatters delta_pos / delta_quat and bumps the
 // per-body constraint count (the caller averages by it). Faithful copy of the CUDA math over the SoA
 // Views. Friction is a separate cluster (ported separately); the position solve does overlap only.
-#ifndef DEM_SOLVER_POSITION_KOKKOS_HPP
-#define DEM_SOLVER_POSITION_KOKKOS_HPP
+#ifndef DEM_SOLVER_POSITION_HPP
+#define DEM_SOLVER_POSITION_HPP
 
 #include <Kokkos_Core.hpp>
 
-#include "contact_preprocessing_kokkos.hpp"  // ContactC, CpExec/CpMem
+#include "contact_preprocessing.hpp"  // ContactC, CpExec/CpMem
 #include "dem_portable.hpp"
 
 namespace dem {
@@ -125,4 +125,4 @@ inline void solvePositionKokkos(Kokkos::View<const ContactC*, CpMem> contacts, i
 
 }  // namespace dem
 
-#endif  // DEM_SOLVER_POSITION_KOKKOS_HPP
+#endif  // DEM_SOLVER_POSITION_HPP

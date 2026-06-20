@@ -10,7 +10,7 @@
 #include <random>
 #include <vector>
 
-#include "solver_position_kokkos.hpp"
+#include "solver_position.hpp"
 
 using namespace dem;
 

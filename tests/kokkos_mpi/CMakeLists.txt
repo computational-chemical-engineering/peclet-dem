@@ -2,14 +2,14 @@
 #
 # Standalone find_package project (like tests/kokkos + tests/arborx, and cfd's tests/kokkos_mpi):
 # Kokkos + ArborX + MPI + the header-only transport-core + the demgpu Kokkos headers (src/cuda). The
-# distributed demStep is gated behind DEMGPU_KOKKOS_MPI (the default demgpu_kokkos module never defines
+# distributed demStep is gated behind DEMGPU_MPI (the default demgpu module never defines
 # it -> byte-identical single-GPU). Build:
 #   cmake -S tests/kokkos_mpi -B build_kmpi \
 #         -DCMAKE_PREFIX_PATH="<suite>/extern/install/<backend>" \
 #         -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun
 #   cmake --build build_kmpi -j && ctest --test-dir build_kmpi --output-on-failure
 cmake_minimum_required(VERSION 3.24)
-project(demgpu_kokkos_mpi LANGUAGES CXX)
+project(demgpu_mpi_tests LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,7 +31,7 @@ foreach(t demstep_mpi)
   add_executable(test_${t} test_${t}.cpp)
   target_include_directories(test_${t} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/cuda ${TPX_DIR}/include)
-  target_compile_definitions(test_${t} PRIVATE DEMGPU_KOKKOS_MPI)
+  target_compile_definitions(test_${t} PRIVATE DEMGPU_MPI)
   target_link_libraries(test_${t} PRIVATE ArborX::ArborX Kokkos::kokkos MPI::MPI_CXX)
   foreach(np 1 2 4)
     # closed (non-periodic) box + fully-periodic lattice (the periodic case exercises the local

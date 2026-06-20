@@ -5,12 +5,12 @@
 // the linear/angular velocity deltas onto the two bodies' REAL indices. Faithful copy of the CUDA
 // math; runs on the particle SoA expressed as Kokkos Views. Friction is a separate per-contact pass
 // (solver_position) and is not done here, matching the original.
-#ifndef DEM_SOLVER_VELOCITY_KOKKOS_HPP
-#define DEM_SOLVER_VELOCITY_KOKKOS_HPP
+#ifndef DEM_SOLVER_VELOCITY_HPP
+#define DEM_SOLVER_VELOCITY_HPP
 
 #include <Kokkos_Core.hpp>
 
-#include "contact_preprocessing_kokkos.hpp"  // ManifoldC, CpExec/CpMem
+#include "contact_preprocessing.hpp"  // ManifoldC, CpExec/CpMem
 #include "dem_portable.hpp"
 
 namespace dem {
@@ -135,4 +135,4 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
 
 }  // namespace dem
 
-#endif  // DEM_SOLVER_VELOCITY_KOKKOS_HPP
+#endif  // DEM_SOLVER_VELOCITY_HPP

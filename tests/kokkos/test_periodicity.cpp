@@ -10,7 +10,7 @@
 #include <random>
 #include <vector>
 
-#include "periodicity_kokkos.hpp"
+#include "periodicity.hpp"
 
 using namespace dem;
 

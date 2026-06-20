@@ -5,13 +5,13 @@
 // (real_indices) for momentum conservation. Faithful port of generate_ghosts_bitmask_kernel; ghost
 // positions use the predicted state to align with the solver. Decoupled from any BVH (the CUDA
 // candidate pre-pass was just an optimization; the boundary test is inlined here).
-#ifndef DEM_PERIODICITY_KOKKOS_HPP
-#define DEM_PERIODICITY_KOKKOS_HPP
+#ifndef DEM_PERIODICITY_HPP
+#define DEM_PERIODICITY_HPP
 
 #include <Kokkos_Core.hpp>
 
 #include "dem_portable.hpp"
-#include "integration_kokkos.hpp"  // Domain, V3/V4/Vf/Vi, detail::st3/st4
+#include "integration.hpp"  // Domain, V3/V4/Vf/Vi, detail::st3/st4
 
 namespace dem {
 
@@ -65,4 +65,4 @@ inline void generateGhostsKokkos(int numReal, int capacity, Domain dom, float sk
 
 }  // namespace dem
 
-#endif  // DEM_PERIODICITY_KOKKOS_HPP
+#endif  // DEM_PERIODICITY_HPP

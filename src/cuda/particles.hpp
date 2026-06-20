@@ -6,14 +6,14 @@
 // atomic counters (rank-0 Views), and the static shape/plane data — everything the ported kernels
 // (broadphase_arborx / narrowphase / contact_preprocessing / solver_* / integration / periodicity)
 // operate on. allocate() sizes them for a given capacity.
-#ifndef DEM_PARTICLES_KOKKOS_HPP
-#define DEM_PARTICLES_KOKKOS_HPP
+#ifndef DEM_PARTICLES_HPP
+#define DEM_PARTICLES_HPP
 
 #include <Kokkos_Core.hpp>
 
-#include "contact_preprocessing_kokkos.hpp"  // ContactC, ManifoldC
-#include "integration_kokkos.hpp"            // Domain, V3/V4/Vf/Vi
-#include "narrowphase_kokkos.hpp"            // ShapeDesc, PlaneP
+#include "contact_preprocessing.hpp"  // ContactC, ManifoldC
+#include "integration.hpp"            // Domain, V3/V4/Vf/Vi
+#include "narrowphase.hpp"            // ShapeDesc, PlaneP
 
 namespace dem {
 
@@ -83,4 +83,4 @@ struct Particles {
 
 }  // namespace dem
 
-#endif  // DEM_PARTICLES_KOKKOS_HPP
+#endif  // DEM_PARTICLES_HPP

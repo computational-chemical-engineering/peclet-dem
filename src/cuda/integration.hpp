@@ -5,12 +5,12 @@
 // predict, quaternion integrate+normalize), iterative delta apply, Jacobi count-averaged update,
 // final commit with periodic wrap, contact-count pre-pass, and growth-scale update. Faithful copies
 // of the CUDA kernels. Ghost generation and the thermostat are separate units.
-#ifndef DEM_INTEGRATION_KOKKOS_HPP
-#define DEM_INTEGRATION_KOKKOS_HPP
+#ifndef DEM_INTEGRATION_HPP
+#define DEM_INTEGRATION_HPP
 
 #include <Kokkos_Core.hpp>
 
-#include "contact_preprocessing_kokkos.hpp"  // ContactC, CpExec/CpMem
+#include "contact_preprocessing.hpp"  // ContactC, CpExec/CpMem
 #include "dem_portable.hpp"
 
 namespace dem {
@@ -233,4 +233,4 @@ inline void updateGrowthScalesKokkos(int n, Vf scale, Vf targetScale, float fact
 
 }  // namespace dem
 
-#endif  // DEM_INTEGRATION_KOKKOS_HPP
+#endif  // DEM_INTEGRATION_HPP

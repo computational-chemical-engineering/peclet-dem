@@ -7,14 +7,14 @@
 // kernels (same band, same bounding radius, same quadratic solve, same max(res)*4 iteration cap), over the
 // Kokkos particle SoA + the ported analytic SDFs. Deterministic (atomic-min + Jacobi) -> matches CUDA for
 // the same particle configuration. Runs on any Kokkos backend.
-#ifndef DEM_OUTPUT_SDF_KOKKOS_HPP
-#define DEM_OUTPUT_SDF_KOKKOS_HPP
+#ifndef DEM_OUTPUT_SDF_HPP
+#define DEM_OUTPUT_SDF_HPP
 
 #include <Kokkos_Core.hpp>
 #include <vector>
 
 #include "dem_portable.hpp"          // F3/F4, invRotateVector, sdfSphere/sdfHollowCylinder, ShapeKind
-#include "narrowphase_kokkos.hpp"    // ShapeDesc, CpExec/CpMem, view aliases
+#include "narrowphase.hpp"    // ShapeDesc, CpExec/CpMem, view aliases
 
 namespace dem {
 
@@ -112,4 +112,4 @@ inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 
 
 }  // namespace dem
 
-#endif  // DEM_OUTPUT_SDF_KOKKOS_HPP
+#endif  // DEM_OUTPUT_SDF_HPP

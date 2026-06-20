@@ -10,7 +10,7 @@
 #include <random>
 #include <vector>
 
-#include "solver_velocity_kokkos.hpp"
+#include "solver_velocity.hpp"
 
 using namespace dem;
 

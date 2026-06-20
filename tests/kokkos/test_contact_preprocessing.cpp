@@ -12,7 +12,7 @@
 #include <random>
 #include <vector>
 
-#include "contact_preprocessing_kokkos.hpp"
+#include "contact_preprocessing.hpp"
 
 using dem::ContactC;
 using dem::F4;

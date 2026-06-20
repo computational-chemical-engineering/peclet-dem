@@ -9,13 +9,13 @@
 //                                                         normal load, count-averaged.
 // Faithful copy of the CUDA math over the SoA Views; the contact's friction_lambda_n is read/written
 // in place (per-contact, no cross-thread race). See packing-velocity-position-split for the design.
-#ifndef DEM_SOLVER_FRICTION_KOKKOS_HPP
-#define DEM_SOLVER_FRICTION_KOKKOS_HPP
+#ifndef DEM_SOLVER_FRICTION_HPP
+#define DEM_SOLVER_FRICTION_HPP
 
 #include <Kokkos_Core.hpp>
 
 #include "dem_portable.hpp"
-#include "solver_position_kokkos.hpp"  // ContactC, detail::computeW, CpExec/CpMem
+#include "solver_position.hpp"  // ContactC, detail::computeW, CpExec/CpMem
 
 namespace dem {
 
@@ -171,4 +171,4 @@ inline void solveContactFrictionKokkos(Kokkos::View<const ContactC*, CpMem> cont
 
 }  // namespace dem
 
-#endif  // DEM_SOLVER_FRICTION_KOKKOS_HPP
+#endif  // DEM_SOLVER_FRICTION_HPP

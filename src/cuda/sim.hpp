@@ -3,11 +3,12 @@
 // Owns a dem::Particles SoA and runs the full XPBD DEM step by composing the ported kernels in the
 // simulation.cpp step() order. Exposes a small std::vector-based API (binding-agnostic) so a pybind
 // module can drive it from Python (set/get arrays, step). Sphere shapes + analytic planes for now.
-#ifndef DEM_SIM_KOKKOS_HPP
-#define DEM_SIM_KOKKOS_HPP
+#ifndef DEM_SIM_HPP
+#define DEM_SIM_HPP
 
 #include <Kokkos_Core.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -16,20 +17,20 @@
 #include <stdexcept>
 
 #include "broadphase_arborx.hpp"
-#include "contact_preprocessing_kokkos.hpp"
-#include "integration_kokkos.hpp"
-#include "io_kokkos.hpp"
-#include "narrowphase_kokkos.hpp"
-#include "output_sdf_kokkos.hpp"
-#include "particles_kokkos.hpp"
-#include "periodicity_kokkos.hpp"
+#include "contact_preprocessing.hpp"
+#include "integration.hpp"
+#include "io.hpp"
+#include "narrowphase.hpp"
+#include "output_sdf.hpp"
+#include "particles.hpp"
+#include "periodicity.hpp"
 #include "shapes_portable.hpp"
-#include "solver_friction_kokkos.hpp"
-#include "solver_position_kokkos.hpp"
-#include "solver_velocity_kokkos.hpp"
+#include "solver_friction.hpp"
+#include "solver_position.hpp"
+#include "solver_velocity.hpp"
 
-#ifdef DEMGPU_KOKKOS_MPI
-#include "mpi_halo_kokkos.hpp"  // KokkosParticleHalo (gated; default module never includes it)
+#ifdef DEMGPU_MPI
+#include "mpi_halo.hpp"  // KokkosParticleHalo (gated; default module never includes it)
 #endif
 
 namespace dem {
@@ -154,7 +155,7 @@ inline float computeOverlapsKokkos(Particles& P) {
   float h; Kokkos::deep_copy(h, P.maxOverlap); return h;
 }
 
-#ifdef DEMGPU_KOKKOS_MPI
+#ifdef DEMGPU_MPI
 /// One distributed XPBD DEM substep (faithful port of Simulation::step_mpi). Identical to demStep
 /// EXCEPT: the periodic ghost generation is replaced by a cross-rank gather (halo.gather, ghosts
 /// carrying REAL mass), and the owners refresh their ghost copies (velPred/angVelPred, then
@@ -248,16 +249,25 @@ inline void demStepMpi(Particles& P, KokkosParticleHalo& halo, double rcut, int 
 
   P.numParticles = P.numReal;  // restore owned-only active count for getters
 }
-#endif  // DEMGPU_KOKKOS_MPI
+#endif  // DEMGPU_MPI
 
 /// Host-facing facade with std::vector setters/getters (binding-agnostic).
 class KokkosSim {
  public:
   explicit KokkosSim(int capacity) {
+    registry().push_back(this);
     P_.allocate(capacity, capacity * 64, capacity * 16, /*shapes*/ 1, /*shell*/ 1, /*planes*/ 8);
     // default sphere shape (radius 1) + identity-ish defaults
     setSphereShape(1.0f);
   }
+  ~KokkosSim() { auto& r = registry(); r.erase(std::remove(r.begin(), r.end(), this), r.end()); }
+
+  // Teardown safety: the Particles SoA holds Kokkos Views, so they MUST be freed before Kokkos::finalize
+  // (else "deallocated after finalize" aborts). releaseAll() (called from the module's atexit, before
+  // finalize) frees every live Sim's Views, so callers need not `del sim; gc.collect()` themselves.
+  void releaseViews() { P_ = Particles{}; }
+  static void releaseAll() { for (auto* s : registry()) s->releaseViews(); }
+  static std::vector<KokkosSim*>& registry() { static std::vector<KokkosSim*> r; return r; }
 
   void setSphereShape(float radius) {
     initializeShape(SPHERE, radius, 0.0f, 0.0f);
@@ -471,7 +481,9 @@ class KokkosSim {
     return std::vector<float>(s.data(), s.data() + P_.numReal);
   }
 
-  void step(int nsteps) { for (int s = 0; s < nsteps; ++s) demStep(P_); }
+  // One XPBD substep (CUDA Simulation::step(dt) semantics): dt>0 sets the timestep; dt==0 is a
+  // dynamics-free relaxation step (overlap removal only). Drive the loop from Python.
+  void step(float dt) { P_.dt = dt; demStep(P_); }
 
   // Max pair interpenetration on the current committed state (CUDA Simulation::compute_overlaps).
   float computeOverlaps() { return computeOverlapsKokkos(P_); }
@@ -495,7 +507,7 @@ class KokkosSim {
     dem::writeSdfVti(filename, grid, rx, ry, rz, mn, mx);
   }
 
-#ifdef DEMGPU_KOKKOS_MPI
+#ifdef DEMGPU_MPI
   // Block decomposition over the GLOBAL domain (once); the per-block solver stays non-periodic, the
   // halo supplies the periodic wrap. gsize is the ORB cell grid. Mirror of Simulation::mpi_init.
   void initMpi(std::tuple<double, double, double> origin, std::tuple<double, double, double> size,
@@ -517,7 +529,7 @@ class KokkosSim {
   }
   int rank() const { return halo_.rank(); }
   int numGhost() const { return halo_.numGhost(); }
-#endif  // DEMGPU_KOKKOS_MPI
+#endif  // DEMGPU_MPI
 
   // SDF grid (get_sdf_grid): Eikonal reconstruction over the domain, flat x-fastest, negative inside solid.
   std::vector<float> getSdfGrid(int rx, int ry, int rz) {
@@ -570,7 +582,7 @@ class KokkosSim {
   Particles P_;
   float baseRadius_ = 1.0f;
   F3 defaultInvI_{2.5f, 2.5f, 2.5f};
-#ifdef DEMGPU_KOKKOS_MPI
+#ifdef DEMGPU_MPI
   KokkosParticleHalo halo_;
   double mpiRcut_ = 0.0;
   int mpiSyncEvery_ = 1;
@@ -580,4 +592,4 @@ class KokkosSim {
 
 }  // namespace dem
 
-#endif  // DEM_SIM_KOKKOS_HPP
+#endif  // DEM_SIM_HPP

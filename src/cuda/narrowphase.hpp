@@ -6,12 +6,12 @@
 // per-point math is a faithful copy of the CUDA kernels (same scale/global_scale handling, same
 // central-difference normal, same contact geometry) so results match. Analytic shapes only for now;
 // grid-SDF (texture) returns +inf (dem::sdfEval), as in the CUDA placeholder.
-#ifndef DEM_NARROWPHASE_KOKKOS_HPP
-#define DEM_NARROWPHASE_KOKKOS_HPP
+#ifndef DEM_NARROWPHASE_HPP
+#define DEM_NARROWPHASE_HPP
 
 #include <Kokkos_Core.hpp>
 
-#include "contact_preprocessing_kokkos.hpp"  // ContactC, CpExec/CpMem
+#include "contact_preprocessing.hpp"  // ContactC, CpExec/CpMem
 #include "dem_portable.hpp"
 
 namespace dem {
@@ -193,4 +193,4 @@ inline void detectBoundaryKokkos(int numReal, int numPlanes, PosView pos, QuatVi
 
 }  // namespace dem
 
-#endif  // DEM_NARROWPHASE_KOKKOS_HPP
+#endif  // DEM_NARROWPHASE_HPP

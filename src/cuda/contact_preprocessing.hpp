@@ -11,8 +11,8 @@
 // -ically from the pair key (canonical min/max, or (idA,-1) for boundary), rather than taken from
 // the first contact of an unstably-sorted run. The summed quantities are commutative, so they are
 // unaffected. Decoupled from ParticleSystemData (portable POD mirrors) for standalone validation.
-#ifndef DEM_CONTACT_PREPROCESSING_KOKKOS_HPP
-#define DEM_CONTACT_PREPROCESSING_KOKKOS_HPP
+#ifndef DEM_CONTACT_PREPROCESSING_HPP
+#define DEM_CONTACT_PREPROCESSING_HPP
 
 #include <Kokkos_Core.hpp>
 #include <Kokkos_Sort.hpp>
@@ -182,4 +182,4 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
 
 }  // namespace dem
 
-#endif  // DEM_CONTACT_PREPROCESSING_KOKKOS_HPP
+#endif  // DEM_CONTACT_PREPROCESSING_HPP

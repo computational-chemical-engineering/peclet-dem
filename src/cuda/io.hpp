@@ -2,8 +2,8 @@
 // a scalar-SDF VTI writer. Operate on flat std::vector<float> host arrays (no CUDA vector_types), so they
 // compile on every Kokkos backend. Faithful to the CUDA io/Exporter.cpp LAMMPS format and Simulation::
 // export_sdf VTI convention.
-#ifndef DEM_IO_KOKKOS_HPP
-#define DEM_IO_KOKKOS_HPP
+#ifndef DEM_IO_HPP
+#define DEM_IO_HPP
 
 #include <algorithm>
 #include <cstdio>
@@ -87,4 +87,4 @@ inline void writeSdfVti(const std::string& filename, const std::vector<float>& g
 
 }  // namespace dem
 
-#endif  // DEM_IO_KOKKOS_HPP
+#endif  // DEM_IO_HPP

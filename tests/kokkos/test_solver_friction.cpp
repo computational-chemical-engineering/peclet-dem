@@ -11,7 +11,7 @@
 #include <random>
 #include <vector>
 
-#include "solver_friction_kokkos.hpp"
+#include "solver_friction.hpp"
 
 using namespace dem;
 
