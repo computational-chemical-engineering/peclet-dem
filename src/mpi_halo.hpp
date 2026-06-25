@@ -21,6 +21,7 @@
 #include <Kokkos_Core.hpp>
 
 #include <array>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -31,6 +32,7 @@
 #include "tpx/halo/particle_halo.hpp"
 #include "tpx/halo/particle_halo_kokkos.hpp"
 #include "tpx/halo/particle_migrator.hpp"
+#include "tpx/halo/particle_rebalance.hpp"
 
 #include "dem_portable.hpp"        // F3, F4
 #include "particles.hpp"    // Particles, V3/V4/Vf/Vi, CpExec/CpMem
@@ -46,6 +48,18 @@ struct MpiGatherPack {
   F4 quat, quatPred;
   float scale, invMass;
   int shape;
+};
+
+// The committed per-particle state that defines a particle across steps — everything except its
+// position (which drives ownership and travels as the migrator's coordinate) and the predicted /
+// delta / ghost scratch the step rebuilds. This is the payload moved when a particle changes owner
+// during a load re-balance. POD => MPI_BYTE-copyable.
+struct MigratePack {
+  F4 quat;
+  F3 vel, angVel, invInertia;
+  float invMass, scale, targetScale;
+  int shapeId;
+  float planeFric0, planeFric1;
 };
 
 // --- free-function pack/unpack kernels (namespace scope: nvcc forbids KOKKOS_LAMBDA in member fns) ---
@@ -190,6 +204,95 @@ class KokkosParticleHalo {
     haloUnpackGather(P.vel, P.velPred, P.angVel, P.angVelPred, P.invInertia, P.quat, P.quatPred,
                      P.scale, P.invMass, P.shapeId, P.realIndices, ghostPack_, no, ng);
     return no + ng;
+  }
+
+  // Dynamic load re-balance: re-decompose the ORB by per-block particle COUNT (weighted ORB) and
+  // migrate each owned particle, with its committed state, to its new owner. A pure redistribution of
+  // the same global particle set (count conserved, per-particle state preserved) — only ownership and
+  // this rank's owned slice change; the physics result is unchanged. Must be called at a step boundary
+  // (committed pos/quat/vel/angVel valid; predicted/delta/ghost scratch are rebuilt next gather()).
+  // Returns this rank's new owned count. No-op-safe at np=1.
+  int rebalance(Particles& P) {
+    const int no = P.numReal;
+
+    // 1. Download the committed state and pack it (position drives ownership; rest is payload).
+    auto h_pos = Kokkos::create_mirror_view(P.pos);
+    auto h_quat = Kokkos::create_mirror_view(P.quat);
+    auto h_vel = Kokkos::create_mirror_view(P.vel);
+    auto h_angVel = Kokkos::create_mirror_view(P.angVel);
+    auto h_invI = Kokkos::create_mirror_view(P.invInertia);
+    auto h_invM = Kokkos::create_mirror_view(P.invMass);
+    auto h_scale = Kokkos::create_mirror_view(P.scale);
+    auto h_tScale = Kokkos::create_mirror_view(P.targetScale);
+    auto h_shape = Kokkos::create_mirror_view(P.shapeId);
+    auto h_pf = Kokkos::create_mirror_view(P.planeFriction);
+    Kokkos::deep_copy(h_pos, P.pos);
+    Kokkos::deep_copy(h_quat, P.quat);
+    Kokkos::deep_copy(h_vel, P.vel);
+    Kokkos::deep_copy(h_angVel, P.angVel);
+    Kokkos::deep_copy(h_invI, P.invInertia);
+    Kokkos::deep_copy(h_invM, P.invMass);
+    Kokkos::deep_copy(h_scale, P.scale);
+    Kokkos::deep_copy(h_tScale, P.targetScale);
+    Kokkos::deep_copy(h_shape, P.shapeId);
+    Kokkos::deep_copy(h_pf, P.planeFriction);
+
+    std::vector<tpx::Vec<3>> pos((std::size_t)no);
+    std::vector<char> payload((std::size_t)no * sizeof(MigratePack));
+    for (int i = 0; i < no; ++i) {
+      pos[(std::size_t)i] = tpx::Vec<3>{h_pos(i, 0), h_pos(i, 1), h_pos(i, 2)};
+      MigratePack m;
+      m.quat = F4{h_quat(i, 0), h_quat(i, 1), h_quat(i, 2), h_quat(i, 3)};
+      m.vel = F3{h_vel(i, 0), h_vel(i, 1), h_vel(i, 2)};
+      m.angVel = F3{h_angVel(i, 0), h_angVel(i, 1), h_angVel(i, 2)};
+      m.invInertia = F3{h_invI(i, 0), h_invI(i, 1), h_invI(i, 2)};
+      m.invMass = h_invM(i);
+      m.scale = h_scale(i);
+      m.targetScale = h_tScale(i);
+      m.shapeId = h_shape(i);
+      m.planeFric0 = h_pf(i, 0);
+      m.planeFric1 = h_pf(i, 1);
+      std::memcpy(&payload[(std::size_t)i * sizeof(MigratePack)], &m, sizeof(MigratePack));
+    }
+
+    // 2. Weighted re-decompose by particle count + migrate (dec_ updated in place; mig_ points to it).
+    const std::size_t newN =
+        tpx::halo::rebalanceByParticleCount(dec_, mig_, pos, payload, sizeof(MigratePack), comm_);
+    if ((int)newN > P.capacity)
+      throw std::runtime_error(
+          "KokkosParticleHalo::rebalance: owned overflow -- rank received " + std::to_string(newN) +
+          " particles, capacity " + std::to_string(P.capacity) +
+          "; size the Simulation for the peak per-rank count.");
+
+    // 3. Unpack the received particles back into the SoA [0,newN) and upload.
+    for (std::size_t i = 0; i < newN; ++i) {
+      h_pos((int)i, 0) = pos[i][0]; h_pos((int)i, 1) = pos[i][1]; h_pos((int)i, 2) = pos[i][2];
+      MigratePack m;
+      std::memcpy(&m, &payload[i * sizeof(MigratePack)], sizeof(MigratePack));
+      h_quat((int)i, 0) = m.quat.x; h_quat((int)i, 1) = m.quat.y; h_quat((int)i, 2) = m.quat.z; h_quat((int)i, 3) = m.quat.w;
+      h_vel((int)i, 0) = m.vel.x; h_vel((int)i, 1) = m.vel.y; h_vel((int)i, 2) = m.vel.z;
+      h_angVel((int)i, 0) = m.angVel.x; h_angVel((int)i, 1) = m.angVel.y; h_angVel((int)i, 2) = m.angVel.z;
+      h_invI((int)i, 0) = m.invInertia.x; h_invI((int)i, 1) = m.invInertia.y; h_invI((int)i, 2) = m.invInertia.z;
+      h_invM((int)i) = m.invMass;
+      h_scale((int)i) = m.scale;
+      h_tScale((int)i) = m.targetScale;
+      h_shape((int)i) = m.shapeId;
+      h_pf((int)i, 0) = m.planeFric0; h_pf((int)i, 1) = m.planeFric1;
+    }
+    Kokkos::deep_copy(P.pos, h_pos);
+    Kokkos::deep_copy(P.quat, h_quat);
+    Kokkos::deep_copy(P.vel, h_vel);
+    Kokkos::deep_copy(P.angVel, h_angVel);
+    Kokkos::deep_copy(P.invInertia, h_invI);
+    Kokkos::deep_copy(P.invMass, h_invM);
+    Kokkos::deep_copy(P.scale, h_scale);
+    Kokkos::deep_copy(P.targetScale, h_tScale);
+    Kokkos::deep_copy(P.shapeId, h_shape);
+    Kokkos::deep_copy(P.planeFriction, h_pf);
+
+    P.numReal = (int)newN;
+    P.numParticles = (int)newN;
+    return (int)newN;
   }
 
   // owner slice [0,numReal) -> ghost slots [numReal,..), verbatim (velocity / angular velocity).

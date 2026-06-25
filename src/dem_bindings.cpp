@@ -192,8 +192,12 @@ PYBIND11_MODULE(dem, m) {
            "Set up the ORB block decomposition + transport-core particle halo for the distributed step.")
       .def("enable_mpi_step", &KokkosSim::enableMpiStep,
            py::arg("rcut"), py::arg("sync_every") = 1, py::arg("forward_rotation") = true,
-           "Enable the distributed step: ghost cutoff rcut, migration/sync cadence, rotation forwarding.")
+           py::arg("rebalance_every") = 0,
+           "Enable the distributed step: ghost cutoff rcut, sync cadence, rotation forwarding, and the "
+           "load-rebalance interval in steps (0 = fixed decomposition).")
       .def("step_mpi", &KokkosSim::stepMpi, py::arg("nsteps") = 1, "Advance the distributed (MPI) simulation by nsteps with halo exchange.")
+      .def("rebalance", &KokkosSim::rebalance,
+           "Re-decompose by particle count and migrate ownership now; returns this rank's new owned count.")
       .def("rank", &KokkosSim::rank, "Return this rank's MPI index.")
       .def("num_ghost", &KokkosSim::numGhost, "Return the number of ghost particles on this rank.")
 #endif

@@ -521,12 +521,24 @@ class KokkosSim {
   }
   // Enable the distributed step. rcut is the ghost-band width (default = 1.0*globalScale, the periodic
   // skin used by the single-GPU path); sync_every is the owner->ghost refresh interval (1 = EXACT).
-  void enableMpiStep(double rcut, int sync_every = 1, bool forward_rotation = true) {
+  // rebalance_every: re-decompose by particle count + migrate ownership every N distributed steps to
+  // keep the per-rank load even as a packing densifies (0 = never; the partition is then fixed at the
+  // initial decomposition, as before). A pure redistribution — the physics result is unchanged.
+  void enableMpiStep(double rcut, int sync_every = 1, bool forward_rotation = true,
+                     int rebalance_every = 0) {
     mpiRcut_ = rcut; mpiSyncEvery_ = sync_every < 1 ? 1 : sync_every; mpiForwardRotation_ = forward_rotation;
+    mpiRebalanceEvery_ = rebalance_every < 0 ? 0 : rebalance_every;
   }
+  // Migrate ownership now so each rank holds a near-equal particle count. Safe to call at a step
+  // boundary; returns this rank's new owned count. Exposed for manual / adaptive balancing.
+  int rebalance() { return halo_.rebalance(P_); }
   void stepMpi(int nsteps) {
     const double rcut = (mpiRcut_ > 0.0) ? mpiRcut_ : 1.0 * P_.globalScale;
-    for (int s = 0; s < nsteps; ++s) demStepMpi(P_, halo_, rcut, mpiSyncEvery_, mpiForwardRotation_);
+    for (int s = 0; s < nsteps; ++s) {
+      if (mpiRebalanceEvery_ > 0 && mpiStepCount_ % mpiRebalanceEvery_ == 0) halo_.rebalance(P_);
+      demStepMpi(P_, halo_, rcut, mpiSyncEvery_, mpiForwardRotation_);
+      ++mpiStepCount_;
+    }
   }
   int rank() const { return halo_.rank(); }
   int numGhost() const { return halo_.numGhost(); }
@@ -588,6 +600,8 @@ class KokkosSim {
   double mpiRcut_ = 0.0;
   int mpiSyncEvery_ = 1;
   bool mpiForwardRotation_ = true;
+  int mpiRebalanceEvery_ = 0;
+  long mpiStepCount_ = 0;
 #endif
 };
 

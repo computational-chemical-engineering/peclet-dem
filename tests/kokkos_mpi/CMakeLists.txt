@@ -27,7 +27,7 @@ if(NOT MPIEXEC_EXECUTABLE)
 endif()
 
 enable_testing()
-foreach(t demstep_mpi)
+foreach(t demstep_mpi rebalance_mpi)
   add_executable(test_${t} test_${t}.cpp)
   target_include_directories(test_${t} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${TPX_DIR}/include)
