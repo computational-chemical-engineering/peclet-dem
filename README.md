@@ -54,7 +54,9 @@ cmake -B build -S . \
 cmake --build build -j$(nproc)
 ```
 *Swap the prefix to `../extern/install/host-openmp` for the OpenMP backend. `-DDEM_MPI=ON` links MPI
-and exposes the distributed step (`init_mpi` / `enable_mpi_step` / `step_mpi`).*
+and exposes the distributed step (`init_mpi` / `enable_mpi_step` / `step_mpi`), including dynamic load
+balancing — `enable_mpi_step(..., rebalance_every=N)` or an explicit `rebalance()` re-decomposes by
+particle count (weighted ORB) and migrates ownership so each rank keeps a near-equal share.*
 
 The compiled `dem.cpython-....so` is placed in `build/`; run scripts from the root with that directory on `PYTHONPATH`.
 
@@ -104,4 +106,6 @@ For visualizing fields (like the Signed Distance Field or occupancy grids), the 
 Prototype stage. Active development on high-density packing stability and friction handling.
 
 > [!NOTE]
-> MPI support is currently scaffolding and not fully implemented.
+> The distributed (MPI) step is validated against the single-rank result (`tests/kokkos_mpi`,
+> np=1,2,4 on OpenMP + CUDA) and supports dynamic load rebalancing; remaining MPI work is at-scale
+> multi-GPU tuning.
