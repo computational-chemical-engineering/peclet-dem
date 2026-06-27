@@ -4,7 +4,7 @@
 //   * distributed  : each rank owns the ORB block of a global particle set, calls initMpi over
 //                     MPI_COMM_WORLD + stepMpi (gather ghosts -> broad/narrow/solve with per-iteration
 //                     owner->ghost forwards). Cross-block body-body contacts are reconstructed by the
-//                     transport-core particle halo (ParticleHalo<3> + DeviceParticleHaloKokkos<3>).
+//                     transport-core particle halo (ParticleHaloTopology<3> + ParticleHalo<3>).
 //   * single-rank  : the SAME stepMpi code on a size-1 communicator (MPI_COMM_SELF) over ALL particles
 //                     -> one block spanning the whole domain == the native complete run.
 //
@@ -13,7 +13,7 @@
 //              block owns everything (no ghosts needed); the distributed run rebuilds the split-plane
 //              neighbours via ghosts.
 //   periodic : a FULLY periodic tiled box, so neighbours wrap across every face. This exercises the
-//              LOCAL periodic self-ghosts (ParticleHalo build(..., includePeriodicSelf=true)) on every
+//              LOCAL periodic self-ghosts (ParticleHaloTopology build(..., includePeriodicSelf=true)) on every
 //              UNDECOMPOSED periodic axis -- all three at np=1, and the z of the np=4 2x2x1 ORB layout
 //              (each rank is its own periodic image on a "x1" axis, so those wrap contacts exist only
 //              as self-ghosts). A periodic box needs a thick ghost boundary layer, so capacity is sized

@@ -2,7 +2,7 @@
 /// @brief dem — portable (Kokkos) owner<->ghost particle halo for the distributed XPBD step.
 ///
 /// Kokkos counterpart of src/mpi/mpi_halo.h (MpiParticleHalo): a thin wrapper over transport-core's
-/// tpx::halo::ParticleHalo<3> (host topology, periodic image shift) + DeviceParticleHaloKokkos<3>
+/// tpx::halo::ParticleHaloTopology<3> (host topology, periodic image shift) + ParticleHalo<3>
 /// (on-device gather/scatter + host-staged MPI). Rebuilt each substep from the owned positions; it
 /// gathers ghost copies of the owners' FULL state into the Particles SoA ghost slots and refreshes
 /// them owner->ghost during the velocity/position solves -- the EXACT distributed scheme (ghosts carry
@@ -324,7 +324,7 @@ class KokkosParticleHalo {
 
  private:
   void allocBuffers(int no, int ng) {
-    // Exact-sized: DeviceParticleHaloKokkos::forward host-stages a deep_copy into the ghost View, so
+    // Exact-sized: ParticleHalo::forward host-stages a deep_copy into the ghost View, so
     // its extent must equal numGhost; owned is indexed by sendIdx in [0,numReal).
     ownedF3_ = tpx::View<F3>("dem::halo::ownedF3", no);
     ghostF3_ = tpx::View<F3>("dem::halo::ghostF3", ng);
@@ -347,8 +347,8 @@ class KokkosParticleHalo {
   MPI_Comm comm_ = MPI_COMM_NULL;
   tpx::decomp::BlockDecomposer<3> dec_;
   tpx::halo::ParticleMigrator<3> mig_;
-  tpx::halo::ParticleHalo<3> halo_;
-  tpx::halo::DeviceParticleHaloKokkos<3> dev_;
+  tpx::halo::ParticleHaloTopology<3> halo_;
+  tpx::halo::ParticleHalo<3> dev_;
   tpx::View<F3> ownedF3_, ghostF3_, shiftDev_;
   tpx::View<F4> ownedF4_, ghostF4_;
   tpx::View<MpiGatherPack> ownedPack_, ghostPack_;

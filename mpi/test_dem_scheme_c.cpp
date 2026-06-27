@@ -1,6 +1,6 @@
 // Scheme C (the user's): compute each pair once, reverse-accumulate forces to owners, then FORWARD
 // the total force to ghosts and integrate ghosts LOCALLY — so ghost state is re-derived by each rank
-// rather than imported. Validated with transport-core's ParticleHalo (reverse + forward).
+// rather than imported. Validated with transport-core's ParticleHaloTopology (reverse + forward).
 //
 // Two checks, np=1,2,4:
 //   (1) owned trajectories match a serial all-pairs reference (forces are correct), and
@@ -25,7 +25,7 @@
 using namespace tpx;
 using tpx::decomp::BlockDecomposer;
 using tpx::halo::DomainMap;
-using tpx::halo::ParticleHalo;
+using tpx::halo::ParticleHaloTopology;
 using tpx::halo::ParticleMigrator;
 
 static constexpr int kSteps = 15;
@@ -101,7 +101,7 @@ int main(int argc, char** argv) {
   }
   ParticleMigrator<3> mig;
   mig.init(dec, rank, map, MPI_COMM_WORLD);
-  ParticleHalo<3> halo;
+  ParticleHaloTopology<3> halo;
   halo.init(mig);
 
   const std::size_t stride = sizeof(Pay);

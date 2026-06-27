@@ -1,5 +1,5 @@
 // Scheme B (Newton-on: compute each pair once, reverse the ghost force to owners, integrate owned) validated against a serial reference, using transport-core's
-// ParticleHalo.reverse.  Each pair is computed exactly ONCE (owned-ghost pairs are computed only on
+// ParticleHaloTopology.reverse.  Each pair is computed exactly ONCE (owned-ghost pairs are computed only on
 // the rank whose particle has the lower id), the reaction force is placed on the ghost, and
 // reverse(ghostForce, ownedForce, +=) accumulates those contributions back onto the owners. The
 // resulting total force on every owned particle must equal the serial all-pairs force, so the
@@ -24,7 +24,7 @@
 using namespace tpx;
 using tpx::decomp::BlockDecomposer;
 using tpx::halo::DomainMap;
-using tpx::halo::ParticleHalo;
+using tpx::halo::ParticleHaloTopology;
 using tpx::halo::ParticleMigrator;
 
 static constexpr int kSteps = 25;
@@ -112,7 +112,7 @@ int main(int argc, char** argv) {
   }
   ParticleMigrator<3> mig;
   mig.init(dec, rank, map, MPI_COMM_WORLD);
-  ParticleHalo<3> halo;
+  ParticleHaloTopology<3> halo;
   halo.init(mig);
 
   const std::size_t stride = sizeof(Pay);
