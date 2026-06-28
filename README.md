@@ -1,6 +1,6 @@
 # dem-gpu (`dem`)
 
-Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD solver with SDF-based point-shell collision detection. Built on **Kokkos + ArborX**, so the same source runs on **CUDA, HIP (AMD/LUMI), and OpenMP** backends (selected at build time by the install prefix). Optional MPI for domain partitioning, with full pybind11 Python bindings for scripting and visualization.
+Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD solver with SDF-based point-shell collision detection. Built on **Kokkos + ArborX**, so the same source runs on **CUDA, HIP (AMD/LUMI), and OpenMP** backends (selected at build time by the install prefix). Optional MPI for domain partitioning, with **nanobind** Python bindings (zero-copy, via scikit-build-core) for scripting and visualization.
 
 > The CUDA implementation was retired (2026-06): the Kokkos `dem` module was validated against it before the CUDA sources were removed. Restore point: git tag `pre-cuda-retirement`.
 
@@ -17,7 +17,7 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 ```text
 ├── CMakeLists.txt              # Build configuration (find_package Kokkos + ArborX)
 ├── src                         # Kokkos sources (header-only, namespace dem)
-│   ├── dem_bindings.cpp        # Pybind11 module entry point (the `dem` module)
+│   ├── dem_bindings.cpp        # nanobind module entry point (the `dem` module)
 │   ├── sim.hpp                 # KokkosSim facade + the demStep XPBD substep
 │   ├── integration.hpp         # Time integration & prediction
 │   ├── broadphase_arborx.hpp   # ArborX BVH broad-phase
@@ -38,8 +38,9 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 
 - **Linux**
 - **CMake** >= 3.24
-- **Kokkos 5.x + ArborX** (C++20) + **pybind11** — provisioned by `../tools/bootstrap_deps.sh` into
+- **Kokkos 5.x + ArborX** (C++20) — provisioned by `../tools/bootstrap_deps.sh` into
   `../extern/install/<backend>` (`nvidia-cuda` / `host-openmp` / `lumi-hip`). A **hard build dependency**.
+- **nanobind** + **scikit-build-core** (found via the active Python interpreter; see `pyproject.toml`)
 - a backend compiler: **nvcc** (CUDA) on `PATH`, **hipcc** (ROCm), or just a host C++ compiler (OpenMP)
 - **Python** >= 3.10
 - **MPI** (optional, `-DDEM_MPI=ON`) — OpenMPI or MPICH
@@ -47,10 +48,14 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 ## Build Instructions
 
 ```bash
-python -m venv .venv && source .venv/bin/activate && pip install pybind11 numpy
+python -m venv .venv && source .venv/bin/activate && pip install nanobind numpy
 export PATH=/usr/local/cuda-13.2/bin:$PATH        # if building the CUDA backend
-cmake -B build -S . \
-  -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda;$(python -m pybind11 --cmakedir)"
+
+# Canonical: build + install the module via scikit-build-core
+CMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda" pip install .
+
+# Or a dev cmake build (nanobind is found via the active interpreter, no cmakedir needed):
+cmake -B build -S . -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda"
 cmake --build build -j$(nproc)
 ```
 *Swap the prefix to `../extern/install/host-openmp` for the OpenMP backend. `-DDEM_MPI=ON` links MPI
@@ -103,7 +108,10 @@ For visualizing fields (like the Signed Distance Field or occupancy grids), the 
 
 ## Status
 
-Prototype stage. Active development on high-density packing stability and friction handling.
+The single-GPU engine is complete and validated: it reaches stable high-density (random close)
+packing, and energy is conserved to ~0.3% (see `docs/packing_investigation.md`). Friction is
+stabilized for spheres; body-body tangential friction is a known follow-up (currently weaker than
+ideal). Active work is at-scale multi-GPU/MPI tuning.
 
 > [!NOTE]
 > The distributed (MPI) step is validated against the single-rank result (`tests/kokkos_mpi`,

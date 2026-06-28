@@ -1,12 +1,12 @@
 # Visualization Guide
 
-This guide explains how to visualize the DEM-GPU simulation results using **Ovito** (for particles) and **ParaView** (for fields).
+This guide explains how to visualize the `dem` simulation results using **Ovito** (for particles) and **ParaView** (for fields).
 
 ---
 
 # Part 1: Particle Visualization (Ovito)
 
-This section explains how to visualize the DEM-GPU simulation results using Ovito.
+This section explains how to visualize the `dem` simulation results using Ovito.
 
 ## 1. Prerequisites
 

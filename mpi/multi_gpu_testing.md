@@ -1,71 +1,80 @@
-# packing-gpu — multi-GPU testing & profiling guide
+# dem — multi-GPU testing & profiling guide
 
 The MPI-aware XPBD step (`Simulation::step_mpi`, see [README.md](README.md)) is **correctness-complete
-and validated on one GPU** but has only ever run with `np>1` ranks **sharing a single RTX 5080**, where
-the CUDA contexts serialise and the wall-clock is contention-bound. This document is the plan for
-running and profiling it on **real multi-GPU hardware** (one rank per GPU, single- or multi-node),
-where the design is meant to scale. It captures the prerequisites, launch recipes, what to measure,
-the profiling toolchain, and the optimisation backlog ranked by expected payoff.
+and validated** (`tests/kokkos_mpi`, np=1,2,4, closed + periodic) but at-scale multi-GPU tuning is the
+remaining roadmap work. On a single GPU, `np>1` ranks **share one device** (the GPU contexts serialise
+and the wall-clock is contention-bound). This document is the plan for running and profiling on **real
+multi-GPU hardware** (one rank per GPU, single- or multi-node), where the design is meant to scale. It
+captures the prerequisites, launch recipes, what to measure, the profiling toolchain, and the
+optimisation backlog ranked by expected payoff.
+
+The engine is header-only **Kokkos + ArborX** (CUDA retired); the backend (CUDA/HIP/OpenMP) is chosen
+by the `extern/install/<backend>` prefix the build is pointed at, not hard-coded. The profiling tools
+below assume the **CUDA backend** (`nvidia-cuda` prefix); for HIP use the ROCm equivalents
+(`rocprof`/`omnitrace`).
 
 Read alongside: `../../transport-core/docs/cuda-aware-mpi.md` (the CUDA-aware-MPI diagnosis &
-sysadmin ask), `../../cfd-gpu/doc/mpi_parallelization_status.md` (the Eulerian precedent), and
-`../../docs/ROADMAP.md` Phase 4.
+sysadmin ask), the "MPI / sdflow" section of `../../sdflow/CLAUDE.md` (the Eulerian precedent), and
+`../../docs/ROADMAP.md` Phase 4 / Phase 7.
 
 ---
 
 ## 1. Prerequisites
 
 ### 1.1 One rank per GPU — device binding (REQUIRED)
-Nothing in demgpu called `cudaSetDevice` historically, so every rank defaulted to device 0. Map each
-MPI rank to its own GPU using the **node-local rank**, before constructing any `Simulation`:
+The `dem` module calls `Kokkos::initialize()` (no args) at import, so each rank takes whatever device
+Kokkos selects by default — **device 0** unless the environment restricts it. There is **no**
+`set_cuda_device` helper in the Kokkos module (that was a CUDA-era API). Bind each MPI rank to its own
+GPU by restricting visibility to the **node-local rank** *before* `import dem`:
 
 ```python
+import os
 from mpi4py import MPI
-import demgpu
 
 world = MPI.COMM_WORLD
 local = world.Split_type(MPI.COMM_TYPE_SHARED)          # ranks sharing a node
-ndev = demgpu.Simulation.cuda_device_count()
-demgpu.Simulation.set_cuda_device(local.rank % ndev)    # <-- bind BEFORE initialize()
+os.environ["CUDA_VISIBLE_DEVICES"] = str(local.rank)    # one visible GPU -> Kokkos uses it as device 0
+import dem                                               # <-- import AFTER setting visibility
 ```
 
-`set_cuda_device` / `cuda_device_count` are `@staticmethod`s on `Simulation`. Equivalent CLI binding:
-`mpirun --map-by ppr:1:gpu` or setting `CUDA_VISIBLE_DEVICES` per rank via a wrapper script. Verify
-the mapping at startup (each rank prints its bus id) — a silent fallback to device 0 looks like a
-correctness pass but with zero speedup.
+Equivalent launcher binding: `mpirun --map-by ppr:1:gpu` (sets `CUDA_VISIBLE_DEVICES` per rank), or a
+wrapper script. Verify the mapping at startup — a silent fallback to a shared device 0 looks like a
+correctness pass but with zero speedup. (For HIP, use `ROCR_VISIBLE_DEVICES`.)
 
-### 1.2 Launcher
+### 1.2 Launcher & build
 Use the system MPI, not ParaView's bundled one (it launches OpenMPI binaries as singletons):
-`-DMPIEXEC_EXECUTABLE=/usr/bin/mpirun`. Build demgpu with `-DDEMGPU_ENABLE_MPI=ON` (the default) and
-the sm-matching arch (`CMAKE_CUDA_ARCHITECTURES=native`/`120` on Blackwell). mpi4py must live in the
-same Python as the `demgpu`/`tpx_mpi` modules.
+`-DMPIEXEC_EXECUTABLE=/usr/bin/mpirun`. Build the `dem` module with `-DDEM_MPI=ON` against the
+bootstrapped backend prefix:
+```bash
+cd dem && source .venv/bin/activate
+export PATH=/usr/local/cuda-13.2/bin:$PATH              # nvcc on PATH for the CUDA backend
+cmake -S . -B build -DDEM_MPI=ON -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda"
+cmake --build build -j$(nproc)
+```
+`mpi4py` must live in the same Python (`.venv`) as the `dem` module.
 
-### 1.3 CUDA-aware MPI — now AVAILABLE locally (unlocks the biggest optimisation)
-The stock `/usr/bin` OpenMPI is built without CUDA (device-pointer MPI segfaults). A **user-space
-CUDA-aware stack is now built** in `~/opt` (OpenMPI 5.0.7 + UCX 1.20.1, both `--with-cuda`,
-`cuda_copy`/`cuda_ipc`); device-pointer `MPI_Send`/`Recv` work (verified). See
+### 1.3 CUDA-aware MPI (unlocks the device-resident halo)
+The stock `/usr/bin` OpenMPI is built without CUDA (device-pointer MPI segfaults). A user-space
+CUDA-aware stack (OpenMPI + UCX, both `--with-cuda`) is required for device→device transfers; see
 [`../../transport-core/docs/cuda-aware-mpi.md`](../../transport-core/docs/cuda-aware-mpi.md) for the
-full build/runtime recipe. To use it:
+build/runtime recipe. transport-core's `GridHalo` device-pointer branch is runtime-gated on
+`TPX_CUDA_AWARE_MPI` (not `MPIX_Query_cuda_support()`, which mis-reports here). Bringing the `dem`
+particle halo's gather/scatter onto the device-pointer path (§5.1) is the remaining piece.
 
 ```bash
-source ~/opt/cudampi-env.sh                 # PATH/LD_LIBRARY_PATH/OPAL_PREFIX + OMPI_MCA_pml=ucx
-cmake -S <proj> -B build_cudampi -DMPIEXEC_EXECUTABLE=$CUDAMPI_HOME/bin/mpirun  # builds vs the new MPI
-TPX_CUDA_AWARE_MPI=1 mpirun -x TPX_CUDA_AWARE_MPI -np N ./prog                  # device-pointer path
+source ~/opt/cudampi-env.sh                              # PATH/LD_LIBRARY_PATH/OPAL_PREFIX + OMPI_MCA_pml=ucx
+TPX_CUDA_AWARE_MPI=1 mpirun -x TPX_CUDA_AWARE_MPI -np N ... # device-pointer path
 ```
-
-transport-core's `DeviceGridExchange` already has the runtime-gated device-pointer branch (gated on
-`TPX_CUDA_AWARE_MPI`, *not* `MPIX_Query_cuda_support()` which mis-reports 0 here); `test_grid_halo_cuda`
-passes on both paths at np=1/2/4. The packing particle-halo device-resident pack (§5.1) is the
-remaining piece to bring onto this path.
 
 ---
 
 ## 2. Launch recipes
 
+The mpi4py drivers in this directory each construct a `dem.Simulation` per rank and drive `step_mpi`:
+
 ```bash
-cd packing-gpu
-export PATH=/usr/local/cuda-13.2/bin:$PATH
-PYP=build_sm120:../transport-core/python/build
+cd dem && source .venv/bin/activate
+PYP=$PWD/build                                           # the -DDEM_MPI=ON module build dir
 
 # Correctness across GPUs (per-particle vs a serial reference; spheres settling on a floor):
 PYTHONPATH=$PYP mpirun -np 2 --map-by ppr:1:gpu python3 mpi/validate_exact.py
@@ -74,13 +83,14 @@ PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 mpi/validate_exact.py
 # Cross-rank physics (restitution across a split, settled packing fraction/overlap):
 PYTHONPATH=$PYP mpirun -np 2 --map-by ppr:1:gpu python3 mpi/verify_distributed.py
 
-# Steady-state throughput (rebuild-free; env knobs PI/VI/M/R):
+# Steady-state throughput (env knobs PI/VI/M/R):
 PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 mpi/bench_step.py
-M=4 R=0 PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 mpi/bench_step.py
+M=4 PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 mpi/bench_step.py
 ```
 
-`validate_exact.py` env: `M`=`sync_every` (1=EXACT), `R`=`forward_rotation` (0 for spheres).
-`bench_step.py` env: `PI`/`VI` iterations, `M`, `R`.
+`validate_exact.py`/`bench_step.py` env: `M`=`sync_every` (1=EXACT), `R`=`forward_rotation` (0 for
+spheres), `PI`/`VI`=position/velocity iterations. The Kokkos `tests/kokkos_mpi` ctests are the
+primary correctness gate; the Python drivers are for at-scale throughput/observable checks.
 
 ---
 
@@ -91,21 +101,22 @@ M=4 R=0 PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 mpi/bench_step.p
 | **Strong scaling** | fixed global N (e.g. 1e6), np = 1,2,4,8 | ms/step, speedup, parallel efficiency | near-linear until comm/halo dominates |
 | **Weak scaling** | fixed N **per rank** (e.g. 2e5), grow np | ms/step ~ flat | flat = comm not growing with np |
 | **Comm fraction** | per-step time split | gather + per-iter forward vs solve | shrinks with N/rank; sets the device-pack payoff |
-| **Ghost fraction** | `num_particles(True)-num_particles(False)` / owned | surface/volume ratio | drops as N/rank grows; drives redundant compute |
+| **Ghost fraction** | `num_ghost()` / owned | surface/volume ratio | drops as N/rank grows; drives redundant compute |
 | **M-knob sweep** | M=1,2,4,8 | ms/step **and** mean‖dist−serial‖ | trade boundary error for fewer exchanges |
-| **Load balance** | per-rank owned count + ms/step | max/mean | ORB split quality; imbalance caps speedup |
+| **Load balance** | per-rank owned count + ms/step | max/mean | weighted-ORB split quality; imbalance caps speedup. Try `rebalance_every=N` |
 
 Record alongside each run: np, N, N/rank, ghost fraction, `gsize` (ORB cell grid), `rcut`,
-`sync_every`, `forward_rotation`, GPU model, MPI build (CUDA-aware?), interconnect (NVLink/PCIe/IB).
+`sync_every`, `forward_rotation`, `rebalance_every`, GPU model, MPI build (CUDA-aware?), interconnect
+(NVLink/PCIe/IB).
 
-A clean scaling story needs the **comm fraction**: instrument `step_mpi` with `cudaEvent`/`MPI_Wtime`
-around (a) gather, (b) the per-iteration forwards, (c) the solver kernels, and reduce-max across ranks.
-That single breakdown tells you whether to spend effort on the device pack (§5.1), load balance, or
-larger blocks.
+A clean scaling story needs the **comm fraction**: instrument `step_mpi` (`Kokkos::Profiling` regions
+or `MPI_Wtime`) around (a) gather, (b) the per-iteration forwards, (c) the solver kernels, and
+reduce-max across ranks. That single breakdown tells you whether to spend effort on the device pack
+(§5.1), load balance, or larger blocks.
 
 ---
 
-## 4. Profiling toolchain
+## 4. Profiling toolchain (CUDA backend)
 
 - **Nsight Systems** (timeline; comm vs compute, H2D/D2H stalls, context serialisation):
   ```bash
@@ -113,70 +124,65 @@ larger blocks.
     nsys profile -t cuda,mpi,nvtx -o nsys_rank_%q{OMPI_COMM_WORLD_RANK} \
     python3 mpi/bench_step.py
   ```
-  Look for: the ~18 synchronous `cudaMemcpy`/step in the host-staged path (each a GPU bubble), MPI
-  wait time, and whether ranks rendezvous in lock-step (over-synchronisation).
-- **Nsight Compute** (`ncu`) — only once comm is hidden; the XPBD kernels (`solve_position_jacobi`,
-  narrowphase, BVH) are the compute targets. Profile a single rank.
-- **NVTX ranges** — wrap gather / forward / solve so they're named on the Nsys timeline (add
-  `nvtxRangePush/Pop` in `step_mpi`, guarded by a build flag).
+  Look for: the synchronous host-staged copies per step (each a GPU bubble), MPI wait time, and whether
+  ranks rendezvous in lock-step (over-synchronisation).
+- **Nsight Compute** (`ncu`) — only once comm is hidden; the XPBD kernels (`dem::solve_position`,
+  narrowphase, the ArborX BVH build/query) are the compute targets. Profile a single rank.
+- **Kokkos profiling** — `KOKKOS_TOOLS_LIBS=<kp_*.so>` (kernel-timer / space-time-stack) attributes
+  time to named kernels (`dem::solve_velocity`, `dem::bp::*`, …) without a vendor tool; the kernels are
+  already labelled. NVTX ranges still show on the Nsys timeline.
 - **MPI**: `OMPI_MCA_pml_base_verbose`, or mpiP/Score-P for message-size/latency histograms. The
   forwards are many small messages — latency-bound — so message **count** matters more than bytes.
-- **Quick host-side breakdown** without external tools: accumulate `std::chrono` around the three
-  phases in `step_mpi` behind an env flag and print rank-0 + reduce-max each N steps.
+- **Quick host-side breakdown** without external tools: accumulate `std::chrono`/`MPI_Wtime` around the
+  gather / per-iter forward / solve phases in `demStepMpi` behind an env flag and print rank-0 +
+  reduce-max each N steps.
 
 ---
 
 ## 5. Optimisation backlog (ranked)
 
-### 5.1 Device-resident pack — IMPLEMENTED (multi-GPU groundwork)
-`src/mpi/device_particle_halo.{cuh,cu}` keeps the forward fully on-device: a **gather kernel** packs
-the (flattened) `sendIdx_` owned records into a contiguous device buffer, MPI transfers it
-**device→device** (CUDA-aware), and the received ghosts land **directly** in the contiguous ghost slab
-`[num_real, num_real+num_ghost)` (no scatter); positions get a per-ghost shift kernel. Driven by
-`tpx::halo::ParticleHalo::flatten()`. Gated on env `TPX_CUDA_AWARE_MPI` in `mpi_forward4`/
-`mpi_forward_positions` (host-staging otherwise). Build demgpu against the CUDA-aware MPI (§1.3) to use
-it.
-
-**Validated** (`mpi/test_device_halo.cu`): device forward is **bit-identical** to the host-staged
-forward (max|d|=0) at np=2/4. **But on the single GPU it is ~2× slower** (host-staged forward4 ~0.10 ms
-vs device-resident ~0.21 ms at np=2): `cuda_ipc` between two processes on the *same* GPU has fixed
-per-transfer overhead that beats the tiny host D2H/H2D + shared-memory MPI for these small messages,
-and there is **no inter-node host-bounce to eliminate on one node**. The payoff is **real
-multi-GPU/multi-node**, where host-staging pays D2H + network + H2D and device pointers go GPU→GPU
-(NVLink / GPUDirect RDMA). So this is groundwork, kept opt-in; re-profile on multi-GPU to see the win.
+### 5.1 Device-resident halo pack
+Keep the owner→ghost forward fully on-device: a gather kernel packs the owned records into a contiguous
+device buffer, MPI transfers it **device→device** (CUDA-aware), and received ghosts land directly in the
+contiguous ghost slab `[num_real, num_real+num_ghost)` (positions get a per-ghost shift kernel). This is
+the Kokkos counterpart of transport-core's device `GridHalo` path; it is **groundwork for real
+multi-GPU/multi-node** — on a single shared GPU the per-transfer overhead beats the tiny host bounce,
+but across NVLink / GPUDirect RDMA it eliminates the D2H + network + H2D round trip. Build against the
+CUDA-aware MPI (§1.3) and gate on `TPX_CUDA_AWARE_MPI`.
 
 ### 5.2 Overlap comm with compute
 Post the ghost forward asynchronously and compute the **interior** (owned particles with no ghost
-neighbour) while the halo is in flight, then apply the boundary. Needs an interior/boundary partition
-of the owned set (particles within `rcut` of the block edge). `GridHalo` already has the
+neighbour) while the halo is in flight, then apply the boundary. Needs an interior/boundary partition of
+the owned set (particles within `rcut` of the block edge). transport-core's `GridHalo` already has the
 overlap-capable `start()/wait()` split to mirror.
 
 ### 5.3 Avoid per-step rebuilds
-The drivers currently build a fresh `Simulation` each step (re-alloc + BVH buffers). Add a
-fixed-capacity sim with a settable **active count** and in-place owned/ghost refresh so migration just
-updates counts. Removes per-step allocation and `mpi_init` re-setup.
+`step_mpi` rebuilds the halo each substep. When the neighbour list is stable (small motion per step),
+skip the `ParticleHalo::build()` and reuse the correspondence for several substeps (rebuild on a
+skin-distance trigger). Saves the build round and the topology recompute.
 
-### 5.4 Persistent halo across substeps
-When the neighbour list is stable (small motion per step), skip `ParticleHalo::build()` and reuse the
-correspondence for several substeps (rebuild on a skin-distance trigger). Saves the build NBX round
-and the topology recompute.
+### 5.4 Load balance
+For evolving packings, sweep `enable_mpi_step(rcut, rebalance_every=N)` (weighted-ORB SoA ownership
+migration via `Sim.rebalance()`): too-frequent rebalancing pays migration cost, too-rare lets imbalance
+cap speedup. Track per-rank owned-count max/mean alongside ms/step.
 
 ### 5.5 Bigger blocks / fewer ranks per GPU
-Ghost (surface) cost scales as N^(2/3); larger blocks amortise comm. One fat rank per GPU beats many
-thin ones. Tune `gsize` so ORB blocks are compact (low surface/volume).
+Ghost (surface) cost scales as $N^{2/3}$; larger blocks amortise comm. One fat rank per GPU beats many
+thin ones. Tune `gsize` so the ORB blocks are compact (low surface/volume).
 
 ---
 
 ## 6. Correctness caveats on multi-GPU
 
-- **Periodicity needs ≥2 ranks per periodic axis.** A rank never ghosts to itself, so a single rank on
-  a periodic axis loses the wrap. `validate_exact.py` is deliberately non-periodic (floor + gravity)
-  so ghosts arise only at the inter-rank split. For periodic validation, decompose the periodic
-  axis across ≥2 ranks and compare aggregate observables (§ `verify_distributed.py`).
-- **Bit-exactness is not expected** even when physics matches: Jacobi accumulates contact deltas with
-  atomic adds whose order differs between the serial (all-N) and distributed (per-block) contact
-  lists. Compare to ~1e-3 per-particle and to tight tolerance on aggregate observables.
+- **Periodicity needs ≥2 ranks per *decomposed* periodic axis.** A rank never ghosts to itself for the
+  cross-rank wrap; undecomposed periodic axes use the local periodic self-ghosts instead.
+  `validate_exact.py` is deliberately non-periodic (floor + gravity) so ghosts arise only at the
+  inter-rank split. For periodic validation, decompose the periodic axis across ≥2 ranks and compare
+  aggregate observables (`verify_distributed.py`).
+- **Bit-exactness is not expected** at np>1 even when physics matches: Jacobi accumulates contact deltas
+  with atomic adds whose order differs between the serial (all-N) and distributed (per-block) contact
+  lists. Compare to ~1e-3 per-particle and to tight tolerance on aggregate observables. np=1 (0 ghosts)
+  is bit-exact to the single-rank step.
 - **`sync_every>1` is an approximation** (boundary error grows with M); only `M=1` is EXACT.
-- Re-run the full suite (`validate_exact.py` np=1/2/4 + `verify_distributed.py`) after any change to
-  `step_mpi`, the gather, or `ParticleHalo`.
-```
+- Re-run the suite (`tests/kokkos_mpi` np=1,2,4 + the Python drivers) after any change to `demStepMpi`,
+  the gather, or the transport-core `ParticleHalo`.
