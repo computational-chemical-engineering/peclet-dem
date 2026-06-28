@@ -49,17 +49,17 @@ NB_MODULE(dem, m) {
   m.attr("__doc__") = "DEM-GPU (Kokkos + ArborX): portable XPBD granular dynamics";
 
   if (!Kokkos::is_initialized()) Kokkos::initialize();
-  // finalize() releases every live Simulation's Kokkos Views then finalizes Kokkos, for deterministic
-  // teardown while the GPU driver is still up. We do NOT register it with atexit: a Simulation (or a
-  // returned array's owning capsule) can outlive the hook, and finalizing first aborts ("deallocated
-  // after Kokkos::finalize"). Leaving Kokkos initialized until process teardown is benign; callers who
-  // want deterministic GPU teardown call dem.finalize() explicitly. Matches transport-core's tpx_amr.
-  m.def("finalize",
-        []() {
-          KokkosSim::releaseAll();
-          if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
-        },
-        "Release all live Simulations and finalize Kokkos (deterministic teardown).");
+  // Teardown order matters on CUDA: releaseAll() drops every live Simulation's Views FIRST (so none
+  // outlive finalize -> no "deallocated after Kokkos::finalize"), THEN Kokkos::finalize() runs from a
+  // Python atexit hook while the CUDA driver is still up (so no cudaErrorCudartUnloading). Doing only
+  // one of the two aborts on CUDA. Returned arrays are backed by host std::vectors (no device Views).
+  auto shutdown = []() {
+    KokkosSim::releaseAll();
+    if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
+  };
+  m.def("finalize", shutdown,
+        "Release all live Simulations and finalize Kokkos (deterministic teardown; also run at exit).");
+  nb::module_::import_("atexit").attr("register")(nb::cpp_function(shutdown));
   m.attr("execution_space") = nb::str(Kokkos::DefaultExecutionSpace::name());
 
   nb::class_<KokkosSim>(m, "Simulation")

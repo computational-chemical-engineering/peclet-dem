@@ -36,8 +36,9 @@ if(NOT EXISTS "${TPX_INCLUDE}/tpx/python/ndarray_interop.hpp")
 endif()
 
 # NB_STATIC: bundle nanobind's runtime into the module; the Kokkos device path is routed by the
-# launch compiler regardless.
-nanobind_add_module(dem NB_STATIC src/dem_bindings.cpp)
+# launch compiler regardless. NOMINSIZE: nanobind's default -Os is rejected by nvcc ("'s': expected a
+# number") since Kokkos device sources compile as CXX through the launch compiler.
+nanobind_add_module(dem NB_STATIC NOMINSIZE src/dem_bindings.cpp)
 target_include_directories(dem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${TPX_INCLUDE})
 target_link_libraries(dem PRIVATE ArborX::ArborX Kokkos::kokkos)
 
