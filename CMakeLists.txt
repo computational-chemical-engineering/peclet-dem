@@ -6,9 +6,8 @@ project(dem LANGUAGES CXX)
 # bootstrapped install prefix (../extern/install/<backend>, built once by ../tools/bootstrap_deps.sh -- a
 # HARD build dependency). With nvcc, put it on PATH (export PATH=/usr/local/cuda-13.2/bin:$PATH).
 #
-# Build (single-rank Python module):
-#   cmake -S . -B build \
-#     -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda;$(python -m pybind11 --cmakedir)"
+# Build (single-rank Python module); nanobind is found via the active interpreter (SuiteNanobind):
+#   cmake -S . -B build -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda"
 #   cmake --build build -j        ->  build/dem.*.so
 #
 # Multi-rank: -DDEM_MPI=ON links MPI + exposes init_mpi/enable_mpi_step/step_mpi in the module; the
@@ -24,22 +23,27 @@ option(DEM_MPI "Build the dem module with the distributed (MPI) step exposed" OF
 
 find_package(Kokkos CONFIG REQUIRED)
 find_package(ArborX CONFIG REQUIRED)
-find_package(pybind11 CONFIG REQUIRED)
 message(STATUS "dem: Kokkos ${Kokkos_VERSION} (${Kokkos_DEVICES}), ArborX ${ArborX_VERSION}")
 
-# NO_EXTRAS: pybind LTO does not mix with the nvcc launch-compiler objects.
-pybind11_add_module(dem NO_EXTRAS src/dem_bindings.cpp)
-target_include_directories(dem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# nanobind (shared suite helper) + transport-core's header-only View<->ndarray zero-copy bridge
+# (tpx/python/ndarray_interop.hpp), used by the binding regardless of the MPI option.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
+include(SuiteNanobind)
+suite_require_nanobind()
+set(TPX_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../transport-core/include")
+if(NOT EXISTS "${TPX_INCLUDE}/tpx/python/ndarray_interop.hpp")
+  message(FATAL_ERROR "transport-core not found at ${TPX_INCLUDE} (clone it as a sibling repo)")
+endif()
+
+# NB_STATIC: bundle nanobind's runtime into the module; the Kokkos device path is routed by the
+# launch compiler regardless.
+nanobind_add_module(dem NB_STATIC src/dem_bindings.cpp)
+target_include_directories(dem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${TPX_INCLUDE})
 target_link_libraries(dem PRIVATE ArborX::ArborX Kokkos::kokkos)
 
 if(DEM_MPI)
   find_package(MPI REQUIRED COMPONENTS CXX)
-  set(TPX_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../transport-core/include")
-  if(NOT EXISTS "${TPX_INCLUDE}/tpx/halo/particle_halo_kokkos.hpp")
-    message(FATAL_ERROR "transport-core not found at ${TPX_INCLUDE} (clone it as a sibling repo)")
-  endif()
   target_compile_definitions(dem PRIVATE DEM_MPI=1)
-  target_include_directories(dem PRIVATE ${TPX_INCLUDE})
   target_link_libraries(dem PRIVATE MPI::MPI_CXX)
   message(STATUS "dem: distributed step ENABLED (MPI)")
 endif()

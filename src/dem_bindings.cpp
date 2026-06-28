@@ -1,63 +1,79 @@
 /// @file
-/// @brief pybind11 module `dem` — the Kokkos + ArborX XPBD granular-dynamics simulation.
+/// @brief nanobind module `dem` — the Kokkos + ArborX XPBD granular-dynamics simulation.
 ///
 /// Exposes dem::KokkosSim (the portable Kokkos+ArborX pipeline) with the essential sphere-packing API.
-/// Kokkos is initialized at import and finalized via Python atexit.
-#include <pybind11/numpy.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+/// Kokkos is initialized at import and left initialized for the interpreter's lifetime. Particle
+/// arrays cross the boundary through the shared tpx::python bridge (transport-core): inputs read as
+/// flat C-order buffers, getters move the result into the NumPy array's backing store (no extra copy),
+/// and under a GPU backend the bridge's device path lets CuPy arrays flow in/out zero-copy.
+#include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
+#include <nanobind/stl/optional.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
+#include <nanobind/stl/vector.h>
 
 #include <Kokkos_Core.hpp>
 
-#include <cstring>
+#include <cstdint>
 #include <optional>
 #include <tuple>
+#include <vector>
 
 #ifdef DEM_MPI
 #include <mpi.h>
 #endif
 
 #include "sim.hpp"
+#include "tpx/python/ndarray_interop.hpp"
 
-namespace py = pybind11;
+namespace nb = nanobind;
 using dem::KokkosSim;
 
-static std::vector<float> to_vec(py::array_t<float, py::array::c_style | py::array::forcecast> a) {
-  std::vector<float> v(static_cast<size_t>(a.size()));
-  std::memcpy(v.data(), a.data(), v.size() * sizeof(float));
-  return v;
+// A contiguous numpy array -> flat C-order host vector (the bridge handles host copy / device wrap).
+static std::vector<float> to_vec(nb::ndarray<float, nb::c_contig> a) {
+  return tpx::python::ndarray_to_vector<float>(nb::ndarray<>(a));
 }
 
-PYBIND11_MODULE(dem, m) {
-  m.doc() = "DEM-GPU (Kokkos + ArborX): portable XPBD granular dynamics";
+// A flat C-order vector -> (N,cols) numpy array, moved into the array's backing store (no extra copy).
+static nb::ndarray<nb::numpy, float> rows(std::vector<float>&& v, int cols) {
+  const std::size_t n = v.size() / static_cast<std::size_t>(cols);
+  return tpx::python::vector_to_ndarray(std::move(v), {n, (std::size_t)cols}, {(std::int64_t)cols, 1});
+}
+static nb::ndarray<nb::numpy, float> flat(std::vector<float>&& v) {
+  const std::size_t n = v.size();
+  return tpx::python::vector_to_ndarray(std::move(v), {n}, {1});
+}
+
+NB_MODULE(dem, m) {
+  m.attr("__doc__") = "DEM-GPU (Kokkos + ArborX): portable XPBD granular dynamics";
 
   if (!Kokkos::is_initialized()) Kokkos::initialize();
-  // Kokkos lifetime: finalize via Python atexit so Kokkos shuts down while the CUDA driver is still
-  // up (avoids cudaErrorCudartUnloading), but the caller must release Simulation objects (their
-  // Kokkos Views) BEFORE interpreter exit — `del sim; gc.collect()` — or use finalize() explicitly,
-  // otherwise a View would be freed after finalize. m.finalize() exposes it for deterministic teardown.
-  // Release every live Simulation's Kokkos Views, THEN finalize (so callers need not del+gc manually).
-  auto shutdown = []() {
-    KokkosSim::releaseAll();
-    if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
-  };
-  m.def("finalize", shutdown,
-        "Release all live Simulations and finalize Kokkos (deterministic teardown; otherwise done at exit).");
-  py::module_::import("atexit").attr("register")(py::cpp_function(shutdown));
-  m.attr("execution_space") = py::str(Kokkos::DefaultExecutionSpace::name());
+  // finalize() releases every live Simulation's Kokkos Views then finalizes Kokkos, for deterministic
+  // teardown while the GPU driver is still up. We do NOT register it with atexit: a Simulation (or a
+  // returned array's owning capsule) can outlive the hook, and finalizing first aborts ("deallocated
+  // after Kokkos::finalize"). Leaving Kokkos initialized until process teardown is benign; callers who
+  // want deterministic GPU teardown call dem.finalize() explicitly. Matches transport-core's tpx_amr.
+  m.def("finalize",
+        []() {
+          KokkosSim::releaseAll();
+          if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
+        },
+        "Release all live Simulations and finalize Kokkos (deterministic teardown).");
+  m.attr("execution_space") = nb::str(Kokkos::DefaultExecutionSpace::name());
 
-  py::class_<KokkosSim>(m, "Simulation")
-      .def(py::init<int>(), py::arg("capacity"))
-      .def("set_sphere_shape", &KokkosSim::setSphereShape, py::arg("radius"), "Use a uniform sphere of the given radius for all particles.")
-      .def("initialize_shape", &KokkosSim::initializeShape, py::arg("shape_type"),
-           py::arg("radius"), py::arg("height") = 0.0f, py::arg("thickness") = 0.0f,
+  nb::class_<KokkosSim>(m, "Simulation")
+      .def(nb::init<int>(), nb::arg("capacity"))
+      .def("set_sphere_shape", &KokkosSim::setSphereShape, nb::arg("radius"), "Use a uniform sphere of the given radius for all particles.")
+      .def("initialize_shape", &KokkosSim::initializeShape, nb::arg("shape_type"),
+           nb::arg("radius"), nb::arg("height") = 0.0f, nb::arg("thickness") = 0.0f,
            "Select the particle shape (sphere/cylinder/ring/...) and its dimensions.")
       // CUDA-API alias: initialize(shape_type, radius, height, thickness).
-      .def("initialize", &KokkosSim::initializeShape, py::arg("shape_type"),
-           py::arg("radius") = 0.5f, py::arg("height") = 2.0f, py::arg("thickness") = 0.0f,
+      .def("initialize", &KokkosSim::initializeShape, nb::arg("shape_type"),
+           nb::arg("radius") = 0.5f, nb::arg("height") = 2.0f, nb::arg("thickness") = 0.0f,
            "CUDA-API alias for initialize_shape.")
-      .def("set_domain", &KokkosSim::setDomain, py::arg("lx"), py::arg("ly"), py::arg("lz"),
-           py::arg("px") = true, py::arg("py") = true, py::arg("pz") = false,
+      .def("set_domain", &KokkosSim::setDomain, nb::arg("lx"), nb::arg("ly"), nb::arg("lz"),
+           nb::arg("px") = true, nb::arg("py") = true, nb::arg("pz") = false,
            "Set the box size (lx,ly,lz) and per-axis periodicity.")
       // CUDA-API overload: set_domain(min, max) tuples (arbitrary origin); keeps current periodicity.
       .def("set_domain",
@@ -65,20 +81,20 @@ PYBIND11_MODULE(dem, m) {
              s.setDomainMinMax(dem::F3{std::get<0>(mn), std::get<1>(mn), std::get<2>(mn)},
                                dem::F3{std::get<0>(mx), std::get<1>(mx), std::get<2>(mx)});
            },
-           py::arg("min"), py::arg("max"),
+           nb::arg("min"), nb::arg("max"),
            "Set the domain by (min, max) corner tuples (arbitrary origin); keeps current periodicity.")
-      .def("enable_periodicity", &KokkosSim::enablePeriodicity, py::arg("x"), py::arg("y"), py::arg("z"), "Enable periodic boundaries per axis (x, y, z).")
+      .def("enable_periodicity", &KokkosSim::enablePeriodicity, nb::arg("x"), nb::arg("y"), nb::arg("z"), "Enable periodic boundaries per axis (x, y, z).")
       .def("get_domain_min", &KokkosSim::getDomainMin, "Return the domain minimum corner (x, y, z).")
       .def("get_domain_max", &KokkosSim::getDomainMax, "Return the domain maximum corner (x, y, z).")
       .def("set_gravity", &KokkosSim::setGravity, "Set the gravitational acceleration vector (gx, gy, gz).")
       .def("set_thermostat", &KokkosSim::setThermostat,
-           py::arg("temperature"), py::arg("tau"), py::arg("kB") = 1.0f,
+           nb::arg("temperature"), nb::arg("tau"), nb::arg("kB") = 1.0f,
            "Enable a Berendsen-style velocity thermostat (target temperature, coupling time tau).")
-      .def("set_solver_iterations", &KokkosSim::setSolverIterations, py::arg("pos"), py::arg("vel"), "Set the XPBD position- and velocity-solve iteration counts.")
+      .def("set_solver_iterations", &KokkosSim::setSolverIterations, nb::arg("pos"), nb::arg("vel"), "Set the XPBD position- and velocity-solve iteration counts.")
       .def("set_global_scale", &KokkosSim::setGlobalScale, "Set a global length scale applied to all particles.")
       .def("set_dt", &KokkosSim::setDt, "Set the time step dt.")
       .def("set_material_params", &KokkosSim::setMaterialParams,
-           py::arg("restitution_normal"), py::arg("restitution_tangent") = 0.0f, py::arg("friction") = 0.0f,
+           nb::arg("restitution_normal"), nb::arg("restitution_tangent") = 0.0f, nb::arg("friction") = 0.0f,
            "Set normal/tangential restitution and the Coulomb friction coefficient.")
       .def("add_plane", &KokkosSim::addPlane, "Add a boundary wall plane (px,py,pz, nx,ny,nz).")
       // CUDA-API overload: add_plane(point, normal) as 3-sequences.
@@ -87,15 +103,14 @@ PYBIND11_MODULE(dem, m) {
              s.addPlane(std::get<0>(p), std::get<1>(p), std::get<2>(p),
                         std::get<0>(n), std::get<1>(n), std::get<2>(n));
            },
-           py::arg("point"), py::arg("normal"),
+           nb::arg("point"), nb::arg("normal"),
            "Add a boundary wall plane from a point and a normal (3-sequences).")
       // Accepts (N,3) or (N,4) like CUDA set_positions; column 3 (if present) is inv_mass (w==0 -> 1.0).
       .def("set_positions",
-           [](KokkosSim& s, py::array_t<float, py::array::c_style | py::array::forcecast> a) {
-             auto b = a.request();
-             if (b.ndim == 2 && (b.shape[1] == 3 || b.shape[1] == 4)) {
-               const int n = (int)b.shape[0], k = (int)b.shape[1];
-               const float* p = static_cast<const float*>(b.ptr);
+           [](KokkosSim& s, nb::ndarray<float, nb::c_contig> a) {
+             if (a.ndim() == 2 && (a.shape(1) == 3 || a.shape(1) == 4)) {
+               const int n = (int)a.shape(0), k = (int)a.shape(1);
+               const float* p = static_cast<const float*>(a.data());
                std::vector<float> xyz((size_t)n * 3), im;
                const bool hasMass = (k == 4);
                if (hasMass) im.resize(n);
@@ -110,51 +125,39 @@ PYBIND11_MODULE(dem, m) {
              }
            },
            "Set particle positions from an (N,3) array, or (N,4) where column 3 is inverse mass.")
-      .def("set_velocities", [](KokkosSim& s, py::array_t<float> a) { s.setVelocities(to_vec(a)); }, "Set particle velocities from an (N,3) array.")
-      .def("set_quaternions", [](KokkosSim& s, py::array_t<float> a) { s.setQuaternions(to_vec(a)); }, "Set particle orientation quaternions from an (N,4) array.")
-      .def("set_angular_velocities", [](KokkosSim& s, py::array_t<float> a) { s.setAngularVelocities(to_vec(a)); }, "Set particle angular velocities from an (N,3) array.")
-      .def("set_inv_inertia", [](KokkosSim& s, py::array_t<float> a) { s.setInvInertia(to_vec(a)); }, "Set per-particle inverse inertia from an (N,3) array.")
-      .def("set_inv_mass", [](KokkosSim& s, py::array_t<float> a) { s.setInvMass(to_vec(a)); }, "Set per-particle inverse mass (0 => fixed/immovable).")
-      .def("get_angular_velocities", [](const KokkosSim& s) {
-             auto v = s.getAngularVelocities(); const int n = (int)(v.size()/3);
-             py::array_t<float> o({n,3}); std::memcpy(o.mutable_data(), v.data(), v.size()*sizeof(float)); return o; })
-      .def("get_inv_inertia", [](const KokkosSim& s) {
-             auto v = s.getInvInertia(); const int n = (int)(v.size()/3);
-             py::array_t<float> o({n,3}); std::memcpy(o.mutable_data(), v.data(), v.size()*sizeof(float)); return o; })
+      .def("set_velocities", [](KokkosSim& s, nb::ndarray<float, nb::c_contig> a) { s.setVelocities(to_vec(a)); }, "Set particle velocities from an (N,3) array.")
+      .def("set_quaternions", [](KokkosSim& s, nb::ndarray<float, nb::c_contig> a) { s.setQuaternions(to_vec(a)); }, "Set particle orientation quaternions from an (N,4) array.")
+      .def("set_angular_velocities", [](KokkosSim& s, nb::ndarray<float, nb::c_contig> a) { s.setAngularVelocities(to_vec(a)); }, "Set particle angular velocities from an (N,3) array.")
+      .def("set_inv_inertia", [](KokkosSim& s, nb::ndarray<float, nb::c_contig> a) { s.setInvInertia(to_vec(a)); }, "Set per-particle inverse inertia from an (N,3) array.")
+      .def("set_inv_mass", [](KokkosSim& s, nb::ndarray<float, nb::c_contig> a) { s.setInvMass(to_vec(a)); }, "Set per-particle inverse mass (0 => fixed/immovable).")
+      .def("get_angular_velocities", [](const KokkosSim& s) { return rows(s.getAngularVelocities(), 3); })
+      .def("get_inv_inertia", [](const KokkosSim& s) { return rows(s.getInvInertia(), 3); })
       .def("set_scales_uniform", &KokkosSim::setScalesUniform, "Set a single uniform scale for all particles.")
-      .def("set_scales", [](KokkosSim& s, py::array_t<float> a) { s.setScales(to_vec(a)); }, "Set per-particle scales from an array.")
-      .def("set_growth_params", &KokkosSim::setGrowthParams, py::arg("rate"), py::arg("new_factor") = -1.0f, "Set the particle growth rate and target size factor.")
+      .def("set_scales", [](KokkosSim& s, nb::ndarray<float, nb::c_contig> a) { s.setScales(to_vec(a)); }, "Set per-particle scales from an array.")
+      .def("set_growth_params", &KokkosSim::setGrowthParams, nb::arg("rate"), nb::arg("new_factor") = -1.0f, "Set the particle growth rate and target size factor.")
       .def("get_growth_factor", &KokkosSim::growthFactor, "Return the current particle growth factor.")
       .def("get_growth_rate", &KokkosSim::getGrowthRate, "Return the particle growth rate.")
-      .def("get_masses", [](const KokkosSim& s) {
-             auto v = s.getMasses(); py::array_t<float> o((py::ssize_t)v.size());
-             std::memcpy(o.mutable_data(), v.data(), v.size() * sizeof(float)); return o; })
-      .def("get_positions",
-           [](const KokkosSim& s) {
-             auto v = s.getPositions();
-             const int n = static_cast<int>(v.size() / 3);
-             py::array_t<float> out({n, 3});
-             std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(float));
-             return out;
-           }, "Return particle positions as an (N,3) numpy array.")
-      .def("get_velocities", [](const KokkosSim& s) {
-             auto v = s.getVelocities(); const int n = (int)(v.size() / 3);
-             py::array_t<float> out({n, 3}); std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(float)); return out; },
-             "Return particle velocities as an (N,3) numpy array.")
-      .def("get_quaternions", [](const KokkosSim& s) {
-             auto v = s.getQuaternions(); const int n = (int)(v.size() / 4);
-             py::array_t<float> out({n, 4}); std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(float)); return out; },
-             "Return particle orientation quaternions as an (N,4) numpy array.")
-      .def("get_scales", [](const KokkosSim& s) {
-             auto v = s.getScales(); py::array_t<float> out((py::ssize_t)v.size());
-             std::memcpy(out.mutable_data(), v.data(), v.size() * sizeof(float)); return out; },
-             "Return per-particle scales as a numpy array.")
-      .def("step", &KokkosSim::step, py::arg("dt") = 0.0f, "Advance the simulation one step (dt=0 uses the configured time step).")
-      .def("get_sdf_grid", [](KokkosSim& s, std::tuple<int, int, int> res) {
-             auto [rx, ry, rz] = res; auto g = s.getSdfGrid(rx, ry, rz);
-             return py::array_t<float>({rx, ry, rz}, g.data()); }, py::arg("resolution"),
+      .def("get_masses", [](const KokkosSim& s) { return flat(s.getMasses()); })
+      .def("get_positions", [](const KokkosSim& s) { return rows(s.getPositions(), 3); },
+           "Return particle positions as an (N,3) numpy array.")
+      .def("get_velocities", [](const KokkosSim& s) { return rows(s.getVelocities(), 3); },
+           "Return particle velocities as an (N,3) numpy array.")
+      .def("get_quaternions", [](const KokkosSim& s) { return rows(s.getQuaternions(), 4); },
+           "Return particle orientation quaternions as an (N,4) numpy array.")
+      .def("get_scales", [](const KokkosSim& s) { return flat(s.getScales()); },
+           "Return per-particle scales as a numpy array.")
+      .def("step", &KokkosSim::step, nb::arg("dt") = 0.0f, "Advance the simulation one step (dt=0 uses the configured time step).")
+      .def("get_sdf_grid",
+           [](KokkosSim& s, std::tuple<int, int, int> res) {
+             auto [rx, ry, rz] = res;
+             // C-order (rx,ry,rz) float array, matching the prior py::array_t<float>({rx,ry,rz}, ...).
+             return tpx::python::vector_to_ndarray(s.getSdfGrid(rx, ry, rz),
+                                                   {(std::size_t)rx, (std::size_t)ry, (std::size_t)rz},
+                                                   {(std::int64_t)ry * rz, (std::int64_t)rz, 1});
+           },
+           nb::arg("resolution"),
            "Reconstruct a packed-bed SDF on a (rx,ry,rz) grid (the get_sdf_grid pipeline for CFD).")
-      .def("write_vtp", &KokkosSim::writeVtp, py::arg("filename"), "Write particle state to a VTP file (ParaView/Ovito).")
+      .def("write_vtp", &KokkosSim::writeVtp, nb::arg("filename"), "Write particle state to a VTP file (ParaView/Ovito).")
       .def("num_particles", &KokkosSim::numParticles, "Return the number of particles.")
       .def("num_contacts", &KokkosSim::numContacts, "Return the number of broad-phase contacts.")
       .def("num_manifolds", &KokkosSim::numManifolds, "Return the number of contact manifolds.")
@@ -164,20 +167,23 @@ PYBIND11_MODULE(dem, m) {
       .def("get_num_manifolds", &KokkosSim::numManifolds)      // CUDA-API alias
       .def("get_max_overlap", &KokkosSim::maxOverlap)          // CUDA-API alias
       .def("compute_overlaps", &KokkosSim::computeOverlaps, "Recompute particle overlaps.")
-      .def("export_lammps", &KokkosSim::exportLammps, py::arg("filename"), py::arg("step"), "Export particle state to a LAMMPS dump file.")
+      .def("export_lammps", &KokkosSim::exportLammps, nb::arg("filename"), nb::arg("step"), "Export particle state to a LAMMPS dump file.")
       .def("export_sdf",
            [](KokkosSim& s, const std::string& filename, std::tuple<int, int, int> res) {
              auto [rx, ry, rz] = res; s.exportSdf(filename, rx, ry, rz);
            },
-           py::arg("filename"), py::arg("resolution"),
+           nb::arg("filename"), nb::arg("resolution"),
            "Reconstruct and write the packed-bed SDF on a (rx,ry,rz) grid to a VTI file.")
-      .def("get_profiling_info", [](KokkosSim& s) {
-             py::dict d;
+      .def("get_profiling_info",
+           [](KokkosSim& s) {
+             nb::dict d;
              d["num_particles"] = s.numParticles();
              d["num_contacts"] = s.numContacts();
              d["num_manifolds"] = s.numManifolds();
              d["max_overlap"] = s.maxOverlap();
-             return d; }, "Return a dict of particle/contact/manifold counts and the max overlap.")
+             return d;
+           },
+           "Return a dict of particle/contact/manifold counts and the max overlap.")
 #ifdef DEM_MPI
       // Gated MPI step (mirrors the CUDA dem MPI binding); built only with -DDEM_MPI.
       .def("init_mpi",
@@ -188,14 +194,14 @@ PYBIND11_MODULE(dem, m) {
              if (!inited) { int argc = 0; char** argv = nullptr; MPI_Init(&argc, &argv); }
              s.initMpi(origin, size, gsize, periodic, MPI_COMM_WORLD);
            },
-           py::arg("origin"), py::arg("size"), py::arg("gsize"), py::arg("periodic"),
+           nb::arg("origin"), nb::arg("size"), nb::arg("gsize"), nb::arg("periodic"),
            "Set up the ORB block decomposition + transport-core particle halo for the distributed step.")
       .def("enable_mpi_step", &KokkosSim::enableMpiStep,
-           py::arg("rcut"), py::arg("sync_every") = 1, py::arg("forward_rotation") = true,
-           py::arg("rebalance_every") = 0,
+           nb::arg("rcut"), nb::arg("sync_every") = 1, nb::arg("forward_rotation") = true,
+           nb::arg("rebalance_every") = 0,
            "Enable the distributed step: ghost cutoff rcut, sync cadence, rotation forwarding, and the "
            "load-rebalance interval in steps (0 = fixed decomposition).")
-      .def("step_mpi", &KokkosSim::stepMpi, py::arg("nsteps") = 1, "Advance the distributed (MPI) simulation by nsteps with halo exchange.")
+      .def("step_mpi", &KokkosSim::stepMpi, nb::arg("nsteps") = 1, "Advance the distributed (MPI) simulation by nsteps with halo exchange.")
       .def("rebalance", &KokkosSim::rebalance,
            "Re-decompose by particle count and migrate ownership now; returns this rank's new owned count.")
       .def("rank", &KokkosSim::rank, "Return this rank's MPI index.")
@@ -205,10 +211,9 @@ PYBIND11_MODULE(dem, m) {
 
   // CUDA-API parity: module-level export_lammps(filename, step, pos, vel, quats, radii, box_min, box_max, pbc).
   m.def("export_lammps",
-        [](const std::string& filename, int step, py::array_t<float, py::array::c_style | py::array::forcecast> pos,
-           py::array_t<float, py::array::c_style | py::array::forcecast> vel,
-           py::array_t<float, py::array::c_style | py::array::forcecast> quats,
-           py::array_t<float, py::array::c_style | py::array::forcecast> radii,
+        [](const std::string& filename, int step, nb::ndarray<float, nb::c_contig> pos,
+           nb::ndarray<float, nb::c_contig> vel, nb::ndarray<float, nb::c_contig> quats,
+           nb::ndarray<float, nb::c_contig> radii,
            std::optional<std::tuple<float, float, float>> box_min,
            std::optional<std::tuple<float, float, float>> box_max, bool pbc_enabled) {
           float bmin[3], bmax[3]; const float *pmn = nullptr, *pmx = nullptr;
@@ -217,8 +222,8 @@ PYBIND11_MODULE(dem, m) {
           dem::writeLammpsDump(filename, step, to_vec(pos), to_vec(vel), to_vec(quats), to_vec(radii),
                                pmn, pmx, pbc_enabled);
         },
-        py::arg("filename"), py::arg("step"), py::arg("pos"), py::arg("vel"), py::arg("quats"),
-        py::arg("radii"), py::arg("box_min") = py::none(), py::arg("box_max") = py::none(),
-        py::arg("pbc_enabled") = false,
+        nb::arg("filename"), nb::arg("step"), nb::arg("pos"), nb::arg("vel"), nb::arg("quats"),
+        nb::arg("radii"), nb::arg("box_min") = std::nullopt, nb::arg("box_max") = std::nullopt,
+        nb::arg("pbc_enabled") = false,
         "Module-level LAMMPS dump writer from raw arrays (filename, step, pos, vel, quats, radii, box, pbc).");
 }
