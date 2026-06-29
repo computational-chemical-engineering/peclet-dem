@@ -13,6 +13,8 @@
 #include <cmath>
 #include <vector>
 
+#include "tpx/common/view.hpp"  // tpx::toVector — single-copy device View -> host std::vector (S2a)
+
 #include <cstdio>
 #include <fstream>
 #include <stdexcept>
@@ -73,8 +75,10 @@ inline void demStep(Particles& P) {
                          KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; }); }
   // Collision detection runs on the PREDICTED state (speculative positions/orientations), matching
   // the CUDA solver — the position solve then corrects posPred against these contacts.
-  findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount);
-  const int np = readInt(P.pairCount);
+  // findCollisionsArborX already fences + reads the pair count back to host; reuse its return value
+  // rather than a second deep_copy of the same P.pairCount scalar (G2).
+  const int np =
+      findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount);
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
@@ -199,8 +203,10 @@ inline void demStepMpi(Particles& P, KokkosParticleHalo& halo, double rcut, int 
                          KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; }); }
 
   // 3. Broad/narrow phase + manifold reduction over owned + ghosts.
-  findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount);
-  const int np = readInt(P.pairCount);
+  // findCollisionsArborX already fences + reads the pair count back to host; reuse its return value
+  // rather than a second deep_copy of the same P.pairCount scalar (G2).
+  const int np =
+      findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount);
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
@@ -430,16 +436,10 @@ class KokkosSim {
     Kokkos::deep_copy(P_.invMass, h);
   }
   std::vector<float> getAngularVelocities() const {
-    auto w = Kokkos::create_mirror_view(P_.angVel); Kokkos::deep_copy(w, P_.angVel);
-    std::vector<float> out((size_t)P_.numReal * 3);
-    for (int i = 0; i < P_.numReal; ++i) { out[3*i]=w(i,0); out[3*i+1]=w(i,1); out[3*i+2]=w(i,2); }
-    return out;
+    return tpx::toVector(Kokkos::subview(P_.angVel, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getInvInertia() const {
-    auto ii = Kokkos::create_mirror_view(P_.invInertia); Kokkos::deep_copy(ii, P_.invInertia);
-    std::vector<float> out((size_t)P_.numReal * 3);
-    for (int i = 0; i < P_.numReal; ++i) { out[3*i]=ii(i,0); out[3*i+1]=ii(i,1); out[3*i+2]=ii(i,2); }
-    return out;
+    return tpx::toVector(Kokkos::subview(P_.invInertia, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   // growth: factor *= exp(rate*dt) per step (capped at 1); new_factor<0 keeps/initialises (0.01 if inactive).
   void setGrowthParams(float rate, float new_factor) {
@@ -459,27 +459,16 @@ class KokkosSim {
   }
 
   std::vector<float> getPositions() const {
-    auto pos = Kokkos::create_mirror_view(P_.pos);
-    Kokkos::deep_copy(pos, P_.pos);
-    std::vector<float> out(static_cast<size_t>(P_.numReal) * 3);
-    for (int i = 0; i < P_.numReal; ++i) { out[3*i]=pos(i,0); out[3*i+1]=pos(i,1); out[3*i+2]=pos(i,2); }
-    return out;
+    return tpx::toVector(Kokkos::subview(P_.pos, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getVelocities() const {
-    auto v = Kokkos::create_mirror_view(P_.vel); Kokkos::deep_copy(v, P_.vel);
-    std::vector<float> out((size_t)P_.numReal * 3);
-    for (int i = 0; i < P_.numReal; ++i) { out[3*i]=v(i,0); out[3*i+1]=v(i,1); out[3*i+2]=v(i,2); }
-    return out;
+    return tpx::toVector(Kokkos::subview(P_.vel, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getQuaternions() const {
-    auto q = Kokkos::create_mirror_view(P_.quat); Kokkos::deep_copy(q, P_.quat);
-    std::vector<float> out((size_t)P_.numReal * 4);
-    for (int i = 0; i < P_.numReal; ++i) { out[4*i]=q(i,0); out[4*i+1]=q(i,1); out[4*i+2]=q(i,2); out[4*i+3]=q(i,3); }
-    return out;
+    return tpx::toVector(Kokkos::subview(P_.quat, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getScales() const {
-    auto s = Kokkos::create_mirror_view(P_.scale); Kokkos::deep_copy(s, P_.scale);
-    return std::vector<float>(s.data(), s.data() + P_.numReal);
+    return tpx::toVector(Kokkos::subview(P_.scale, Kokkos::make_pair(0, P_.numReal)));
   }
 
   // One XPBD substep (CUDA Simulation::step(dt) semantics): dt>0 sets the timestep; dt==0 is a
