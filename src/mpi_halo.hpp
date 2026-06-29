@@ -154,43 +154,76 @@ class KokkosParticleHalo {
   int rank() const { return rank_; }
   int numGhost() const { return numGhost_; }
 
+  /// Verlet-skin ghost reuse (D2): build the owner↔ghost topology with a band of `rcut + skin` and
+  /// REUSE it across gather() calls until an owned particle has moved more than `skin` since the last
+  /// build — only then download positions + rebuild the host topology + re-init the device halo. The
+  /// per-substep forward exchange (the actual ghost-state move) always runs. `skin == 0` (the default)
+  /// rebuilds every call — bit-identical to the original behaviour. A larger skin trades a thicker
+  /// ghost band (more forwarded ghosts, more SoA capacity) for fewer host rebuilds + position D2Hs.
+  void setVerletSkin(float skin) { verletSkin_ = skin < 0.0f ? 0.0f : skin; }
+  float verletSkin() const { return verletSkin_; }
+  /// Number of topology rebuilds vs total gather() calls since construction (for benchmarking/tests).
+  long numRebuilds() const { return nRebuild_; }
+  long numGathers() const { return nGather_; }
+
   // Rebuild the owner<->ghost correspondence over the current owned positions and populate the ghost
   // slots [numReal, numReal+numGhost) with the owners' full forwarded state. Sets P.numParticles.
   // Returns numReal+numGhost. Faithful port of Simulation::mpi_gather_ghosts.
   int gather(Particles& P, double rcut) {
     const int no = P.numReal;
+    ++nGather_;
+
+    // Decide whether to rebuild the owner↔ghost topology or reuse the cached one (Verlet skin, D2). A
+    // rebuild is forced when reuse is off (skin==0), on the first gather, when the owned count changed
+    // (a migration happened ⇒ topology invalid), or when an owned particle has displaced ≥ skin since
+    // the last build (a particle could have entered the rcut band without being in the rcut+skin list).
+    bool rebuild = (verletSkin_ <= 0.0f) || !haveTopo_ || (no != lastNumReal_);
+    if (!rebuild && maxOwnedDisplacement(P.pos, no) >= verletSkin_) rebuild = true;
     numReal_ = no;
 
-    // (1) download owned positions, (re)build the host halo topology, capture it on device.
-    auto hpos = Kokkos::create_mirror_view(P.pos);
-    Kokkos::deep_copy(hpos, P.pos);
-    std::vector<tpx::Vec<3>> pv(static_cast<std::size_t>(no));
-    for (int i = 0; i < no; ++i) pv[i] = tpx::Vec<3>{hpos(i, 0), hpos(i, 1), hpos(i, 2)};
-    // includePeriodicSelf: a rank that owns a full (undecomposed) periodic axis -- a "x1" ORB axis
-    // (e.g. z of a 2x2x1 layout) or np=1 -- is its own periodic image on that axis, so the periodic
-    // neighbours are local self-ghosts the cross-rank exchange never makes. This supplies them.
-    halo_.build(pv, rcut, /*includePeriodicSelf=*/true);
-    dev_.init(halo_);
-    const int ng = static_cast<int>(halo_.numGhost());
-    // The halo topology (forward / device self-gather) writes ALL ng ghost slots [no, no+ng); the
-    // Particles SoA must have room for them. Silently truncating ng here would leave the halo writing
-    // past the truncated count -> out-of-bounds SoA writes (memory corruption, not a clean drop). So
-    // require adequate capacity and fail loudly instead. Size Simulation capacity for the worst-case
-    // ghost band (a fully periodic box at rcut needs a thick boundary layer of ghosts).
-    if (no + ng > P.capacity)
-      throw std::runtime_error(
-          "KokkosParticleHalo::gather: ghost overflow -- need capacity >= " + std::to_string(no + ng) +
-          " (numReal=" + std::to_string(no) + " + numGhost=" + std::to_string(ng) + "), have " +
-          std::to_string(P.capacity) + "; increase the Simulation capacity.");
-    numGhost_ = ng;
-    P.numParticles = no + ng;
+    if (rebuild) {
+      ++nRebuild_;
+      const double band = rcut + static_cast<double>(verletSkin_);
+      // (1) download owned positions, (re)build the host halo topology, capture it on device.
+      auto hpos = Kokkos::create_mirror_view(P.pos);
+      Kokkos::deep_copy(hpos, P.pos);
+      std::vector<tpx::Vec<3>> pv(static_cast<std::size_t>(no));
+      for (int i = 0; i < no; ++i) pv[i] = tpx::Vec<3>{hpos(i, 0), hpos(i, 1), hpos(i, 2)};
+      // includePeriodicSelf: a rank that owns a full (undecomposed) periodic axis -- a "x1" ORB axis
+      // (e.g. z of a 2x2x1 layout) or np=1 -- is its own periodic image on that axis, so the periodic
+      // neighbours are local self-ghosts the cross-rank exchange never makes. This supplies them.
+      halo_.build(pv, band, /*includePeriodicSelf=*/true);
+      dev_.init(halo_);
+      const int ng = static_cast<int>(halo_.numGhost());
+      // The halo topology (forward / device self-gather) writes ALL ng ghost slots [no, no+ng); the
+      // Particles SoA must have room for them. Silently truncating ng here would leave the halo writing
+      // past the truncated count -> out-of-bounds SoA writes (memory corruption, not a clean drop). So
+      // require adequate capacity and fail loudly instead. Size Simulation capacity for the worst-case
+      // ghost band (a fully periodic box at rcut+skin needs a thick boundary layer of ghosts).
+      if (no + ng > P.capacity)
+        throw std::runtime_error(
+            "KokkosParticleHalo::gather: ghost overflow -- need capacity >= " + std::to_string(no + ng) +
+            " (numReal=" + std::to_string(no) + " + numGhost=" + std::to_string(ng) + "), have " +
+            std::to_string(P.capacity) + "; increase the Simulation capacity.");
+      numGhost_ = ng;
+      allocBuffers(no, ng);
+      uploadShift();
+      // Snapshot the owned positions at build time — the reference for the displacement check.
+      if (verletSkin_ > 0.0f) {
+        if (refPos_.extent(0) < static_cast<std::size_t>(no))
+          refPos_ = V3("dem::halo::refPos", static_cast<std::size_t>(P.capacity));
+        Kokkos::deep_copy(Kokkos::subview(refPos_, std::pair<int, int>(0, no), Kokkos::ALL),
+                          Kokkos::subview(P.pos, std::pair<int, int>(0, no), Kokkos::ALL));
+      }
+      haveTopo_ = true;
+      lastNumReal_ = no;
+    }
 
+    const int ng = numGhost_;
+    P.numParticles = no + ng;
     // self-map realIndices for the reals (owner deltas land on themselves); done every step like demStep.
     selfMapReals(P.realIndices, no);
     if (ng == 0) return no;
-
-    allocBuffers(no, ng);
-    uploadShift();
 
     // (2) positions (committed + predicted) with the periodic image shift. d_pos_pred was already
     // advanced by predict_velocity, so it is forwarded too (NOT copied from pos) -- see CUDA comment.
@@ -333,6 +366,22 @@ class KokkosParticleHalo {
     ownedPack_ = tpx::View<MpiGatherPack>("dem::halo::ownedPack", no);
     ghostPack_ = tpx::View<MpiGatherPack>("dem::halo::ghostPack", ng);
   }
+  // Max Euclidean displacement of any owned particle since the last topology build (device reduce +
+  // one scalar read-back) — the Verlet-skin reuse criterion.
+  float maxOwnedDisplacement(const V3& pos, int no) const {
+    if (no <= 0 || refPos_.extent(0) < static_cast<std::size_t>(no)) return 1e30f;
+    float md = 0.0f;
+    V3 p = pos, r = refPos_;
+    Kokkos::parallel_reduce(
+        "dem::halo::maxdisp", Kokkos::RangePolicy<CpExec>(0, no),
+        KOKKOS_LAMBDA(const int i, float& m) {
+          const float dx = p(i, 0) - r(i, 0), dy = p(i, 1) - r(i, 1), dz = p(i, 2) - r(i, 2);
+          const float d = Kokkos::sqrt(dx * dx + dy * dy + dz * dz);
+          if (d > m) m = d;
+        },
+        Kokkos::Max<float>(md));
+    return md;
+  }
   void uploadShift() {
     auto t = halo_.flatten();
     std::vector<F3> hs(t.shift.size());
@@ -344,6 +393,12 @@ class KokkosParticleHalo {
 
   bool inited_ = false;
   int rank_ = 0, numReal_ = 0, numGhost_ = 0;
+  // Verlet-skin reuse state (D2): skin width, the build-time owned positions, and the cache-valid flags.
+  float verletSkin_ = 0.0f;
+  bool haveTopo_ = false;
+  int lastNumReal_ = -1;
+  long nRebuild_ = 0, nGather_ = 0;
+  V3 refPos_;
   MPI_Comm comm_ = MPI_COMM_NULL;
   tpx::decomp::BlockDecomposer<3> dec_;
   tpx::halo::ParticleMigrator<3> mig_;

@@ -144,8 +144,13 @@ int main(int argc, char** argv) {
     configure(dist, scene);
     dist.setPositions(ownedPos);
     dist.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);
-    dist.enableMpiStep(RCUT, /*sync_every=*/1, /*forward_rotation=*/false);  // spheres
+    // Verlet-skin ghost reuse (D2): build the halo topology with a band of RCUT+GS and reuse it across
+    // substeps until a particle moves > GS. The result must still match the rebuild-every-substep
+    // reference (which keeps skin=0 below) — reuse only changes WHEN the topology is rebuilt.
+    dist.enableMpiStep(RCUT, /*sync_every=*/1, /*forward_rotation=*/false, /*rebalance_every=*/0,
+                       /*verlet_skin=*/GS);  // spheres
     dist.stepMpi(STEPS);
+    const long distRebuilds = dist.mpiRebuilds(), distGathers = dist.mpiGathers();
     const std::vector<float> distPos = dist.getPositions();
     const float distOv = dist.maxOverlap();
     int totGhost = 0, myGhost = dist.numGhost();
@@ -206,6 +211,13 @@ int main(int argc, char** argv) {
       std::printf("  [%-8s] np=%d  particles=%d  ghosts(total)=%d  posErr=%.3e (tol %.0e)  overlap dist=%.4e ref=%.4e d=%.2e\n",
                   periodic ? "periodic" : "closed", size, n, totGhost, posErr, posTol, distOv, refOv, ovErr);
     if (!(posErr < posTol) || !(ovErr < 5e-3) || !relaxed) fail = 1;
+    // D2: with a Verlet skin the topology must be reused on at least one substep (fewer rebuilds than
+    // gathers) — otherwise the reuse path is never exercised. STEPS=8 gathers, displacement per substep
+    // ≪ GS in a relaxing pack, so most substeps reuse.
+    if (rank == 0)
+      std::printf("  [%-8s] np=%d  halo rebuilds=%ld / gathers=%ld (Verlet-skin reuse)\n",
+                  periodic ? "periodic" : "closed", size, distRebuilds, distGathers);
+    if (distRebuilds >= distGathers) fail = 1;
   }
   int totalFail = 0;
   MPI_Allreduce(&fail, &totalFail, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);

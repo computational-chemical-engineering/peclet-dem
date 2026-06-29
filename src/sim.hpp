@@ -514,10 +514,16 @@ class KokkosSim {
   // keep the per-rank load even as a packing densifies (0 = never; the partition is then fixed at the
   // initial decomposition, as before). A pure redistribution — the physics result is unchanged.
   void enableMpiStep(double rcut, int sync_every = 1, bool forward_rotation = true,
-                     int rebalance_every = 0) {
+                     int rebalance_every = 0, double verlet_skin = 0.0) {
     mpiRcut_ = rcut; mpiSyncEvery_ = sync_every < 1 ? 1 : sync_every; mpiForwardRotation_ = forward_rotation;
     mpiRebalanceEvery_ = rebalance_every < 0 ? 0 : rebalance_every;
+    // Verlet-skin ghost reuse (D2): rebuild the halo topology only when a particle has moved > skin,
+    // instead of every substep. 0 (default) keeps the exact per-substep rebuild.
+    halo_.setVerletSkin(static_cast<float>(verlet_skin));
   }
+  // Halo rebuild stats (D2): topology rebuilds vs total gather() calls (for benchmarking).
+  long mpiRebuilds() const { return halo_.numRebuilds(); }
+  long mpiGathers() const { return halo_.numGathers(); }
   // Migrate ownership now so each rank holds a near-equal particle count. Safe to call at a step
   // boundary; returns this rank's new owned count. Exposed for manual / adaptive balancing.
   int rebalance() { return halo_.rebalance(P_); }

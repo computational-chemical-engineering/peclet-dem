@@ -198,9 +198,10 @@ NB_MODULE(dem, m) {
            "Set up the ORB block decomposition + transport-core particle halo for the distributed step.")
       .def("enable_mpi_step", &KokkosSim::enableMpiStep,
            nb::arg("rcut"), nb::arg("sync_every") = 1, nb::arg("forward_rotation") = true,
-           nb::arg("rebalance_every") = 0,
-           "Enable the distributed step: ghost cutoff rcut, sync cadence, rotation forwarding, and the "
-           "load-rebalance interval in steps (0 = fixed decomposition).")
+           nb::arg("rebalance_every") = 0, nb::arg("verlet_skin") = 0.0,
+           "Enable the distributed step: ghost cutoff rcut, sync cadence, rotation forwarding, the "
+           "load-rebalance interval in steps (0 = fixed decomposition), and the Verlet ghost-reuse skin "
+           "(0 = rebuild the halo topology every substep; >0 = reuse it until a particle moves > skin).")
       .def("step_mpi", &KokkosSim::stepMpi, nb::arg("nsteps") = 1, "Advance the distributed (MPI) simulation by nsteps with halo exchange.")
       .def("rebalance", &KokkosSim::rebalance,
            "Re-decompose by particle count and migrate ownership now; returns this rank's new owned count.")
