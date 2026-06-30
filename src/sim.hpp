@@ -547,6 +547,11 @@ class KokkosSim {
   }
 
   int numParticles() const { return P_.numReal; }
+  // Live device Views of the owned particle state, for the zero-copy device-array export (H2): the
+  // binding wraps a [0,numReal) subview as a DLPack/__cuda_array_interface__ array (or a NumPy view on
+  // a host backend) referencing this memory — no device->host copy.
+  const V3& positionsView() const { return P_.pos; }
+  const V3& velocitiesView() const { return P_.vel; }
   int numContacts() { return readInt(P_.contactCount); }
   int numManifolds() { return readInt(P_.manifoldCount); }
   float maxOverlap() { float h; Kokkos::deep_copy(h, P_.maxOverlap); return h; }

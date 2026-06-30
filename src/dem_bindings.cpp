@@ -142,6 +142,22 @@ NB_MODULE(dem, m) {
            "Return particle positions as an (N,3) numpy array.")
       .def("get_velocities", [](const KokkosSim& s) { return rows(s.getVelocities(), 3); },
            "Return particle velocities as an (N,3) numpy array.")
+      // Zero-copy device export (H2): the returned (N,3) array REFERENCES the device particle Views —
+      // a NumPy view on a host backend, a DLPack/__cuda_array_interface__ array (consume with
+      // cupy.from_dlpack / torch.from_dlpack) on CUDA/HIP — so a GPU-resident analysis chain never
+      // pays the device->host copy. The array keeps the (ref-counted) View alive.
+      .def("get_positions_device",
+           [](const KokkosSim& s) {
+             return tpx::python::view_to_ndarray(
+                 Kokkos::subview(s.positionsView(), Kokkos::make_pair(0, s.numParticles()), Kokkos::ALL));
+           },
+           "Zero-copy (N,3) device array of positions (NumPy view on host, DLPack/CuPy on GPU).")
+      .def("get_velocities_device",
+           [](const KokkosSim& s) {
+             return tpx::python::view_to_ndarray(
+                 Kokkos::subview(s.velocitiesView(), Kokkos::make_pair(0, s.numParticles()), Kokkos::ALL));
+           },
+           "Zero-copy (N,3) device array of velocities (NumPy view on host, DLPack/CuPy on GPU).")
       .def("get_quaternions", [](const KokkosSim& s) { return rows(s.getQuaternions(), 4); },
            "Return particle orientation quaternions as an (N,4) numpy array.")
       .def("get_scales", [](const KokkosSim& s) { return flat(s.getScales()); },
