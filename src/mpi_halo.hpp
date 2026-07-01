@@ -368,6 +368,8 @@ class ParticleHalo {
   }
   // Max Euclidean displacement of any owned particle since the last topology build (device reduce +
   // one scalar read-back) — the Verlet-skin reuse criterion.
+  // public: nvcc forbids an extended __host__ __device__ (KOKKOS_LAMBDA) lambda inside a private method.
+ public:
   float maxOwnedDisplacement(const V3& pos, int no) const {
     if (no <= 0 || refPos_.extent(0) < static_cast<std::size_t>(no)) return 1e30f;
     float md = 0.0f;
@@ -382,6 +384,8 @@ class ParticleHalo {
         Kokkos::Max<float>(md));
     return md;
   }
+
+ private:
   void uploadShift() {
     auto t = halo_.flatten();
     std::vector<F3> hs(t.shift.size());
