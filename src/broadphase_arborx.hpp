@@ -16,7 +16,7 @@
 
 #include <utility>
 
-namespace dem {
+namespace peclet::dem {
 
 using BpExec = Kokkos::DefaultExecutionSpace;
 using BpMem = BpExec::memory_space;
@@ -38,10 +38,10 @@ inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numRea
   using Box = ArborX::Box<3>;
 
   // AABBs over all particles (these are the BVH primitives).
-  Kokkos::View<Box*, BpMem> boxes(Kokkos::view_alloc(space, "dem::bp::boxes", Kokkos::WithoutInitializing),
+  Kokkos::View<Box*, BpMem> boxes(Kokkos::view_alloc(space, "peclet::dem::bp::boxes", Kokkos::WithoutInitializing),
                                   numParticles);
   Kokkos::parallel_for(
-      "dem::bp::aabb", Kokkos::RangePolicy<BpExec>(space, 0, numParticles),
+      "peclet::dem::bp::aabb", Kokkos::RangePolicy<BpExec>(space, 0, numParticles),
       KOKKOS_LAMBDA(int i) {
         const float b = rad(i) + margin;
         boxes(i) = Box{{pos(i, 0) - b, pos(i, 1) - b, pos(i, 2) - b},
@@ -53,16 +53,16 @@ inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numRea
   // One intersection query per real particle (box of the same half-width).
   using Predicate = decltype(ArborX::intersects(std::declval<Box>()));
   Kokkos::View<Predicate*, BpMem> preds(
-      Kokkos::view_alloc(space, "dem::bp::preds", Kokkos::WithoutInitializing), numReal);
+      Kokkos::view_alloc(space, "peclet::dem::bp::preds", Kokkos::WithoutInitializing), numReal);
   Kokkos::parallel_for(
-      "dem::bp::preds", Kokkos::RangePolicy<BpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::bp::preds", Kokkos::RangePolicy<BpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
         const float b = rad(i) + margin;
         preds(i) = ArborX::intersects(Box{{pos(i, 0) - b, pos(i, 1) - b, pos(i, 2) - b},
                                           {pos(i, 0) + b, pos(i, 1) + b, pos(i, 2) + b}});
       });
 
-  Kokkos::View<typename decltype(tree)::value_type*, BpMem> values("dem::bp::values", 0);
-  Kokkos::View<int*, BpMem> offsets("dem::bp::offsets", 0);
+  Kokkos::View<typename decltype(tree)::value_type*, BpMem> values("peclet::dem::bp::values", 0);
+  Kokkos::View<int*, BpMem> offsets("peclet::dem::bp::offsets", 0);
   tree.query(space, preds, values, offsets);
 
   // Compact the (i, j) results with i<j into the output buffer (matches cuBQL's i<j filter).
@@ -71,7 +71,7 @@ inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numRea
   Kokkos::View<int* [2], BpMem> pairs = outPairs;
   Kokkos::View<int, BpMem> cnt = outCount;
   Kokkos::parallel_for(
-      "dem::bp::emit", Kokkos::RangePolicy<BpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::bp::emit", Kokkos::RangePolicy<BpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
         for (int k = offsets(i); k < offsets(i + 1); ++k) {
           const int j = values(k).index;
           if (i < j) {
@@ -90,6 +90,6 @@ inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numRea
   return h_count;
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_BROADPHASE_ARBORX_HPP

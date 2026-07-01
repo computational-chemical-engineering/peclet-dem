@@ -2,7 +2,7 @@
 /// @brief dem — portable (host) surface-shell point generators for the analytic shapes.
 ///
 /// Faithful copy of shapes/point_sampler.cpp (generate_cylinder_points / generate_box_points), but
-/// emitting dem::F3 instead of CUDA float4 so the Kokkos module can build the point shell without the
+/// emitting peclet::dem::F3 instead of CUDA float4 so the Kokkos module can build the point shell without the
 /// CUDA vector_types.h dependency. The point math (spacing, ceil counts, cos/sin sampling, cap annulus,
 /// box faces incl. edges/corners) is byte-for-byte the same so the generated shells match the CUDA path.
 #ifndef DEM_SHAPES_PORTABLE_HPP
@@ -11,9 +11,9 @@
 #include <cmath>
 #include <vector>
 
-#include "dem_portable.hpp"  // dem::F3
+#include "dem_portable.hpp"  // peclet::dem::F3
 
-namespace dem {
+namespace peclet::dem {
 
 // Surface point shell of a hollow cylinder (outer wall + inner wall if thick + top/bottom annulus
 // caps). Faithful copy of generate_cylinder_points.
@@ -108,6 +108,6 @@ inline std::vector<F3> genBoxShell(float hx, float hy, float hz, float spacing) 
   return points;
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_SHAPES_PORTABLE_HPP

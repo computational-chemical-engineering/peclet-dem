@@ -16,7 +16,7 @@
 #include "integration.hpp"            // Domain, V3/V4/Vf/Vi
 #include "narrowphase.hpp"            // ShapeDesc, PlaneP
 
-namespace dem {
+namespace peclet::dem {
 
 struct Particles {
   // --- per-particle state (size = capacity) ---
@@ -82,6 +82,6 @@ struct Particles {
   Kokkos::View<const float*, CpMem> crad() const { return rad; }
 };
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_PARTICLES_HPP

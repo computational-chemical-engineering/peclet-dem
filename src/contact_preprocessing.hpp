@@ -22,7 +22,7 @@
 
 #include "dem_portable.hpp"  // F4, cross3
 
-namespace dem {
+namespace peclet::dem {
 
 using CpExec = Kokkos::DefaultExecutionSpace;
 using CpMem = CpExec::memory_space;
@@ -114,10 +114,10 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
   }
 
   // 1. Key every contact and seed an identity permutation.
-  Kokkos::View<std::uint64_t*, CpMem> keys(Kokkos::view_alloc(space, "dem::cp::keys", Kokkos::WithoutInitializing), n);
-  Kokkos::View<int*, CpMem> perm(Kokkos::view_alloc(space, "dem::cp::perm", Kokkos::WithoutInitializing), n);
+  Kokkos::View<std::uint64_t*, CpMem> keys(Kokkos::view_alloc(space, "peclet::dem::cp::keys", Kokkos::WithoutInitializing), n);
+  Kokkos::View<int*, CpMem> perm(Kokkos::view_alloc(space, "peclet::dem::cp::perm", Kokkos::WithoutInitializing), n);
   Kokkos::parallel_for(
-      "dem::cp::key", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::cp::key", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
         keys(i) = pairKey(contacts(i));
         perm(i) = i;
       });
@@ -126,10 +126,10 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
   Kokkos::Experimental::sort_by_key(space, keys, perm);
 
   // 3. Segment id per sorted position: inclusive scan of "key changed" minus 1.
-  Kokkos::View<int*, CpMem> segId(Kokkos::view_alloc(space, "dem::cp::segId", Kokkos::WithoutInitializing), n);
+  Kokkos::View<int*, CpMem> segId(Kokkos::view_alloc(space, "peclet::dem::cp::segId", Kokkos::WithoutInitializing), n);
   int numSeg = 0;
   Kokkos::parallel_scan(
-      "dem::cp::segscan", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      "peclet::dem::cp::segscan", Kokkos::RangePolicy<CpExec>(space, 0, n),
       KOKKOS_LAMBDA(int p, int& run, const bool final) {
         const bool isNew = (p == 0) || (keys(p) != keys(p - 1));
         if (isNew) ++run;
@@ -142,7 +142,7 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
   Kokkos::View<int*, CpMem> sid = segId;
   Kokkos::View<ManifoldC*, CpMem> out = outManifolds;
   Kokkos::parallel_for(
-      "dem::cp::init", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int p) {
+      "peclet::dem::cp::init", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int p) {
         const bool leader = (p == 0) || (k(p) != k(p - 1));
         if (leader) {
           ManifoldC m{};
@@ -155,7 +155,7 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
   Kokkos::View<const ContactC*, CpMem> ct = contacts;
   Kokkos::View<int*, CpMem> pm = perm;
   Kokkos::parallel_for(
-      "dem::cp::accum", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int p) {
+      "peclet::dem::cp::accum", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int p) {
         const ManifoldC m = transformContact(ct(pm(p)));
         const int s = sid(p);
         Kokkos::atomic_add(&out(s).num_points, m.num_points);
@@ -181,6 +181,6 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
   return numSeg;
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_CONTACT_PREPROCESSING_HPP

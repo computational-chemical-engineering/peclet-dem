@@ -1,7 +1,7 @@
 /// @file
 /// @brief dem — portable (Kokkos) Simulation facade: the dem flip's host-facing driver.
 ///
-/// Owns a dem::Particles SoA and runs the full XPBD DEM step by composing the ported kernels in the
+/// Owns a peclet::dem::Particles SoA and runs the full XPBD DEM step by composing the ported kernels in the
 /// simulation.cpp step() order. Exposes a small std::vector-based API (binding-agnostic) so a pybind
 /// module can drive it from Python (set/get arrays, step). Sphere shapes + analytic planes for now.
 #ifndef DEM_SIM_HPP
@@ -13,7 +13,7 @@
 #include <cmath>
 #include <vector>
 
-#include "tpx/common/view.hpp"  // tpx::toVector — single-copy device View -> host std::vector (S2a)
+#include "peclet/core/common/view.hpp"  // peclet::core::toVector — single-copy device View -> host std::vector (S2a)
 
 #include <cstdio>
 #include <fstream>
@@ -32,11 +32,11 @@
 #include "solver_position.hpp"
 #include "solver_velocity.hpp"
 
-#ifdef DEM_MPI
-#include "mpi_halo.hpp"  // KokkosParticleHalo (gated; default module never includes it)
+#ifdef PECLET_DEM_MPI
+#include "mpi_halo.hpp"  // ParticleHalo (gated; default module never includes it)
 #endif
 
-namespace dem {
+namespace peclet::dem {
 
 inline int readInt(Kokkos::View<int, CpMem> v) { int h; Kokkos::deep_copy(h, v); return h; }
 
@@ -160,7 +160,7 @@ inline float computeOverlapsKokkos(Particles& P) {
   float h; Kokkos::deep_copy(h, P.maxOverlap); return h;
 }
 
-#ifdef DEM_MPI
+#ifdef PECLET_DEM_MPI
 /// One distributed XPBD DEM substep (faithful port of Simulation::step_mpi). Identical to demStep
 /// EXCEPT: the periodic ghost generation is replaced by a cross-rank gather (halo.gather, ghosts
 /// carrying REAL mass), and the owners refresh their ghost copies (velPred/angVelPred, then
@@ -171,13 +171,13 @@ inline float computeOverlapsKokkos(Particles& P) {
 /// restitution. `forwardRotation`=false (spheres) skips the angular/quaternion forwards.
 ///
 /// PERIODICITY: cross-rank ghosts supply the wrap on DECOMPOSED axes; LOCAL periodic self-ghosts
-/// (KokkosParticleHalo build with includePeriodicSelf) supply it on UNDECOMPOSED periodic axes (a "x1"
+/// (ParticleHalo build with includePeriodicSelf) supply it on UNDECOMPOSED periodic axes (a "x1"
 /// ORB axis, e.g. z of a 2x2x1 layout, or np=1). Correct for any layout, including np=1 fully periodic
 /// (it matches the single-GPU demStep to ~roundoff). CAPACITY: a periodic box needs a thick ghost
 /// boundary layer -- a fully periodic box at this rcut needs ~no + (boundary layer) ghost slots, well
 /// above the no*2 the closed case wants -- so size the Simulation capacity for the worst-case ghost
 /// band; gather() throws on overflow rather than corrupting the SoA.
-inline void demStepMpi(Particles& P, KokkosParticleHalo& halo, double rcut, int syncEvery,
+inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEvery,
                        bool forwardRotation) {
   CpExec space;
   const float margin = 0.1f * P.globalScale;
@@ -256,25 +256,25 @@ inline void demStepMpi(Particles& P, KokkosParticleHalo& halo, double rcut, int 
 
   P.numParticles = P.numReal;  // restore owned-only active count for getters
 }
-#endif  // DEM_MPI
+#endif  // PECLET_DEM_MPI
 
 /// Host-facing facade with std::vector setters/getters (binding-agnostic).
-class KokkosSim {
+class Simulation {
  public:
-  explicit KokkosSim(int capacity) {
+  explicit Simulation(int capacity) {
     registry().push_back(this);
     P_.allocate(capacity, capacity * 64, capacity * 16, /*shapes*/ 1, /*shell*/ 1, /*planes*/ 8);
     // default sphere shape (radius 1) + identity-ish defaults
     setSphereShape(1.0f);
   }
-  ~KokkosSim() { auto& r = registry(); r.erase(std::remove(r.begin(), r.end(), this), r.end()); }
+  ~Simulation() { auto& r = registry(); r.erase(std::remove(r.begin(), r.end(), this), r.end()); }
 
   // Teardown safety: the Particles SoA holds Kokkos Views, so they MUST be freed before Kokkos::finalize
   // (else "deallocated after finalize" aborts). releaseAll() (called from the module's atexit, before
   // finalize) frees every live Sim's Views, so callers need not `del sim; gc.collect()` themselves.
   void releaseViews() { P_ = Particles{}; }
   static void releaseAll() { for (auto* s : registry()) s->releaseViews(); }
-  static std::vector<KokkosSim*>& registry() { static std::vector<KokkosSim*> r; return r; }
+  static std::vector<Simulation*>& registry() { static std::vector<Simulation*> r; return r; }
 
   void setSphereShape(float radius) {
     initializeShape(SPHERE, radius, 0.0f, 0.0f);
@@ -283,7 +283,7 @@ class KokkosSim {
   // Mirror of CUDA Simulation::initialize(shape_type, radius, height, thickness): builds shape 0's
   // descriptor + surface point shell (cylinder/box) and records the per-shape base radius and
   // (uniform-mass=1) inverse inertia applied to every particle by setPositions. shape_type uses the
-  // dem::ShapeKind values (SPHERE=1, HOLLOW_CYLINDER=2, BOX=3).
+  // peclet::dem::ShapeKind values (SPHERE=1, HOLLOW_CYLINDER=2, BOX=3).
   void initializeShape(int shape_type, float radius, float height, float thickness) {
     baseRadius_ = radius;
     F4 params{radius, 0, 0, 0};
@@ -436,10 +436,10 @@ class KokkosSim {
     Kokkos::deep_copy(P_.invMass, h);
   }
   std::vector<float> getAngularVelocities() const {
-    return tpx::toVector(Kokkos::subview(P_.angVel, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
+    return peclet::core::toVector(Kokkos::subview(P_.angVel, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getInvInertia() const {
-    return tpx::toVector(Kokkos::subview(P_.invInertia, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
+    return peclet::core::toVector(Kokkos::subview(P_.invInertia, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   // growth: factor *= exp(rate*dt) per step (capped at 1); new_factor<0 keeps/initialises (0.01 if inactive).
   void setGrowthParams(float rate, float new_factor) {
@@ -459,16 +459,16 @@ class KokkosSim {
   }
 
   std::vector<float> getPositions() const {
-    return tpx::toVector(Kokkos::subview(P_.pos, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
+    return peclet::core::toVector(Kokkos::subview(P_.pos, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getVelocities() const {
-    return tpx::toVector(Kokkos::subview(P_.vel, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
+    return peclet::core::toVector(Kokkos::subview(P_.vel, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getQuaternions() const {
-    return tpx::toVector(Kokkos::subview(P_.quat, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
+    return peclet::core::toVector(Kokkos::subview(P_.quat, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getScales() const {
-    return tpx::toVector(Kokkos::subview(P_.scale, Kokkos::make_pair(0, P_.numReal)));
+    return peclet::core::toVector(Kokkos::subview(P_.scale, Kokkos::make_pair(0, P_.numReal)));
   }
 
   // One XPBD substep (CUDA Simulation::step(dt) semantics): dt>0 sets the timestep; dt==0 is a
@@ -486,7 +486,7 @@ class KokkosSim {
     std::vector<float> radii(P_.numReal);
     for (int i = 0; i < P_.numReal; ++i) radii[i] = sc(i) * P_.globalScale * baseRadius_;
     const bool pbc = P_.domain.periodic_x || P_.domain.periodic_y || P_.domain.periodic_z;
-    dem::writeLammpsDump(filename, step, pos, vel, quat, radii, nullptr, nullptr, pbc);
+    peclet::dem::writeLammpsDump(filename, step, pos, vel, quat, radii, nullptr, nullptr, pbc);
   }
 
   // SDF field over the domain -> ImageData VTI (CUDA Simulation::export_sdf).
@@ -494,10 +494,10 @@ class KokkosSim {
     const std::vector<float> grid = getSdfGrid(rx, ry, rz);
     const float mn[3] = {P_.domain.min.x, P_.domain.min.y, P_.domain.min.z};
     const float mx[3] = {P_.domain.max.x, P_.domain.max.y, P_.domain.max.z};
-    dem::writeSdfVti(filename, grid, rx, ry, rz, mn, mx);
+    peclet::dem::writeSdfVti(filename, grid, rx, ry, rz, mn, mx);
   }
 
-#ifdef DEM_MPI
+#ifdef PECLET_DEM_MPI
   // Block decomposition over the GLOBAL domain (once); the per-block solver stays non-periodic, the
   // halo supplies the periodic wrap. gsize is the ORB cell grid. Mirror of Simulation::mpi_init.
   void initMpi(std::tuple<double, double, double> origin, std::tuple<double, double, double> size,
@@ -537,11 +537,11 @@ class KokkosSim {
   }
   int rank() const { return halo_.rank(); }
   int numGhost() const { return halo_.numGhost(); }
-#endif  // DEM_MPI
+#endif  // PECLET_DEM_MPI
 
   // SDF grid (get_sdf_grid): Eikonal reconstruction over the domain, flat x-fastest, negative inside solid.
   std::vector<float> getSdfGrid(int rx, int ry, int rz) {
-    return dem::generateSdfKokkos(rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal, P_.pos, P_.quat,
+    return peclet::dem::generateSdfKokkos(rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal, P_.pos, P_.quat,
                                   P_.scale, P_.shapeId, P_.shapes, P_.domain.periodic_x, P_.domain.periodic_y,
                                   P_.domain.periodic_z);
   }
@@ -595,8 +595,8 @@ class KokkosSim {
   Particles P_;
   float baseRadius_ = 1.0f;
   F3 defaultInvI_{2.5f, 2.5f, 2.5f};
-#ifdef DEM_MPI
-  KokkosParticleHalo halo_;
+#ifdef PECLET_DEM_MPI
+  ParticleHalo halo_;
   double mpiRcut_ = 0.0;
   int mpiSyncEvery_ = 1;
   bool mpiForwardRotation_ = true;
@@ -605,6 +605,6 @@ class KokkosSim {
 #endif
 };
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_SIM_HPP

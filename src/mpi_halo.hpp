@@ -2,7 +2,7 @@
 /// @brief dem — portable (Kokkos) owner<->ghost particle halo for the distributed XPBD step.
 ///
 /// Kokkos counterpart of src/mpi/mpi_halo.h (MpiParticleHalo): a thin wrapper over transport-core's
-/// tpx::halo::ParticleHaloTopology<3> (host topology, periodic image shift) + ParticleHalo<3>
+/// peclet::core::halo::ParticleHaloTopology<3> (host topology, periodic image shift) + ParticleHalo<3>
 /// (on-device gather/scatter + host-staged MPI). Rebuilt each substep from the owned positions; it
 /// gathers ghost copies of the owners' FULL state into the Particles SoA ghost slots and refreshes
 /// them owner->ghost during the velocity/position solves -- the EXACT distributed scheme (ghosts carry
@@ -10,11 +10,11 @@
 /// locally; ghost deltas are discarded via a self-mapped realIndices).
 ///
 /// Faithful Kokkos port of Simulation::mpi_gather_ghosts / mpi_forward_positions / mpi_forward4. Gated
-/// behind DEM_MPI (mirrors cfd's CFD_MPI): the default dem module never
+/// behind PECLET_DEM_MPI (mirrors cfd's CFD_MPI): the default dem module never
 /// includes this, so it stays byte-identical when the macro is off.
 #ifndef DEM_MPI_HALO_HPP
 #define DEM_MPI_HALO_HPP
-#ifdef DEM_MPI
+#ifdef PECLET_DEM_MPI
 
 #include <mpi.h>
 
@@ -26,18 +26,18 @@
 #include <string>
 #include <vector>
 
-#include "tpx/common/types.hpp"
-#include "tpx/common/view.hpp"
-#include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/halo/particle_halo_topology.hpp"
-#include "tpx/halo/particle_halo.hpp"
-#include "tpx/halo/particle_migrator.hpp"
-#include "tpx/halo/particle_rebalance.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/common/view.hpp"
+#include "peclet/core/decomp/block_decomposer.hpp"
+#include "peclet/core/halo/particle_halo_topology.hpp"
+#include "peclet/core/halo/particle_halo.hpp"
+#include "peclet/core/halo/particle_migrator.hpp"
+#include "peclet/core/halo/particle_rebalance.hpp"
 
 #include "dem_portable.hpp"        // F3, F4
 #include "particles.hpp"    // Particles, V3/V4/Vf/Vi, CpExec/CpMem
 
-namespace dem {
+namespace peclet::dem {
 
 // All non-position per-particle state in one record, so the substep gather is a single MPI exchange
 // (latency dominates the host-staged path). Mirrors MpiParticleHalo::GatherPack; positions are
@@ -64,27 +64,27 @@ struct MigratePack {
 
 // --- free-function pack/unpack kernels (namespace scope: nvcc forbids KOKKOS_LAMBDA in member fns) ---
 
-inline void haloPackF3(V3 field, tpx::View<F3> owned, int n) {
-  Kokkos::parallel_for("dem::halo::packF3", Kokkos::RangePolicy<CpExec>(0, n),
+inline void haloPackF3(V3 field, peclet::core::View<F3> owned, int n) {
+  Kokkos::parallel_for("peclet::dem::halo::packF3", Kokkos::RangePolicy<CpExec>(0, n),
                        KOKKOS_LAMBDA(int i) { owned(i) = F3{field(i, 0), field(i, 1), field(i, 2)}; });
 }
-inline void haloPackF4(V4 field, tpx::View<F4> owned, int n) {
+inline void haloPackF4(V4 field, peclet::core::View<F4> owned, int n) {
   Kokkos::parallel_for(
-      "dem::halo::packF4", Kokkos::RangePolicy<CpExec>(0, n),
+      "peclet::dem::halo::packF4", Kokkos::RangePolicy<CpExec>(0, n),
       KOKKOS_LAMBDA(int i) { owned(i) = F4{field(i, 0), field(i, 1), field(i, 2), field(i, 3)}; });
 }
 // ghost[g] -> field(no+g,:), optionally adding the per-ghost periodic image shift (positions only).
-inline void haloUnpackF3(V3 field, tpx::View<F3> ghost, tpx::View<F3> shift, int no, int ng,
+inline void haloUnpackF3(V3 field, peclet::core::View<F3> ghost, peclet::core::View<F3> shift, int no, int ng,
                          bool doShift) {
-  Kokkos::parallel_for("dem::halo::unpackF3", Kokkos::RangePolicy<CpExec>(0, ng),
+  Kokkos::parallel_for("peclet::dem::halo::unpackF3", Kokkos::RangePolicy<CpExec>(0, ng),
                        KOKKOS_LAMBDA(int g) {
                          F3 v = ghost(g);
                          if (doShift) { v.x += shift(g).x; v.y += shift(g).y; v.z += shift(g).z; }
                          field(no + g, 0) = v.x; field(no + g, 1) = v.y; field(no + g, 2) = v.z;
                        });
 }
-inline void haloUnpackF4(V4 field, tpx::View<F4> ghost, int no, int ng) {
-  Kokkos::parallel_for("dem::halo::unpackF4", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
+inline void haloUnpackF4(V4 field, peclet::core::View<F4> ghost, int no, int ng) {
+  Kokkos::parallel_for("peclet::dem::halo::unpackF4", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
     field(no + g, 0) = ghost(g).x; field(no + g, 1) = ghost(g).y;
     field(no + g, 2) = ghost(g).z; field(no + g, 3) = ghost(g).w;
   });
@@ -92,8 +92,8 @@ inline void haloUnpackF4(V4 field, tpx::View<F4> ghost, int no, int ng) {
 
 inline void haloPackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invInertia, V4 quat,
                            V4 quatPred, Vf scale, Vf invMass, Vi shapeId,
-                           tpx::View<MpiGatherPack> owned, int n) {
-  Kokkos::parallel_for("dem::halo::packGather", Kokkos::RangePolicy<CpExec>(0, n), KOKKOS_LAMBDA(int i) {
+                           peclet::core::View<MpiGatherPack> owned, int n) {
+  Kokkos::parallel_for("peclet::dem::halo::packGather", Kokkos::RangePolicy<CpExec>(0, n), KOKKOS_LAMBDA(int i) {
     MpiGatherPack g;
     g.vel = F3{vel(i, 0), vel(i, 1), vel(i, 2)};
     g.velPred = F3{velPred(i, 0), velPred(i, 1), velPred(i, 2)};
@@ -110,8 +110,8 @@ inline void haloPackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invI
 // owner is remote, so velocity/position deltas landing on the ghost slot are discarded next forward).
 inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invInertia, V4 quat,
                              V4 quatPred, Vf scale, Vf invMass, Vi shapeId, Vi realIndices,
-                             tpx::View<MpiGatherPack> ghost, int no, int ng) {
-  Kokkos::parallel_for("dem::halo::unpackGather", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
+                             peclet::core::View<MpiGatherPack> ghost, int no, int ng) {
+  Kokkos::parallel_for("peclet::dem::halo::unpackGather", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
     const MpiGatherPack p = ghost(g);
     const int s = no + g;
     vel(s, 0) = p.vel.x; vel(s, 1) = p.vel.y; vel(s, 2) = p.vel.z;
@@ -128,7 +128,7 @@ inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 in
 
 /// Owner<->ghost halo driver for the distributed Kokkos demStep. Set up once (initMpi), then each
 /// substep: gather() (rebuild + populate ghost slots) and per-iteration forward/forwardPositions.
-class KokkosParticleHalo {
+class ParticleHalo {
  public:
   // Block decomposition over the GLOBAL domain (the per-block solver stays non-periodic; the halo
   // supplies the periodic wrap). gsize is the ORB cell grid. Mirrors MpiParticleHalo::init.
@@ -138,8 +138,8 @@ class KokkosParticleHalo {
     int sz = 1;
     MPI_Comm_rank(comm_, &rank_);
     MPI_Comm_size(comm_, &sz);
-    dec_.init(static_cast<std::size_t>(sz), tpx::IVec<3>{gsize[0], gsize[1], gsize[2]});
-    tpx::halo::DomainMap<3> map;
+    dec_.init(static_cast<std::size_t>(sz), peclet::core::IVec<3>{gsize[0], gsize[1], gsize[2]});
+    peclet::core::halo::DomainMap<3> map;
     for (int i = 0; i < 3; ++i) {
       map.origin[i] = origin[i];
       map.cellSize[i] = size[i] / static_cast<double>(gsize[i]);
@@ -187,8 +187,8 @@ class KokkosParticleHalo {
       // (1) download owned positions, (re)build the host halo topology, capture it on device.
       auto hpos = Kokkos::create_mirror_view(P.pos);
       Kokkos::deep_copy(hpos, P.pos);
-      std::vector<tpx::Vec<3>> pv(static_cast<std::size_t>(no));
-      for (int i = 0; i < no; ++i) pv[i] = tpx::Vec<3>{hpos(i, 0), hpos(i, 1), hpos(i, 2)};
+      std::vector<peclet::core::Vec<3>> pv(static_cast<std::size_t>(no));
+      for (int i = 0; i < no; ++i) pv[i] = peclet::core::Vec<3>{hpos(i, 0), hpos(i, 1), hpos(i, 2)};
       // includePeriodicSelf: a rank that owns a full (undecomposed) periodic axis -- a "x1" ORB axis
       // (e.g. z of a 2x2x1 layout) or np=1 -- is its own periodic image on that axis, so the periodic
       // neighbours are local self-ghosts the cross-rank exchange never makes. This supplies them.
@@ -202,7 +202,7 @@ class KokkosParticleHalo {
       // ghost band (a fully periodic box at rcut+skin needs a thick boundary layer of ghosts).
       if (no + ng > P.capacity)
         throw std::runtime_error(
-            "KokkosParticleHalo::gather: ghost overflow -- need capacity >= " + std::to_string(no + ng) +
+            "ParticleHalo::gather: ghost overflow -- need capacity >= " + std::to_string(no + ng) +
             " (numReal=" + std::to_string(no) + " + numGhost=" + std::to_string(ng) + "), have " +
             std::to_string(P.capacity) + "; increase the Simulation capacity.");
       numGhost_ = ng;
@@ -211,7 +211,7 @@ class KokkosParticleHalo {
       // Snapshot the owned positions at build time — the reference for the displacement check.
       if (verletSkin_ > 0.0f) {
         if (refPos_.extent(0) < static_cast<std::size_t>(no))
-          refPos_ = V3("dem::halo::refPos", static_cast<std::size_t>(P.capacity));
+          refPos_ = V3("peclet::dem::halo::refPos", static_cast<std::size_t>(P.capacity));
         Kokkos::deep_copy(Kokkos::subview(refPos_, std::pair<int, int>(0, no), Kokkos::ALL),
                           Kokkos::subview(P.pos, std::pair<int, int>(0, no), Kokkos::ALL));
       }
@@ -270,10 +270,10 @@ class KokkosParticleHalo {
     Kokkos::deep_copy(h_shape, P.shapeId);
     Kokkos::deep_copy(h_pf, P.planeFriction);
 
-    std::vector<tpx::Vec<3>> pos((std::size_t)no);
+    std::vector<peclet::core::Vec<3>> pos((std::size_t)no);
     std::vector<char> payload((std::size_t)no * sizeof(MigratePack));
     for (int i = 0; i < no; ++i) {
-      pos[(std::size_t)i] = tpx::Vec<3>{h_pos(i, 0), h_pos(i, 1), h_pos(i, 2)};
+      pos[(std::size_t)i] = peclet::core::Vec<3>{h_pos(i, 0), h_pos(i, 1), h_pos(i, 2)};
       MigratePack m;
       m.quat = F4{h_quat(i, 0), h_quat(i, 1), h_quat(i, 2), h_quat(i, 3)};
       m.vel = F3{h_vel(i, 0), h_vel(i, 1), h_vel(i, 2)};
@@ -290,10 +290,10 @@ class KokkosParticleHalo {
 
     // 2. Weighted re-decompose by particle count + migrate (dec_ updated in place; mig_ points to it).
     const std::size_t newN =
-        tpx::halo::rebalanceByParticleCount(dec_, mig_, pos, payload, sizeof(MigratePack), comm_);
+        peclet::core::halo::rebalanceByParticleCount(dec_, mig_, pos, payload, sizeof(MigratePack), comm_);
     if ((int)newN > P.capacity)
       throw std::runtime_error(
-          "KokkosParticleHalo::rebalance: owned overflow -- rank received " + std::to_string(newN) +
+          "ParticleHalo::rebalance: owned overflow -- rank received " + std::to_string(newN) +
           " particles, capacity " + std::to_string(P.capacity) +
           "; size the Simulation for the peak per-rank count.");
 
@@ -351,7 +351,7 @@ class KokkosParticleHalo {
   }
 
   void selfMapReals(Vi realIndices, int no) {
-    Kokkos::parallel_for("dem::halo::selfMapReals", Kokkos::RangePolicy<CpExec>(0, no),
+    Kokkos::parallel_for("peclet::dem::halo::selfMapReals", Kokkos::RangePolicy<CpExec>(0, no),
                          KOKKOS_LAMBDA(int i) { realIndices(i) = i; });
   }
 
@@ -359,12 +359,12 @@ class KokkosParticleHalo {
   void allocBuffers(int no, int ng) {
     // Exact-sized: ParticleHalo::forward host-stages a deep_copy into the ghost View, so
     // its extent must equal numGhost; owned is indexed by sendIdx in [0,numReal).
-    ownedF3_ = tpx::View<F3>("dem::halo::ownedF3", no);
-    ghostF3_ = tpx::View<F3>("dem::halo::ghostF3", ng);
-    ownedF4_ = tpx::View<F4>("dem::halo::ownedF4", no);
-    ghostF4_ = tpx::View<F4>("dem::halo::ghostF4", ng);
-    ownedPack_ = tpx::View<MpiGatherPack>("dem::halo::ownedPack", no);
-    ghostPack_ = tpx::View<MpiGatherPack>("dem::halo::ghostPack", ng);
+    ownedF3_ = peclet::core::View<F3>("peclet::dem::halo::ownedF3", no);
+    ghostF3_ = peclet::core::View<F3>("peclet::dem::halo::ghostF3", ng);
+    ownedF4_ = peclet::core::View<F4>("peclet::dem::halo::ownedF4", no);
+    ghostF4_ = peclet::core::View<F4>("peclet::dem::halo::ghostF4", ng);
+    ownedPack_ = peclet::core::View<MpiGatherPack>("peclet::dem::halo::ownedPack", no);
+    ghostPack_ = peclet::core::View<MpiGatherPack>("peclet::dem::halo::ghostPack", ng);
   }
   // Max Euclidean displacement of any owned particle since the last topology build (device reduce +
   // one scalar read-back) — the Verlet-skin reuse criterion.
@@ -373,7 +373,7 @@ class KokkosParticleHalo {
     float md = 0.0f;
     V3 p = pos, r = refPos_;
     Kokkos::parallel_reduce(
-        "dem::halo::maxdisp", Kokkos::RangePolicy<CpExec>(0, no),
+        "peclet::dem::halo::maxdisp", Kokkos::RangePolicy<CpExec>(0, no),
         KOKKOS_LAMBDA(const int i, float& m) {
           const float dx = p(i, 0) - r(i, 0), dy = p(i, 1) - r(i, 1), dz = p(i, 2) - r(i, 2);
           const float d = Kokkos::sqrt(dx * dx + dy * dy + dz * dz);
@@ -388,7 +388,7 @@ class KokkosParticleHalo {
     for (std::size_t i = 0; i < t.shift.size(); ++i)
       hs[i] = F3{static_cast<float>(t.shift[i][0]), static_cast<float>(t.shift[i][1]),
                  static_cast<float>(t.shift[i][2])};
-    shiftDev_ = tpx::toDevice(hs, "dem::halo::shift");
+    shiftDev_ = peclet::core::toDevice(hs, "peclet::dem::halo::shift");
   }
 
   bool inited_ = false;
@@ -400,16 +400,16 @@ class KokkosParticleHalo {
   long nRebuild_ = 0, nGather_ = 0;
   V3 refPos_;
   MPI_Comm comm_ = MPI_COMM_NULL;
-  tpx::decomp::BlockDecomposer<3> dec_;
-  tpx::halo::ParticleMigrator<3> mig_;
-  tpx::halo::ParticleHaloTopology<3> halo_;
-  tpx::halo::ParticleHalo<3> dev_;
-  tpx::View<F3> ownedF3_, ghostF3_, shiftDev_;
-  tpx::View<F4> ownedF4_, ghostF4_;
-  tpx::View<MpiGatherPack> ownedPack_, ghostPack_;
+  peclet::core::decomp::BlockDecomposer<3> dec_;
+  peclet::core::halo::ParticleMigrator<3> mig_;
+  peclet::core::halo::ParticleHaloTopology<3> halo_;
+  peclet::core::halo::ParticleHalo<3> dev_;
+  peclet::core::View<F3> ownedF3_, ghostF3_, shiftDev_;
+  peclet::core::View<F4> ownedF4_, ghostF4_;
+  peclet::core::View<MpiGatherPack> ownedPack_, ghostPack_;
 };
 
-}  // namespace dem
+}  // namespace peclet::dem
 
-#endif  // DEM_MPI
+#endif  // PECLET_DEM_MPI
 #endif  // DEM_MPI_HALO_HPP

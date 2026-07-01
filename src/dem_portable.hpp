@@ -11,7 +11,7 @@
 #include <Kokkos_Core.hpp>
 #include <Kokkos_MathematicalFunctions.hpp>
 
-namespace dem {
+namespace peclet::dem {
 
 // Portable mirrors of CUDA float3/float4 (POD, trivially copyable).
 struct F3 {
@@ -95,6 +95,6 @@ KOKKOS_INLINE_FUNCTION float sdfEval(F3 p, int type, F4 params) {
   return 1e9f;  // grid SDF (texture) not yet ported
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_PORTABLE_HPP

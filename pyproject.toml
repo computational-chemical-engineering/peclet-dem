@@ -13,7 +13,7 @@
 #   CMAKE_PREFIX_PATH=/path/to/extern/install/nvidia-cuda pip install .
 #
 #   # add the distributed (MPI) step:
-#   CMAKE_PREFIX_PATH=... pip install . --config-settings=cmake.define.DEM_MPI=ON
+#   CMAKE_PREFIX_PATH=... pip install . --config-settings=cmake.define.PECLET_DEM_MPI=ON
 #
 # See ../docs/DEPLOYMENT.md for the full environment matrix and HPC/container recipes.
 
@@ -49,7 +49,7 @@ sdist.include = ["src", "mpi", "packaging", "cmake", "CMakeLists.txt", "README.m
 # ---------------------------------------------------------------------------
 # Self-contained redistributable CPU wheels (cibuildwheel). PECLET_VENDOR_DEPS=ON FetchContent-builds
 # Kokkos (OpenMP+Serial) + ArborX + the transport-core headers, so the wheel needs no prefix and runs
-# multicore on any x86-64 Linux. The distributed (MPI) step (DEM_MPI) stays OFF in the wheel — MPI is a
+# multicore on any x86-64 Linux. The distributed (MPI) step (PECLET_DEM_MPI) stays OFF in the wheel — MPI is a
 # source (sdist) / container build. GPU/HIP likewise stay source/container.
 # ---------------------------------------------------------------------------
 [tool.cibuildwheel]

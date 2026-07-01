@@ -19,7 +19,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-option(DEM_MPI "Build the dem module with the distributed (MPI) step exposed" OFF)
+option(PECLET_DEM_MPI "Build the dem module with the distributed (MPI) step exposed" OFF)
 
 # Dependencies via the vendored PecletDeps helper: installed Kokkos+ArborX prefix + sibling checkout for
 # the dev/suite build, or FetchContent-built Kokkos+ArborX + fetched transport-core headers for a
@@ -46,9 +46,9 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packaging/dem_init.py
 target_include_directories(dem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${TPX_INCLUDE})
 target_link_libraries(dem PRIVATE ArborX::ArborX Kokkos::kokkos)
 
-if(DEM_MPI)
+if(PECLET_DEM_MPI)
   find_package(MPI REQUIRED COMPONENTS CXX)
-  target_compile_definitions(dem PRIVATE DEM_MPI=1)
+  target_compile_definitions(dem PRIVATE PECLET_DEM_MPI=1)
   target_link_libraries(dem PRIVATE MPI::MPI_CXX)
   message(STATUS "dem: distributed step ENABLED (MPI)")
 endif()

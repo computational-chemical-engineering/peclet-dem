@@ -14,7 +14,7 @@
 #include "contact_preprocessing.hpp"  // ManifoldC, CpExec/CpMem
 #include "dem_portable.hpp"
 
-namespace dem {
+namespace peclet::dem {
 
 namespace detail {
 KOKKOS_INLINE_FUNCTION F3 ld3(Kokkos::View<const float* [3], CpMem> v, int i) {
@@ -41,7 +41,7 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
   using detail::ld3;
   CpExec space;
   Kokkos::parallel_for(
-      "dem::solve_velocity", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      "peclet::dem::solve_velocity", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
       KOKKOS_LAMBDA(int idx) {
         const ManifoldC m = manifolds(idx);
         if (m.num_points <= 0) return;
@@ -134,6 +134,6 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
   space.fence();
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_SOLVER_VELOCITY_HPP

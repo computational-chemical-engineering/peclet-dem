@@ -6,7 +6,7 @@
 /// View<float*>/<int*> — backend-default layout, so coalesced on GPU and cache-friendly on CPU). The
 /// per-point math is a faithful copy of the CUDA kernels (same scale/global_scale handling, same
 /// central-difference normal, same contact geometry) so results match. Analytic shapes only for now;
-/// grid-SDF (texture) returns +inf (dem::sdfEval), as in the CUDA placeholder.
+/// grid-SDF (texture) returns +inf (peclet::dem::sdfEval), as in the CUDA placeholder.
 #ifndef DEM_NARROWPHASE_HPP
 #define DEM_NARROWPHASE_HPP
 
@@ -15,11 +15,11 @@
 #include "contact_preprocessing.hpp"  // ContactC, CpExec/CpMem
 #include "dem_portable.hpp"
 
-namespace dem {
+namespace peclet::dem {
 
 /// Portable mirror of ShapeDescriptor (analytic fields + a flat-array point shell).
 struct ShapeDesc {
-  int type;        // dem::ShapeKind
+  int type;        // peclet::dem::ShapeKind
   F4 params;       // analytic parameters (see sdf_analytic)
   int shellOffset; // start index into the flat shell-points View
   int numPoints;   // shell size; 0 => analytic single-probe (sphere center)
@@ -51,7 +51,7 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
-      "dem::np::contacts", Kokkos::RangePolicy<CpExec>(space, 0, numPairs), KOKKOS_LAMBDA(int idx) {
+      "peclet::dem::np::contacts", Kokkos::RangePolicy<CpExec>(space, 0, numPairs), KOKKOS_LAMBDA(int idx) {
         const int idA = pairs(idx, 0), idB = pairs(idx, 1);
         const ShapeDesc dA = shapes(shapeId(idA));
         const ShapeDesc dB = shapes(shapeId(idB));
@@ -129,7 +129,7 @@ inline void detectBoundaryKokkos(int numReal, int numPlanes, PosView pos, QuatVi
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
-      "dem::np::boundary", Kokkos::RangePolicy<CpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::np::boundary", Kokkos::RangePolicy<CpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
         const F3 posA = loadF3(pos, i);
         const float s = scale(i) * globalScale;
         const ShapeDesc d = shapes(shapeId(i));
@@ -192,6 +192,6 @@ inline void detectBoundaryKokkos(int numReal, int numPlanes, PosView pos, QuatVi
   space.fence();
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_NARROWPHASE_HPP

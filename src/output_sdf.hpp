@@ -17,7 +17,7 @@
 #include "dem_portable.hpp"          // F3/F4, invRotateVector, sdfSphere/sdfHollowCylinder, ShapeKind
 #include "narrowphase.hpp"    // ShapeDesc, CpExec/CpMem, view aliases
 
-namespace dem {
+namespace peclet::dem {
 
 // Generate the SDF grid (flat, x-fastest: i = x + y*rx + z*rx*ry; negative inside solid) over [min,max].
 inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 dmax, int numReal,
@@ -35,7 +35,7 @@ inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 
   Kokkos::deep_copy(state, 0);
 
   // SPLAT: each particle writes the exact analytic signed distance over its AABB band (atomic-min).
-  Kokkos::parallel_for("dem::sdf::splat", Kokkos::RangePolicy<CpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
+  Kokkos::parallel_for("peclet::dem::sdf::splat", Kokkos::RangePolicy<CpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
     const F3 pw = loadF3(pos, i);
     const F4 q = loadF4(quat, i);
     const float sc = scale(i);
@@ -78,7 +78,7 @@ inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 
   Kokkos::View<float*, CpMem> in = grid, out = grid2;
   for (int it = 0; it < iters; ++it) {
     Kokkos::View<float*, CpMem> din = in, dout = out; Kokkos::View<int*, CpMem> st = state;
-    Kokkos::parallel_for("dem::sdf::eikonal", Kokkos::RangePolicy<CpExec>(space, 0, total), KOKKOS_LAMBDA(long idx) {
+    Kokkos::parallel_for("peclet::dem::sdf::eikonal", Kokkos::RangePolicy<CpExec>(space, 0, total), KOKKOS_LAMBDA(long idx) {
       if (st(idx) == 1) { dout(idx) = din(idx); return; }
       const long sy = rx, sz = (long)rx * ry;
       const int z = (int)(idx / sz); const long rem = idx % sz; const int y = (int)(rem / sy), x = (int)(rem % sy);
@@ -111,6 +111,6 @@ inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 
   return h_grid;
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_OUTPUT_SDF_HPP

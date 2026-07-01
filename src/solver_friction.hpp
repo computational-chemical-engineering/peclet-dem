@@ -18,7 +18,7 @@
 #include "dem_portable.hpp"
 #include "solver_position.hpp"  // ContactC, detail::computeW, CpExec/CpMem
 
-namespace dem {
+namespace peclet::dem {
 
 using FrManifoldCounts = Kokkos::View<float* [2], CpMem>;  // per body: .x = plane load, .y = count
 
@@ -32,7 +32,7 @@ inline void accumulateNormalImpulseKokkos(Kokkos::View<ContactC*, CpMem> contact
   using detail::computeW;
   CpExec space;
   Kokkos::parallel_for(
-      "dem::fric_accum", Kokkos::RangePolicy<CpExec>(space, 0, numContacts), KOKKOS_LAMBDA(int idx) {
+      "peclet::dem::fric_accum", Kokkos::RangePolicy<CpExec>(space, 0, numContacts), KOKKOS_LAMBDA(int idx) {
         ContactC c = contacts(idx);
         if (c.bodyB < 0) return;
         const int realA = realIdx(c.bodyA), realB = realIdx(c.bodyB);
@@ -64,7 +64,7 @@ inline void computePlaneLoadKokkos(Kokkos::View<ContactC*, CpMem> contacts, int 
   CpExec space;
   Kokkos::deep_copy(space, planeFriction, 0.0f);
   Kokkos::parallel_for(
-      "dem::fric_plane_load", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
+      "peclet::dem::fric_plane_load", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
       KOKKOS_LAMBDA(int idx) {
         ContactC c = contacts(idx);
         if (c.bodyB >= 0) return;
@@ -89,7 +89,7 @@ inline void countFrictionContactsKokkos(Kokkos::View<const ContactC*, CpMem> con
                                         FrManifoldCounts planeFriction) {
   CpExec space;
   Kokkos::parallel_for(
-      "dem::fric_count", Kokkos::RangePolicy<CpExec>(space, 0, numContacts), KOKKOS_LAMBDA(int idx) {
+      "peclet::dem::fric_count", Kokkos::RangePolicy<CpExec>(space, 0, numContacts), KOKKOS_LAMBDA(int idx) {
         const ContactC c = contacts(idx);
         if (c.friction_lambda_n <= 0.0f) return;
         Kokkos::atomic_add(&planeFriction(realIdx(c.bodyA), 1), 1.0f);
@@ -113,7 +113,7 @@ inline void solveContactFrictionKokkos(Kokkos::View<const ContactC*, CpMem> cont
   Kokkos::deep_copy(space, deltaVel, 0.0f);
   Kokkos::deep_copy(space, deltaAngVel, 0.0f);
   Kokkos::parallel_for(
-      "dem::fric_solve", Kokkos::RangePolicy<CpExec>(space, 0, numContacts), KOKKOS_LAMBDA(int idx) {
+      "peclet::dem::fric_solve", Kokkos::RangePolicy<CpExec>(space, 0, numContacts), KOKKOS_LAMBDA(int idx) {
         const ContactC c = contacts(idx);
         const float lambda_n = c.friction_lambda_n;
         if (lambda_n <= 0.0f) return;
@@ -170,6 +170,6 @@ inline void solveContactFrictionKokkos(Kokkos::View<const ContactC*, CpMem> cont
   space.fence();
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_SOLVER_FRICTION_HPP

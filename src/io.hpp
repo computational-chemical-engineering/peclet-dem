@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-namespace dem {
+namespace peclet::dem {
 
 // LAMMPS "dump custom" (Ovito): id type x y z radius vx vy vz qw qx qy qz.
 // pos/vel are flat [n*3]; quat is flat [n*4] in (x,y,z,w) order; radii is [n]. Bounds: explicit box if
@@ -86,6 +86,6 @@ inline void writeSdfVti(const std::string& filename, const std::vector<float>& g
   std::printf("Exported SDF VTI: %s\n", filename.c_str());
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_IO_HPP

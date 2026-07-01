@@ -14,7 +14,7 @@
 #include "contact_preprocessing.hpp"  // ContactC, CpExec/CpMem
 #include "dem_portable.hpp"
 
-namespace dem {
+namespace peclet::dem {
 
 struct Domain {
   F3 min, max, size;
@@ -40,7 +40,7 @@ inline void predictVelocityKokkos(int n, V3 pos, Vf invMass, V3 vel, V4 quat, V3
                                   Vi constraintCounts, F3 gravity, float dt) {
   CpExec space;
   Kokkos::parallel_for(
-      "dem::predict_velocity", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::predict_velocity", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
         const float invM = invMass(i);
         F3 v = ldF3(vel, i);
         if (invM > 0.0f) v = add3(v, scale3(gravity, dt));
@@ -81,7 +81,7 @@ inline void predictVelocityKokkos(int n, V3 pos, Vf invMass, V3 vel, V4 quat, V3
 inline void applyVelocityDeltasKokkos(int n, V3 velPred, V3 angVelPred, V3 deltaVel, V3 deltaAngVel) {
   CpExec space;
   Kokkos::parallel_for(
-      "dem::apply_velocity_deltas", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::apply_velocity_deltas", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
         detail::st3(velPred, i, add3(ldF3(velPred, i), ldF3(deltaVel, i)));
         detail::st3(angVelPred, i, add3(ldF3(angVelPred, i), ldF3(deltaAngVel, i)));
         detail::st3(deltaVel, i, F3{0, 0, 0});
@@ -96,7 +96,7 @@ inline void applyVelocityAndPredictPositionKokkos(int n, V3 pos, Vf invMass, V3 
                                                   V3 angVel, float dt) {
   CpExec space;
   Kokkos::parallel_for(
-      "dem::apply_vel_predict_pos", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::apply_vel_predict_pos", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
         const F3 vStart = ldF3(vel, i);
         const F3 vFinal = ldF3(velPred, i);  // already includes deltas
         detail::st3(velPred, i, vFinal);
@@ -132,7 +132,7 @@ inline void computeContactCountsKokkos(Kokkos::View<const ContactC*, CpMem> cont
                                        Vi constraintCounts) {
   CpExec space;
   Kokkos::parallel_for(
-      "dem::contact_counts", Kokkos::RangePolicy<CpExec>(space, 0, numContacts), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::contact_counts", Kokkos::RangePolicy<CpExec>(space, 0, numContacts), KOKKOS_LAMBDA(int i) {
         const ContactC c = contacts(i);
         if (c.dist > 0.0f) return;
         Kokkos::atomic_add(&constraintCounts(c.bodyA), 1);
@@ -146,7 +146,7 @@ inline void applyUpdatesKokkos(int n, V3 posPred, V3 velPred, V3 deltaPos, V3 de
                                Vi constraintCounts) {
   CpExec space;
   Kokkos::parallel_for(
-      "dem::apply_updates", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::apply_updates", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
         const int count = constraintCounts(i);
         if (count <= 0) return;
         const float f = 1.0f / static_cast<float>(count);
@@ -163,7 +163,7 @@ inline void applyUpdatesKokkos(int n, V3 posPred, V3 velPred, V3 deltaPos, V3 de
 inline void finalCommitKokkos(int n, V3 pos, Vf invMass, V3 posPred, V4 quat, V4 quatPred, Domain dom) {
   CpExec space;
   Kokkos::parallel_for(
-      "dem::final_commit", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::final_commit", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
         F3 p = ldF3(posPred, i);
         if (dom.periodic_x) { if (p.x < dom.min.x) p.x += dom.size.x; else if (p.x >= dom.max.x) p.x -= dom.size.x; }
         if (dom.periodic_y) { if (p.y < dom.min.y) p.y += dom.size.y; else if (p.y >= dom.max.y) p.y -= dom.size.y; }
@@ -187,7 +187,7 @@ inline void applyThermostatKokkos(int numReal, V3 vel, Vf invMass, V3 angVel, V3
   CpExec space;
   KE2 sum;
   Kokkos::parallel_reduce(
-      "dem::thermo_energy", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
+      "peclet::dem::thermo_energy", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
       KOKKOS_LAMBDA(int i, KE2& acc) {
         const float invM = invMass(i);
         const F3 v = ldF3(vel, i);
@@ -215,7 +215,7 @@ inline void applyThermostatKokkos(int numReal, V3 vel, Vf invMass, V3 angVel, V3
   const float lt = lambda(sum.t), lr = lambda(sum.r);
 
   Kokkos::parallel_for(
-      "dem::thermo_scale", Kokkos::RangePolicy<CpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::thermo_scale", Kokkos::RangePolicy<CpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
         detail::st3(vel, i, scale3(ldF3(vel, i), lt));
         detail::st3(angVel, i, scale3(ldF3(angVel, i), lr));
       });
@@ -227,11 +227,11 @@ inline void updateGrowthScalesKokkos(int n, Vf scale, Vf targetScale, float fact
   if (!(factor > 0.0f)) return;
   CpExec space;
   Kokkos::parallel_for(
-      "dem::growth", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      "peclet::dem::growth", Kokkos::RangePolicy<CpExec>(space, 0, n),
       KOKKOS_LAMBDA(int i) { scale(i) = targetScale(i) * factor; });
   space.fence();
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_INTEGRATION_HPP

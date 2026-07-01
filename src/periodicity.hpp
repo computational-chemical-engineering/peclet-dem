@@ -14,7 +14,7 @@
 #include "dem_portable.hpp"
 #include "integration.hpp"  // Domain, V3/V4/Vf/Vi, detail::st3/st4
 
-namespace dem {
+namespace peclet::dem {
 
 /// Generate periodic ghosts for particles [0,numReal). topGhost must be pre-seeded to numReal (the
 /// first free slot); on return it holds the total particle count. Slots beyond `capacity` are
@@ -27,7 +27,7 @@ inline void generateGhostsKokkos(int numReal, int capacity, Domain dom, float sk
   using detail::st4;
   CpExec space;
   Kokkos::parallel_for(
-      "dem::generate_ghosts", Kokkos::RangePolicy<CpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::generate_ghosts", Kokkos::RangePolicy<CpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
         const F3 p = ldF3(pos, i);
         const int sx = dom.periodic_x ? ((p.x < dom.min.x + skin) ? 1 : ((p.x > dom.max.x - skin) ? -1 : 0)) : 0;
         const int sy = dom.periodic_y ? ((p.y < dom.min.y + skin) ? 1 : ((p.y > dom.max.y - skin) ? -1 : 0)) : 0;
@@ -64,6 +64,6 @@ inline void generateGhostsKokkos(int numReal, int capacity, Domain dom, float sk
   space.fence();
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_PERIODICITY_HPP

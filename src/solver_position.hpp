@@ -14,7 +14,7 @@
 #include "contact_preprocessing.hpp"  // ContactC, CpExec/CpMem
 #include "dem_portable.hpp"
 
-namespace dem {
+namespace peclet::dem {
 
 namespace detail {
 KOKKOS_INLINE_FUNCTION float computeW(F3 r, F3 dir, float invM, F3 invI) {
@@ -43,7 +43,7 @@ inline void solvePositionKokkos(Kokkos::View<const ContactC*, CpMem> contacts, i
   using detail::computeW;
   CpExec space;
   Kokkos::parallel_for(
-      "dem::solve_position", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
+      "peclet::dem::solve_position", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
       KOKKOS_LAMBDA(int idx) {
         const ContactC c = contacts(idx);
         const int idA = c.bodyA, idB = c.bodyB;
@@ -124,6 +124,6 @@ inline void solvePositionKokkos(Kokkos::View<const ContactC*, CpMem> contacts, i
   space.fence();
 }
 
-}  // namespace dem
+}  // namespace peclet::dem
 
 #endif  // DEM_SOLVER_POSITION_HPP
