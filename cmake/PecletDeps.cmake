@@ -39,7 +39,41 @@ macro(peclet_require_nanobind)
   endif()
 endmacro()
 
-# Kokkos — prefix if present (unless forced), else vendored OpenMP+Serial (static, PIC).
+# Vendored Kokkos/ArborX are *installed* to a staging prefix (not added as bare build-tree subprojects):
+# ArborX REQUIREs an installed Kokkos package config (`find_package(Kokkos ... CONFIG)`), which a
+# FetchContent subproject target does not provide — so a subproject Kokkos makes ArborX's own
+# find_package(Kokkos) fail. Instead we build+install each into a shared staging prefix exactly like
+# tools/bootstrap_deps.sh, then find_package() both (satisfying our code AND ArborX). Built once (marker).
+set(PECLET_STAGE_PREFIX "${CMAKE_BINARY_DIR}/_peclet_deps" CACHE PATH "Vendored-deps staging install prefix")
+
+function(_peclet_stage_build name url tag)  # extra -D configure args via ARGN
+  FetchContent_Declare(${name} GIT_REPOSITORY "${url}" GIT_TAG "${tag}" GIT_SHALLOW TRUE)
+  FetchContent_GetProperties(${name})
+  if(NOT ${name}_POPULATED)
+    FetchContent_Populate(${name})
+  endif()
+  if(EXISTS "${PECLET_STAGE_PREFIX}/.peclet_${name}_installed")
+    return()
+  endif()
+  message(STATUS "[peclet] building+installing ${name} ${tag} -> ${PECLET_STAGE_PREFIX}")
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -S "${${name}_SOURCE_DIR}" -B "${${name}_BINARY_DIR}"
+            -DCMAKE_BUILD_TYPE=Release "-DCMAKE_INSTALL_PREFIX=${PECLET_STAGE_PREFIX}"
+            "-DCMAKE_PREFIX_PATH=${PECLET_STAGE_PREFIX}" -DCMAKE_CXX_STANDARD=20
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON ${ARGN}
+    RESULT_VARIABLE _rc)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "[peclet] ${name} configure failed (${_rc})")
+  endif()
+  execute_process(COMMAND ${CMAKE_COMMAND} --build "${${name}_BINARY_DIR}" --target install --parallel
+                  RESULT_VARIABLE _rc)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "[peclet] ${name} build/install failed (${_rc})")
+  endif()
+  file(WRITE "${PECLET_STAGE_PREFIX}/.peclet_${name}_installed" "")
+endfunction()
+
+# Kokkos — prefix if present (unless forced), else vendored OpenMP+Serial installed to the staging prefix.
 macro(peclet_require_kokkos)
   if(NOT PECLET_VENDOR_DEPS)
     find_package(Kokkos CONFIG QUIET)
@@ -47,26 +81,24 @@ macro(peclet_require_kokkos)
   if(Kokkos_FOUND)
     message(STATUS "[peclet] Kokkos ${Kokkos_VERSION} from prefix (${Kokkos_DEVICES})")
   else()
-    message(STATUS "[peclet] vendoring Kokkos ${PECLET_KOKKOS_TAG} (OpenMP+Serial, static PIC)")
-    set(Kokkos_ENABLE_OPENMP ON CACHE BOOL "" FORCE)
-    set(Kokkos_ENABLE_SERIAL ON CACHE BOOL "" FORCE)
-    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-    FetchContent_Declare(kokkos GIT_REPOSITORY https://github.com/kokkos/kokkos.git
-                         GIT_TAG ${PECLET_KOKKOS_TAG} GIT_SHALLOW TRUE)
-    FetchContent_MakeAvailable(kokkos)
+    _peclet_stage_build(kokkos "https://github.com/kokkos/kokkos.git" "${PECLET_KOKKOS_TAG}"
+                        -DKokkos_ENABLE_OPENMP=ON -DKokkos_ENABLE_SERIAL=ON)
+    list(APPEND CMAKE_PREFIX_PATH "${PECLET_STAGE_PREFIX}")
+    find_package(Kokkos CONFIG REQUIRED)
+    message(STATUS "[peclet] vendored Kokkos ${Kokkos_VERSION} @ ${PECLET_STAGE_PREFIX}")
   endif()
 endmacro()
 
-# ArborX — header-only, needs Kokkos first. prefix or vendored.
+# ArborX — header-only but REQUIREs an installed Kokkos config; built against + installed to the same prefix.
 macro(peclet_require_arborx)
   if(NOT PECLET_VENDOR_DEPS)
     find_package(ArborX CONFIG QUIET)
   endif()
   if(NOT ArborX_FOUND)
-    message(STATUS "[peclet] vendoring ArborX ${PECLET_ARBORX_TAG}")
-    FetchContent_Declare(arborx GIT_REPOSITORY https://github.com/arborx/ArborX.git
-                         GIT_TAG ${PECLET_ARBORX_TAG} GIT_SHALLOW TRUE)
-    FetchContent_MakeAvailable(arborx)
+    _peclet_stage_build(arborx "https://github.com/arborx/ArborX.git" "${PECLET_ARBORX_TAG}")
+    list(APPEND CMAKE_PREFIX_PATH "${PECLET_STAGE_PREFIX}")
+    find_package(ArborX CONFIG REQUIRED)
+    message(STATUS "[peclet] vendored ArborX ${ArborX_VERSION} @ ${PECLET_STAGE_PREFIX}")
   endif()
 endmacro()
 
