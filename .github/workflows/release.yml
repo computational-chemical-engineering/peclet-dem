@@ -2,7 +2,7 @@ name: Release
 
 # Build the sdist + self-contained OpenMP CPU wheels and publish to PyPI (peclet-dem) on a version tag.
 # Uses PyPI Trusted Publishing (OIDC) — configure the publisher on PyPI first; no API token secret needed.
-# The wheels FetchContent-build Kokkos (OpenMP+Serial) + the transport-core headers inside each build
+# The wheels FetchContent-build Kokkos (OpenMP+Serial) + the core headers inside each build
 # (PECLET_VENDOR_DEPS=ON, from pyproject's [tool.cibuildwheel]); GPU/HIP + MPI are the source (sdist) path.
 
 on:

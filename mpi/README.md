@@ -1,7 +1,7 @@
 # dem — distributed (MPI) step
 
-MPI block-parallelism for the DEM/XPBD solver on the shared `transport-core` library (sibling repo
-`../../transport-core`), mirroring the approach validated for `sdflow`. The Lagrangian counterpart to
+MPI block-parallelism for the DEM/XPBD solver on the shared `core` library (sibling repo
+`../../core`), mirroring the approach validated for `sdflow`. The Lagrangian counterpart to
 the Eulerian grid halo is **particle migration** (reassign particles to their owning rank) + **ghost
 particles** (copies within one interaction radius of a block boundary, so each rank's ArborX broad-phase
 runs locally), plus periodic **load rebalancing** (weighted-ORB SoA ownership migration).
@@ -9,7 +9,7 @@ runs locally), plus periodic **load rebalancing** (weighted-ORB SoA ownership mi
 The distributed step now ships **inside the `dem` Kokkos module** as `step_mpi`, gated behind the
 `DEM_MPI` build option (the default module never defines it, so the single-rank module stays
 byte-identical). This document is the status + how-to-build/run + what-is-validated for that step, plus
-the standalone transport-core bring-up harness that still lives in this directory.
+the standalone core bring-up harness that still lives in this directory.
 
 ## The shipped distributed step (`dem`, `-DDEM_MPI=ON`)
 
@@ -35,7 +35,7 @@ sim.rebalance()                                          # force a load rebalanc
 ```
 
 ### Implementation
-- `src/mpi_halo.hpp` (`KokkosParticleHalo`) — a thin wrapper over transport-core's
+- `src/mpi_halo.hpp` (`KokkosParticleHalo`) — a thin wrapper over core's
   `tpx::halo::ParticleHaloTopology<3>` (host topology + periodic image shift), `tpx::halo::ParticleHalo<3>`
   (on-device gather/scatter + host-staged MPI), `tpx::halo::ParticleMigrator`, and the
   weighted-ORB `particle_rebalance` path. Rebuilt each substep from the owned positions.
@@ -80,12 +80,12 @@ quaternion forward and is **exact for spheres**.
 ### Load rebalancing
 With `rebalance_every=N` (or an explicit `sim.rebalance()`), the decomposition is recomputed by
 particle count (weighted ORB) and SoA ownership is migrated — keeping per-rank work balanced as the
-packing evolves. See the suite memory note on dynamic load balancing and `transport-core`'s
+packing evolves. See the suite memory note on dynamic load balancing and `core`'s
 `particle_rebalance` / `rebalanceByParticleCount`.
 
-## Standalone bring-up harness (host C++ + transport-core)
+## Standalone bring-up harness (host C++ + core)
 
-This directory also holds the original bring-up tests — host C++ + MPI + header-only transport-core,
+This directory also holds the original bring-up tests — host C++ + MPI + header-only core,
 no Kokkos/ArborX/Python needed — that validated the migration + ghost-exchange machinery before it was
 wired into the module. They still build and run:
 ```bash
@@ -102,9 +102,9 @@ which launches OpenMPI binaries as singletons).
   `gatherGhosts(rcut)` to collect copies within one interaction radius of the block boundary (periodic
   images handled) — the input to a local broad-phase. Validated: count conserved, every particle on its
   owning rank, id multiset preserved, np=1,2,4.
-- **The three ghost-exchange schemes** (built on transport-core's persistent `ParticleHalo` —
+- **The three ghost-exchange schemes** (built on core's persistent `ParticleHalo` —
   `build` + field-agnostic `forward` / `reverse(sum)`), each matched to a serial reference cell-for-cell
-  at np=1,2,4 with a toy soft-sphere force in place of XPBD so they build with just MPI + transport-core:
+  at np=1,2,4 with a toy soft-sphere force in place of XPBD so they build with just MPI + core:
   - **A — replicate / frozen ghosts** (`test_dem_step.cpp`): import ghost state, compute boundary pairs
     twice, integrate owned.
   - **B — Newton-on** (`test_dem_scheme_b.cpp`): import ghost state, compute each pair once,
@@ -116,4 +116,4 @@ The shipped `step_mpi` follows the **EXACT** variant (full owner→ghost state r
 particle computes its complete serial delta locally) rather than the reverse-reduction schemes B/C.
 
 See [multi_gpu_testing.md](multi_gpu_testing.md) for the multi-GPU profiling/scaling playbook, `../../docs/ROADMAP.md`
-(Phase 4 / Phase 7) and the "MPI / sdflow" section of `../../sdflow/CLAUDE.md` for the Eulerian precedent.
+(Phase 4 / Phase 7) and the "MPI / sdflow" section of `../../flow/CLAUDE.md` for the Eulerian precedent.

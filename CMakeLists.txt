@@ -22,14 +22,14 @@ endif()
 option(PECLET_DEM_MPI "Build the dem module with the distributed (MPI) step exposed" OFF)
 
 # Dependencies via the vendored PecletDeps helper: installed Kokkos+ArborX prefix + sibling checkout for
-# the dev/suite build, or FetchContent-built Kokkos+ArborX + fetched transport-core headers for a
+# the dev/suite build, or FetchContent-built Kokkos+ArborX + fetched core headers for a
 # self-contained sdist/wheel (cibuildwheel). See cmake/PecletDeps.cmake.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(PecletDeps)
 peclet_require_kokkos()
 peclet_require_arborx()
-peclet_require_nanobind()   # nanobind + transport-core's View<->ndarray zero-copy bridge
-peclet_sibling_include(transport-core "${PECLET_TPX_TAG}" "../transport-core" TPX_INCLUDE)
+peclet_require_nanobind()   # nanobind + core's View<->ndarray zero-copy bridge
+peclet_sibling_include(peclet-core "${PECLET_TPX_TAG}" "../core" TPX_INCLUDE)
 
 # NB_STATIC: bundle nanobind's runtime into the module; the Kokkos device path is routed by the
 # launch compiler regardless. NOMINSIZE: nanobind's default -Os is rejected by nvcc ("'s': expected a

@@ -3,7 +3,7 @@
 # A peclet compute wheel must build both ways:
 #   * DEV / suite build — Kokkos (+ArborX) come from an installed prefix on CMAKE_PREFIX_PATH
 #     (../extern/install/<backend> from tools/bootstrap_deps.sh) and the sibling headers
-#     (transport-core, morton) from ../<sibling>/include. Fast; the developer workflow.
+#     (core, morton) from ../<sibling>/include. Fast; the developer workflow.
 #   * SELF-CONTAINED sdist/wheel (cibuildwheel) — the umbrella and siblings are ABSENT (the build runs on
 #     an isolated copy of this one repo), so everything is FetchContent-built at the suite-pinned
 #     versions. This is what makes `pip install peclet-flow` produce a working OpenMP CPU wheel.
@@ -16,7 +16,7 @@ include(FetchContent)
 
 set(PECLET_KOKKOS_TAG "5.1.1" CACHE STRING "Vendored Kokkos git tag")
 set(PECLET_ARBORX_TAG "v2.1"  CACHE STRING "Vendored ArborX git tag")
-set(PECLET_TPX_TAG    "main"  CACHE STRING "Vendored transport-core git tag (headers)")
+set(PECLET_TPX_TAG    "main"  CACHE STRING "Vendored core git tag (headers)")
 set(PECLET_MORTON_TAG "main"  CACHE STRING "Vendored morton git tag (headers)")
 option(PECLET_VENDOR_DEPS "Force FetchContent-build of Kokkos/ArborX/siblings (self-contained wheel)" OFF)
 
@@ -70,7 +70,7 @@ macro(peclet_require_arborx)
   endif()
 endmacro()
 
-# Sibling header include dir (transport-core / morton). Returns the sibling checkout if present, else a
+# Sibling header include dir (core / morton). Returns the sibling checkout if present, else a
 # FetchContent-fetched source tree's include/ (header-only — declared but not built).
 function(peclet_sibling_include repo tag sibling_reldir outvar)
   set(_local "${CMAKE_CURRENT_SOURCE_DIR}/${sibling_reldir}/include")

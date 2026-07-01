@@ -1,6 +1,6 @@
-# Standalone MPI validation for packing-gpu's transport-core integration (Lagrangian).
+# Standalone MPI validation for packing-gpu's core integration (Lagrangian).
 # Decoupled from the main demgpu build (no CUDA/pybind/cuBQL needed): host C++ + MPI + the header-only
-# transport-core. Build:
+# core. Build:
 #   cmake -S mpi -B mpi/build -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun && cmake --build mpi/build
 #   ctest --test-dir mpi/build --output-on-failure
 cmake_minimum_required(VERSION 3.16)
@@ -11,9 +11,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(MPI REQUIRED COMPONENTS CXX)
 
-set(TPX_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../../transport-core/include")
+set(TPX_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../../core/include")
 if(NOT EXISTS "${TPX_INCLUDE}/tpx/halo/particle_migrator.hpp")
-  message(FATAL_ERROR "transport-core not found at ${TPX_INCLUDE} (clone it as a sibling repo)")
+  message(FATAL_ERROR "core not found at ${TPX_INCLUDE} (clone it as a sibling repo)")
 endif()
 
 enable_testing()

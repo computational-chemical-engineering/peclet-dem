@@ -13,8 +13,8 @@ by the `extern/install/<backend>` prefix the build is pointed at, not hard-coded
 below assume the **CUDA backend** (`nvidia-cuda` prefix); for HIP use the ROCm equivalents
 (`rocprof`/`omnitrace`).
 
-Read alongside: `../../transport-core/docs/cuda-aware-mpi.md` (the CUDA-aware-MPI diagnosis &
-sysadmin ask), the "MPI / sdflow" section of `../../sdflow/CLAUDE.md` (the Eulerian precedent), and
+Read alongside: `../../core/docs/cuda-aware-mpi.md` (the CUDA-aware-MPI diagnosis &
+sysadmin ask), the "MPI / sdflow" section of `../../flow/CLAUDE.md` (the Eulerian precedent), and
 `../../docs/ROADMAP.md` Phase 4 / Phase 7.
 
 ---
@@ -56,8 +56,8 @@ cmake --build build -j$(nproc)
 ### 1.3 CUDA-aware MPI (unlocks the device-resident halo)
 The stock `/usr/bin` OpenMPI is built without CUDA (device-pointer MPI segfaults). A user-space
 CUDA-aware stack (OpenMPI + UCX, both `--with-cuda`) is required for device→device transfers; see
-[`../../transport-core/docs/cuda-aware-mpi.md`](../../transport-core/docs/cuda-aware-mpi.md) for the
-build/runtime recipe. transport-core's `GridHalo` device-pointer branch is runtime-gated on
+[`../../core/docs/cuda-aware-mpi.md`](../../core/docs/cuda-aware-mpi.md) for the
+build/runtime recipe. core's `GridHalo` device-pointer branch is runtime-gated on
 `TPX_CUDA_AWARE_MPI` (not `MPIX_Query_cuda_support()`, which mis-reports here). Bringing the `dem`
 particle halo's gather/scatter onto the device-pointer path (§5.1) is the remaining piece.
 
@@ -145,7 +145,7 @@ reduce-max across ranks. That single breakdown tells you whether to spend effort
 Keep the owner→ghost forward fully on-device: a gather kernel packs the owned records into a contiguous
 device buffer, MPI transfers it **device→device** (CUDA-aware), and received ghosts land directly in the
 contiguous ghost slab `[num_real, num_real+num_ghost)` (positions get a per-ghost shift kernel). This is
-the Kokkos counterpart of transport-core's device `GridHalo` path; it is **groundwork for real
+the Kokkos counterpart of core's device `GridHalo` path; it is **groundwork for real
 multi-GPU/multi-node** — on a single shared GPU the per-transfer overhead beats the tiny host bounce,
 but across NVLink / GPUDirect RDMA it eliminates the D2H + network + H2D round trip. Build against the
 CUDA-aware MPI (§1.3) and gate on `TPX_CUDA_AWARE_MPI`.
@@ -153,7 +153,7 @@ CUDA-aware MPI (§1.3) and gate on `TPX_CUDA_AWARE_MPI`.
 ### 5.2 Overlap comm with compute
 Post the ghost forward asynchronously and compute the **interior** (owned particles with no ghost
 neighbour) while the halo is in flight, then apply the boundary. Needs an interior/boundary partition of
-the owned set (particles within `rcut` of the block edge). transport-core's `GridHalo` already has the
+the owned set (particles within `rcut` of the block edge). core's `GridHalo` already has the
 overlap-capable `start()/wait()` split to mirror.
 
 ### 5.3 Avoid per-step rebuilds
@@ -185,4 +185,4 @@ thin ones. Tune `gsize` so the ORB blocks are compact (low surface/volume).
   is bit-exact to the single-rank step.
 - **`sync_every>1` is an approximation** (boundary error grows with M); only `M=1` is EXACT.
 - Re-run the suite (`tests/kokkos_mpi` np=1,2,4 + the Python drivers) after any change to `demStepMpi`,
-  the gather, or the transport-core `ParticleHalo`.
+  the gather, or the core `ParticleHalo`.

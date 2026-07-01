@@ -2,7 +2,7 @@ name: CI
 
 # Build the Kokkos (OpenMP/Serial) backend + ArborX from source, then build the dem Python module and
 # smoke-import it. The GPU (CUDA/HIP) backends and the multi-rank MPI step (DEM_MPI, needs the
-# transport-core sibling) are NOT exercisable on free GitHub runners (no GPU); this CI covers the
+# core sibling) are NOT exercisable on free GitHub runners (no GPU); this CI covers the
 # portable host build, which catches the bulk of regressions. The single-rank module depends only on
 # Kokkos + ArborX + pybind11 (the distributed step is gated behind DEM_MPI).
 

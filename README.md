@@ -28,7 +28,7 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 │   ├── output_sdf.hpp          # SDF/VTI grid generation (Eikonal)
 │   ├── shapes_portable.hpp     # Analytic shapes (sphere / hollow cylinder / box)
 │   ├── io.hpp                  # LAMMPS-dump + SDF-VTI export
-│   └── mpi_halo.hpp            # Distributed particle halo (transport-core), gated DEM_MPI
+│   └── mpi_halo.hpp            # Distributed particle halo (core), gated DEM_MPI
 ├── tests                       # C++ unit tests: kokkos/ (kernels), arborx/, kokkos_mpi/
 ├── docs                        # Documentation
 └── *.py                        # Python verification/example scripts (verify_*.py)
