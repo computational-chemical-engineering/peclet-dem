@@ -21,19 +21,15 @@ endif()
 
 option(DEM_MPI "Build the dem module with the distributed (MPI) step exposed" OFF)
 
-find_package(Kokkos CONFIG REQUIRED)
-find_package(ArborX CONFIG REQUIRED)
-message(STATUS "dem: Kokkos ${Kokkos_VERSION} (${Kokkos_DEVICES}), ArborX ${ArborX_VERSION}")
-
-# nanobind (shared suite helper) + transport-core's header-only View<->ndarray zero-copy bridge
-# (tpx/python/ndarray_interop.hpp), used by the binding regardless of the MPI option.
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
-include(SuiteNanobind)
-suite_require_nanobind()
-set(TPX_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../transport-core/include")
-if(NOT EXISTS "${TPX_INCLUDE}/tpx/python/ndarray_interop.hpp")
-  message(FATAL_ERROR "transport-core not found at ${TPX_INCLUDE} (clone it as a sibling repo)")
-endif()
+# Dependencies via the vendored PecletDeps helper: installed Kokkos+ArborX prefix + sibling checkout for
+# the dev/suite build, or FetchContent-built Kokkos+ArborX + fetched transport-core headers for a
+# self-contained sdist/wheel (cibuildwheel). See cmake/PecletDeps.cmake.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(PecletDeps)
+peclet_require_kokkos()
+peclet_require_arborx()
+peclet_require_nanobind()   # nanobind + transport-core's View<->ndarray zero-copy bridge
+peclet_sibling_include(transport-core "${PECLET_TPX_TAG}" "../transport-core" TPX_INCLUDE)
 
 # NB_STATIC: bundle nanobind's runtime into the module; the Kokkos device path is routed by the
 # launch compiler regardless. NOMINSIZE: nanobind's default -Os is rejected by nvcc ("'s': expected a

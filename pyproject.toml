@@ -44,4 +44,20 @@ cmake.version = ">=3.24"
 # SKBUILD) into the peclet namespace; disable package auto-discovery so nothing else is added.
 wheel.install-dir = "."
 wheel.packages = []
-sdist.include = ["src", "mpi", "packaging", "CMakeLists.txt", "README.md", "LICENSE"]
+sdist.include = ["src", "mpi", "packaging", "cmake", "CMakeLists.txt", "README.md", "LICENSE"]
+
+# ---------------------------------------------------------------------------
+# Self-contained redistributable CPU wheels (cibuildwheel). PECLET_VENDOR_DEPS=ON FetchContent-builds
+# Kokkos (OpenMP+Serial) + ArborX + the transport-core headers, so the wheel needs no prefix and runs
+# multicore on any x86-64 Linux. The distributed (MPI) step (DEM_MPI) stays OFF in the wheel — MPI is a
+# source (sdist) / container build. GPU/HIP likewise stay source/container.
+# ---------------------------------------------------------------------------
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip = "*-musllinux* *_i686 pp*"
+build-frontend = "build"
+manylinux-x86_64-image = "manylinux_2_28"
+test-command = "python -c \"import peclet.dem as d; assert hasattr(d,'Simulation'); print('peclet.dem', d.execution_space)\""
+
+[tool.cibuildwheel.environment]
+PECLET_VENDOR_DEPS = "ON"
