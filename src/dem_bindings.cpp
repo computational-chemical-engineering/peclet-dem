@@ -223,6 +223,9 @@ NB_MODULE(_dem, m) {
            "Re-decompose by particle count and migrate ownership now; returns this rank's new owned count.")
       .def("rank", &Simulation::rank, "Return this rank's MPI index.")
       .def("num_ghost", &Simulation::numGhost, "Return the number of ghost particles on this rank.")
+      .def("mpi_rebuilds", &Simulation::mpiRebuilds,
+           "Cumulative halo topology-rebuild count (Verlet-skin path); pair with mpi_gathers() for the ghost-reuse ratio.")
+      .def("mpi_gathers", &Simulation::mpiGathers, "Cumulative ghost gather() count across distributed steps.")
 #endif
       ;
 
