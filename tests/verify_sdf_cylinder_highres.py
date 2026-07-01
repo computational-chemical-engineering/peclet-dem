@@ -6,7 +6,7 @@ import numpy as np
 
 # Add build to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../build'))
-import dem
+from peclet import dem
 
 def run_cylinder_highres():
     # Setup

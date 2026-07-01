@@ -5,7 +5,7 @@ import numpy as np
 
 # Add build to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../build'))
-import dem
+from peclet import dem
 
 def generate_unit_sdf_stl(radius, height, thickness, filename):
     """

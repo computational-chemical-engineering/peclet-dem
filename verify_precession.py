@@ -5,7 +5,7 @@ import math
 
 # Adjust path to find the shared library
 sys.path.append(os.path.join(os.path.dirname(__file__), "build"))
-import dem
+from peclet import dem
 
 def verify_precession():
     # Setup

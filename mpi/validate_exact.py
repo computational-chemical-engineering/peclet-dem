@@ -15,8 +15,8 @@ import os
 import sys
 import numpy as np
 from mpi4py import MPI
-import dem
-import tpx_mpi
+from peclet import dem
+from peclet.core import mpi as tpx_mpi
 
 # M = sync_every (1 = EXACT), R = forward_rotation (1 = forward ghost quaternions). Defaults = EXACT.
 SYNC_EVERY = int(os.environ.get("M", "1"))

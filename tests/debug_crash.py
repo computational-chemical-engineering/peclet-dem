@@ -10,7 +10,7 @@ sys.path.append(build_path)
 print(f"Loading from {build_path}")
 sys.stdout.flush()
 
-import dem
+from peclet import dem
 print("Imported dem.")
 sys.stdout.flush()
 

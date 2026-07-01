@@ -22,19 +22,26 @@ requires = ["scikit-build-core>=0.8", "nanobind>=2.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "dem-gpu"
+name = "peclet-dem"
 version = "0.1.0"
-description = "Performance-portable XPBD Discrete Element Method (Kokkos + ArborX)"
+description = "peclet.dem — performance-portable XPBD Discrete Element Method (Kokkos + ArborX)"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Frank Peters", email = "e.a.j.f.peters@gmail.com" }]
 dependencies = ["numpy>=1.20"]
 
 [project.urls]
-Homepage = "https://github.com/computational-chemical-engineering/dem"
+Homepage = "https://github.com/computational-chemical-engineering/peclet"
+Documentation = "https://github.com/computational-chemical-engineering/peclet"
+Source = "https://github.com/computational-chemical-engineering/dem"
 
 [tool.scikit-build]
 minimum-version = "0.8"
 cmake.version = ">=3.24"
-# The C++ extension is installed by the CMake `install(TARGETS dem ...)` rule (guarded by SKBUILD).
+# The C++ extension + peclet/dem/__init__.py are placed by the CMake install() rules (guarded by
+# SKBUILD) into the peclet namespace; disable package auto-discovery so nothing else is added.
 wheel.install-dir = "."
-sdist.include = ["src", "mpi", "CMakeLists.txt", "README.md"]
+wheel.packages = []
+sdist.include = ["src", "mpi", "packaging", "CMakeLists.txt", "README.md", "LICENSE"]

@@ -1,4 +1,4 @@
-import dem
+from peclet import dem
 import numpy as np
 import sys
 import math

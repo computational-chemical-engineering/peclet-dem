@@ -14,7 +14,7 @@ re-approaches the plane under gravity -> normal impulse -> mu-bounded tangential
 import math, sys
 import numpy as np
 sys.path.insert(0, "build")
-import dem
+from peclet import dem
 
 g, theta = 9.8, math.radians(20.0)
 tan_t = math.tan(theta)

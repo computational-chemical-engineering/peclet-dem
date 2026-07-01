@@ -12,9 +12,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../python"))
 from export_vtp import save_to_vtp
 
 try:
-    import dem
+    from peclet import dem
 except ImportError as e:
-    print(f"Failed to import dem from {build_path}")
+    print(f"Failed to from peclet import dem from {build_path}")
     print(e)
     sys.exit(1)
 

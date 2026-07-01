@@ -9,7 +9,7 @@ Frictionless: a = g sin th, no spin, KE/PE = 1 (all translational).
 import math, sys
 import numpy as np
 sys.path.insert(0, "build")
-import dem
+from peclet import dem
 
 g, theta = 9.8, math.radians(20.0)
 gx, gz = g * math.sin(theta), -g * math.cos(theta)

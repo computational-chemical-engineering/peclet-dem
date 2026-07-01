@@ -15,7 +15,7 @@ from scipy.spatial import cKDTree
 
 sys.path.insert(0, "build")
 sys.path.insert(0, ".")
-import dem  # noqa: E402
+from peclet import dem  # noqa: E402
 
 import pack_meter  # noqa: E402
 

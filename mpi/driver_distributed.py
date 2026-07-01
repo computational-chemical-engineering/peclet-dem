@@ -23,8 +23,8 @@ owner gets its mass-weighted share) is the next step -- see mpi/README.md.
 import sys
 import numpy as np
 from mpi4py import MPI
-import dem
-import tpx_mpi
+from peclet import dem
+from peclet.core import mpi as tpx_mpi
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size

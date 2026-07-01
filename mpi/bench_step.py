@@ -10,7 +10,7 @@ import os
 import time
 import numpy as np
 from mpi4py import MPI
-import dem
+from peclet import dem
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size

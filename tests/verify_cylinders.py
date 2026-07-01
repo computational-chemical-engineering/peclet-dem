@@ -4,7 +4,7 @@ import sys
 import numpy as np
 sys.path.append(os.path.join(os.path.dirname(__file__), '../build'))
 
-import dem
+from peclet import dem
 
 def run_cylinder_test():
     # 1. Setup

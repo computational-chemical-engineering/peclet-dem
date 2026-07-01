@@ -22,7 +22,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, "build")
-import dem  # noqa: E402
+from peclet import dem  # noqa: E402
 
 import pack_meter  # noqa: E402
 

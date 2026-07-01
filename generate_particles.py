@@ -2,7 +2,7 @@ import numpy as np
 from skimage import measure
 from stl import mesh
 
-import dem
+from peclet import dem
 
 def hollow_cylinder_sdf_wrapper(x, y, z):
     # This wrapper function is called by the grid generator.

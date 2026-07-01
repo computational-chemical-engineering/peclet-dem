@@ -45,7 +45,7 @@ static nb::ndarray<nb::numpy, float> flat(std::vector<float>&& v) {
   return tpx::python::vector_to_ndarray(std::move(v), {n}, {1});
 }
 
-NB_MODULE(dem, m) {
+NB_MODULE(_dem, m) {
   m.attr("__doc__") = "DEM-GPU (Kokkos + ArborX): portable XPBD granular dynamics";
 
   if (!Kokkos::is_initialized()) Kokkos::initialize();

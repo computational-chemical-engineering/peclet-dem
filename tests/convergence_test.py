@@ -9,7 +9,7 @@ build_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../build')
 sys.path.append(build_path)
 sys.path.append(os.path.join(os.path.dirname(__file__), "../python"))
 
-import dem
+from peclet import dem
 
 # Numba overlap check (copied from verify_flexible.py)
 try:

@@ -20,8 +20,8 @@ Run: PYTHONPATH=build_sm120:../transport-core/python/build mpirun -np 2 python3 
 import sys
 import numpy as np
 from mpi4py import MPI
-import dem
-import tpx_mpi
+from peclet import dem
+from peclet.core import mpi as tpx_mpi
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size

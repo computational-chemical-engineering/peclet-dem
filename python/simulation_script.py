@@ -1,5 +1,5 @@
 """simulation_script.py - User entry point for DEMGPU simulation (placeholder)"""
-import dem
+from peclet import dem
 
 def main():
     cfg = dem.EngineConfig()

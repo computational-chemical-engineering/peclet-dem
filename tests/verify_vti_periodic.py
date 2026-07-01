@@ -5,7 +5,7 @@ import os
 # Adjust path to find the build module
 sys.path.append(os.path.join(os.getcwd(), 'build'))
 
-import dem
+from peclet import dem
 import numpy as np
 
 def verify_periodic_vti():

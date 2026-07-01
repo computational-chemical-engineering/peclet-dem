@@ -1,6 +1,6 @@
 import sys
 sys.path.append('./build')
-import dem
+from peclet import dem
 import numpy as np
 import time
 import sys

@@ -2,7 +2,7 @@ import numpy as np
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "../build"))
-import dem
+from peclet import dem
 import math
 
 def run_simulation(num_particles, density_target, steps=1000):

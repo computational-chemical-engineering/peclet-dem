@@ -6,7 +6,7 @@ import math
 
 # Add build path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../build")))
-import dem
+from peclet import dem
 
 def test_restitution():
     print("--- Test 1: Normal Restitution ---")

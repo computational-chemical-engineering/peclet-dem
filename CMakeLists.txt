@@ -39,6 +39,14 @@ endif()
 # launch compiler regardless. NOMINSIZE: nanobind's default -Os is rejected by nvcc ("'s': expected a
 # number") since Kokkos device sources compile as CXX through the launch compiler.
 nanobind_add_module(dem NB_STATIC NOMINSIZE src/dem_bindings.cpp)
+# -> peclet.dem._dem (NB_MODULE(_dem)), re-exported by peclet/dem/__init__.py. The __init__ is kept as a
+# plain file under packaging/ (OUTSIDE any importable peclet/ dir, so an incomplete source package can
+# never shadow the installed one) and staged into <build>/peclet/dem so `PYTHONPATH=<build> python …`
+# (`import peclet.dem`) works in the dev loop too.
+set_target_properties(dem PROPERTIES OUTPUT_NAME _dem
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/peclet/dem")
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packaging/dem_init.py
+               ${CMAKE_CURRENT_BINARY_DIR}/peclet/dem/__init__.py COPYONLY)
 target_include_directories(dem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${TPX_INCLUDE})
 target_link_libraries(dem PRIVATE ArborX::ArborX Kokkos::kokkos)
 
@@ -55,5 +63,7 @@ endif()
 # plain `cmake --build` (no `cmake --install`), so the developer workflow is unchanged. SKBUILD is set
 # by scikit-build-core; SKBUILD_PROJECT_NAME-style guards keep it from interfering elsewhere.
 if(DEFINED SKBUILD)
-  install(TARGETS dem LIBRARY DESTINATION . COMPONENT python)
+  install(TARGETS dem LIBRARY DESTINATION peclet/dem COMPONENT python)
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/dem_init.py
+          DESTINATION peclet/dem RENAME __init__.py COMPONENT python)
 endif()
