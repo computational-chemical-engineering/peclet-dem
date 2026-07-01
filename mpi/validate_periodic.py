@@ -10,13 +10,13 @@ periodicity. Agreement means the halo's periodic image ghosts reproduce true per
   distributed : per-block non-periodic + walls; mpi_init(periodic=split) so the halo supplies the
                 wrap-ghosts; migration wraps positions on the periodic axes.
 
-Run: PYTHONPATH=build_sm120:../transport-core/python/build mpirun -np 2 python3 mpi/validate_periodic.py
+Run: PYTHONPATH=build_sm120:../core/python/build mpirun -np 2 python3 mpi/validate_periodic.py
 """
 import os
 import sys
 import numpy as np
 from mpi4py import MPI
-from peclet import dem
+from peclet from peclet import dem
 from peclet.core import mpi as tpx_mpi
 
 comm = MPI.COMM_WORLD

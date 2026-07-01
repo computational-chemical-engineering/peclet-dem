@@ -3,14 +3,14 @@
 
 Env knobs:  PI/VI = position/velocity iterations; M = sync_every (1=EXACT); R = forward_rotation (0/1).
 
-Run:  PYTHONPATH=build_sm120:../transport-core/python/build mpirun -np 2 python3 mpi/bench_step.py
+Run:  PYTHONPATH=build_sm120:../core/python/build mpirun -np 2 python3 mpi/bench_step.py
       M=4 R=0 ... mpirun ...   # spheres, refresh ghosts every 4 iters
 """
 import os
 import time
 import numpy as np
 from mpi4py import MPI
-from peclet import dem
+from peclet from peclet import dem
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size

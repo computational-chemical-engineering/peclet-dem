@@ -7,22 +7,22 @@ particles** (copies within one interaction radius of a block boundary, so each r
 runs locally), plus periodic **load rebalancing** (weighted-ORB SoA ownership migration).
 
 The distributed step now ships **inside the `dem` Kokkos module** as `step_mpi`, gated behind the
-`DEM_MPI` build option (the default module never defines it, so the single-rank module stays
+`PECLET_DEM_MPI` build option (the default module never defines it, so the single-rank module stays
 byte-identical). This document is the status + how-to-build/run + what-is-validated for that step, plus
 the standalone core bring-up harness that still lives in this directory.
 
 ## The shipped distributed step (`dem`, `-DDEM_MPI=ON`)
 
-Build the `dem` module with MPI exposed, against the bootstrapped Kokkos prefix:
+Build the `peclet.dem` module with MPI exposed, against the bootstrapped Kokkos prefix:
 ```bash
 cd dem && source .venv/bin/activate
 cmake -S . -B build -DDEM_MPI=ON -DCMAKE_PREFIX_PATH="$PWD/../extern/install/<backend>"
-cmake --build build -j$(nproc)            # -> build/dem.*.so with init_mpi/enable_mpi_step/step_mpi
+cmake --build build -j$(nproc)            # -> build/peclet/dem/_dem.*.so with init_mpi/enable_mpi_step/step_mpi
 ```
 
 Python surface (gated; present only when built with `-DDEM_MPI=ON`):
 ```python
-import dem
+from peclet import dem
 sim = dem.Simulation()
 sim.initialize_shape(...); sim.set_positions(...)        # as usual
 sim.init_mpi(origin, size, gsize, periodic)              # ORB block decomposition + tpx particle halo
@@ -35,9 +35,9 @@ sim.rebalance()                                          # force a load rebalanc
 ```
 
 ### Implementation
-- `src/mpi_halo.hpp` (`KokkosParticleHalo`) — a thin wrapper over core's
-  `tpx::halo::ParticleHaloTopology<3>` (host topology + periodic image shift), `tpx::halo::ParticleHalo<3>`
-  (on-device gather/scatter + host-staged MPI), `tpx::halo::ParticleMigrator`, and the
+- `src/mpi_halo.hpp` (`ParticleHalo`) — a thin wrapper over core's
+  `peclet::core::halo::ParticleHaloTopology<3>` (host topology + periodic image shift), `peclet::core::halo::ParticleHalo<3>`
+  (on-device gather/scatter + host-staged MPI), `peclet::core::halo::ParticleMigrator`, and the
   weighted-ORB `particle_rebalance` path. Rebuilt each substep from the owned positions.
 - `src/sim.hpp` (`demStepMpi`) — the distributed substep. Identical to the single-rank `demStep` except
   the periodic ghost generation is replaced by a cross-rank gather (ghosts carry **real** mass), and the
@@ -96,8 +96,8 @@ ctest --test-dir mpi/build --output-on-failure        # *_np{1,2,4}
 Force `-DMPIEXEC_EXECUTABLE=/usr/bin/mpirun` (FindMPI may otherwise pick ParaView's bundled mpiexec,
 which launches OpenMPI binaries as singletons).
 
-- **`test_particle_migration.cpp`** — decomposes the periodic domain (`tpx::decomp::BlockDecomposer`),
-  builds a `tpx::halo::DomainMap`, and migrates particles with `tpx::halo::ParticleMigrator`. Each
+- **`test_particle_migration.cpp`** — decomposes the periodic domain (`peclet::core::decomp::BlockDecomposer`),
+  builds a `peclet::core::halo::DomainMap`, and migrates particles with `peclet::core::halo::ParticleMigrator`. Each
   particle's full SoA record is the opaque payload; its position drives ownership. Then calls
   `gatherGhosts(rcut)` to collect copies within one interaction radius of the block boundary (periodic
   images handled) — the input to a local broad-phase. Validated: count conserved, every particle on its

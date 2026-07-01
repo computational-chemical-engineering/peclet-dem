@@ -7,9 +7,9 @@ Per step, each rank:
 
 Run (system python3 has mpi4py + numpy; build both modules first):
     cmake -S . -B build_sm120 -DDEMGPU_ENABLE_MPI=ON && cmake --build build_sm120 --target dem -j
-    cmake -S ../transport-core/python -B ../transport-core/python/build && \
-        cmake --build ../transport-core/python/build -j
-    PYTHONPATH=build_sm120:../transport-core/python/build \
+    cmake -S ../core/python -B ../core/python/build && \
+        cmake --build ../core/python/build -j
+    PYTHONPATH=build_sm120:../core/python/build \
         mpirun -np 4 python3 mpi/driver_distributed.py
 
 STATUS: implements the **FROZEN** scheme. Ghosts are set to inv_mass=0 (via the new dem
@@ -23,7 +23,7 @@ owner gets its mass-weighted share) is the next step -- see mpi/README.md.
 import sys
 import numpy as np
 from mpi4py import MPI
-from peclet import dem
+from peclet from peclet import dem
 from peclet.core import mpi as tpx_mpi
 
 comm = MPI.COMM_WORLD

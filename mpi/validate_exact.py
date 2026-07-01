@@ -9,13 +9,13 @@ If the EXACT scheme is correct, the two agree to within Jacobi/atomic-ordering f
 Non-periodic domain with a ground plane (gravity settling) so the only ghosts are at the
 inter-rank split -- this isolates MPI-ghost correctness from periodic-wrap handling.
 
-Run:  PYTHONPATH=build_sm120:../transport-core/python/build mpirun -np 2 python3 mpi/validate_exact.py
+Run:  PYTHONPATH=build_sm120:../core/python/build mpirun -np 2 python3 mpi/validate_exact.py
 """
 import os
 import sys
 import numpy as np
 from mpi4py import MPI
-from peclet import dem
+from peclet from peclet import dem
 from peclet.core import mpi as tpx_mpi
 
 # M = sync_every (1 = EXACT), R = forward_rotation (1 = forward ghost quaternions). Defaults = EXACT.

@@ -1,9 +1,9 @@
-# Doxygen configuration for dem (dem-gpu). Generates HTML API docs for the Kokkos + ArborX C++ sources
+# Doxygen configuration for dem (peclet-dem). Generates HTML API docs for the Kokkos + ArborX C++ sources
 # (src/) and the distributed-step sources (mpi/). Build with:  doxygen docs/Doxyfile
 # Output lands in docs/html/ ; the Documentation CI workflow publishes it to GitHub Pages.
 
 #---- project -------------------------------------------------------------------------------------
-PROJECT_NAME           = "dem"
+PROJECT_NAME           = "peclet-dem"
 PROJECT_BRIEF          = "Performance-portable XPBD Discrete Element Method (Kokkos + ArborX)"
 OUTPUT_DIRECTORY       = docs
 HTML_OUTPUT            = html

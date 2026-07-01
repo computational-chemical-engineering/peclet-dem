@@ -1,8 +1,8 @@
-# dem-gpu (`dem`)
+# peclet-dem (`peclet.dem`)
 
 Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD solver with SDF-based point-shell collision detection. Built on **Kokkos + ArborX**, so the same source runs on **CUDA, HIP (AMD/LUMI), and OpenMP** backends (selected at build time by the install prefix). Optional MPI for domain partitioning, with **nanobind** Python bindings (zero-copy, via scikit-build-core) for scripting and visualization.
 
-> The CUDA implementation was retired (2026-06): the Kokkos `dem` module was validated against it before the CUDA sources were removed. Restore point: git tag `pre-cuda-retirement`.
+> The CUDA implementation was retired (2026-06): the Kokkos `peclet.dem` module was validated against it before the CUDA sources were removed. Restore point: git tag `pre-cuda-retirement`.
 
 ## Features
 
@@ -16,9 +16,9 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 
 ```text
 ├── CMakeLists.txt              # Build configuration (find_package Kokkos + ArborX)
-├── src                         # Kokkos sources (header-only, namespace dem)
-│   ├── dem_bindings.cpp        # nanobind module entry point (the `dem` module)
-│   ├── sim.hpp                 # KokkosSim facade + the demStep XPBD substep
+├── src                         # Kokkos sources (header-only, namespace peclet::dem)
+│   ├── dem_bindings.cpp        # nanobind module entry point (the `peclet.dem` module)
+│   ├── sim.hpp                 # Simulation facade + the demStep XPBD substep
 │   ├── integration.hpp         # Time integration & prediction
 │   ├── broadphase_arborx.hpp   # ArborX BVH broad-phase
 │   ├── narrowphase.hpp         # Narrow-phase point-shell-vs-SDF collision
@@ -28,7 +28,7 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 │   ├── output_sdf.hpp          # SDF/VTI grid generation (Eikonal)
 │   ├── shapes_portable.hpp     # Analytic shapes (sphere / hollow cylinder / box)
 │   ├── io.hpp                  # LAMMPS-dump + SDF-VTI export
-│   └── mpi_halo.hpp            # Distributed particle halo (core), gated DEM_MPI
+│   └── mpi_halo.hpp            # Distributed particle halo (core), gated PECLET_DEM_MPI
 ├── tests                       # C++ unit tests: kokkos/ (kernels), arborx/, kokkos_mpi/
 ├── docs                        # Documentation
 └── *.py                        # Python verification/example scripts (verify_*.py)
@@ -63,7 +63,7 @@ and exposes the distributed step (`init_mpi` / `enable_mpi_step` / `step_mpi`), 
 balancing — `enable_mpi_step(..., rebalance_every=N)` or an explicit `rebalance()` re-decomposes by
 particle count (weighted ORB) and migrates ownership so each rank keeps a near-equal share.*
 
-The compiled `dem.cpython-....so` is placed in `build/`; run scripts from the root with that directory on `PYTHONPATH`.
+The compiled `peclet.dem` extension is placed in `build/peclet/dem/`; run scripts with `build/` on `PYTHONPATH` (`import peclet.dem`).
 
 ## Running Simulations
 

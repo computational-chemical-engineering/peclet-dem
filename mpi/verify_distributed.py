@@ -15,12 +15,12 @@ Each scenario runs two ways -- serial reference on rank 0 over all N; distribute
      overlap) and the pile geometry (mean/min z).
 
 Aggregate observables match even though per-particle positions differ by Jacobi atomic-ordering noise.
-Run: PYTHONPATH=build_sm120:../transport-core/python/build mpirun -np 2 python3 mpi/verify_distributed.py
+Run: PYTHONPATH=build_sm120:../core/python/build mpirun -np 2 python3 mpi/verify_distributed.py
 """
 import sys
 import numpy as np
 from mpi4py import MPI
-from peclet import dem
+from peclet from peclet import dem
 from peclet.core import mpi as tpx_mpi
 
 comm = MPI.COMM_WORLD

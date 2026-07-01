@@ -12,8 +12,8 @@
 /// Faithful Kokkos port of Simulation::mpi_gather_ghosts / mpi_forward_positions / mpi_forward4. Gated
 /// behind PECLET_DEM_MPI (mirrors cfd's CFD_MPI): the default dem module never
 /// includes this, so it stays byte-identical when the macro is off.
-#ifndef DEM_MPI_HALO_HPP
-#define DEM_MPI_HALO_HPP
+#ifndef PECLET_DEM_MPI_HALO_HPP
+#define PECLET_DEM_MPI_HALO_HPP
 #ifdef PECLET_DEM_MPI
 
 #include <mpi.h>
@@ -412,4 +412,4 @@ class ParticleHalo {
 }  // namespace peclet::dem
 
 #endif  // PECLET_DEM_MPI
-#endif  // DEM_MPI_HALO_HPP
+#endif  // PECLET_DEM_MPI_HALO_HPP

@@ -25,7 +25,7 @@ sysadmin ask), the "MPI / sdflow" section of `../../flow/CLAUDE.md` (the Euleria
 The `dem` module calls `Kokkos::initialize()` (no args) at import, so each rank takes whatever device
 Kokkos selects by default — **device 0** unless the environment restricts it. There is **no**
 `set_cuda_device` helper in the Kokkos module (that was a CUDA-era API). Bind each MPI rank to its own
-GPU by restricting visibility to the **node-local rank** *before* `import dem`:
+GPU by restricting visibility to the **node-local rank** *before* `from peclet import dem`:
 
 ```python
 import os
@@ -34,7 +34,7 @@ from mpi4py import MPI
 world = MPI.COMM_WORLD
 local = world.Split_type(MPI.COMM_TYPE_SHARED)          # ranks sharing a node
 os.environ["CUDA_VISIBLE_DEVICES"] = str(local.rank)    # one visible GPU -> Kokkos uses it as device 0
-import dem                                               # <-- import AFTER setting visibility
+from peclet import dem                                               # <-- import AFTER setting visibility
 ```
 
 Equivalent launcher binding: `mpirun --map-by ppr:1:gpu` (sets `CUDA_VISIBLE_DEVICES` per rank), or a

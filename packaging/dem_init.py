@@ -3,7 +3,7 @@
 A Kokkos + ArborX XPBD solver with SDF point-shell collision for dense particle packing. The compiled
 backend (Serial / OpenMP / CUDA / HIP) is chosen at build time — ``peclet.dem.execution_space`` reports
 which one this build has. The distributed (MPI) step is exposed only in an MPI-enabled build
-(``pip install . --config-settings=cmake.define.DEM_MPI=ON``).
+(``pip install . --config-settings=cmake.define.PECLET_DEM_MPI=ON``).
 
 * :class:`peclet.dem.Simulation` — the packing simulation (initialize_shape, set_positions, step, ...).
 
