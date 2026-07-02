@@ -1,7 +1,7 @@
 # peclet-dem (`peclet.dem`)
 
 [![PyPI version](https://img.shields.io/pypi/v/peclet-dem.svg)](https://pypi.org/project/peclet-dem/)
-[![Python versions](https://img.shields.io/pypi/pyversions/peclet-dem.svg)](https://pypi.org/project/peclet-dem/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://pypi.org/project/peclet-dem/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/computational-chemical-engineering/peclet-dem/actions/workflows/ci.yml/badge.svg)](https://github.com/computational-chemical-engineering/peclet-dem/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21132441.svg)](https://doi.org/10.5281/zenodo.21132441)
