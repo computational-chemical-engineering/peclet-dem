@@ -15,7 +15,7 @@
 
 #include "narrowphase.hpp"
 
-using namespace dem;
+using namespace peclet::dem;
 
 struct CC {
   int a, b;

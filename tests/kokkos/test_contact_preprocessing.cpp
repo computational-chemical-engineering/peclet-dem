@@ -1,4 +1,4 @@
-// Correctness of the Kokkos contact->manifold reduction (dem::reduceContactsToManifoldsKokkos)
+// Correctness of the Kokkos contact->manifold reduction (peclet::dem::reduceContactsToManifoldsKokkos)
 // against a host reference that groups contacts by canonical pair and sums the same per-contact
 // transform. Checks: manifold count == unique pairs; per-pair summed quantities match (float tol);
 // num_points and canonical (bodyA,bodyB) match exactly. Runs on whatever backend Kokkos was built
@@ -14,9 +14,9 @@
 
 #include "contact_preprocessing.hpp"
 
-using dem::ContactC;
-using dem::F4;
-using dem::ManifoldC;
+using peclet::dem::ContactC;
+using peclet::dem::F4;
+using peclet::dem::ManifoldC;
 
 static bool close(float a, float b) { return std::fabs(a - b) <= 1e-3f * (1.0f + std::fabs(b)); }
 static bool close4(const F4& a, const F4& b) {
@@ -57,15 +57,15 @@ int main(int argc, char** argv) {
     }
 
     // --- device reduction ---
-    Kokkos::View<ContactC*, dem::CpMem> dContacts("contacts", Ncontacts);
+    Kokkos::View<ContactC*, peclet::dem::CpMem> dContacts("contacts", Ncontacts);
     {
       auto hc = Kokkos::create_mirror_view(dContacts);
       for (int i = 0; i < Ncontacts; ++i) hc(i) = h[i];
       Kokkos::deep_copy(dContacts, hc);
     }
-    Kokkos::View<ManifoldC*, dem::CpMem> dMan("manifolds", Ncontacts);  // upper bound
-    Kokkos::View<int, dem::CpMem> dCount("count");
-    const int nman = dem::reduceContactsToManifoldsKokkos(dContacts, Ncontacts, dMan, dCount);
+    Kokkos::View<ManifoldC*, peclet::dem::CpMem> dMan("manifolds", Ncontacts);  // upper bound
+    Kokkos::View<int, peclet::dem::CpMem> dCount("count");
+    const int nman = peclet::dem::reduceContactsToManifoldsKokkos(dContacts, Ncontacts, dMan, dCount);
 
     std::vector<ManifoldC> gotMan(nman);
     {
@@ -77,14 +77,14 @@ int main(int argc, char** argv) {
     // --- host reference: group by key, sum the same transform ---
     std::map<std::uint64_t, ManifoldC> ref;
     for (int i = 0; i < Ncontacts; ++i) {
-      const std::uint64_t key = dem::pairKey(h[i]);
+      const std::uint64_t key = peclet::dem::pairKey(h[i]);
       auto it = ref.find(key);
       if (it == ref.end()) {
         ManifoldC m{};
-        dem::decodeKey(key, m.bodyA, m.bodyB);
+        peclet::dem::decodeKey(key, m.bodyA, m.bodyB);
         it = ref.emplace(key, m).first;
       }
-      const ManifoldC t = dem::transformContact(h[i]);
+      const ManifoldC t = peclet::dem::transformContact(h[i]);
       ManifoldC& m = it->second;
       m.num_points += t.num_points;
       F4* md[5] = {&m.normal_sum, &m.torque_armA_sum, &m.torque_armB_sum, &m.rA_sum, &m.rB_sum};
@@ -128,7 +128,7 @@ int main(int argc, char** argv) {
     }
     if (!status) {
       std::printf("[contact_preprocessing] PASS: %d manifolds match host reference (exec: %s)\n",
-                  nman, dem::CpExec::name());
+                  nman, peclet::dem::CpExec::name());
     }
   }
   Kokkos::finalize();

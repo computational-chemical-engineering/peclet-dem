@@ -13,7 +13,7 @@
 
 #include "solver_friction.hpp"
 
-using namespace dem;
+using namespace peclet::dem;
 
 int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
