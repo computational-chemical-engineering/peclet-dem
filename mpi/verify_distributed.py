@@ -20,7 +20,7 @@ Run: PYTHONPATH=build_sm120:../core/python/build mpirun -np 2 python3 mpi/verify
 import sys
 import numpy as np
 from mpi4py import MPI
-from peclet from peclet import dem
+from peclet import dem
 from peclet.core import mpi as tpx_mpi
 
 comm = MPI.COMM_WORLD

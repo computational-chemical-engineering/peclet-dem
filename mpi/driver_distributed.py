@@ -23,7 +23,7 @@ owner gets its mass-weighted share) is the next step -- see mpi/README.md.
 import sys
 import numpy as np
 from mpi4py import MPI
-from peclet from peclet import dem
+from peclet import dem
 from peclet.core import mpi as tpx_mpi
 
 comm = MPI.COMM_WORLD
