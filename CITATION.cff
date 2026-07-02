@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "peclet-dem: performance-portable Discrete Element Method (XPBD) particle simulation"
+abstract: >-
+  A performance-portable Discrete Element Method (DEM) code for dense particle packing: an XPBD solver
+  with SDF-based point-shell collision detection and an ArborX broad phase. Built on Kokkos + ArborX so
+  the same source runs on CUDA, HIP (AMD/LUMI) and OpenMP backends, with an optional distributed step on
+  the peclet-core particle halo (periodic load rebalancing) and nanobind Python bindings.
+type: software
+authors:
+  - family-names: Peters
+    given-names: Frank
+    email: e.a.j.f.peters@gmail.com
+    affiliation: "Eindhoven University of Technology"
+version: 0.2.0
+date-released: "2026-07-02"
+license: MIT
+doi: 10.5281/zenodo.21132441
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.21132441
+    description: "Concept DOI (all versions) — always resolves to the latest release"
+  - type: doi
+    value: 10.5281/zenodo.21132442
+    description: "Version DOI for v0.2.0"
+repository-code: "https://github.com/computational-chemical-engineering/peclet-dem"
+keywords:
+  - discrete element method
+  - XPBD
+  - particle packing
+  - signed distance function
+  - ArborX
+  - Kokkos
+  - GPU computing
+  - MPI
