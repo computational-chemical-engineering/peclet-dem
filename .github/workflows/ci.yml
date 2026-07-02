@@ -30,7 +30,7 @@ jobs:
 
       - name: Cache Kokkos + ArborX install
         id: deps-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/deps-install
           key: kokkos-${{ env.KOKKOS_TAG }}-arborx-${{ env.ARBORX_TAG }}-openmp-${{ runner.os }}
