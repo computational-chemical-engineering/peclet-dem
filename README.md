@@ -1,5 +1,10 @@
 # peclet-dem (`peclet.dem`)
 
+[![PyPI version](https://img.shields.io/pypi/v/peclet-dem.svg)](https://pypi.org/project/peclet-dem/)
+[![Python versions](https://img.shields.io/pypi/pyversions/peclet-dem.svg)](https://pypi.org/project/peclet-dem/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/computational-chemical-engineering/peclet-dem/actions/workflows/ci.yml/badge.svg)](https://github.com/computational-chemical-engineering/peclet-dem/actions/workflows/ci.yml)
+
 Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD solver with SDF-based point-shell collision detection. Built on **Kokkos + ArborX**, so the same source runs on **CUDA, HIP (AMD/LUMI), and OpenMP** backends (selected at build time by the install prefix). Optional MPI for domain partitioning, with **nanobind** Python bindings (zero-copy, via scikit-build-core) for scripting and visualization.
 
 > The CUDA implementation was retired (2026-06): the Kokkos `peclet.dem` module was validated against it before the CUDA sources were removed. Restore point: git tag `pre-cuda-retirement`.
