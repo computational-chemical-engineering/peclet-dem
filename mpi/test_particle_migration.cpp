@@ -3,13 +3,14 @@
 //
 // packing-gpu stores particles as SoA float4 arrays (d_pos[.xyz,.w=inv_mass], d_vel, d_quat,
 // d_ang_vel, d_inv_inertia, d_scale, d_shape_ids) in a periodic box [domain_min, domain_min+size).
-// Here each particle's full per-particle record is the migrator's opaque payload; its position drives
-// ownership. We decompose the domain (ORB over a cell grid covering the box), then over several
-// random-walk + migrate steps require, globally and every step: particle count conserved, every
-// particle on its owning rank, and the id multiset exactly preserved (sum + xor reductions).
+// Here each particle's full per-particle record is the migrator's opaque payload; its position
+// drives ownership. We decompose the domain (ORB over a cell grid covering the box), then over
+// several random-walk + migrate steps require, globally and every step: particle count conserved,
+// every particle on its owning rank, and the id multiset exactly preserved (sum + xor reductions).
 //
-// Host-side: migration is infrequent and host-staged (CUDA-aware MPI is unavailable on this box), so
-// a real integration would download particles, migrate, and upload — the same pattern validated here.
+// Host-side: migration is infrequent and host-staged (CUDA-aware MPI is unavailable on this box),
+// so a real integration would download particles, migrate, and upload — the same pattern validated
+// here.
 #include <mpi.h>
 
 #include <array>
@@ -78,7 +79,10 @@ int main(int argc, char** argv) {
              dmin[2] + frac((std::uint64_t)id * 3 + 2) * dsize[2]};
     pos.push_back(x);
     PackingParticle p{};
-    p.pos[0] = (float)x[0]; p.pos[1] = (float)x[1]; p.pos[2] = (float)x[2]; p.pos[3] = 1.0f;
+    p.pos[0] = (float)x[0];
+    p.pos[1] = (float)x[1];
+    p.pos[2] = (float)x[2];
+    p.pos[3] = 1.0f;
     p.quat[3] = 1.0f;
     p.scale = 1.0f;
     p.shape_id = (int)(id % 4);
@@ -89,7 +93,8 @@ int main(int argc, char** argv) {
   }
 
   std::int64_t expectSum = N * (N - 1) / 2, expectXor = 0;
-  for (std::int64_t i = 0; i < N; ++i) expectXor ^= i;
+  for (std::int64_t i = 0; i < N; ++i)
+    expectXor ^= i;
 
   int fail = 0;
   for (int step = 0; step < 6; ++step) {
@@ -97,7 +102,8 @@ int main(int argc, char** argv) {
 
     std::int64_t lcount = (std::int64_t)pos.size(), lsum = 0, lxor = 0;
     for (std::size_t k = 0; k < pos.size(); ++k) {
-      if (mig.ownerOf(pos[k]) != rank) ++fail;
+      if (mig.ownerOf(pos[k]) != rank)
+        ++fail;
       PackingParticle p;
       std::memcpy(&p, &payload[k * stride], stride);
       lsum += p.id;
@@ -132,7 +138,8 @@ int main(int argc, char** argv) {
   // Invariant: every received ghost image lies within rcut of this rank's block.
   Vec<3> img;
   for (std::size_t k = 0; k < gpos.size(); ++k)
-    if (!mig.withinRcutOfBlock(gpos[k], rank, rcut, img)) ++fail;
+    if (!mig.withinRcutOfBlock(gpos[k], rank, rcut, img))
+      ++fail;
   long long lg = (long long)nghost, gghost = 0;
   MPI_Reduce(&lg, &gghost, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 
@@ -141,9 +148,8 @@ int main(int argc, char** argv) {
   if (rank == 0) {
     std::printf("# %lld ghost particles gathered (rcut=%.2f)\n", gghost, rcut);
     if (total == 0)
-      std::printf(
-          "OK (np=%d): %lld packing particles migrate+ghost correctly over 6 steps\n", size,
-          (long long)N);
+      std::printf("OK (np=%d): %lld packing particles migrate+ghost correctly over 6 steps\n", size,
+                  (long long)N);
     else
       std::fprintf(stderr, "FAILED (np=%d): %d\n", size, total);
   }

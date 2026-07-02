@@ -1,23 +1,20 @@
 /// @file
 /// @brief dem — portable (Kokkos) Simulation facade: the dem flip's host-facing driver.
 ///
-/// Owns a peclet::dem::Particles SoA and runs the full XPBD DEM step by composing the ported kernels in the
-/// simulation.cpp step() order. Exposes a small std::vector-based API (binding-agnostic) so a pybind
-/// module can drive it from Python (set/get arrays, step). Sphere shapes + analytic planes for now.
+/// Owns a peclet::dem::Particles SoA and runs the full XPBD DEM step by composing the ported
+/// kernels in the simulation.cpp step() order. Exposes a small std::vector-based API
+/// (binding-agnostic) so a pybind module can drive it from Python (set/get arrays, step). Sphere
+/// shapes + analytic planes for now.
 #ifndef DEM_SIM_HPP
 #define DEM_SIM_HPP
 
-#include <Kokkos_Core.hpp>
-
 #include <algorithm>
 #include <cmath>
-#include <vector>
-
-#include "peclet/core/common/view.hpp"  // peclet::core::toVector — single-copy device View -> host std::vector (S2a)
-
 #include <cstdio>
 #include <fstream>
+#include <Kokkos_Core.hpp>
 #include <stdexcept>
+#include <vector>
 
 #include "broadphase_arborx.hpp"
 #include "contact_preprocessing.hpp"
@@ -26,6 +23,7 @@
 #include "narrowphase.hpp"
 #include "output_sdf.hpp"
 #include "particles.hpp"
+#include "peclet/core/common/view.hpp"  // peclet::core::toVector — single-copy device View -> host std::vector (S2a)
 #include "periodicity.hpp"
 #include "shapes_portable.hpp"
 #include "solver_friction.hpp"
@@ -38,7 +36,11 @@
 
 namespace peclet::dem {
 
-inline int readInt(Kokkos::View<int, CpMem> v) { int h; Kokkos::deep_copy(h, v); return h; }
+inline int readInt(Kokkos::View<int, CpMem> v) {
+  int h;
+  Kokkos::deep_copy(h, v);
+  return h;
+}
 
 /// One full XPBD DEM substep over the particle SoA (mirrors simulation.cpp Simulation::step()).
 inline void demStep(Particles& P) {
@@ -49,43 +51,54 @@ inline void demStep(Particles& P) {
   // scale = targetScale * factor. (CUDA stores the unscaled target in d_target_scales.)
   if (P.growthFactor != -1.0f && P.growthRate != 0.0f) {
     P.growthFactor *= std::exp(P.growthRate * P.dt);
-    if (P.growthFactor > 1.0f) P.growthFactor = 1.0f;
+    if (P.growthFactor > 1.0f)
+      P.growthFactor = 1.0f;
   }
-  if (P.growthFactor > 0.0f) updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
+  if (P.growthFactor > 0.0f)
+    updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
 
   predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
                         P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
                         P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt);
 
-  { auto ri = P.realIndices;
-    Kokkos::parallel_for("self", Kokkos::RangePolicy<CpExec>(space, 0, P.numReal),
-                         KOKKOS_LAMBDA(int i) { ri(i) = i; }); }
+  {
+    auto ri = P.realIndices;
+    Kokkos::parallel_for(
+        "self", Kokkos::RangePolicy<CpExec>(space, 0, P.numReal),
+        KOKKOS_LAMBDA(int i) { ri(i) = i; });
+  }
   Kokkos::deep_copy(space, P.topGhost, P.numReal);
-  // periodic ghost band = max radius + margin (CUDA config.skin_width = 1.0*global_scale), NOT the small
-  // Verlet broadphase margin -- else particles farther than the Verlet skin from a periodic face are not
-  // ghosted and cross-boundary contacts are missed.
+  // periodic ghost band = max radius + margin (CUDA config.skin_width = 1.0*global_scale), NOT the
+  // small Verlet broadphase margin -- else particles farther than the Verlet skin from a periodic
+  // face are not ghosted and cross-boundary contacts are missed.
   const float ghostBand = 1.0f * P.globalScale;
-  generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred, P.vel,
-                       P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale, P.shapeId,
-                       P.realIndices, P.topGhost);
+  generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred,
+                       P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
+                       P.shapeId, P.realIndices, P.topGhost);
   P.numParticles = readInt(P.topGhost);
 
-  { auto sc = P.scale; auto rad = P.rad; float gs = P.globalScale;
-    Kokkos::parallel_for("rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
-                         KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; }); }
+  {
+    auto sc = P.scale;
+    auto rad = P.rad;
+    float gs = P.globalScale;
+    Kokkos::parallel_for(
+        "rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
+        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; });
+  }
   // Collision detection runs on the PREDICTED state (speculative positions/orientations), matching
   // the CUDA solver — the position solve then corrects posPred against these contacts.
   // findCollisionsArborX already fences + reads the pair count back to host; reuse its return value
   // rather than a second deep_copy of the same P.pairCount scalar (G2).
-  const int np =
-      findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount);
+  const int np = findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin,
+                                      P.pairs, P.pairCount);
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
                        P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
-                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
+                       P.maxOverlap);
   const int nc = readInt(P.contactCount);
 
   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount);
@@ -93,20 +106,23 @@ inline void demStep(Particles& P) {
 
   const bool friction = (P.frictionDynamic > 0.0f);
   if (friction)
-    computePlaneLoadKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred, P.planeFriction);
+    computePlaneLoadKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
+                           P.planeFriction);
 
   for (int it = 0; it < P.velocityIterations; ++it) {
     if (friction)
-      accumulateNormalImpulseKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
-                                    P.realIndices, P.growthRate);
+      accumulateNormalImpulseKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred,
+                                    P.angVelPred, P.realIndices, P.growthRate);
     solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                        P.realIndices, P.growthRate, P.restitutionNormal, P.deltaVel, P.deltaAngVel);
+                        P.realIndices, P.growthRate, P.restitutionNormal, P.deltaVel,
+                        P.deltaAngVel);
     applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
   }
   if (friction) {
     countFrictionContactsKokkos(P.contacts, nc, P.realIndices, P.planeFriction);
     solveContactFrictionKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
-                               P.realIndices, P.planeFriction, P.frictionDynamic, P.deltaVel, P.deltaAngVel);
+                               P.realIndices, P.planeFriction, P.frictionDynamic, P.deltaVel,
+                               P.deltaAngVel);
     applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
   }
 
@@ -116,7 +132,8 @@ inline void demStep(Particles& P) {
   for (int it = 0; it < P.positionIterations; ++it) {
     solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
                         P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
-    applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel, P.constraintCounts);
+    applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
+                       P.constraintCounts);
   }
 
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
@@ -127,37 +144,50 @@ inline void demStep(Particles& P) {
                           P.thermostatKB, P.thermostatTau, P.thermostatTemp, P.dt);
 }
 
-/// Max pair interpenetration on the *committed* state (faithful to CUDA Simulation::compute_overlaps):
-/// copy committed pos/quat into the predicted buffers, regenerate the periodic ghosts from that state, then
-/// run the same broad/narrow phase as demStep and return the recorded max overlap. No solve.
+/// Max pair interpenetration on the *committed* state (faithful to CUDA
+/// Simulation::compute_overlaps): copy committed pos/quat into the predicted buffers, regenerate
+/// the periodic ghosts from that state, then run the same broad/narrow phase as demStep and return
+/// the recorded max overlap. No solve.
 inline float computeOverlapsKokkos(Particles& P) {
   CpExec space;
   const float margin = 0.1f * P.globalScale;
   P.numParticles = P.numReal;
   Kokkos::deep_copy(P.posPred, P.pos);
   Kokkos::deep_copy(P.quatPred, P.quat);
-  { auto ri = P.realIndices;
-    Kokkos::parallel_for("self", Kokkos::RangePolicy<CpExec>(space, 0, P.numReal),
-                         KOKKOS_LAMBDA(int i) { ri(i) = i; }); }
+  {
+    auto ri = P.realIndices;
+    Kokkos::parallel_for(
+        "self", Kokkos::RangePolicy<CpExec>(space, 0, P.numReal),
+        KOKKOS_LAMBDA(int i) { ri(i) = i; });
+  }
   Kokkos::deep_copy(space, P.topGhost, P.numReal);
   const float ghostBand = 1.0f * P.globalScale;
-  generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred, P.vel,
-                       P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale, P.shapeId,
-                       P.realIndices, P.topGhost);
+  generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred,
+                       P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
+                       P.shapeId, P.realIndices, P.topGhost);
   P.numParticles = readInt(P.topGhost);
-  { auto sc = P.scale; auto rad = P.rad; float gs = P.globalScale;
-    Kokkos::parallel_for("rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
-                         KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; }); }
-  findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount);
+  {
+    auto sc = P.scale;
+    auto rad = P.rad;
+    float gs = P.globalScale;
+    Kokkos::parallel_for(
+        "rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
+        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; });
+  }
+  findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs,
+                       P.pairCount);
   const int np = readInt(P.pairCount);
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
                        P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
-                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
+                       P.maxOverlap);
   P.numParticles = P.numReal;
-  float h; Kokkos::deep_copy(h, P.maxOverlap); return h;
+  float h;
+  Kokkos::deep_copy(h, P.maxOverlap);
+  return h;
 }
 
 #ifdef PECLET_DEM_MPI
@@ -172,11 +202,11 @@ inline float computeOverlapsKokkos(Particles& P) {
 ///
 /// PERIODICITY: cross-rank ghosts supply the wrap on DECOMPOSED axes; LOCAL periodic self-ghosts
 /// (ParticleHalo build with includePeriodicSelf) supply it on UNDECOMPOSED periodic axes (a "x1"
-/// ORB axis, e.g. z of a 2x2x1 layout, or np=1). Correct for any layout, including np=1 fully periodic
-/// (it matches the single-GPU demStep to ~roundoff). CAPACITY: a periodic box needs a thick ghost
-/// boundary layer -- a fully periodic box at this rcut needs ~no + (boundary layer) ghost slots, well
-/// above the no*2 the closed case wants -- so size the Simulation capacity for the worst-case ghost
-/// band; gather() throws on overflow rather than corrupting the SoA.
+/// ORB axis, e.g. z of a 2x2x1 layout, or np=1). Correct for any layout, including np=1 fully
+/// periodic (it matches the single-GPU demStep to ~roundoff). CAPACITY: a periodic box needs a
+/// thick ghost boundary layer -- a fully periodic box at this rcut needs ~no + (boundary layer)
+/// ghost slots, well above the no*2 the closed case wants -- so size the Simulation capacity for
+/// the worst-case ghost band; gather() throws on overflow rather than corrupting the SoA.
 inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEvery,
                        bool forwardRotation) {
   CpExec space;
@@ -184,9 +214,11 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
 
   if (P.growthFactor != -1.0f && P.growthRate != 0.0f) {
     P.growthFactor *= std::exp(P.growthRate * P.dt);
-    if (P.growthFactor > 1.0f) P.growthFactor = 1.0f;
+    if (P.growthFactor > 1.0f)
+      P.growthFactor = 1.0f;
   }
-  if (P.growthFactor > 0.0f) updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
+  if (P.growthFactor > 0.0f)
+    updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
 
   // 1. Predict velocity on the owned set (no ghosts yet -> numParticles == numReal).
   P.numParticles = P.numReal;
@@ -198,52 +230,66 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   //    P.numParticles = numReal + numGhost and self-maps realIndices.
   halo.gather(P, rcut);
 
-  { auto sc = P.scale; auto rad = P.rad; float gs = P.globalScale;
-    Kokkos::parallel_for("rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
-                         KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; }); }
+  {
+    auto sc = P.scale;
+    auto rad = P.rad;
+    float gs = P.globalScale;
+    Kokkos::parallel_for(
+        "rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
+        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; });
+  }
 
   // 3. Broad/narrow phase + manifold reduction over owned + ghosts.
   // findCollisionsArborX already fences + reads the pair count back to host; reuse its return value
   // rather than a second deep_copy of the same P.pairCount scalar (G2).
-  const int np =
-      findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount);
+  const int np = findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin,
+                                      P.pairs, P.pairCount);
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
                        P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
-                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
+                       P.maxOverlap);
   const int nc = readInt(P.contactCount);
 
   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount);
   const int nm = readInt(P.manifoldCount);
 
-  // 4. Velocity solve (normal restitution); refresh ghost velocities every syncEvery iters (+ last).
+  // 4. Velocity solve (normal restitution); refresh ghost velocities every syncEvery iters (+
+  // last).
   for (int it = 0; it < P.velocityIterations; ++it) {
     solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                        P.realIndices, P.growthRate, P.restitutionNormal, P.deltaVel, P.deltaAngVel);
+                        P.realIndices, P.growthRate, P.restitutionNormal, P.deltaVel,
+                        P.deltaAngVel);
     applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
     if ((it + 1) % syncEvery == 0 || it == P.velocityIterations - 1) {
       halo.forward(P.velPred);
-      if (forwardRotation) halo.forward(P.angVelPred);
+      if (forwardRotation)
+        halo.forward(P.angVelPred);
     }
   }
 
-  // 5. Apply velocity & predict position, then refresh ghost predicted positions (+ pose if rotating).
+  // 5. Apply velocity & predict position, then refresh ghost predicted positions (+ pose if
+  // rotating).
   applyVelocityAndPredictPositionKokkos(P.numParticles, P.pos, P.invMass, P.vel, P.quat, P.velPred,
                                         P.angVelPred, P.posPred, P.quatPred, P.angVel, P.dt);
   halo.forwardPositions(P.posPred);
-  if (forwardRotation) halo.forward4(P.quatPred);
+  if (forwardRotation)
+    halo.forward4(P.quatPred);
 
-  // 6. Position solve (Projected Jacobi); refresh ghost predicted pose every syncEvery iters (+ last).
+  // 6. Position solve (Projected Jacobi); refresh ghost predicted pose every syncEvery iters (+
+  // last).
   for (int it = 0; it < P.positionIterations; ++it) {
     solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
                         P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
-    applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel, P.constraintCounts);
+    applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
+                       P.constraintCounts);
     if ((it + 1) % syncEvery == 0 || it == P.positionIterations - 1) {
       halo.forwardPositions(P.posPred);
-      if (forwardRotation) halo.forward4(P.quatPred);
+      if (forwardRotation)
+        halo.forward4(P.quatPred);
     }
   }
 
@@ -267,18 +313,26 @@ class Simulation {
     // default sphere shape (radius 1) + identity-ish defaults
     setSphereShape(1.0f);
   }
-  ~Simulation() { auto& r = registry(); r.erase(std::remove(r.begin(), r.end(), this), r.end()); }
-
-  // Teardown safety: the Particles SoA holds Kokkos Views, so they MUST be freed before Kokkos::finalize
-  // (else "deallocated after finalize" aborts). releaseAll() (called from the module's atexit, before
-  // finalize) frees every live Sim's Views, so callers need not `del sim; gc.collect()` themselves.
-  void releaseViews() { P_ = Particles{}; }
-  static void releaseAll() { for (auto* s : registry()) s->releaseViews(); }
-  static std::vector<Simulation*>& registry() { static std::vector<Simulation*> r; return r; }
-
-  void setSphereShape(float radius) {
-    initializeShape(SPHERE, radius, 0.0f, 0.0f);
+  ~Simulation() {
+    auto& r = registry();
+    r.erase(std::remove(r.begin(), r.end(), this), r.end());
   }
+
+  // Teardown safety: the Particles SoA holds Kokkos Views, so they MUST be freed before
+  // Kokkos::finalize (else "deallocated after finalize" aborts). releaseAll() (called from the
+  // module's atexit, before finalize) frees every live Sim's Views, so callers need not `del sim;
+  // gc.collect()` themselves.
+  void releaseViews() { P_ = Particles{}; }
+  static void releaseAll() {
+    for (auto* s : registry())
+      s->releaseViews();
+  }
+  static std::vector<Simulation*>& registry() {
+    static std::vector<Simulation*> r;
+    return r;
+  }
+
+  void setSphereShape(float radius) { initializeShape(SPHERE, radius, 0.0f, 0.0f); }
 
   // Mirror of CUDA Simulation::initialize(shape_type, radius, height, thickness): builds shape 0's
   // descriptor + surface point shell (cylinder/box) and records the per-shape base radius and
@@ -293,9 +347,11 @@ class Simulation {
       params = F4{radius, height, thickness, 0};
       // Dynamic spacing (faithful to CUDA): >=4 pts across thickness, >=20 around circumference.
       float min_dim = std::min(radius, thickness);
-      if (min_dim < 1e-4f) min_dim = radius;  // safety if thickness 0
+      if (min_dim < 1e-4f)
+        min_dim = radius;  // safety if thickness 0
       float spacing = std::min(radius * 0.3f, min_dim * 0.5f);
-      if (spacing < 1e-3f) spacing = 1e-3f;
+      if (spacing < 1e-3f)
+        spacing = 1e-3f;
       shell = genCylinderShell(radius, height, thickness, spacing);
     } else if (shape_type == BOX) {
       // Cube with half-extent = radius (side = 2*radius).
@@ -312,7 +368,11 @@ class Simulation {
     if (nPts > 0) {
       P_.shell = Kokkos::View<float* [3], CpMem>("shell", nPts);
       auto hs = Kokkos::create_mirror_view(P_.shell);
-      for (int i = 0; i < nPts; ++i) { hs(i, 0) = shell[i].x; hs(i, 1) = shell[i].y; hs(i, 2) = shell[i].z; }
+      for (int i = 0; i < nPts; ++i) {
+        hs(i, 0) = shell[i].x;
+        hs(i, 1) = shell[i].y;
+        hs(i, 2) = shell[i].z;
+      }
       Kokkos::deep_copy(P_.shell, hs);
     }
 
@@ -323,19 +383,29 @@ class Simulation {
     // Per-shape inverse inertia (mass=1), faithful to CUDA Simulation::initialize.
     float ix = 1.0f, iy = 1.0f, iz = 1.0f;
     if (shape_type == SPHERE) {
-      if (baseRadius_ > 0.0f) { float v = 2.5f / (baseRadius_ * baseRadius_); ix = iy = iz = v; }
+      if (baseRadius_ > 0.0f) {
+        float v = 2.5f / (baseRadius_ * baseRadius_);
+        ix = iy = iz = v;
+      }
     } else if (shape_type == HOLLOW_CYLINDER) {
       float r_out = baseRadius_, r_in = baseRadius_ - thickness;
-      if (r_in < 0) r_in = 0;
+      if (r_in < 0)
+        r_in = 0;
       float term_r = r_out * r_out + r_in * r_in;
       float I_zz = 0.5f * term_r;
       float I_xx = (1.0f / 12.0f) * (3.0f * term_r + height * height);
-      if (I_xx > 1e-6f) { ix = 1.0f / I_xx; iy = 1.0f / I_xx; }
-      if (I_zz > 1e-6f) iz = 1.0f / I_zz;
+      if (I_xx > 1e-6f) {
+        ix = 1.0f / I_xx;
+        iy = 1.0f / I_xx;
+      }
+      if (I_zz > 1e-6f)
+        iz = 1.0f / I_zz;
     } else if (shape_type == BOX) {
       float L = 2.0f * baseRadius_;
       float I = (1.0f / 6.0f) * L * L;
-      if (I > 1e-6f) { ix = iy = iz = 1.0f / I; }
+      if (I > 1e-6f) {
+        ix = iy = iz = 1.0f / I;
+      }
     }
     defaultInvI_ = F3{ix, iy, iz};
   }
@@ -345,26 +415,47 @@ class Simulation {
   }
   // CUDA Simulation::set_domain(min, max): arbitrary origin; keeps the current periodicity flags.
   void setDomainMinMax(F3 mn, F3 mx) {
-    P_.domain = Domain{mn, mx, F3{mx.x - mn.x, mx.y - mn.y, mx.z - mn.z},
-                       P_.domain.periodic_x, P_.domain.periodic_y, P_.domain.periodic_z};
+    P_.domain = Domain{mn,
+                       mx,
+                       F3{mx.x - mn.x, mx.y - mn.y, mx.z - mn.z},
+                       P_.domain.periodic_x,
+                       P_.domain.periodic_y,
+                       P_.domain.periodic_z};
     P_.skin = 0.1f * P_.globalScale;
   }
   void enablePeriodicity(bool x, bool y, bool z) {
-    P_.domain.periodic_x = x; P_.domain.periodic_y = y; P_.domain.periodic_z = z;
+    P_.domain.periodic_x = x;
+    P_.domain.periodic_y = y;
+    P_.domain.periodic_z = z;
   }
-  std::tuple<float, float, float> getDomainMin() const { return {P_.domain.min.x, P_.domain.min.y, P_.domain.min.z}; }
-  std::tuple<float, float, float> getDomainMax() const { return {P_.domain.max.x, P_.domain.max.y, P_.domain.max.z}; }
+  std::tuple<float, float, float> getDomainMin() const {
+    return {P_.domain.min.x, P_.domain.min.y, P_.domain.min.z};
+  }
+  std::tuple<float, float, float> getDomainMax() const {
+    return {P_.domain.max.x, P_.domain.max.y, P_.domain.max.z};
+  }
   void setGravity(float gx, float gy, float gz) { P_.gravity = F3{gx, gy, gz}; }
   void setThermostat(float temperature, float tau, float kB) {  // Berendsen; tau=0 disables
-    P_.thermostatTemp = temperature; P_.thermostatTau = tau; P_.thermostatKB = kB;
+    P_.thermostatTemp = temperature;
+    P_.thermostatTau = tau;
+    P_.thermostatKB = kB;
   }
-  void setSolverIterations(int pos, int vel) { P_.positionIterations = pos; P_.velocityIterations = vel; }
-  void setGlobalScale(float s) { P_.globalScale = s; P_.skin = 0.1f * s; }
+  void setSolverIterations(int pos, int vel) {
+    P_.positionIterations = pos;
+    P_.velocityIterations = vel;
+  }
+  void setGlobalScale(float s) {
+    P_.globalScale = s;
+    P_.skin = 0.1f * s;
+  }
   void setDt(float dt) { P_.dt = dt; }
-  // (restitution_normal, restitution_tangent, friction) to match CUDA set_material_params; the Kokkos
-  // pipeline currently carries normal restitution + dynamic friction (tangential restitution unused).
+  // (restitution_normal, restitution_tangent, friction) to match CUDA set_material_params; the
+  // Kokkos pipeline currently carries normal restitution + dynamic friction (tangential restitution
+  // unused).
   void setMaterialParams(float restitution_normal, float restitution_tangent, float friction) {
-    P_.restitutionNormal = restitution_normal; P_.frictionDynamic = friction; (void)restitution_tangent;
+    P_.restitutionNormal = restitution_normal;
+    P_.frictionDynamic = friction;
+    (void)restitution_tangent;
   }
   void addPlane(float px, float py, float pz, float nx, float ny, float nz) {
     auto h = Kokkos::create_mirror_view(P_.planes);
@@ -377,7 +468,8 @@ class Simulation {
   // positions: flat [n*3]; (re)sets the real-particle count and default state.
   void setPositions(const std::vector<float>& xyz) {
     const int n = static_cast<int>(xyz.size() / 3);
-    P_.numReal = n; P_.numParticles = n;
+    P_.numReal = n;
+    P_.numParticles = n;
     auto pos = Kokkos::create_mirror_view(P_.pos);
     auto q = Kokkos::create_mirror_view(P_.quat);
     auto im = Kokkos::create_mirror_view(P_.invMass);
@@ -387,85 +479,136 @@ class Simulation {
     auto vel = Kokkos::create_mirror_view(P_.vel);
     auto av = Kokkos::create_mirror_view(P_.angVel);
     for (int i = 0; i < n; ++i) {
-      pos(i, 0) = xyz[3*i]; pos(i, 1) = xyz[3*i+1]; pos(i, 2) = xyz[3*i+2];
-      q(i, 0) = 0; q(i, 1) = 0; q(i, 2) = 0; q(i, 3) = 1;
-      im(i) = 1.0f; sc(i) = 1.0f; sid(i) = 0;
-      ii(i, 0) = defaultInvI_.x; ii(i, 1) = defaultInvI_.y; ii(i, 2) = defaultInvI_.z;
-      vel(i, 0) = vel(i, 1) = vel(i, 2) = 0; av(i, 0) = av(i, 1) = av(i, 2) = 0;
+      pos(i, 0) = xyz[3 * i];
+      pos(i, 1) = xyz[3 * i + 1];
+      pos(i, 2) = xyz[3 * i + 2];
+      q(i, 0) = 0;
+      q(i, 1) = 0;
+      q(i, 2) = 0;
+      q(i, 3) = 1;
+      im(i) = 1.0f;
+      sc(i) = 1.0f;
+      sid(i) = 0;
+      ii(i, 0) = defaultInvI_.x;
+      ii(i, 1) = defaultInvI_.y;
+      ii(i, 2) = defaultInvI_.z;
+      vel(i, 0) = vel(i, 1) = vel(i, 2) = 0;
+      av(i, 0) = av(i, 1) = av(i, 2) = 0;
     }
-    Kokkos::deep_copy(P_.pos, pos); Kokkos::deep_copy(P_.quat, q); Kokkos::deep_copy(P_.invMass, im);
-    Kokkos::deep_copy(P_.scale, sc); Kokkos::deep_copy(P_.invInertia, ii); Kokkos::deep_copy(P_.shapeId, sid);
-    Kokkos::deep_copy(P_.vel, vel); Kokkos::deep_copy(P_.angVel, av);
+    Kokkos::deep_copy(P_.pos, pos);
+    Kokkos::deep_copy(P_.quat, q);
+    Kokkos::deep_copy(P_.invMass, im);
+    Kokkos::deep_copy(P_.scale, sc);
+    Kokkos::deep_copy(P_.invInertia, ii);
+    Kokkos::deep_copy(P_.shapeId, sid);
+    Kokkos::deep_copy(P_.vel, vel);
+    Kokkos::deep_copy(P_.angVel, av);
     Kokkos::deep_copy(P_.targetScale, P_.scale);  // unscaled growth target = the set scale
   }
   void setScalesUniform(float s) {
     auto sc = Kokkos::create_mirror_view(P_.scale);
-    for (int i = 0; i < P_.numReal; ++i) sc(i) = s;
-    Kokkos::deep_copy(P_.scale, sc); Kokkos::deep_copy(P_.targetScale, P_.scale);
+    for (int i = 0; i < P_.numReal; ++i)
+      sc(i) = s;
+    Kokkos::deep_copy(P_.scale, sc);
+    Kokkos::deep_copy(P_.targetScale, P_.scale);
   }
-  // per-particle scales (growth target): flat [n]. scale starts at target (growth factor applies in step).
+  // per-particle scales (growth target): flat [n]. scale starts at target (growth factor applies in
+  // step).
   void setScales(const std::vector<float>& s) {
     auto tsc = Kokkos::create_mirror_view(P_.targetScale);
-    for (int i = 0; i < P_.numReal && i < (int)s.size(); ++i) tsc(i) = s[i];
-    Kokkos::deep_copy(P_.targetScale, tsc); Kokkos::deep_copy(P_.scale, P_.targetScale);
+    for (int i = 0; i < P_.numReal && i < (int)s.size(); ++i)
+      tsc(i) = s[i];
+    Kokkos::deep_copy(P_.targetScale, tsc);
+    Kokkos::deep_copy(P_.scale, P_.targetScale);
   }
   void setVelocities(const std::vector<float>& v) {
     auto vel = Kokkos::create_mirror_view(P_.vel);
-    for (int i = 0; i < P_.numReal && 3*i+2 < (int)v.size(); ++i) { vel(i,0)=v[3*i]; vel(i,1)=v[3*i+1]; vel(i,2)=v[3*i+2]; }
+    for (int i = 0; i < P_.numReal && 3 * i + 2 < (int)v.size(); ++i) {
+      vel(i, 0) = v[3 * i];
+      vel(i, 1) = v[3 * i + 1];
+      vel(i, 2) = v[3 * i + 2];
+    }
     Kokkos::deep_copy(P_.vel, vel);
   }
-  // rigid-body rotation state (the pipeline integrates the gyroscopic Euler term + quaternion already)
+  // rigid-body rotation state (the pipeline integrates the gyroscopic Euler term + quaternion
+  // already)
   void setQuaternions(const std::vector<float>& q) {
     auto h = Kokkos::create_mirror_view(P_.quat);
-    for (int i = 0; i < P_.numReal && 4*i+3 < (int)q.size(); ++i) { h(i,0)=q[4*i]; h(i,1)=q[4*i+1]; h(i,2)=q[4*i+2]; h(i,3)=q[4*i+3]; }
+    for (int i = 0; i < P_.numReal && 4 * i + 3 < (int)q.size(); ++i) {
+      h(i, 0) = q[4 * i];
+      h(i, 1) = q[4 * i + 1];
+      h(i, 2) = q[4 * i + 2];
+      h(i, 3) = q[4 * i + 3];
+    }
     Kokkos::deep_copy(P_.quat, h);
   }
   void setAngularVelocities(const std::vector<float>& w) {
     auto h = Kokkos::create_mirror_view(P_.angVel);
-    for (int i = 0; i < P_.numReal && 3*i+2 < (int)w.size(); ++i) { h(i,0)=w[3*i]; h(i,1)=w[3*i+1]; h(i,2)=w[3*i+2]; }
+    for (int i = 0; i < P_.numReal && 3 * i + 2 < (int)w.size(); ++i) {
+      h(i, 0) = w[3 * i];
+      h(i, 1) = w[3 * i + 1];
+      h(i, 2) = w[3 * i + 2];
+    }
     Kokkos::deep_copy(P_.angVel, h);
   }
   void setInvInertia(const std::vector<float>& ii) {
     auto h = Kokkos::create_mirror_view(P_.invInertia);
-    for (int i = 0; i < P_.numReal && 3*i+2 < (int)ii.size(); ++i) { h(i,0)=ii[3*i]; h(i,1)=ii[3*i+1]; h(i,2)=ii[3*i+2]; }
+    for (int i = 0; i < P_.numReal && 3 * i + 2 < (int)ii.size(); ++i) {
+      h(i, 0) = ii[3 * i];
+      h(i, 1) = ii[3 * i + 1];
+      h(i, 2) = ii[3 * i + 2];
+    }
     Kokkos::deep_copy(P_.invInertia, h);
   }
   void setInvMass(const std::vector<float>& im) {
     auto h = Kokkos::create_mirror_view(P_.invMass);
-    for (int i = 0; i < P_.numReal && i < (int)im.size(); ++i) h(i) = im[i];
+    for (int i = 0; i < P_.numReal && i < (int)im.size(); ++i)
+      h(i) = im[i];
     Kokkos::deep_copy(P_.invMass, h);
   }
   std::vector<float> getAngularVelocities() const {
-    return peclet::core::toVector(Kokkos::subview(P_.angVel, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
+    return peclet::core::toVector(
+        Kokkos::subview(P_.angVel, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getInvInertia() const {
-    return peclet::core::toVector(Kokkos::subview(P_.invInertia, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
+    return peclet::core::toVector(
+        Kokkos::subview(P_.invInertia, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
-  // growth: factor *= exp(rate*dt) per step (capped at 1); new_factor<0 keeps/initialises (0.01 if inactive).
+  // growth: factor *= exp(rate*dt) per step (capped at 1); new_factor<0 keeps/initialises (0.01 if
+  // inactive).
   void setGrowthParams(float rate, float new_factor) {
-    if (P_.growthFactor == -1.0f) P_.growthFactor = (new_factor > 0.0f) ? new_factor : 0.01f;
-    else if (new_factor > 0.0f) P_.growthFactor = new_factor;
+    if (P_.growthFactor == -1.0f)
+      P_.growthFactor = (new_factor > 0.0f) ? new_factor : 0.01f;
+    else if (new_factor > 0.0f)
+      P_.growthFactor = new_factor;
     P_.growthRate = rate;
-    if (P_.growthFactor > 0.0f) updateGrowthScalesKokkos(P_.numReal, P_.scale, P_.targetScale, P_.growthFactor);
+    if (P_.growthFactor > 0.0f)
+      updateGrowthScalesKokkos(P_.numReal, P_.scale, P_.targetScale, P_.growthFactor);
   }
   float growthFactor() const { return P_.growthFactor; }
   float getGrowthRate() const { return P_.growthRate; }
-  // per-particle mass = 1/invMass (0 for fixed/infinite-mass particles), CUDA Simulation::get_masses.
+  // per-particle mass = 1/invMass (0 for fixed/infinite-mass particles), CUDA
+  // Simulation::get_masses.
   std::vector<float> getMasses() const {
-    auto im = Kokkos::create_mirror_view(P_.invMass); Kokkos::deep_copy(im, P_.invMass);
+    auto im = Kokkos::create_mirror_view(P_.invMass);
+    Kokkos::deep_copy(im, P_.invMass);
     std::vector<float> out(P_.numReal);
-    for (int i = 0; i < P_.numReal; ++i) out[i] = (im(i) > 0.0f) ? (1.0f / im(i)) : 0.0f;
+    for (int i = 0; i < P_.numReal; ++i)
+      out[i] = (im(i) > 0.0f) ? (1.0f / im(i)) : 0.0f;
     return out;
   }
 
   std::vector<float> getPositions() const {
-    return peclet::core::toVector(Kokkos::subview(P_.pos, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
+    return peclet::core::toVector(
+        Kokkos::subview(P_.pos, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getVelocities() const {
-    return peclet::core::toVector(Kokkos::subview(P_.vel, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
+    return peclet::core::toVector(
+        Kokkos::subview(P_.vel, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getQuaternions() const {
-    return peclet::core::toVector(Kokkos::subview(P_.quat, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
+    return peclet::core::toVector(
+        Kokkos::subview(P_.quat, Kokkos::make_pair(0, P_.numReal), Kokkos::ALL));
   }
   std::vector<float> getScales() const {
     return peclet::core::toVector(Kokkos::subview(P_.scale, Kokkos::make_pair(0, P_.numReal)));
@@ -473,7 +616,10 @@ class Simulation {
 
   // One XPBD substep (CUDA Simulation::step(dt) semantics): dt>0 sets the timestep; dt==0 is a
   // dynamics-free relaxation step (overlap removal only). Drive the loop from Python.
-  void step(float dt) { P_.dt = dt; demStep(P_); }
+  void step(float dt) {
+    P_.dt = dt;
+    demStep(P_);
+  }
 
   // Max pair interpenetration on the current committed state (CUDA Simulation::compute_overlaps).
   float computeOverlaps() { return computeOverlapsKokkos(P_); }
@@ -482,9 +628,11 @@ class Simulation {
   // scale*globalScale*baseRadius; bounds computed from the particle AABBs.
   void exportLammps(const std::string& filename, int step) const {
     const std::vector<float> pos = getPositions(), vel = getVelocities(), quat = getQuaternions();
-    auto sc = Kokkos::create_mirror_view(P_.scale); Kokkos::deep_copy(sc, P_.scale);
+    auto sc = Kokkos::create_mirror_view(P_.scale);
+    Kokkos::deep_copy(sc, P_.scale);
     std::vector<float> radii(P_.numReal);
-    for (int i = 0; i < P_.numReal; ++i) radii[i] = sc(i) * P_.globalScale * baseRadius_;
+    for (int i = 0; i < P_.numReal; ++i)
+      radii[i] = sc(i) * P_.globalScale * baseRadius_;
     const bool pbc = P_.domain.periodic_x || P_.domain.periodic_y || P_.domain.periodic_z;
     peclet::dem::writeLammpsDump(filename, step, pos, vel, quat, radii, nullptr, nullptr, pbc);
   }
@@ -508,17 +656,20 @@ class Simulation {
                   {std::get<0>(gsize), std::get<1>(gsize), std::get<2>(gsize)},
                   {std::get<0>(periodic), std::get<1>(periodic), std::get<2>(periodic)}, comm);
   }
-  // Enable the distributed step. rcut is the ghost-band width (default = 1.0*globalScale, the periodic
-  // skin used by the single-GPU path); sync_every is the owner->ghost refresh interval (1 = EXACT).
-  // rebalance_every: re-decompose by particle count + migrate ownership every N distributed steps to
-  // keep the per-rank load even as a packing densifies (0 = never; the partition is then fixed at the
-  // initial decomposition, as before). A pure redistribution — the physics result is unchanged.
+  // Enable the distributed step. rcut is the ghost-band width (default = 1.0*globalScale, the
+  // periodic skin used by the single-GPU path); sync_every is the owner->ghost refresh interval (1
+  // = EXACT). rebalance_every: re-decompose by particle count + migrate ownership every N
+  // distributed steps to keep the per-rank load even as a packing densifies (0 = never; the
+  // partition is then fixed at the initial decomposition, as before). A pure redistribution — the
+  // physics result is unchanged.
   void enableMpiStep(double rcut, int sync_every = 1, bool forward_rotation = true,
                      int rebalance_every = 0, double verlet_skin = 0.0) {
-    mpiRcut_ = rcut; mpiSyncEvery_ = sync_every < 1 ? 1 : sync_every; mpiForwardRotation_ = forward_rotation;
+    mpiRcut_ = rcut;
+    mpiSyncEvery_ = sync_every < 1 ? 1 : sync_every;
+    mpiForwardRotation_ = forward_rotation;
     mpiRebalanceEvery_ = rebalance_every < 0 ? 0 : rebalance_every;
-    // Verlet-skin ghost reuse (D2): rebuild the halo topology only when a particle has moved > skin,
-    // instead of every substep. 0 (default) keeps the exact per-substep rebuild.
+    // Verlet-skin ghost reuse (D2): rebuild the halo topology only when a particle has moved >
+    // skin, instead of every substep. 0 (default) keeps the exact per-substep rebuild.
     halo_.setVerletSkin(static_cast<float>(verlet_skin));
   }
   // Halo rebuild stats (D2): topology rebuilds vs total gather() calls (for benchmarking).
@@ -530,7 +681,8 @@ class Simulation {
   void stepMpi(int nsteps) {
     const double rcut = (mpiRcut_ > 0.0) ? mpiRcut_ : 1.0 * P_.globalScale;
     for (int s = 0; s < nsteps; ++s) {
-      if (mpiRebalanceEvery_ > 0 && mpiStepCount_ % mpiRebalanceEvery_ == 0) halo_.rebalance(P_);
+      if (mpiRebalanceEvery_ > 0 && mpiStepCount_ % mpiRebalanceEvery_ == 0)
+        halo_.rebalance(P_);
       demStepMpi(P_, halo_, rcut, mpiSyncEvery_, mpiForwardRotation_);
       ++mpiStepCount_;
     }
@@ -539,49 +691,64 @@ class Simulation {
   int numGhost() const { return halo_.numGhost(); }
 #endif  // PECLET_DEM_MPI
 
-  // SDF grid (get_sdf_grid): Eikonal reconstruction over the domain, flat x-fastest, negative inside solid.
+  // SDF grid (get_sdf_grid): Eikonal reconstruction over the domain, flat x-fastest, negative
+  // inside solid.
   std::vector<float> getSdfGrid(int rx, int ry, int rz) {
-    return peclet::dem::generateSdfKokkos(rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal, P_.pos, P_.quat,
-                                  P_.scale, P_.shapeId, P_.shapes, P_.domain.periodic_x, P_.domain.periodic_y,
-                                  P_.domain.periodic_z);
+    return peclet::dem::generateSdfKokkos(
+        rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal, P_.pos, P_.quat, P_.scale, P_.shapeId,
+        P_.shapes, P_.domain.periodic_x, P_.domain.periodic_y, P_.domain.periodic_z);
   }
 
   int numParticles() const { return P_.numReal; }
   // Live device Views of the owned particle state, for the zero-copy device-array export (H2): the
-  // binding wraps a [0,numReal) subview as a DLPack/__cuda_array_interface__ array (or a NumPy view on
-  // a host backend) referencing this memory — no device->host copy.
+  // binding wraps a [0,numReal) subview as a DLPack/__cuda_array_interface__ array (or a NumPy view
+  // on a host backend) referencing this memory — no device->host copy.
   const V3& positionsView() const { return P_.pos; }
   const V3& velocitiesView() const { return P_.vel; }
   int numContacts() { return readInt(P_.contactCount); }
   int numManifolds() { return readInt(P_.manifoldCount); }
-  float maxOverlap() { float h; Kokkos::deep_copy(h, P_.maxOverlap); return h; }
+  float maxOverlap() {
+    float h;
+    Kokkos::deep_copy(h, P_.maxOverlap);
+    return h;
+  }
 
   // ParaView PolyData (points + Radius + Velocity), faithful to CUDA Simulation::write_vtp:
   // Radius = scale * globalScale * baseRadius.
   void writeVtp(const std::string& filename) const {
-    auto pos = Kokkos::create_mirror_view(P_.pos);   Kokkos::deep_copy(pos, P_.pos);
-    auto sc = Kokkos::create_mirror_view(P_.scale);  Kokkos::deep_copy(sc, P_.scale);
-    auto vel = Kokkos::create_mirror_view(P_.vel);   Kokkos::deep_copy(vel, P_.vel);
+    auto pos = Kokkos::create_mirror_view(P_.pos);
+    Kokkos::deep_copy(pos, P_.pos);
+    auto sc = Kokkos::create_mirror_view(P_.scale);
+    Kokkos::deep_copy(sc, P_.scale);
+    auto vel = Kokkos::create_mirror_view(P_.vel);
+    Kokkos::deep_copy(vel, P_.vel);
     const int n = P_.numReal;
 
     std::ofstream out(filename);
-    if (!out) throw std::runtime_error("Could not open file for writing: " + filename);
+    if (!out)
+      throw std::runtime_error("Could not open file for writing: " + filename);
     out << "<?xml version=\"1.0\"?>\n";
     out << "<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\">\n";
     out << "  <PolyData>\n";
     out << "    <Piece NumberOfPoints=\"" << n << "\" NumberOfVerts=\"0\" "
         << "NumberOfLines=\"0\" NumberOfStrips=\"0\" NumberOfPolys=\"0\">\n";
     out << "      <Points>\n";
-    out << "        <DataArray type=\"Float32\" Name=\"Position\" NumberOfComponents=\"3\" format=\"ascii\">\n";
-    for (int i = 0; i < n; ++i) out << pos(i, 0) << " " << pos(i, 1) << " " << pos(i, 2) << " ";
+    out << "        <DataArray type=\"Float32\" Name=\"Position\" NumberOfComponents=\"3\" "
+           "format=\"ascii\">\n";
+    for (int i = 0; i < n; ++i)
+      out << pos(i, 0) << " " << pos(i, 1) << " " << pos(i, 2) << " ";
     out << "\n        </DataArray>\n";
     out << "      </Points>\n";
     out << "      <PointData Scalars=\"Radius\">\n";
-    out << "        <DataArray type=\"Float32\" Name=\"Radius\" NumberOfComponents=\"1\" format=\"ascii\">\n";
-    for (int i = 0; i < n; ++i) out << sc(i) * P_.globalScale * baseRadius_ << " ";
+    out << "        <DataArray type=\"Float32\" Name=\"Radius\" NumberOfComponents=\"1\" "
+           "format=\"ascii\">\n";
+    for (int i = 0; i < n; ++i)
+      out << sc(i) * P_.globalScale * baseRadius_ << " ";
     out << "\n        </DataArray>\n";
-    out << "        <DataArray type=\"Float32\" Name=\"Velocity\" NumberOfComponents=\"3\" format=\"ascii\">\n";
-    for (int i = 0; i < n; ++i) out << vel(i, 0) << " " << vel(i, 1) << " " << vel(i, 2) << " ";
+    out << "        <DataArray type=\"Float32\" Name=\"Velocity\" NumberOfComponents=\"3\" "
+           "format=\"ascii\">\n";
+    for (int i = 0; i < n; ++i)
+      out << vel(i, 0) << " " << vel(i, 1) << " " << vel(i, 2) << " ";
     out << "\n        </DataArray>\n";
     out << "      </PointData>\n";
     out << "    </Piece>\n";

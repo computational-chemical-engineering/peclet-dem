@@ -1,12 +1,13 @@
 /// @file
 /// @brief dem — portable (Kokkos) narrow-phase: SDF point-shell collision + boundary planes.
 ///
-/// Kokkos port of detect_contacts_kernel / detect_boundary_kernel (narrowphase.cu) over the particle
-/// SoA expressed as Kokkos Views (positions/quaternions as View<float*[3]>/[4], scales/shape-ids as
-/// View<float*>/<int*> — backend-default layout, so coalesced on GPU and cache-friendly on CPU). The
-/// per-point math is a faithful copy of the CUDA kernels (same scale/global_scale handling, same
-/// central-difference normal, same contact geometry) so results match. Analytic shapes only for now;
-/// grid-SDF (texture) returns +inf (peclet::dem::sdfEval), as in the CUDA placeholder.
+/// Kokkos port of detect_contacts_kernel / detect_boundary_kernel (narrowphase.cu) over the
+/// particle SoA expressed as Kokkos Views (positions/quaternions as View<float*[3]>/[4],
+/// scales/shape-ids as View<float*>/<int*> — backend-default layout, so coalesced on GPU and
+/// cache-friendly on CPU). The per-point math is a faithful copy of the CUDA kernels (same
+/// scale/global_scale handling, same central-difference normal, same contact geometry) so results
+/// match. Analytic shapes only for now; grid-SDF (texture) returns +inf (peclet::dem::sdfEval), as
+/// in the CUDA placeholder.
 #ifndef DEM_NARROWPHASE_HPP
 #define DEM_NARROWPHASE_HPP
 
@@ -19,10 +20,10 @@ namespace peclet::dem {
 
 /// Portable mirror of ShapeDescriptor (analytic fields + a flat-array point shell).
 struct ShapeDesc {
-  int type;        // peclet::dem::ShapeKind
-  F4 params;       // analytic parameters (see sdf_analytic)
-  int shellOffset; // start index into the flat shell-points View
-  int numPoints;   // shell size; 0 => analytic single-probe (sphere center)
+  int type;         // peclet::dem::ShapeKind
+  F4 params;        // analytic parameters (see sdf_analytic)
+  int shellOffset;  // start index into the flat shell-points View
+  int numPoints;    // shell size; 0 => analytic single-probe (sphere center)
 };
 
 struct PlaneP {
@@ -37,21 +38,27 @@ using ScalarF = Kokkos::View<const float*, CpMem>;
 using ScalarI = Kokkos::View<const int*, CpMem>;
 using ShellView = Kokkos::View<const float* [3], CpMem>;
 
-KOKKOS_INLINE_FUNCTION F3 loadF3(PosView v, int i) { return F3{v(i, 0), v(i, 1), v(i, 2)}; }
-KOKKOS_INLINE_FUNCTION F4 loadF4(QuatView v, int i) { return F4{v(i, 0), v(i, 1), v(i, 2), v(i, 3)}; }
+KOKKOS_INLINE_FUNCTION F3 loadF3(PosView v, int i) {
+  return F3{v(i, 0), v(i, 1), v(i, 2)};
+}
+KOKKOS_INLINE_FUNCTION F4 loadF4(QuatView v, int i) {
+  return F4{v(i, 0), v(i, 1), v(i, 2), v(i, 3)};
+}
 
 /// Pair point-shell vs SDF contacts. pairs[numPairs][2] are (idA,idB) from the broad-phase; emits
 /// ContactC into outContacts guarded by atomic outCount (clamped to outContacts.extent(0)).
-inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int numPairs, PosView pos,
-                                 QuatView quat, ScalarF scale, ScalarI shapeId,
+inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int numPairs,
+                                 PosView pos, QuatView quat, ScalarF scale, ScalarI shapeId,
                                  Kokkos::View<const ShapeDesc*, CpMem> shapes, ShellView shell,
                                  float globalScale, float margin,
                                  Kokkos::View<ContactC*, CpMem> outContacts,
-                                 Kokkos::View<int, CpMem> outCount, Kokkos::View<float, CpMem> maxOverlap) {
+                                 Kokkos::View<int, CpMem> outCount,
+                                 Kokkos::View<float, CpMem> maxOverlap) {
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
-      "peclet::dem::np::contacts", Kokkos::RangePolicy<CpExec>(space, 0, numPairs), KOKKOS_LAMBDA(int idx) {
+      "peclet::dem::np::contacts", Kokkos::RangePolicy<CpExec>(space, 0, numPairs),
+      KOKKOS_LAMBDA(int idx) {
         const int idA = pairs(idx, 0), idB = pairs(idx, 1);
         const ShapeDesc dA = shapes(shapeId(idA));
         const ShapeDesc dB = shapes(shapeId(idB));
@@ -79,9 +86,11 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
 
           const float dist = sdfEval(pCanB, dB.type, dB.params) * scaleB;
           const float effDist = dist - pointRadius;
-          if (effDist >= margin) continue;
+          if (effDist >= margin)
+            continue;
 
-          if (effDist < 0.0f) Kokkos::atomic_max(&maxOverlap(), -effDist);
+          if (effDist < 0.0f)
+            Kokkos::atomic_max(&maxOverlap(), -effDist);
           const int slot = Kokkos::atomic_fetch_add(&outCount(), 1);
           if (slot >= maxContacts) {
             Kokkos::atomic_add(&outCount(), -1);
@@ -125,16 +134,19 @@ inline void detectBoundaryKokkos(int numReal, int numPlanes, PosView pos, QuatVi
                                  Kokkos::View<const ShapeDesc*, CpMem> shapes, ShellView shell,
                                  Kokkos::View<const PlaneP*, CpMem> planes, float globalScale,
                                  float margin, Kokkos::View<ContactC*, CpMem> outContacts,
-                                 Kokkos::View<int, CpMem> outCount, Kokkos::View<float, CpMem> maxOverlap) {
+                                 Kokkos::View<int, CpMem> outCount,
+                                 Kokkos::View<float, CpMem> maxOverlap) {
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
-      "peclet::dem::np::boundary", Kokkos::RangePolicy<CpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::np::boundary", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
+      KOKKOS_LAMBDA(int i) {
         const F3 posA = loadF3(pos, i);
         const float s = scale(i) * globalScale;
         const ShapeDesc d = shapes(shapeId(i));
         float baseR = d.params.x;
-        if (baseR == 0.0f) baseR = 1.0f;
+        if (baseR == 0.0f)
+          baseR = 1.0f;
         const float radius = baseR * s;
         const int numPts = d.numPoints;
         const F4 qA = loadF4(quat, i);
@@ -145,11 +157,14 @@ inline void detectBoundaryKokkos(int numReal, int numPlanes, PosView pos, QuatVi
           if (numPts > 0) {
             for (int k = 0; k < numPts; ++k) {
               const int si = d.shellOffset + k;
-              const F3 rA = rotateVector(qA, scale3(F3{shell(si, 0), shell(si, 1), shell(si, 2)}, s));
+              const F3 rA =
+                  rotateVector(qA, scale3(F3{shell(si, 0), shell(si, 1), shell(si, 2)}, s));
               const F3 pwk = add3(posA, rA);
               const float dist = dot3(sub3(pwk, pl.point), pl.normal);
-              if (dist >= margin) continue;
-              if (dist < 0.0f) Kokkos::atomic_max(&maxOverlap(), -dist);
+              if (dist >= margin)
+                continue;
+              if (dist < 0.0f)
+                Kokkos::atomic_max(&maxOverlap(), -dist);
               const int slot = Kokkos::atomic_fetch_add(&outCount(), 1);
               if (slot >= maxContacts) {
                 Kokkos::atomic_add(&outCount(), -1);
@@ -168,8 +183,10 @@ inline void detectBoundaryKokkos(int numReal, int numPlanes, PosView pos, QuatVi
             }
           } else {
             const float dist = dot3(sub3(posA, pl.point), pl.normal) - radius;
-            if (dist >= margin) continue;
-            if (dist < 0.0f) Kokkos::atomic_max(&maxOverlap(), -dist);
+            if (dist >= margin)
+              continue;
+            if (dist < 0.0f)
+              Kokkos::atomic_max(&maxOverlap(), -dist);
             const int slot = Kokkos::atomic_fetch_add(&outCount(), 1);
             if (slot >= maxContacts) {
               Kokkos::atomic_add(&outCount(), -1);

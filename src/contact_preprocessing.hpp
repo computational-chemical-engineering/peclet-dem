@@ -4,9 +4,10 @@
 ///
 /// Same pipeline: key each contact by its canonical pair, group by key, and within a group sum the
 /// aligned normals / torque arms / lever arms and count the points. thrust::sort_by_key +
-/// reduce_by_key become Kokkos::Experimental::sort_by_key + a scan-based segmented reduction (atomic
-/// accumulation), so no thrust/cub. The per-contact math (ContactToManifold / TransformAndFilter) is
-/// reused verbatim as KOKKOS_INLINE_FUNCTION and is shared with the host reference in the test.
+/// reduce_by_key become Kokkos::Experimental::sort_by_key + a scan-based segmented reduction
+/// (atomic accumulation), so no thrust/cub. The per-contact math (ContactToManifold /
+/// TransformAndFilter) is reused verbatim as KOKKOS_INLINE_FUNCTION and is shared with the host
+/// reference in the test.
 ///
 /// One intentional change vs the thrust version: a manifold's (bodyA,bodyB) is decoded determinist
 /// -ically from the pair key (canonical min/max, or (idA,-1) for boundary), rather than taken from
@@ -15,10 +16,9 @@
 #ifndef DEM_CONTACT_PREPROCESSING_HPP
 #define DEM_CONTACT_PREPROCESSING_HPP
 
+#include <cstdint>
 #include <Kokkos_Core.hpp>
 #include <Kokkos_Sort.hpp>
-
-#include <cstdint>
 
 #include "dem_portable.hpp"  // F4, cross3
 
@@ -30,10 +30,10 @@ using CpMem = CpExec::memory_space;
 /// Portable mirror of ParticleSystem.cuh ContactConstraint (the fields this reduction touches).
 struct ContactC {
   int bodyA;
-  int bodyB;  // < 0 => boundary/static
-  F4 normal;  // .xyz = world normal
-  F4 rA;      // lever arm on A
-  F4 rB;      // lever arm on B
+  int bodyB;   // < 0 => boundary/static
+  F4 normal;   // .xyz = world normal
+  F4 rA;       // lever arm on A
+  F4 rB;       // lever arm on B
   float dist;  // signed penetration (>0 => inactive)
   float friction_lambda_n;
   float weight;
@@ -54,7 +54,8 @@ struct ManifoldC {
 /// Canonical pair key: (min<<32)|max, or (idA<<32)|0xFFFFFFFF for a boundary (idB<0) contact.
 KOKKOS_INLINE_FUNCTION std::uint64_t pairKey(const ContactC& c) {
   const int idA = c.bodyA, idB = c.bodyB;
-  if (idB < 0) return (static_cast<std::uint64_t>(static_cast<unsigned>(idA)) << 32) | 0xFFFFFFFFu;
+  if (idB < 0)
+    return (static_cast<std::uint64_t>(static_cast<unsigned>(idA)) << 32) | 0xFFFFFFFFu;
   const unsigned u = (idA < idB) ? idA : idB;
   const unsigned v = (idA < idB) ? idB : idA;
   return (static_cast<std::uint64_t>(u) << 32) | v;
@@ -102,8 +103,8 @@ KOKKOS_INLINE_FUNCTION ManifoldC transformContact(const ContactC& c) {
   return m;
 }
 
-/// Reduce `n` contacts to manifolds (one per unique canonical pair). outManifolds must hold at least
-/// the number of unique pairs; returns that count (also written to outCount).
+/// Reduce `n` contacts to manifolds (one per unique canonical pair). outManifolds must hold at
+/// least the number of unique pairs; returns that count (also written to outCount).
 inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, int n,
                                            Kokkos::View<ManifoldC*, CpMem> outManifolds,
                                            Kokkos::View<int, CpMem> outCount) {
@@ -114,8 +115,10 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
   }
 
   // 1. Key every contact and seed an identity permutation.
-  Kokkos::View<std::uint64_t*, CpMem> keys(Kokkos::view_alloc(space, "peclet::dem::cp::keys", Kokkos::WithoutInitializing), n);
-  Kokkos::View<int*, CpMem> perm(Kokkos::view_alloc(space, "peclet::dem::cp::perm", Kokkos::WithoutInitializing), n);
+  Kokkos::View<std::uint64_t*, CpMem> keys(
+      Kokkos::view_alloc(space, "peclet::dem::cp::keys", Kokkos::WithoutInitializing), n);
+  Kokkos::View<int*, CpMem> perm(
+      Kokkos::view_alloc(space, "peclet::dem::cp::perm", Kokkos::WithoutInitializing), n);
   Kokkos::parallel_for(
       "peclet::dem::cp::key", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
         keys(i) = pairKey(contacts(i));
@@ -126,14 +129,17 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
   Kokkos::Experimental::sort_by_key(space, keys, perm);
 
   // 3. Segment id per sorted position: inclusive scan of "key changed" minus 1.
-  Kokkos::View<int*, CpMem> segId(Kokkos::view_alloc(space, "peclet::dem::cp::segId", Kokkos::WithoutInitializing), n);
+  Kokkos::View<int*, CpMem> segId(
+      Kokkos::view_alloc(space, "peclet::dem::cp::segId", Kokkos::WithoutInitializing), n);
   int numSeg = 0;
   Kokkos::parallel_scan(
       "peclet::dem::cp::segscan", Kokkos::RangePolicy<CpExec>(space, 0, n),
       KOKKOS_LAMBDA(int p, int& run, const bool final) {
         const bool isNew = (p == 0) || (keys(p) != keys(p - 1));
-        if (isNew) ++run;
-        if (final) segId(p) = run - 1;  // 0-based segment index
+        if (isNew)
+          ++run;
+        if (final)
+          segId(p) = run - 1;  // 0-based segment index
       },
       numSeg);
 

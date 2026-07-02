@@ -2,9 +2,10 @@
 /// @brief dem — portable (host) surface-shell point generators for the analytic shapes.
 ///
 /// Faithful copy of shapes/point_sampler.cpp (generate_cylinder_points / generate_box_points), but
-/// emitting peclet::dem::F3 instead of CUDA float4 so the Kokkos module can build the point shell without the
-/// CUDA vector_types.h dependency. The point math (spacing, ceil counts, cos/sin sampling, cap annulus,
-/// box faces incl. edges/corners) is byte-for-byte the same so the generated shells match the CUDA path.
+/// emitting peclet::dem::F3 instead of CUDA float4 so the Kokkos module can build the point shell
+/// without the CUDA vector_types.h dependency. The point math (spacing, ceil counts, cos/sin
+/// sampling, cap annulus, box faces incl. edges/corners) is byte-for-byte the same so the generated
+/// shells match the CUDA path.
 #ifndef DEM_SHAPES_PORTABLE_HPP
 #define DEM_SHAPES_PORTABLE_HPP
 
@@ -17,7 +18,8 @@ namespace peclet::dem {
 
 // Surface point shell of a hollow cylinder (outer wall + inner wall if thick + top/bottom annulus
 // caps). Faithful copy of generate_cylinder_points.
-inline std::vector<F3> genCylinderShell(float radius, float height, float thickness, float spacing) {
+inline std::vector<F3> genCylinderShell(float radius, float height, float thickness,
+                                        float spacing) {
   std::vector<F3> points;
 
   float r_outer = radius;
@@ -73,8 +75,8 @@ inline std::vector<F3> genCylinderShell(float radius, float height, float thickn
   return points;
 }
 
-// Surface points of an axis-aligned box: each of the 6 faces sampled on a grid whose endpoints land on
-// the box edges (so the 8 corners are present). Faithful copy of generate_box_points.
+// Surface points of an axis-aligned box: each of the 6 faces sampled on a grid whose endpoints land
+// on the box edges (so the 8 corners are present). Faithful copy of generate_box_points.
 inline std::vector<F3> genBoxShell(float hx, float hy, float hz, float spacing) {
   std::vector<F3> points;
   auto nseg = [&](float half) {

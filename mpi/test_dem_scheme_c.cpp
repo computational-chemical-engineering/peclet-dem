@@ -1,14 +1,15 @@
 // Scheme C (the user's): compute each pair once, reverse-accumulate forces to owners, then FORWARD
-// the total force to ghosts and integrate ghosts LOCALLY — so ghost state is re-derived by each rank
-// rather than imported. Validated with transport-core's ParticleHaloTopology (reverse + forward).
+// the total force to ghosts and integrate ghosts LOCALLY — so ghost state is re-derived by each
+// rank rather than imported. Validated with transport-core's ParticleHaloTopology (reverse +
+// forward).
 //
 // Two checks, np=1,2,4:
 //   (1) owned trajectories match a serial all-pairs reference (forces are correct), and
 //   (2) the locally-integrated ghost copies stay consistent with their owners
 //       (forwardPositions(current owned) == the locally-integrated ghost positions).
-// To isolate the local-integration property the halo is built ONCE with a skin and positions are not
-// wrapped (periodicity is handled by the min-image force); particles drift << skin over the run.
-// Scheme A is in test_dem_step.cpp, scheme B in test_dem_scheme_b.cpp.
+// To isolate the local-integration property the halo is built ONCE with a skin and positions are
+// not wrapped (periodicity is handled by the min-image force); particles drift << skin over the
+// run. Scheme A is in test_dem_step.cpp, scheme B in test_dem_scheme_b.cpp.
 #include <mpi.h>
 
 #include <cmath>
@@ -37,7 +38,9 @@ static constexpr double kStiff = 0.2, kDt = 0.02, kDamp = 0.99;
 struct F3 {
   double v[3] = {0, 0, 0};
   F3& operator+=(const F3& o) {
-    v[0] += o.v[0]; v[1] += o.v[1]; v[2] += o.v[2];
+    v[0] += o.v[0];
+    v[1] += o.v[1];
+    v[2] += o.v[2];
     return *this;
   }
 };
@@ -47,17 +50,23 @@ struct Pay {
 };
 static double frac(std::uint64_t x, int s) {
   x ^= (std::uint64_t)s * 2654435761u;
-  x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33;
+  x ^= x >> 33;
+  x *= 0xff51afd7ed558ccdULL;
+  x ^= x >> 33;
   return (double)(x & 0xFFFFFF) / (double)0x1000000;
 }
-static double mi(double d, double L) { return d - L * std::round(d / L); }
+static double mi(double d, double L) {
+  return d - L * std::round(d / L);
+}
 static F3 pf(const Vec<3>& a, const Vec<3>& b) {
   double s[3] = {mi(a[0] - b[0], Ld[0]), mi(a[1] - b[1], Ld[1]), mi(a[2] - b[2], Ld[2])};
   double d = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
   F3 f;
   if (d < kRcut && d > 1e-12) {
     double m = kStiff * (kRcut - d) / d;
-    f.v[0] = m * s[0]; f.v[1] = m * s[1]; f.v[2] = m * s[2];
+    f.v[0] = m * s[0];
+    f.v[1] = m * s[1];
+    f.v[2] = m * s[2];
   }
   return f;
 }
@@ -82,7 +91,8 @@ int main(int argc, char** argv) {
     std::vector<F3> F(N);
     for (std::int64_t i = 0; i < N; ++i)
       for (std::int64_t j = 0; j < N; ++j)
-        if (j != i) F[i] += pf(sp[i], sp[j]);
+        if (j != i)
+          F[i] += pf(sp[i], sp[j]);
     for (std::int64_t i = 0; i < N; ++i)
       for (int a = 0; a < 3; ++a) {
         sv[i][a] = (sv[i][a] + F[i].v[a] * kDt) * kDamp;
@@ -110,7 +120,8 @@ int main(int argc, char** argv) {
   for (std::int64_t id = rank; id < N; id += size) {
     pos.push_back(p0[id]);
     Pay p{};
-    for (int a = 0; a < 3; ++a) p.vel[a] = v0[id][a];
+    for (int a = 0; a < 3; ++a)
+      p.vel[a] = v0[id][a];
     p.id = id;
     std::size_t off = payload.size();
     payload.resize(off + stride);
@@ -133,7 +144,8 @@ int main(int argc, char** argv) {
   std::vector<Vec<3>> gpos = halo.ghostPositions();
   std::vector<Vec<3>> gvel(G);
   std::vector<double> ownIdD(n), ghIdD(G);
-  for (std::size_t i = 0; i < n; ++i) ownIdD[i] = (double)id[i];
+  for (std::size_t i = 0; i < n; ++i)
+    ownIdD[i] = (double)id[i];
   halo.forward(ownIdD.data(), ghIdD.data());
   halo.forward(vel.data(), gvel.data());  // initial ghost velocities
 
@@ -147,14 +159,15 @@ int main(int argc, char** argv) {
       }
     for (std::size_t i = 0; i < n; ++i)
       for (std::size_t g = 0; g < G; ++g) {
-        if (id[i] >= (std::int64_t)std::llround(ghIdD[g])) continue;
+        if (id[i] >= (std::int64_t)std::llround(ghIdD[g]))
+          continue;
         F3 f = pf(pos[i], gpos[g]);
         Fown[i] += f;
         Fgh[g] += F3{{-f.v[0], -f.v[1], -f.v[2]}};
       }
-    halo.reverse(Fgh.data(), Fown.data());        // owners get total force
+    halo.reverse(Fgh.data(), Fown.data());  // owners get total force
     std::vector<F3> FghTot(G);
-    halo.forward(Fown.data(), FghTot.data());      // ghosts get THEIR total force
+    halo.forward(Fown.data(), FghTot.data());  // ghosts get THEIR total force
 
     for (std::size_t i = 0; i < n; ++i)
       for (int a = 0; a < 3; ++a) {
@@ -178,14 +191,17 @@ int main(int argc, char** argv) {
   halo.forwardPositions(pos.data(), fresh.data());
   for (std::size_t g = 0; g < G; ++g)
     for (int a = 0; a < 3; ++a)
-      if (std::fabs(fresh[g][a] - gpos[g][a]) > 1e-9) ++fail;
+      if (std::fabs(fresh[g][a] - gpos[g][a]) > 1e-9)
+        ++fail;
 
   int total = 0;
   MPI_Allreduce(&fail, &total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   if (rank == 0) {
     if (total == 0)
-      std::printf("OK (np=%d): scheme C (local ghost integration via forwarded forces) matches serial"
-                  " AND ghosts stay consistent\n", size);
+      std::printf(
+          "OK (np=%d): scheme C (local ghost integration via forwarded forces) matches serial"
+          " AND ghosts stay consistent\n",
+          size);
     else
       std::fprintf(stderr, "FAILED (np=%d): %d\n", size, total);
   }

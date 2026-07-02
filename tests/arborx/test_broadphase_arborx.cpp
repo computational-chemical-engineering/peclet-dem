@@ -5,11 +5,10 @@
 // queries but can be hit), run the ArborX broad-phase, and require the emitted pair set {(i<j)} to
 // equal the set of all i<j (i real) whose padded AABBs overlap. Run on whatever backend Kokkos was
 // built for (CUDA locally; OpenMP for CI).
-#include <Kokkos_Core.hpp>
-
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <Kokkos_Core.hpp>
 #include <random>
 #include <set>
 #include <utility>
@@ -58,7 +57,8 @@ int main(int argc, char** argv) {
     Kokkos::View<int* [2], dem::BpMem> outPairs("pairs", maxPairs);
     Kokkos::View<int, dem::BpMem> outCount("count");
 
-    const int n = dem::findCollisionsArborX(pos, rad, numParticles, numReal, margin, outPairs, outCount);
+    const int n =
+        dem::findCollisionsArborX(pos, rad, numParticles, numReal, margin, outPairs, outCount);
 
     if (n > maxPairs) {
       std::fprintf(stderr, "FAIL: pair buffer overflow (%d > %d)\n", n, maxPairs);
@@ -70,7 +70,8 @@ int main(int argc, char** argv) {
     {
       auto hp = Kokkos::create_mirror_view(outPairs);
       Kokkos::deep_copy(hp, outPairs);
-      for (int k = 0; k < n && k < maxPairs; ++k) got.insert({hp(k, 0), hp(k, 1)});
+      for (int k = 0; k < n && k < maxPairs; ++k)
+        got.insert({hp(k, 0), hp(k, 1)});
     }
 
     // Brute-force oracle: i real, i<j, AABBs overlap on every axis (half = r+margin).
@@ -90,10 +91,13 @@ int main(int argc, char** argv) {
     if (got != expect) {
       std::size_t missing = 0, extra = 0;
       for (const auto& p : expect)
-        if (!got.count(p)) ++missing;
+        if (!got.count(p))
+          ++missing;
       for (const auto& p : got)
-        if (!expect.count(p)) ++extra;
-      std::fprintf(stderr, "FAIL: pair sets differ — got %zu, expected %zu (missing %zu, extra %zu)\n",
+        if (!expect.count(p))
+          ++extra;
+      std::fprintf(stderr,
+                   "FAIL: pair sets differ — got %zu, expected %zu (missing %zu, extra %zu)\n",
                    got.size(), expect.size(), missing, extra);
       status = 1;
     } else {

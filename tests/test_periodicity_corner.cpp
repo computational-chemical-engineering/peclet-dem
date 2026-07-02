@@ -1,15 +1,15 @@
-#include "../src/simulation.h"
 #include <cassert>
 #include <cmath>
 #include <iostream>
 #include <vector>
 
+#include "../src/simulation.h"
+
 // Simple check macro
-#define CHECK(expr)                                                            \
-  if (!(expr)) {                                                               \
-    std::cerr << "Test failed: " << #expr << " at line " << __LINE__           \
-              << std::endl;                                                    \
-    exit(1);                                                                   \
+#define CHECK(expr)                                                                \
+  if (!(expr)) {                                                                   \
+    std::cerr << "Test failed: " << #expr << " at line " << __LINE__ << std::endl; \
+    exit(1);                                                                       \
   }
 
 void test_corner_ghosts() {
@@ -18,9 +18,9 @@ void test_corner_ghosts() {
   // 1. Setup
   // Domain: [0,0,0] to [10,10,10]
   // Particle at (9.9, 9.9, 9.9) -> Should trigger 7 ghosts
-  Simulation sim(1); // 1 Real Particle
+  Simulation sim(1);  // 1 Real Particle
   sim.set_domain(make_float3(0, 0, 0), make_float3(10, 10, 10));
-  sim.initialize(0); // Spheres
+  sim.initialize(0);  // Spheres
 
   // Set Position
   std::vector<float> pos = {9.9f, 9.9f, 9.9f};
@@ -41,12 +41,12 @@ void test_corner_ghosts() {
   sim.step(0.0f);
 
   // 3. Verify Count
-  int n = sim.num_particles(true); // Include Ghosts
+  int n = sim.num_particles(true);  // Include Ghosts
   std::cout << "Particles after step: " << n << std::endl;
   CHECK(n == 8);
 
   // 4. Verify Positions
-  auto py_res = sim.get_positions_numpy(true); // Include Ghosts
+  auto py_res = sim.get_positions_numpy(true);  // Include Ghosts
   float *ptr = (float *)py_res.request().ptr;
 
   // Expected shifts:
@@ -97,8 +97,7 @@ void test_corner_ghosts() {
 #include <pybind11/embed.h>
 
 int main() {
-  pybind11::scoped_interpreter
-      guard{}; // Start the interpreter and keep it alive
+  pybind11::scoped_interpreter guard{};  // Start the interpreter and keep it alive
   test_corner_ghosts();
   return 0;
 }

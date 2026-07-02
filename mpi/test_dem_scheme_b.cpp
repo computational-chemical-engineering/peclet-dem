@@ -1,9 +1,10 @@
-// Scheme B (Newton-on: compute each pair once, reverse the ghost force to owners, integrate owned) validated against a serial reference, using transport-core's
-// ParticleHaloTopology.reverse.  Each pair is computed exactly ONCE (owned-ghost pairs are computed only on
-// the rank whose particle has the lower id), the reaction force is placed on the ghost, and
-// reverse(ghostForce, ownedForce, +=) accumulates those contributions back onto the owners. The
-// resulting total force on every owned particle must equal the serial all-pairs force, so the
-// trajectories match (to round-off). Schemes A (replicate) and C (local ghost integration) are in test_dem_step.cpp / test_dem_scheme_c.cpp.
+// Scheme B (Newton-on: compute each pair once, reverse the ghost force to owners, integrate owned)
+// validated against a serial reference, using transport-core's ParticleHaloTopology.reverse.  Each
+// pair is computed exactly ONCE (owned-ghost pairs are computed only on the rank whose particle has
+// the lower id), the reaction force is placed on the ghost, and reverse(ghostForce, ownedForce, +=)
+// accumulates those contributions back onto the owners. The resulting total force on every owned
+// particle must equal the serial all-pairs force, so the trajectories match (to round-off). Schemes
+// A (replicate) and C (local ghost integration) are in test_dem_step.cpp / test_dem_scheme_c.cpp.
 //
 // (Scheme A — frozen ghosts, replicated pair computation — is validated in test_dem_step.cpp.)
 #include <mpi.h>
@@ -53,7 +54,9 @@ static double frac(std::uint64_t x, int s) {
   x ^= x >> 33;
   return (double)(x & 0xFFFFFF) / (double)0x1000000;
 }
-static double mi(double d, double L) { return d - L * std::round(d / L); }
+static double mi(double d, double L) {
+  return d - L * std::round(d / L);
+}
 
 // repulsion on particle at a from particle at b (zero if beyond contact). min-image.
 static F3 pair_force(const Vec<3>& a, const Vec<3>& b) {
@@ -121,7 +124,8 @@ int main(int argc, char** argv) {
   for (std::int64_t id = rank; id < N; id += size) {
     pos.push_back(p0[id]);
     Pay pay{};
-    for (int a = 0; a < 3; ++a) pay.vel[a] = v0[id][a];
+    for (int a = 0; a < 3; ++a)
+      pay.vel[a] = v0[id][a];
     pay.id = id;
     std::size_t off = payload.size();
     payload.resize(off + stride);
@@ -144,7 +148,8 @@ int main(int argc, char** argv) {
     std::size_t G = halo.numGhost();
     const auto& gpos = halo.ghostPositions();
     std::vector<double> ownIdD(n), ghIdD(G);
-    for (std::size_t i = 0; i < n; ++i) ownIdD[i] = (double)id[i];
+    for (std::size_t i = 0; i < n; ++i)
+      ownIdD[i] = (double)id[i];
     halo.forward(ownIdD.data(), ghIdD.data());
 
     std::vector<F3> Fown(n), Fgh(G);
@@ -159,7 +164,8 @@ int main(int argc, char** argv) {
     // owned-ghost: compute once, on the rank whose id is lower; reaction goes to the ghost
     for (std::size_t i = 0; i < n; ++i)
       for (std::size_t g = 0; g < G; ++g) {
-        if (id[i] >= (std::int64_t)std::llround(ghIdD[g])) continue;
+        if (id[i] >= (std::int64_t)std::llround(ghIdD[g]))
+          continue;
         F3 f = pair_force(pos[i], gpos[g]);
         Fown[i] += f;
         F3 mf{{-f.v[0], -f.v[1], -f.v[2]}};
@@ -177,7 +183,8 @@ int main(int argc, char** argv) {
     for (std::size_t i = 0; i < n; ++i) {
       Pay p;
       p.id = id[i];
-      for (int a = 0; a < 3; ++a) p.vel[a] = vel[i][a];
+      for (int a = 0; a < 3; ++a)
+        p.vel[a] = vel[i][a];
       std::memcpy(&payload[i * stride], &p, stride);
     }
   }
@@ -194,7 +201,9 @@ int main(int argc, char** argv) {
   MPI_Allreduce(&fail, &total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   if (rank == 0) {
     if (total == 0)
-      std::printf("OK (np=%d): scheme B (compute-once + reverse-force, integrate owned) matches serial\n", size);
+      std::printf(
+          "OK (np=%d): scheme B (compute-once + reverse-force, integrate owned) matches serial\n",
+          size);
     else
       std::fprintf(stderr, "FAILED (np=%d): %d state mismatches\n", size, total);
   }

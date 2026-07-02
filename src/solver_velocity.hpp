@@ -1,11 +1,11 @@
 /// @file
 /// @brief dem — portable (Kokkos) manifold velocity solve (normal restitution impulse).
 ///
-/// Kokkos port of solve_velocity_jacobi_kernel (solver_velocity.cu): one thread per manifold computes
-/// the aggregate normal impulse (with growth-velocity term and restitution) and atomically scatters
-/// the linear/angular velocity deltas onto the two bodies' REAL indices. Faithful copy of the CUDA
-/// math; runs on the particle SoA expressed as Kokkos Views. Friction is a separate per-contact pass
-/// (solver_position) and is not done here, matching the original.
+/// Kokkos port of solve_velocity_jacobi_kernel (solver_velocity.cu): one thread per manifold
+/// computes the aggregate normal impulse (with growth-velocity term and restitution) and atomically
+/// scatters the linear/angular velocity deltas onto the two bodies' REAL indices. Faithful copy of
+/// the CUDA math; runs on the particle SoA expressed as Kokkos Views. Friction is a separate
+/// per-contact pass (solver_position) and is not done here, matching the original.
 #ifndef DEM_SOLVER_VELOCITY_HPP
 #define DEM_SOLVER_VELOCITY_HPP
 
@@ -44,14 +44,16 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
       "peclet::dem::solve_velocity", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
       KOKKOS_LAMBDA(int idx) {
         const ManifoldC m = manifolds(idx);
-        if (m.num_points <= 0) return;
+        if (m.num_points <= 0)
+          return;
 
         const int idA = m.bodyA, idB = m.bodyB;
         const int realA = realIdx(idA);
         int realB = idB;
         if (idB >= 0) {
           realB = realIdx(idB);
-          if (realA > realB) return;  // periodic dedup
+          if (realA > realB)
+            return;  // periodic dedup
         }
 
         const float invMassA = invMass(realA);
@@ -59,8 +61,9 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         const F3 invIA = ld3(invInertia, realA);
         const F3 invIB = (idB >= 0) ? ld3(invInertia, realB) : F3{0, 0, 0};
         const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
-        const F4 qB = (idB >= 0) ? F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)}
-                                 : F4{0, 0, 0, 1};
+        const F4 qB = (idB >= 0)
+                          ? F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)}
+                          : F4{0, 0, 0, 1};
 
         const F3 vA = ld3(velPred, realA), wA = ld3(angVelPred, realA);
         F3 vB{0, 0, 0}, wB{0, 0, 0};
@@ -78,27 +81,31 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
 
         const float lenN = Kokkos::sqrt(dot3(Nsum, Nsum));
-        if (lenN < 1e-9f) return;
+        if (lenN < 1e-9f)
+          return;
 
         const F3 diffCenters = sub3(rAavg, rBavg);
         const F3 vGrowth = scale3(diffCenters, growthRate);
 
-        float vn = dot3(vA, Nsum) + dot3(wA, TauA) +
-                   dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) + dot3(wB, TauB);
+        float vn = dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
+                   dot3(wB, TauB);
         vn += dot3(vGrowth, Nsum);
 
         const float alignment = dot3(Nsum, diffCenters);
         if (alignment > 0.0f) {
-          if (vn < 0.0f) return;  // sphere convention: approaching if vn>0
+          if (vn < 0.0f)
+            return;  // sphere convention: approaching if vn>0
         } else {
-          if (vn > 0.0f) return;  // inverted convention
+          if (vn > 0.0f)
+            return;  // inverted convention
         }
 
         const float Nsq = dot3(Nsum, Nsum);
         const float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
         const float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
         const float wTotal = wA_n + wB_n;
-        if (wTotal <= 0.0f) return;
+        if (wTotal <= 0.0f)
+          return;
 
         const float lambda = (-restitutionNormal * vn - vn) / wTotal;
 

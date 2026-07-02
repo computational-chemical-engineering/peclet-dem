@@ -1,13 +1,12 @@
-// Correctness of the Kokkos contact->manifold reduction (peclet::dem::reduceContactsToManifoldsKokkos)
-// against a host reference that groups contacts by canonical pair and sums the same per-contact
-// transform. Checks: manifold count == unique pairs; per-pair summed quantities match (float tol);
-// num_points and canonical (bodyA,bodyB) match exactly. Runs on whatever backend Kokkos was built
-// for (CUDA locally; OpenMP for CI).
-#include <Kokkos_Core.hpp>
-
+// Correctness of the Kokkos contact->manifold reduction
+// (peclet::dem::reduceContactsToManifoldsKokkos) against a host reference that groups contacts by
+// canonical pair and sums the same per-contact transform. Checks: manifold count == unique pairs;
+// per-pair summed quantities match (float tol); num_points and canonical (bodyA,bodyB) match
+// exactly. Runs on whatever backend Kokkos was built for (CUDA locally; OpenMP for CI).
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <Kokkos_Core.hpp>
 #include <map>
 #include <random>
 #include <vector>
@@ -18,7 +17,9 @@ using peclet::dem::ContactC;
 using peclet::dem::F4;
 using peclet::dem::ManifoldC;
 
-static bool close(float a, float b) { return std::fabs(a - b) <= 1e-3f * (1.0f + std::fabs(b)); }
+static bool close(float a, float b) {
+  return std::fabs(a - b) <= 1e-3f * (1.0f + std::fabs(b));
+}
 static bool close4(const F4& a, const F4& b) {
   return close(a.x, b.x) && close(a.y, b.y) && close(a.z, b.z);
 }
@@ -60,18 +61,21 @@ int main(int argc, char** argv) {
     Kokkos::View<ContactC*, peclet::dem::CpMem> dContacts("contacts", Ncontacts);
     {
       auto hc = Kokkos::create_mirror_view(dContacts);
-      for (int i = 0; i < Ncontacts; ++i) hc(i) = h[i];
+      for (int i = 0; i < Ncontacts; ++i)
+        hc(i) = h[i];
       Kokkos::deep_copy(dContacts, hc);
     }
     Kokkos::View<ManifoldC*, peclet::dem::CpMem> dMan("manifolds", Ncontacts);  // upper bound
     Kokkos::View<int, peclet::dem::CpMem> dCount("count");
-    const int nman = peclet::dem::reduceContactsToManifoldsKokkos(dContacts, Ncontacts, dMan, dCount);
+    const int nman =
+        peclet::dem::reduceContactsToManifoldsKokkos(dContacts, Ncontacts, dMan, dCount);
 
     std::vector<ManifoldC> gotMan(nman);
     {
       auto hm = Kokkos::create_mirror_view(dMan);
       Kokkos::deep_copy(hm, dMan);
-      for (int i = 0; i < nman; ++i) gotMan[i] = hm(i);
+      for (int i = 0; i < nman; ++i)
+        gotMan[i] = hm(i);
     }
 
     // --- host reference: group by key, sum the same transform ---
@@ -88,7 +92,8 @@ int main(int argc, char** argv) {
       ManifoldC& m = it->second;
       m.num_points += t.num_points;
       F4* md[5] = {&m.normal_sum, &m.torque_armA_sum, &m.torque_armB_sum, &m.rA_sum, &m.rB_sum};
-      const F4* td[5] = {&t.normal_sum, &t.torque_armA_sum, &t.torque_armB_sum, &t.rA_sum, &t.rB_sum};
+      const F4* td[5] = {&t.normal_sum, &t.torque_armA_sum, &t.torque_armB_sum, &t.rA_sum,
+                         &t.rB_sum};
       for (int q = 0; q < 5; ++q) {
         md[q]->x += td[q]->x;
         md[q]->y += td[q]->y;

@@ -2,18 +2,18 @@
 /// @brief dem — portable (ArborX) broad-phase, the Kokkos-native replacement for the CUDA-only
 /// cuBQL broad-phase in broadphase.cu.
 ///
-/// Same semantics as find_collisions(): build axis-aligned bounding boxes (half-width radius+margin)
-/// over ALL particles, then for each REAL particle query the BVH for overlapping boxes and emit the
-/// candidate pairs (i,j) with i<j into a preallocated buffer guarded by an atomic counter. An
-/// AABB-overlap broad-phase, identical in criterion to cuBQL's fixedBoxQuery, so it yields the same
-/// candidate set. Decoupled from ParticleSystemData (plain Kokkos Views) so it builds and is tested
-/// standalone before being wired into the solver; runs on whatever backend Kokkos was built for.
+/// Same semantics as find_collisions(): build axis-aligned bounding boxes (half-width
+/// radius+margin) over ALL particles, then for each REAL particle query the BVH for overlapping
+/// boxes and emit the candidate pairs (i,j) with i<j into a preallocated buffer guarded by an
+/// atomic counter. An AABB-overlap broad-phase, identical in criterion to cuBQL's fixedBoxQuery, so
+/// it yields the same candidate set. Decoupled from ParticleSystemData (plain Kokkos Views) so it
+/// builds and is tested standalone before being wired into the solver; runs on whatever backend
+/// Kokkos was built for.
 #ifndef DEM_BROADPHASE_ARBORX_HPP
 #define DEM_BROADPHASE_ARBORX_HPP
 
 #include <ArborX.hpp>
 #include <Kokkos_Core.hpp>
-
 #include <utility>
 
 namespace peclet::dem {
@@ -25,8 +25,9 @@ using BpMem = BpExec::memory_space;
 ///   pos[numParticles][3]   positions of all particles (real first, then ghosts)
 ///   rad[numParticles]      effective radius per particle (scale * global_scale)
 ///   numReal                only particles [0,numReal) issue queries (own real particles)
-///   margin                 safety margin added to every box half-width (cuBQL uses 0.1*global_scale)
-///   outPairs[maxPairs][2]  preallocated output; outCount is the (clamped) number found
+///   margin                 safety margin added to every box half-width (cuBQL uses
+///   0.1*global_scale) outPairs[maxPairs][2]  preallocated output; outCount is the (clamped) number
+///   found
 /// Returns the number of pairs found (may exceed maxPairs if the buffer is too small).
 // View params are templated so callers can pass managed Views (tests) OR unmanaged Views wrapping
 // raw device buffers (the CUDA dem module's float4*/int2* arrays). Element types/layout must be
@@ -38,8 +39,9 @@ inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numRea
   using Box = ArborX::Box<3>;
 
   // AABBs over all particles (these are the BVH primitives).
-  Kokkos::View<Box*, BpMem> boxes(Kokkos::view_alloc(space, "peclet::dem::bp::boxes", Kokkos::WithoutInitializing),
-                                  numParticles);
+  Kokkos::View<Box*, BpMem> boxes(
+      Kokkos::view_alloc(space, "peclet::dem::bp::boxes", Kokkos::WithoutInitializing),
+      numParticles);
   Kokkos::parallel_for(
       "peclet::dem::bp::aabb", Kokkos::RangePolicy<BpExec>(space, 0, numParticles),
       KOKKOS_LAMBDA(int i) {
@@ -55,7 +57,8 @@ inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numRea
   Kokkos::View<Predicate*, BpMem> preds(
       Kokkos::view_alloc(space, "peclet::dem::bp::preds", Kokkos::WithoutInitializing), numReal);
   Kokkos::parallel_for(
-      "peclet::dem::bp::preds", Kokkos::RangePolicy<BpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::bp::preds", Kokkos::RangePolicy<BpExec>(space, 0, numReal),
+      KOKKOS_LAMBDA(int i) {
         const float b = rad(i) + margin;
         preds(i) = ArborX::intersects(Box{{pos(i, 0) - b, pos(i, 1) - b, pos(i, 2) - b},
                                           {pos(i, 0) + b, pos(i, 1) + b, pos(i, 2) + b}});
@@ -71,7 +74,8 @@ inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numRea
   Kokkos::View<int* [2], BpMem> pairs = outPairs;
   Kokkos::View<int, BpMem> cnt = outCount;
   Kokkos::parallel_for(
-      "peclet::dem::bp::emit", Kokkos::RangePolicy<BpExec>(space, 0, numReal), KOKKOS_LAMBDA(int i) {
+      "peclet::dem::bp::emit", Kokkos::RangePolicy<BpExec>(space, 0, numReal),
+      KOKKOS_LAMBDA(int i) {
         for (int k = offsets(i); k < offsets(i + 1); ++k) {
           const int j = values(k).index;
           if (i < j) {

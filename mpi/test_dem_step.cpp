@@ -5,8 +5,8 @@
 // transport-core). Per step, each rank:
 //     migrate (reassign ownership) -> gatherGhosts(rcut) -> forces on OWNED from owned+ghost
 //     within the interaction radius -> integrate owned.
-// Every rank also runs the full N-body system serially (replicated, deterministic) as the reference;
-// the distributed owned-particle states must match it for every particle, np=1,2,4.
+// Every rank also runs the full N-body system serially (replicated, deterministic) as the
+// reference; the distributed owned-particle states must match it for every particle, np=1,2,4.
 //
 // Bit-exactness across decompositions: forces are summed in a canonical order (sorted by neighbour
 // id) and separations use the minimum image, so the same neighbour set yields identical arithmetic
@@ -32,13 +32,13 @@ using peclet::core::halo::ParticleMigrator;
 
 // Simulation constants.
 static constexpr int kSteps = 25;
-static const double L[3] = {10.0, 8.0, 6.0};      // periodic box size
+static const double L[3] = {10.0, 8.0, 6.0};  // periodic box size
 static const double dmin[3] = {0.0, 0.0, 0.0};
-static constexpr double kRadius = 0.4;            // particle radius (contact at 2r)
-static constexpr double kRcut = 2.0 * kRadius;    // interaction radius
-static constexpr double kStiff = 0.2;             // contact stiffness
+static constexpr double kRadius = 0.4;          // particle radius (contact at 2r)
+static constexpr double kRcut = 2.0 * kRadius;  // interaction radius
+static constexpr double kStiff = 0.2;           // contact stiffness
 static constexpr double kDt = 0.02;
-static constexpr double kDamp = 0.99;             // velocity damping (keeps it bounded)
+static constexpr double kDamp = 0.99;  // velocity damping (keeps it bounded)
 
 struct Pay {
   double vel[3];
@@ -52,7 +52,9 @@ static double frac(std::uint64_t x, int s) {
   x ^= x >> 33;
   return (double)(x & 0xFFFFFF) / (double)0x1000000;
 }
-static double minImage(double d, double Li) { return d - Li * std::round(d / Li); }
+static double minImage(double d, double Li) {
+  return d - Li * std::round(d / Li);
+}
 
 // Soft-sphere repulsion on particle at xi from neighbours (id, position), summed in id order.
 static std::array<double, 3> force(const Vec<3>& xi, std::int64_t selfId,
@@ -60,11 +62,13 @@ static std::array<double, 3> force(const Vec<3>& xi, std::int64_t selfId,
   std::sort(nbr.begin(), nbr.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
   std::array<double, 3> F{0, 0, 0};
   for (auto& [jid, xj] : nbr) {
-    if (jid == selfId) continue;
+    if (jid == selfId)
+      continue;
     double s[3] = {minImage(xi[0] - xj[0], L[0]), minImage(xi[1] - xj[1], L[1]),
                    minImage(xi[2] - xj[2], L[2])};
     double d = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
-    if (d >= kRcut || d < 1e-12) continue;
+    if (d >= kRcut || d < 1e-12)
+      continue;
     double mag = kStiff * (kRcut - d) / d;  // push apart
     F[0] += mag * s[0];
     F[1] += mag * s[1];
@@ -98,7 +102,8 @@ int main(int argc, char** argv) {
     for (std::int64_t i = 0; i < N; ++i) {
       std::vector<std::pair<std::int64_t, Vec<3>>> nbr;
       nbr.reserve(N);
-      for (std::int64_t j = 0; j < N; ++j) nbr.push_back({j, sp[j]});
+      for (std::int64_t j = 0; j < N; ++j)
+        nbr.push_back({j, sp[j]});
       F[i] = force(sp[i], i, nbr);
     }
     for (std::int64_t i = 0; i < N; ++i)
@@ -127,7 +132,9 @@ int main(int argc, char** argv) {
   for (std::int64_t id = rank; id < N; id += size) {  // scatter by id%size; migrate fixes ownership
     pos.push_back(p0[id]);
     Pay pay{};
-    pay.vel[0] = v0[id][0]; pay.vel[1] = v0[id][1]; pay.vel[2] = v0[id][2];
+    pay.vel[0] = v0[id][0];
+    pay.vel[1] = v0[id][1];
+    pay.vel[2] = v0[id][2];
     pay.id = id;
     std::size_t off = payload.size();
     payload.resize(off + stride);
@@ -177,8 +184,10 @@ int main(int argc, char** argv) {
     Pay pi;
     std::memcpy(&pi, &payload[i * stride], stride);
     for (int a = 0; a < 3; ++a) {
-      if (std::fabs(pos[i][a] - sp[pi.id][a]) > 1e-9) ++fail;
-      if (std::fabs(pi.vel[a] - sv[pi.id][a]) > 1e-9) ++fail;
+      if (std::fabs(pos[i][a] - sp[pi.id][a]) > 1e-9)
+        ++fail;
+      if (std::fabs(pi.vel[a] - sv[pi.id][a]) > 1e-9)
+        ++fail;
     }
   }
   std::int64_t lcount = (std::int64_t)pos.size(), gcount = 0;

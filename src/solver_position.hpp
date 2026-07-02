@@ -1,11 +1,12 @@
 /// @file
 /// @brief dem — portable (Kokkos) XPBD position solve (pure overlap removal).
 ///
-/// Kokkos port of solve_position_jacobi_kernel (solver_position.cu): one thread per contact evaluates
-/// the linearized non-penetration constraint C(x) (using the delta-rotated lever arms / normal),
-/// computes the XPBD position correction, and atomically scatters delta_pos / delta_quat and bumps the
-/// per-body constraint count (the caller averages by it). Faithful copy of the CUDA math over the SoA
-/// Views. Friction is a separate cluster (ported separately); the position solve does overlap only.
+/// Kokkos port of solve_position_jacobi_kernel (solver_position.cu): one thread per contact
+/// evaluates the linearized non-penetration constraint C(x) (using the delta-rotated lever arms /
+/// normal), computes the XPBD position correction, and atomically scatters delta_pos / delta_quat
+/// and bumps the per-body constraint count (the caller averages by it). Faithful copy of the CUDA
+/// math over the SoA Views. Friction is a separate cluster (ported separately); the position solve
+/// does overlap only.
 #ifndef DEM_SOLVER_POSITION_HPP
 #define DEM_SOLVER_POSITION_HPP
 
@@ -80,13 +81,14 @@ inline void solvePositionKokkos(Kokkos::View<const ContactC*, CpMem> contacts, i
           const F3 pBc = add3(pB, rB);
           C = dot3(sub3(pAc, pBc), n);
         }
-        if (C >= 0.0f) return;
+        if (C >= 0.0f)
+          return;
 
         const F3 invIA = ldF3(invInertia, idA);
         const F3 invIB = (idB >= 0) ? ldF3(invInertia, idB) : F3{0, 0, 0};
-        const float wTotal =
-            computeW(rA, n, invMassA, invIA) + computeW(rB, n, invMassB, invIB);
-        if (wTotal < 1e-6f) return;
+        const float wTotal = computeW(rA, n, invMassA, invIA) + computeW(rB, n, invMassB, invIB);
+        if (wTotal < 1e-6f)
+          return;
 
         const float dLambda = -C / wTotal;
 
@@ -96,7 +98,8 @@ inline void solvePositionKokkos(Kokkos::View<const ContactC*, CpMem> contacts, i
         Kokkos::atomic_add(&deltaPos(idA, 2), n.z * dLambda * invMassA);
         {
           const F3 rn = cross3v(rA, n);
-          const F3 dTheta{rn.x * invIA.x * dLambda, rn.y * invIA.y * dLambda, rn.z * invIA.z * dLambda};
+          const F3 dTheta{rn.x * invIA.x * dLambda, rn.y * invIA.y * dLambda,
+                          rn.z * invIA.z * dLambda};
           const F4 dq = detail::deltaQuat(dTheta, qA);
           Kokkos::atomic_add(&deltaQuat(idA, 0), dq.x);
           Kokkos::atomic_add(&deltaQuat(idA, 1), dq.y);
@@ -119,7 +122,8 @@ inline void solvePositionKokkos(Kokkos::View<const ContactC*, CpMem> contacts, i
         }
         Kokkos::atomic_add(&constraintCounts(idA), 1);
 
-        if (C < 0.0f) Kokkos::atomic_max(&maxOverlap(), -C);
+        if (C < 0.0f)
+          Kokkos::atomic_max(&maxOverlap(), -C);
       });
   space.fence();
 }
