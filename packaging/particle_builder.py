@@ -64,6 +64,10 @@ class ParticleShape:
         (``p_input = com + R @ p_body``).
     bounding_radius : float
         Canonical radius enclosing the surface (broad-phase / SDF-export bound).
+    vertices, faces : np.ndarray
+        The marching-cubes surface mesh in the body frame: ``vertices`` is ``(V, 3)`` and ``faces``
+        is ``(F, 3)`` of vertex indices. Handy for rendering (transform per particle) or STL export
+        (:meth:`to_stl`).
     """
 
     grid: np.ndarray
@@ -76,6 +80,8 @@ class ParticleShape:
     inv_inertia_unit: np.ndarray
     principal_rotation: np.ndarray
     bounding_radius: float
+    vertices: np.ndarray
+    faces: np.ndarray
 
     def apply_to(self, sim, *, unit_mass: bool = True) -> None:
         """Upload this shape onto a :class:`peclet.dem.Simulation` (replaces shape 0 for all
@@ -96,6 +102,44 @@ class ParticleShape:
             tuple(float(v) for v in inv_i),
             float(self.bounding_radius),
         )
+
+    def to_stl(self, path, *, binary: bool = True, scale: float = 1.0) -> str:
+        """Write the particle's surface mesh to an STL file (in the body frame) and return ``path``.
+
+        Opens straight into ParaView/Blender/Ovito or any mesh tool. ``scale`` multiplies the
+        coordinates (the shape is unit-scale; pass a physical size if you want). ``binary=False``
+        writes ASCII STL. Facet normals are computed and oriented outward from the mesh centroid."""
+        v = np.asarray(self.vertices, dtype=np.float64) * float(scale)
+        f = np.asarray(self.faces)
+        tris = v[f]  # (F, 3, 3)
+        n = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+        ln = np.linalg.norm(n, axis=1, keepdims=True)
+        n = np.divide(n, ln, out=np.zeros_like(n), where=ln > 0)
+        # orient outward from the centroid (the COM sits at the body-frame origin)
+        flip = np.sum(n * (tris.mean(axis=1) - v.mean(axis=0)), axis=1) < 0
+        n[flip] *= -1
+        if binary:
+            import struct
+
+            with open(path, "wb") as fh:
+                fh.write(b"peclet.dem build_particle".ljust(80, b"\0"))
+                fh.write(struct.pack("<I", len(f)))
+                rec = np.zeros(len(f), dtype=np.dtype([("d", "<f4", (12,)), ("a", "<u2")]))
+                rec["d"][:, 0:3] = n
+                rec["d"][:, 3:6] = tris[:, 0]
+                rec["d"][:, 6:9] = tris[:, 1]
+                rec["d"][:, 9:12] = tris[:, 2]
+                fh.write(rec.tobytes())
+        else:
+            with open(path, "w") as fh:
+                fh.write("solid particle\n")
+                for i in range(len(f)):
+                    fh.write(f"facet normal {n[i, 0]:.6e} {n[i, 1]:.6e} {n[i, 2]:.6e}\n outer loop\n")
+                    for j in range(3):
+                        fh.write(f"  vertex {tris[i, j, 0]:.6e} {tris[i, j, 1]:.6e} {tris[i, j, 2]:.6e}\n")
+                    fh.write(" endloop\nendfacet\n")
+                fh.write("endsolid particle\n")
+        return path
 
 
 def _sample(f, lo, hi, res):
@@ -313,4 +357,6 @@ def build_particle(
         inv_inertia_unit=np.asarray(inv_inertia_unit, float),
         principal_rotation=np.asarray(R, float),
         bounding_radius=bounding_radius,
+        vertices=np.ascontiguousarray(verts, dtype=np.float64),
+        faces=np.ascontiguousarray(faces, dtype=np.int64),
     )
