@@ -16,6 +16,27 @@
 
 namespace peclet::dem {
 
+/// Padded particle-array capacity that leaves room for the periodic ghosts generateGhostsKokkos will
+/// emit: the real count plus an estimate of the boundary-shell ghost population, gated on which axes
+/// are actually periodic. Faithful port of the CUDA Simulation::calculate_capacity (small/dense box
+/// -> full 26-neighbour headroom; large box -> a few times the boundary-shell volume fraction), with
+/// the periodicity gating added so a closed or partly-periodic box is not over-allocated. `skin` is
+/// the ghost band width at each periodic face (1.0*globalScale in the solver).
+inline int calculateGhostCapacity(int nReal, Domain dom, float skin) {
+  const float sx = dom.periodic_x ? skin : 0.0f;
+  const float sy = dom.periodic_y ? skin : 0.0f;
+  const float sz = dom.periodic_z ? skin : 0.0f;
+  const double innerX = (dom.size.x - 2.0f * sx > 0.0f) ? (dom.size.x - 2.0f * sx) : 0.0;
+  const double innerY = (dom.size.y - 2.0f * sy > 0.0f) ? (dom.size.y - 2.0f * sy) : 0.0;
+  const double innerZ = (dom.size.z - 2.0f * sz > 0.0f) ? (dom.size.z - 2.0f * sz) : 0.0;
+  const double volTotal = static_cast<double>(dom.size.x) * dom.size.y * dom.size.z;
+  if (volTotal <= 0.0)
+    return nReal * 8;  // degenerate box (domain not set yet) -> generous fallback
+  const double ghostFraction = (volTotal - innerX * innerY * innerZ) / volTotal;
+  const double estGhosts = (ghostFraction > 0.5) ? nReal * 32.0 : nReal * ghostFraction * 4.0;
+  return nReal + static_cast<int>(estGhosts) + 4096;  // + fixed buffer (matches CUDA)
+}
+
 /// Generate periodic ghosts for particles [0,numReal). topGhost must be pre-seeded to numReal (the
 /// first free slot); on return it holds the total particle count. Slots beyond `capacity` are
 /// dropped. `skin` is the ghost band width at each periodic face.

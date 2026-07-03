@@ -107,6 +107,40 @@ struct Particles {
     planes = Kokkos::View<PlaneP*, CpMem>("planes", nPlanes > 0 ? nPlanes : 1);
   }
 
+  // Grow the per-particle SoA to hold at least `newCap` particles (real + periodic-ghost headroom),
+  // preserving the existing [0,numReal) state (Kokkos::resize copies the overlapping subextent). The
+  // single-GPU step sizes this from the domain before generating ghosts; without the headroom every
+  // ghost slot overflows `capacity` and cross-boundary contacts silently vanish. A no-op when the
+  // SoA is already large enough (e.g. the MPI path, whose caller pre-sizes capacity for the
+  // worst-case ghost band). The collision buffers (pairs/contacts/manifolds) keep their
+  // construction-time sizing — each real particle still issues one broad-phase query.
+  void ensureCapacity(int newCap) {
+    if (newCap <= capacity)
+      return;
+    Kokkos::resize(pos, newCap);
+    Kokkos::resize(invMass, newCap);
+    Kokkos::resize(quat, newCap);
+    Kokkos::resize(vel, newCap);
+    Kokkos::resize(angVel, newCap);
+    Kokkos::resize(invInertia, newCap);
+    Kokkos::resize(scale, newCap);
+    Kokkos::resize(targetScale, newCap);
+    Kokkos::resize(shapeId, newCap);
+    Kokkos::resize(posPred, newCap);
+    Kokkos::resize(quatPred, newCap);
+    Kokkos::resize(velPred, newCap);
+    Kokkos::resize(angVelPred, newCap);
+    Kokkos::resize(deltaPos, newCap);
+    Kokkos::resize(deltaQuat, newCap);
+    Kokkos::resize(deltaVel, newCap);
+    Kokkos::resize(deltaAngVel, newCap);
+    Kokkos::resize(constraintCounts, newCap);
+    Kokkos::resize(realIndices, newCap);
+    Kokkos::resize(planeFriction, newCap);
+    Kokkos::resize(rad, newCap);
+    capacity = newCap;
+  }
+
   // Const views for the read-only kernel inputs.
   Kokkos::View<const float* [3], CpMem> cpos() const { return pos; }
   Kokkos::View<const float*, CpMem> crad() const { return rad; }

@@ -72,6 +72,10 @@ inline void demStep(Particles& P) {
   // small Verlet broadphase margin -- else particles farther than the Verlet skin from a periodic
   // face are not ghosted and cross-boundary contacts are missed.
   const float ghostBand = 1.0f * P.globalScale;
+  // Size the SoA for the ghost boundary layer BEFORE emitting (CUDA did this in initialize() via
+  // calculate_capacity). Without it a Simulation(numReal) leaves capacity==numReal, so every ghost
+  // overflows P.capacity in generateGhostsKokkos and cross-boundary contacts are never detected.
+  P.ensureCapacity(calculateGhostCapacity(P.numReal, P.domain, ghostBand));
   generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred,
                        P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
                        P.shapeId, P.realIndices, P.topGhost);
@@ -162,6 +166,9 @@ inline float computeOverlapsKokkos(Particles& P) {
   }
   Kokkos::deep_copy(space, P.topGhost, P.numReal);
   const float ghostBand = 1.0f * P.globalScale;
+  // Match demStep: ensure ghost-boundary-layer headroom so cross-boundary overlaps are counted (a
+  // Simulation(numReal) otherwise has capacity==numReal and every ghost overflows). See demStep.
+  P.ensureCapacity(calculateGhostCapacity(P.numReal, P.domain, ghostBand));
   generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred,
                        P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
                        P.shapeId, P.realIndices, P.topGhost);
