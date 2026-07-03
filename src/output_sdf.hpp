@@ -26,7 +26,7 @@ inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 
                                             PosView pos, QuatView quat, ScalarF scale,
                                             ScalarI shapeId,
                                             Kokkos::View<const ShapeDesc*, CpMem> shapes, bool px,
-                                            bool py, bool pz) {
+                                            bool py, bool pz, GridView sdfGrid = GridView{}) {
   CpExec space;
   const long total = (long)rx * ry * rz;
   const F3 origin = dmin;
@@ -51,6 +51,8 @@ inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 
           rbound = Kokkos::sqrt(r * r + (h * 0.5f) * (h * 0.5f));
         } else if (shp.type == SPHERE)
           rbound = shp.params.x;
+        else if (shp.type == SHAPE_GRID_SDF)
+          rbound = shp.params.x;  // canonical bounding radius stored in params.x
         rbound *= sc;
         rbound *= 1.2f;
 
@@ -85,6 +87,8 @@ inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 
                 distc = sdfHollowCylinder(plocal, shp.params);
               else if (shp.type == SPHERE)
                 distc = sdfSphere(plocal, shp.params);
+              else if (shp.type == SHAPE_GRID_SDF)
+                distc = sampleGridSdf(plocal, shp, sdfGrid);
               const float dist = distc * sc;
               const int wx = (x % rx + rx) % rx, wy = (y % ry + ry) % ry, wz = (z % rz + rz) % rz;
               if (!px && (x < 0 || x >= rx))

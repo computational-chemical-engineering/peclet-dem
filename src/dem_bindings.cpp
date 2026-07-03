@@ -80,6 +80,30 @@ NB_MODULE(_dem, m) {
       .def("initialize", &Simulation::initializeShape, nb::arg("shape_type"),
            nb::arg("radius") = 0.5f, nb::arg("height") = 2.0f, nb::arg("thickness") = 0.0f,
            "CUDA-API alias for initialize_shape.")
+      // Import a general particle as a grid SDF + surface point shell (all particles share it).
+      // grid: flat [nx*ny*nz] signed-distance samples, x-fastest (idx = x + y*nx + z*nx*ny), at
+      // nodes origin + (x,y,z)*spacing (negative inside). shell: (M,3) surface points. inv_inertia:
+      // unit-mass principal-frame diagonal inverse inertia. bounding_radius: canonical enclosing
+      // radius. See peclet.dem.particle_builder for the SDF -> (grid, shell, inertia) helper.
+      .def(
+          "set_sdf_shape",
+          [](Simulation& s, nb::ndarray<float, nb::c_contig> grid, int nx, int ny, int nz,
+             std::tuple<float, float, float> origin, std::tuple<float, float, float> spacing,
+             nb::ndarray<float, nb::c_contig> shell, std::tuple<float, float, float> inv_inertia,
+             float bounding_radius) {
+            s.setSdfShape(
+                to_vec(grid), nx, ny, nz,
+                peclet::dem::F3{std::get<0>(origin), std::get<1>(origin), std::get<2>(origin)},
+                peclet::dem::F3{std::get<0>(spacing), std::get<1>(spacing), std::get<2>(spacing)},
+                to_vec(shell),
+                peclet::dem::F3{std::get<0>(inv_inertia), std::get<1>(inv_inertia),
+                                std::get<2>(inv_inertia)},
+                bounding_radius);
+          },
+          nb::arg("grid"), nb::arg("nx"), nb::arg("ny"), nb::arg("nz"), nb::arg("origin"),
+          nb::arg("spacing"), nb::arg("shell"), nb::arg("inv_inertia"), nb::arg("bounding_radius"),
+          "Import a general particle: grid SDF (flat nx*ny*nz, x-fastest), surface point shell "
+          "(M,3), unit-mass principal diagonal inverse inertia, and canonical bounding radius.")
       .def("set_domain", &Simulation::setDomain, nb::arg("lx"), nb::arg("ly"), nb::arg("lz"),
            nb::arg("px") = true, nb::arg("py") = true, nb::arg("pz") = false,
            "Set the box size (lx,ly,lz) and per-axis periodicity.")

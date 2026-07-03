@@ -43,6 +43,9 @@ set_target_properties(dem PROPERTIES OUTPUT_NAME _dem
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/peclet/dem")
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packaging/dem_init.py
                ${CMAKE_CURRENT_BINARY_DIR}/peclet/dem/__init__.py COPYONLY)
+# Pure-Python particle builder (SDF -> grid + surface shell + mass properties) shipped alongside.
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packaging/particle_builder.py
+               ${CMAKE_CURRENT_BINARY_DIR}/peclet/dem/particle_builder.py COPYONLY)
 target_include_directories(dem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${TPX_INCLUDE})
 target_link_libraries(dem PRIVATE ArborX::ArborX Kokkos::kokkos)
 
@@ -62,4 +65,6 @@ if(DEFINED SKBUILD)
   install(TARGETS dem LIBRARY DESTINATION peclet/dem COMPONENT python)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/dem_init.py
           DESTINATION peclet/dem RENAME __init__.py COMPONENT python)
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/particle_builder.py
+          DESTINATION peclet/dem COMPONENT python)
 endif()

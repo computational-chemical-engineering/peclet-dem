@@ -55,6 +55,7 @@ struct Particles {
   Kokkos::View<ShapeDesc*, CpMem> shapes;
   Kokkos::View<float* [3], CpMem> shell;
   Kokkos::View<PlaneP*, CpMem> planes;
+  Kokkos::View<float*, CpMem> sdfGrid;  // concatenated grid-SDF samples (imported shapes)
 
   // --- sizes & params (host) ---
   int capacity = 0, numReal = 0, numParticles = 0;
@@ -105,6 +106,7 @@ struct Particles {
     shapes = Kokkos::View<ShapeDesc*, CpMem>("shapes", nShapes > 0 ? nShapes : 1);
     shell = Kokkos::View<float* [3], CpMem>("shell", nShell > 0 ? nShell : 1);
     planes = Kokkos::View<PlaneP*, CpMem>("planes", nPlanes > 0 ? nPlanes : 1);
+    sdfGrid = Kokkos::View<float*, CpMem>("sdfGrid", 1);  // resized by setSdfShape
   }
 
   // Grow the per-particle SoA to hold at least `newCap` particles (real + periodic-ghost headroom),

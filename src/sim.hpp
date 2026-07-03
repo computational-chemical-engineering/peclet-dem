@@ -99,7 +99,7 @@ inline void demStep(Particles& P) {
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
-                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid);
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                        P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
                        P.maxOverlap);
@@ -187,7 +187,7 @@ inline float computeOverlapsKokkos(Particles& P) {
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
-                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid);
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                        P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
                        P.maxOverlap);
@@ -255,7 +255,7 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
-                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid);
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                        P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
                        P.maxOverlap);
@@ -416,6 +416,82 @@ class Simulation {
     }
     defaultInvI_ = F3{ix, iy, iz};
   }
+
+  // Import a general particle as a grid SDF (canonical, unit-scale space) + a surface point shell +
+  // its unit-mass principal-frame diagonal inverse inertia. Replaces shape 0, so every particle
+  // becomes an instance of this shape (per-particle position/quaternion/scale still apply). `grid`
+  // holds nx*ny*nz signed-distance samples, x-fastest (idx = x + y*nx + z*nx*ny), at lattice nodes
+  // q = origin + (x,y,z)*spacing (negative inside). `shellFlat` is the flat [nPts*3] surface point
+  // set the collision probes body A against. boundingRadius is the canonical radius enclosing the
+  // surface (broad-phase + VTI splat bound). invInertia is the per-unit-mass diagonal inverse
+  // inertia in the body (principal) frame; like the analytic shapes it becomes the default applied
+  // to every particle by setPositions (override afterwards with set_inv_inertia / set_inv_mass for a
+  // real density). See peclet.dem.particle_builder for the Python side that produces these arrays
+  // from an implicit-solid SDF (marching-cubes shell + voxel-integrated mass properties).
+  void setSdfShape(const std::vector<float>& grid, int nx, int ny, int nz, F3 origin, F3 spacing,
+                   const std::vector<float>& shellFlat, F3 invInertia, float boundingRadius) {
+    if (nx < 2 || ny < 2 || nz < 2)
+      throw std::runtime_error("setSdfShape: grid dims must be >= 2 on each axis");
+    if (static_cast<long>(nx) * ny * nz != static_cast<long>(grid.size()))
+      throw std::runtime_error("setSdfShape: grid.size() must equal nx*ny*nz");
+    const int nPts = static_cast<int>(shellFlat.size() / 3);
+    if (nPts <= 0)
+      throw std::runtime_error("setSdfShape: empty surface point shell");
+
+    // Upload the signed-distance samples.
+    P_.sdfGrid = Kokkos::View<float*, CpMem>("sdfGrid", grid.size());
+    auto hg = Kokkos::create_mirror_view(P_.sdfGrid);
+    for (size_t i = 0; i < grid.size(); ++i)
+      hg(i) = grid[i];
+    Kokkos::deep_copy(P_.sdfGrid, hg);
+
+    // Upload the surface point shell.
+    P_.shell = Kokkos::View<float* [3], CpMem>("shell", nPts);
+    auto hs = Kokkos::create_mirror_view(P_.shell);
+    for (int i = 0; i < nPts; ++i) {
+      hs(i, 0) = shellFlat[3 * i];
+      hs(i, 1) = shellFlat[3 * i + 1];
+      hs(i, 2) = shellFlat[3 * i + 2];
+    }
+    Kokkos::deep_copy(P_.shell, hs);
+
+    // Shape descriptor: grid SDF for the field, shell points for the probes.
+    ShapeDesc sd{};
+    sd.type = SHAPE_GRID_SDF;
+    sd.params = F4{boundingRadius, 0, 0, 0};
+    sd.shellOffset = 0;
+    sd.numPoints = nPts;
+    sd.gridOffset = 0;
+    sd.nx = nx;
+    sd.ny = ny;
+    sd.nz = nz;
+    sd.gridOrigin = origin;
+    sd.gridInvSpacing = F3{spacing.x > 0 ? 1.0f / spacing.x : 0.0f,
+                           spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
+                           spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    auto h = Kokkos::create_mirror_view(P_.shapes);
+    h(0) = sd;
+    Kokkos::deep_copy(P_.shapes, h);
+
+    baseRadius_ = boundingRadius;
+    defaultInvI_ = invInertia;
+
+    // A point-shell shape emits up to ~(shell points in the contact patch) contacts per neighbour,
+    // far more than the analytic sphere's one-per-pair. The default contacts buffer (capacity*16)
+    // starves them: once it saturates, later contacts are dropped — and since boundary/wall contacts
+    // are appended AFTER the body-body ones, they vanish and particles tunnel through walls. Size the
+    // buffer so every shell point of every particle can record a contact (the realistic upper bound
+    // — a shell point sits inside at most ~one neighbour), floored at the analytic default. At
+    // ~72 B/contact this is a few MB even for large packings.
+    const int perParticle = std::max(16, nPts);
+    const int wantContacts = P_.capacity * perParticle;
+    if (wantContacts > P_.maxContacts) {
+      P_.maxContacts = wantContacts;
+      P_.contacts = Kokkos::View<ContactC*, CpMem>("contacts", wantContacts);
+      P_.manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", wantContacts);
+    }
+  }
+
   void setDomain(float lx, float ly, float lz, bool px, bool py, bool pz) {
     P_.domain = Domain{F3{0, 0, 0}, F3{lx, ly, lz}, F3{lx, ly, lz}, px, py, pz};
     P_.skin = 0.1f * P_.globalScale;
@@ -703,7 +779,7 @@ class Simulation {
   std::vector<float> getSdfGrid(int rx, int ry, int rz) {
     return peclet::dem::generateSdfKokkos(
         rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal, P_.pos, P_.quat, P_.scale, P_.shapeId,
-        P_.shapes, P_.domain.periodic_x, P_.domain.periodic_y, P_.domain.periodic_z);
+        P_.shapes, P_.domain.periodic_x, P_.domain.periodic_y, P_.domain.periodic_z, P_.sdfGrid);
   }
 
   int numParticles() const { return P_.numReal; }
