@@ -23,7 +23,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "peclet-dem"
-version = "0.2.1"
+version = "0.3.0"
 description = "peclet.dem — performance-portable XPBD Discrete Element Method (Kokkos + ArborX)"
 readme = "README.md"
 requires-python = ">=3.10"
