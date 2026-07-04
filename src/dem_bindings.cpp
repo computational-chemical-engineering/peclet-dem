@@ -182,6 +182,13 @@ NB_MODULE(_dem, m) {
           [](Simulation& s, nb::ndarray<float, nb::c_contig> a) { s.setVelocities(to_vec(a)); },
           "Set particle velocities from an (N,3) array.")
       .def(
+          "set_external_forces",
+          [](Simulation& s, nb::ndarray<float, nb::c_contig> a) { s.setExternalForces(to_vec(a)); },
+          "Set the per-particle external FORCE (e.g. fluid drag) from an (N,3) array. Applied each "
+          "step as dv = F*invMass*dt; persists until re-set or cleared.")
+      .def("clear_external_forces", &Simulation::clearExternalForces,
+           "Zero all per-particle external forces.")
+      .def(
           "set_quaternions",
           [](Simulation& s, nb::ndarray<float, nb::c_contig> a) { s.setQuaternions(to_vec(a)); },
           "Set particle orientation quaternions from an (N,4) array.")
@@ -238,6 +245,14 @@ NB_MODULE(_dem, m) {
                 s.velocitiesView(), Kokkos::make_pair(0, s.numParticles()), Kokkos::ALL));
           },
           "Zero-copy (N,3) device array of velocities (NumPy view on host, DLPack/CuPy on GPU).")
+      .def(
+          "get_external_forces_view",
+          [](const Simulation& s) {
+            return peclet::core::python::view_to_ndarray(Kokkos::subview(
+                s.externalForcesView(), Kokkos::make_pair(0, s.numParticles()), Kokkos::ALL));
+          },
+          "Zero-copy (N,3) device array of the per-particle external force (NumPy view on host, "
+          "DLPack/CuPy on GPU) — write fluid drag here directly to avoid a host round-trip.")
       .def(
           "get_quaternions", [](const Simulation& s) { return rows(s.getQuaternions(), 4); },
           "Return particle orientation quaternions as an (N,4) numpy array.")

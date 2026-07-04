@@ -44,15 +44,19 @@ KOKKOS_INLINE_FUNCTION void st4(const V4& v, int i, F4 a) {
 inline void predictVelocityKokkos(int n, V3 pos, Vf invMass, V3 vel, V4 quat, V3 angVel,
                                   V3 invInertia, V3 posPred, V4 quatPred, V3 velPred, V3 angVelPred,
                                   V3 deltaPos, V4 deltaQuat, V3 deltaVel, V3 deltaAngVel,
-                                  Vi constraintCounts, F3 gravity, float dt) {
+                                  Vi constraintCounts, F3 gravity, float dt, V3 extForce) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::predict_velocity", Kokkos::RangePolicy<CpExec>(space, 0, n),
       KOKKOS_LAMBDA(int i) {
         const float invM = invMass(i);
         F3 v = ldF3(vel, i);
-        if (invM > 0.0f)
+        if (invM > 0.0f) {
           v = add3(v, scale3(gravity, dt));
+          // external force (fluid drag, etc.): F=ma => dv = F*invMass*dt (extForce is a FORCE, so it
+          // scales with 1/mass; gravity above is already an acceleration).
+          v = add3(v, scale3(ldF3(extForce, i), invM * dt));
+        }
         detail::st3(velPred, i, v);
 
         F3 wpred = ldF3(angVel, i);

@@ -59,7 +59,7 @@ inline void demStep(Particles& P) {
 
   predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
                         P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
-                        P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt);
+                        P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce);
 
   {
     auto ri = P.realIndices;
@@ -231,7 +231,7 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   P.numParticles = P.numReal;
   predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
                         P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
-                        P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt);
+                        P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce);
 
   // 2. Gather ghosts (real mass) from owners over the halo: full state into the ghost slots; sets
   //    P.numParticles = numReal + numGhost and self-maps realIndices.
@@ -613,6 +613,19 @@ class Simulation {
     }
     Kokkos::deep_copy(P_.vel, vel);
   }
+  // Per-particle external FORCE (fluid drag etc.), an (N,3) flat array. Applied in the next step()'s
+  // velocity predict as dv = F*invMass*dt. Persists across steps until re-set or cleared.
+  void setExternalForces(const std::vector<float>& f) {
+    auto ef = Kokkos::create_mirror_view(P_.extForce);
+    for (int i = 0; i < P_.numReal && 3 * i + 2 < (int)f.size(); ++i) {
+      ef(i, 0) = f[3 * i];
+      ef(i, 1) = f[3 * i + 1];
+      ef(i, 2) = f[3 * i + 2];
+    }
+    Kokkos::deep_copy(P_.extForce, ef);
+  }
+  void clearExternalForces() { Kokkos::deep_copy(P_.extForce, 0.0f); }
+  const V3& externalForcesView() const { return P_.extForce; }
   // rigid-body rotation state (the pipeline integrates the gyroscopic Euler term + quaternion
   // already)
   void setQuaternions(const std::vector<float>& q) {

@@ -40,7 +40,8 @@ struct Particles {
   Vi constraintCounts;
   Vi realIndices;
   Kokkos::View<float* [2], CpMem> planeFriction;
-  Vf rad;  // effective broadphase radius scratch (scale * globalScale)
+  Vf rad;      // effective broadphase radius scratch (scale * globalScale)
+  V3 extForce;  // per-particle external FORCE (e.g. fluid drag); F=ma => dv = extForce*invMass*dt
 
   // --- collision/contact/manifold buffers ---
   Kokkos::View<int* [2], CpMem> pairs;        // broadphase candidates (maxPairs)
@@ -95,6 +96,7 @@ struct Particles {
     realIndices = Vi("realIndices", cap);
     planeFriction = Kokkos::View<float* [2], CpMem>("planeFriction", cap);
     rad = Vf("rad", cap);
+    extForce = V3("extForce", cap);  // zero-initialised => no external force by default
     pairs = Kokkos::View<int* [2], CpMem>("pairs", maxPairs);
     contacts = Kokkos::View<ContactC*, CpMem>("contacts", maxContacts);
     manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", maxContacts);
@@ -140,6 +142,7 @@ struct Particles {
     Kokkos::resize(realIndices, newCap);
     Kokkos::resize(planeFriction, newCap);
     Kokkos::resize(rad, newCap);
+    Kokkos::resize(extForce, newCap);
     capacity = newCap;
   }
 
