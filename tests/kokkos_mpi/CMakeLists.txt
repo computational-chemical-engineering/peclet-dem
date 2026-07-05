@@ -27,6 +27,17 @@ if(NOT MPIEXEC_EXECUTABLE)
 endif()
 
 enable_testing()
+# migrateTo onto a shared decomposition (co-rebalance; PECLET_DEM_MPI guards mpi_halo.hpp).
+add_executable(test_migrate_mpi test_migrate_mpi.cpp)
+target_include_directories(test_migrate_mpi PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${TPX_DIR}/include)
+target_compile_definitions(test_migrate_mpi PRIVATE PECLET_DEM_MPI)
+target_link_libraries(test_migrate_mpi PRIVATE ArborX::ArborX Kokkos::kokkos MPI::MPI_CXX)
+foreach(np 1 2 4)
+  add_test(NAME migrate_np${np}
+           COMMAND ${MPIEXEC_EXECUTABLE} -np ${np} $<TARGET_FILE:test_migrate_mpi>)
+endforeach()
+
 foreach(t demstep_mpi rebalance_mpi)
   add_executable(test_${t} test_${t}.cpp)
   target_include_directories(test_${t} PRIVATE

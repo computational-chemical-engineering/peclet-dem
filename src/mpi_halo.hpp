@@ -179,10 +179,32 @@ class ParticleHalo {
       map.cellSize[i] = size[i] / static_cast<double>(gsize[i]);
       map.periodic[i] = periodic[i];
     }
+    map_ = map;
     mig_.init(dec_, rank_, map, comm_);
     halo_.init(mig_);
     inited_ = true;
   }
+  // Shared-decomposition overload: adopt an EXTERNALLY-built ORB (so dem shares one BlockDecomposer
+  // with the flow solver in a coupled run, and migrateTo() can move onto a re-decomposed partition).
+  // `size`/`origin` map the ORB cell grid (= dec.globalSize()) to the physical domain.
+  void initMpi(const peclet::core::decomp::BlockDecomposer<3>& dec, std::array<double, 3> origin,
+               std::array<double, 3> size, std::array<bool, 3> periodic, MPI_Comm comm) {
+    comm_ = comm;
+    MPI_Comm_rank(comm_, &rank_);
+    dec_ = dec;
+    const auto& gs = dec.globalSize();
+    peclet::core::halo::DomainMap<3> map;
+    for (int i = 0; i < 3; ++i) {
+      map.origin[i] = origin[i];
+      map.cellSize[i] = size[i] / static_cast<double>(gs[i]);
+      map.periodic[i] = periodic[i];
+    }
+    map_ = map;
+    mig_.init(dec_, rank_, map, comm_);
+    halo_.init(mig_);
+    inited_ = true;
+  }
+  const peclet::core::decomp::BlockDecomposer<3>& decomposer() const { return dec_; }
 
   bool inited() const { return inited_; }
   int rank() const { return rank_; }
@@ -290,10 +312,42 @@ class ParticleHalo {
   // ownership and this rank's owned slice change; the physics result is unchanged. Must be called
   // at a step boundary (committed pos/quat/vel/angVel valid; predicted/delta/ghost scratch are
   // rebuilt next gather()). Returns this rank's new owned count. No-op-safe at np=1.
+  // Weighted re-decompose by particle count (the equal-cell ORB imbalances as particles cluster)
+  // and migrate owners. dec_ updated in place; mig_ points to it. Returns the new owned count.
   int rebalance(Particles& P) {
-    const int no = P.numReal;
+    std::vector<peclet::core::Vec<3>> pos;
+    std::vector<char> payload;
+    packState(P, pos, payload);
+    const std::size_t newN = peclet::core::halo::rebalanceByParticleCount(
+        dec_, mig_, pos, payload, sizeof(MigratePack), comm_);
+    if ((int)newN > P.capacity)
+      throw std::runtime_error("ParticleHalo::rebalance: owned overflow -- rank received " +
+                               std::to_string(newN) + " particles, capacity " +
+                               std::to_string(P.capacity));
+    unpackState(P, pos, payload, newN);
+    return (int)newN;
+  }
+  // Migrate particles onto an EXTERNALLY-supplied decomposition (dynamic co-rebalancing: the same
+  // BlockDecomposer the flow solver redistributes onto). Pure ownership move — counts/state
+  // conserved. Must be called at a step boundary. No-op-safe at np=1.
+  int migrateTo(Particles& P, const peclet::core::decomp::BlockDecomposer<3>& newDec) {
+    std::vector<peclet::core::Vec<3>> pos;
+    std::vector<char> payload;
+    packState(P, pos, payload);
+    dec_ = newDec;  // in place: mig_ still points at dec_; mig_.migrate() sends to dec_.ownerOf(...)
+    const std::size_t newN = mig_.migrate(pos, payload, sizeof(MigratePack));
+    if ((int)newN > P.capacity)
+      throw std::runtime_error("ParticleHalo::migrateTo: owned overflow -- rank received " +
+                               std::to_string(newN) + " particles, capacity " +
+                               std::to_string(P.capacity));
+    unpackState(P, pos, payload, newN);
+    return (int)newN;
+  }
 
-    // 1. Download the committed state and pack it (position drives ownership; rest is payload).
+ private:
+  // Download the committed state and pack it (position drives ownership; the rest is the payload).
+  void packState(Particles& P, std::vector<peclet::core::Vec<3>>& pos, std::vector<char>& payload) {
+    const int no = P.numReal;
     auto h_pos = Kokkos::create_mirror_view(P.pos);
     auto h_quat = Kokkos::create_mirror_view(P.quat);
     auto h_vel = Kokkos::create_mirror_view(P.vel);
@@ -314,9 +368,8 @@ class ParticleHalo {
     Kokkos::deep_copy(h_tScale, P.targetScale);
     Kokkos::deep_copy(h_shape, P.shapeId);
     Kokkos::deep_copy(h_pf, P.planeFriction);
-
-    std::vector<peclet::core::Vec<3>> pos((std::size_t)no);
-    std::vector<char> payload((std::size_t)no * sizeof(MigratePack));
+    pos.assign((std::size_t)no, peclet::core::Vec<3>{});
+    payload.assign((std::size_t)no * sizeof(MigratePack), 0);
     for (int i = 0; i < no; ++i) {
       pos[(std::size_t)i] = peclet::core::Vec<3>{h_pos(i, 0), h_pos(i, 1), h_pos(i, 2)};
       MigratePack m;
@@ -332,18 +385,20 @@ class ParticleHalo {
       m.planeFric1 = h_pf(i, 1);
       std::memcpy(&payload[(std::size_t)i * sizeof(MigratePack)], &m, sizeof(MigratePack));
     }
-
-    // 2. Weighted re-decompose by particle count + migrate (dec_ updated in place; mig_ points to
-    // it).
-    const std::size_t newN = peclet::core::halo::rebalanceByParticleCount(
-        dec_, mig_, pos, payload, sizeof(MigratePack), comm_);
-    if ((int)newN > P.capacity)
-      throw std::runtime_error("ParticleHalo::rebalance: owned overflow -- rank received " +
-                               std::to_string(newN) + " particles, capacity " +
-                               std::to_string(P.capacity) +
-                               "; size the Simulation for the peak per-rank count.");
-
-    // 3. Unpack the received particles back into the SoA [0,newN) and upload.
+  }
+  // Unpack the migrated particles back into the SoA [0,newN) and upload.
+  void unpackState(Particles& P, const std::vector<peclet::core::Vec<3>>& pos,
+                   const std::vector<char>& payload, std::size_t newN) {
+    auto h_pos = Kokkos::create_mirror_view(P.pos);
+    auto h_quat = Kokkos::create_mirror_view(P.quat);
+    auto h_vel = Kokkos::create_mirror_view(P.vel);
+    auto h_angVel = Kokkos::create_mirror_view(P.angVel);
+    auto h_invI = Kokkos::create_mirror_view(P.invInertia);
+    auto h_invM = Kokkos::create_mirror_view(P.invMass);
+    auto h_scale = Kokkos::create_mirror_view(P.scale);
+    auto h_tScale = Kokkos::create_mirror_view(P.targetScale);
+    auto h_shape = Kokkos::create_mirror_view(P.shapeId);
+    auto h_pf = Kokkos::create_mirror_view(P.planeFriction);
     for (std::size_t i = 0; i < newN; ++i) {
       h_pos((int)i, 0) = pos[i][0];
       h_pos((int)i, 1) = pos[i][1];
@@ -383,9 +438,9 @@ class ParticleHalo {
 
     P.numReal = (int)newN;
     P.numParticles = (int)newN;
-    return (int)newN;
   }
 
+ public:
   // owner slice [0,numReal) -> ghost slots [numReal,..), verbatim (velocity / angular velocity).
   void forward(V3 field) {
     if (numGhost_ == 0)
@@ -471,6 +526,7 @@ class ParticleHalo {
   V3 refPos_;
   MPI_Comm comm_ = MPI_COMM_NULL;
   peclet::core::decomp::BlockDecomposer<3> dec_;
+  peclet::core::halo::DomainMap<3> map_;  // physical<->cell mapping (for migrateTo)
   peclet::core::halo::ParticleMigrator<3> mig_;
   peclet::core::halo::ParticleHaloTopology<3> halo_;
   peclet::core::halo::ParticleHalo<3> dev_;
