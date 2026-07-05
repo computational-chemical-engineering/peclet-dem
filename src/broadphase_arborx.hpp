@@ -34,9 +34,22 @@ using BpMem = BpExec::memory_space;
 // the usual (positions [N][3], radii [N], pairs [N][2], count scalar).
 template <class PosV, class RadV, class PairsV, class CountV>
 inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numReal, float margin,
-                                PairsV outPairs, CountV outCount) {
+                                PairsV outPairs, CountV outCount, float boxCap = 0.0f) {
   BpExec space;
   using Box = ArborX::Box<3>;
+
+  // Sanitize the AABB half-width + centre: a non-finite (NaN/inf) or absurdly large box — a particle
+  // blown up by a bad coupling/DEM transient — would otherwise overlap ~every other box and make the
+  // ArborX query allocate billions of intersections (observed: a 36 GiB "bp::values" OOM). SANE_BOX
+  // parks such a particle in a degenerate far box that matches nothing, so one bad particle can't
+  // crash the run. boxCap<=0 disables the size clamp (NaN/inf are always caught).
+#define PECLET_DEM_SANE_BOX(i, px, py, pz, b)                                        \
+  float px = pos(i, 0), py = pos(i, 1), pz = pos(i, 2), b = rad(i) + margin;         \
+  if (!(b == b) || !(px == px) || !(py == py) || !(pz == pz) ||                      \
+      (boxCap > 0.0f && b > boxCap)) {                                               \
+    px = py = pz = -1.0e30f;                                                         \
+    b = 0.0f;                                                                        \
+  }
 
   // AABBs over all particles (these are the BVH primitives).
   Kokkos::View<Box*, BpMem> boxes(
@@ -45,9 +58,8 @@ inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numRea
   Kokkos::parallel_for(
       "peclet::dem::bp::aabb", Kokkos::RangePolicy<BpExec>(space, 0, numParticles),
       KOKKOS_LAMBDA(int i) {
-        const float b = rad(i) + margin;
-        boxes(i) = Box{{pos(i, 0) - b, pos(i, 1) - b, pos(i, 2) - b},
-                       {pos(i, 0) + b, pos(i, 1) + b, pos(i, 2) + b}};
+        PECLET_DEM_SANE_BOX(i, px, py, pz, b);
+        boxes(i) = Box{{px - b, py - b, pz - b}, {px + b, py + b, pz + b}};
       });
 
   ArborX::BoundingVolumeHierarchy const tree(space, ArborX::Experimental::attach_indices(boxes));
@@ -59,10 +71,10 @@ inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numRea
   Kokkos::parallel_for(
       "peclet::dem::bp::preds", Kokkos::RangePolicy<BpExec>(space, 0, numReal),
       KOKKOS_LAMBDA(int i) {
-        const float b = rad(i) + margin;
-        preds(i) = ArborX::intersects(Box{{pos(i, 0) - b, pos(i, 1) - b, pos(i, 2) - b},
-                                          {pos(i, 0) + b, pos(i, 1) + b, pos(i, 2) + b}});
+        PECLET_DEM_SANE_BOX(i, px, py, pz, b);
+        preds(i) = ArborX::intersects(Box{{px - b, py - b, pz - b}, {px + b, py + b, pz + b}});
       });
+#undef PECLET_DEM_SANE_BOX
 
   Kokkos::View<typename decltype(tree)::value_type*, BpMem> values("peclet::dem::bp::values", 0);
   Kokkos::View<int*, BpMem> offsets("peclet::dem::bp::offsets", 0);

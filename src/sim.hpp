@@ -113,8 +113,9 @@ inline void demStep(Particles& P) {
   // the CUDA solver — the position solve then corrects posPred against these contacts.
   // findCollisionsArborX already fences + reads the pair count back to host; reuse its return value
   // rather than a second deep_copy of the same P.pairCount scalar (G2).
-  const int np = findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin,
-                                      P.pairs, P.pairCount);
+  const int np = findCollisionsArborX(
+      P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount,
+      std::max(std::max(P.domain.size.x, P.domain.size.y), P.domain.size.z));  // OOM guard
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
@@ -207,8 +208,8 @@ inline float computeOverlapsKokkos(Particles& P) {
         "rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
         KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
   }
-  findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs,
-                       P.pairCount);
+  findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount,
+                       std::max(std::max(P.domain.size.x, P.domain.size.y), P.domain.size.z));
   const int np = readInt(P.pairCount);
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
@@ -279,8 +280,9 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   // 3. Broad/narrow phase + manifold reduction over owned + ghosts.
   // findCollisionsArborX already fences + reads the pair count back to host; reuse its return value
   // rather than a second deep_copy of the same P.pairCount scalar (G2).
-  const int np = findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin,
-                                      P.pairs, P.pairCount);
+  const int np = findCollisionsArborX(
+      P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount,
+      std::max(std::max(P.domain.size.x, P.domain.size.y), P.domain.size.z));  // OOM guard
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
