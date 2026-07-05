@@ -202,7 +202,7 @@ int main(int argc, char** argv) {
       float lenN = std::sqrt(dot3(Nsum, Nsum));
       if (lenN < 1e-9f)
         continue;
-      F3 diff = sub3(rAavg, rBavg);
+      F3 diff = (idB < 0) ? rAavg : sub3(rAavg, rBavg);  // boundary: rBavg is absolute, use rAavg
       F3 vG = scale3(diff, growthRate);
       float vn = dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
                  dot3(wB, TauB);

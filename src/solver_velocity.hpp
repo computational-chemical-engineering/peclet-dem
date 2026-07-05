@@ -95,7 +95,14 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         if (lenN < 1e-9f)
           return;
 
-        const F3 diffCenters = sub3(rAavg, rBavg);
+        // Separation vector for the approaching-sign gate + growth velocity. For a BOUNDARY (idB<0),
+        // rBavg is the ABSOLUTE wall contact point (kept absolute for the position solve's plane
+        // linearisation), NOT a body-relative lever — so rAavg - rBavg would depend on where the
+        // contact sits in world space, flipping `alignment` (and thus the approaching test) around a
+        // curved wall / a wall far from the origin and injecting energy (grains "jump" on the way
+        // down a rotating drum). The grain's own contact lever rAavg is the meaningful relative
+        // vector (dot(Nsum, rAavg) = radius > 0, a consistent convention). Body-body keeps rAavg-rBavg.
+        const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
         const F3 vGrowth = scale3(diffCenters, growthRate);
 
         float vn = dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
