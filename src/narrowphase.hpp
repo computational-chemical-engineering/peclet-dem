@@ -180,7 +180,12 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
         const ShapeDesc dB = shapes(shapeId(idB));
         const F3 posA = loadF3(pos, idA), posB = loadF3(pos, idB);
         const F4 qA = loadF4(quat, idA), qB = loadF4(quat, idB);
-        const float scaleA = scale(idA), scaleB = scale(idB);
+        // Canonical->world size = per-particle scale * global scale. globalScale must appear in the
+        // shell placement, the canonical remap of B, and the distance rescale exactly as it does in
+        // the sphere probe radius below — else a non-unit global_scale makes A's and B's radii
+        // disagree (grains a real diameter apart read a huge penetration and the solver explodes).
+        // The plane/wall boundary kernels already fold globalScale into their `s = scale*globalScale`.
+        const float effScaleA = scale(idA) * globalScale, effScaleB = scale(idB) * globalScale;
 
         const int countA = dA.numPoints;
         const bool sphereA = (dA.type == SPHERE);
@@ -193,14 +198,14 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
             const int s = dA.shellOffset + k;
             pLocalA = F3{shell(s, 0), shell(s, 1), shell(s, 2)};
           } else if (sphereA) {
-            pointRadius = dA.params.x * scaleA * globalScale;
+            pointRadius = dA.params.x * effScaleA;
           }
 
-          const F3 pWorld = add3(posA, rotateVector(qA, scale3(pLocalA, scaleA)));
+          const F3 pWorld = add3(posA, rotateVector(qA, scale3(pLocalA, effScaleA)));
           const F3 pLocalB = invRotateVector(qB, sub3(pWorld, posB));
-          const F3 pCanB = scale3(pLocalB, 1.0f / scaleB);
+          const F3 pCanB = scale3(pLocalB, 1.0f / effScaleB);
 
-          const float dist = sdfEvalShape(pCanB, dB, sdfGrid) * scaleB;
+          const float dist = sdfEvalShape(pCanB, dB, sdfGrid) * effScaleB;
           const float effDist = dist - pointRadius;
           if (effDist >= margin)
             continue;

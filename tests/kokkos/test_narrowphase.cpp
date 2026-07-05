@@ -55,8 +55,10 @@ int main(int argc, char** argv) {
   {
     const int G = 6;             // 6x6x6 grid
     const int N = G * G * G;     // 216 spheres
-    const float spacing = 1.8f;  // < diameter(2) => face neighbours overlap
-    const float globalScale = 1.0f;
+    const float globalScale = 0.7f;  // non-unit: exercises the canonical->world globalScale folding
+    // all lengths scale with globalScale so the config is the unit-scale one in world units: spacing
+    // < world diameter (2*globalScale) => face neighbours overlap; lift = one world radius onto z=0.
+    const float spacing = 1.8f * globalScale;
     const float margin = 0.1f * globalScale;
 
     std::mt19937 rng(7);
@@ -69,7 +71,7 @@ int main(int argc, char** argv) {
       int ix = i % G, iy = (i / G) % G, iz = i / (G * G);
       px[i] = ix * spacing + jit(rng);
       py[i] = iy * spacing + jit(rng);
-      pz[i] = iz * spacing + 1.0f + jit(rng);  // lift above z=0 plane
+      pz[i] = iz * spacing + globalScale + jit(rng);  // lift one world radius onto the z=0 plane
       float a = nq(rng), b = nq(rng), c = nq(rng), d = nq(rng);
       float nrm = std::sqrt(a * a + b * b + c * c + d * d) + 1e-12f;
       qx[i] = a / nrm;
@@ -173,7 +175,7 @@ int main(int argc, char** argv) {
       ShapeDesc dA = shapes[sid[idA]], dB = shapes[sid[idB]];
       F3 posA = loadF3h(idA), posB = loadF3h(idB);
       F4 qA = loadF4h(idA), qB = loadF4h(idB);
-      float scaleA = sc[idA], scaleB = sc[idB];
+      float effScaleA = sc[idA] * globalScale, effScaleB = sc[idB] * globalScale;
       int iter = (dA.numPoints > 0) ? dA.numPoints : 1;
       for (int k = 0; k < iter; ++k) {
         F3 pLocalA{0, 0, 0};
@@ -181,11 +183,11 @@ int main(int argc, char** argv) {
         if (dA.numPoints > 0) {
           /* shell unused here */
         } else if (dA.type == SPHERE) {
-          pr = dA.params.x * scaleA * globalScale;
+          pr = dA.params.x * effScaleA;
         }
-        F3 pWorld = add3(posA, rotateVector(qA, scale3(pLocalA, scaleA)));
-        F3 pCanB = scale3(invRotateVector(qB, sub3(pWorld, posB)), 1.0f / scaleB);
-        float dist = sdfEval(pCanB, dB.type, dB.params) * scaleB;
+        F3 pWorld = add3(posA, rotateVector(qA, scale3(pLocalA, effScaleA)));
+        F3 pCanB = scale3(invRotateVector(qB, sub3(pWorld, posB)), 1.0f / effScaleB);
+        float dist = sdfEval(pCanB, dB.type, dB.params) * effScaleB;
         float effDist = dist - pr;
         if (effDist >= margin)
           continue;

@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <fstream>
 #include <Kokkos_Core.hpp>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -277,9 +278,23 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount);
   const int nm = readInt(P.manifoldCount);
 
-  // 4. Velocity solve (normal restitution); refresh ghost velocities every syncEvery iters (+
-  // last).
+  // 4. Velocity solve: normal restitution + Coulomb friction; refresh ghost velocities every
+  // syncEvery iters (+ last). Unlike the original CUDA distributed scheme (pure normal restitution),
+  // the friction cluster runs here too, so a frictional/moving wall drives the distributed step —
+  // e.g. a rotating drum lifts its bed under MPI exactly as single-rank. WALL friction (boundary
+  // contacts, bodyB<0) touches only the OWNED particle, so it is exact across ranks; body-body
+  // friction near a rank boundary uses the ghost's LOCAL contact count in the count-average, so it is
+  // a close approximation there (bounded by the Coulomb clamp), not bit-exact. The gathered ghosts
+  // carry current velPred (forwarded each syncEvery iter), so the force-chain load sees neighbours.
+  const bool friction = (P.frictionDynamic > 0.0f || P.wallFrictionMax > 0.0f);
+  if (friction)
+    computePlaneLoadKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
+                           P.planeFriction);
+
   for (int it = 0; it < P.velocityIterations; ++it) {
+    if (friction)
+      accumulateNormalImpulseKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred,
+                                    P.angVelPred, P.realIndices, P.growthRate);
     solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
                         P.realIndices, P.growthRate, P.restitutionNormal, P.deltaVel,
                         P.deltaAngVel);
@@ -289,6 +304,16 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
       if (forwardRotation)
         halo.forward(P.angVelPred);
     }
+  }
+  if (friction) {
+    countFrictionContactsKokkos(P.contacts, nc, P.realIndices, P.planeFriction);
+    solveContactFrictionKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
+                               P.realIndices, P.planeFriction, P.frictionDynamic, P.deltaVel,
+                               P.deltaAngVel);
+    applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
+    halo.forward(P.velPred);  // publish the friction velocity update to the ghosts
+    if (forwardRotation)
+      halo.forward(P.angVelPred);
   }
 
   // 5. Apply velocity & predict position, then refresh ghost predicted positions (+ pose if
@@ -342,7 +367,14 @@ class Simulation {
   // Kokkos::finalize (else "deallocated after finalize" aborts). releaseAll() (called from the
   // module's atexit, before finalize) frees every live Sim's Views, so callers need not `del sim;
   // gc.collect()` themselves.
-  void releaseViews() { P_ = Particles{}; }
+  void releaseViews() {
+    P_ = Particles{};
+#ifdef PECLET_DEM_MPI
+    halo_.reset();  // the halo also owns Kokkos Views (gather/forward buffers + its core sub-objects')
+                    // that must be freed before Kokkos::finalize, else "deallocated after finalize"
+                    // aborts. Destroying it via the unique_ptr frees them all.
+#endif
+  }
   static void releaseAll() {
     for (auto* s : registry())
       s->releaseViews();
@@ -803,7 +835,7 @@ class Simulation {
   void initMpi(std::tuple<double, double, double> origin, std::tuple<double, double, double> size,
                std::tuple<long, long, long> gsize, std::tuple<bool, bool, bool> periodic,
                MPI_Comm comm) {
-    halo_.initMpi({std::get<0>(origin), std::get<1>(origin), std::get<2>(origin)},
+    halo_->initMpi({std::get<0>(origin), std::get<1>(origin), std::get<2>(origin)},
                   {std::get<0>(size), std::get<1>(size), std::get<2>(size)},
                   {std::get<0>(gsize), std::get<1>(gsize), std::get<2>(gsize)},
                   {std::get<0>(periodic), std::get<1>(periodic), std::get<2>(periodic)}, comm);
@@ -822,30 +854,30 @@ class Simulation {
     mpiRebalanceEvery_ = rebalance_every < 0 ? 0 : rebalance_every;
     // Verlet-skin ghost reuse (D2): rebuild the halo topology only when a particle has moved >
     // skin, instead of every substep. 0 (default) keeps the exact per-substep rebuild.
-    halo_.setVerletSkin(static_cast<float>(verlet_skin));
+    halo_->setVerletSkin(static_cast<float>(verlet_skin));
   }
   // Halo rebuild stats (D2): topology rebuilds vs total gather() calls (for benchmarking).
-  long mpiRebuilds() const { return halo_.numRebuilds(); }
-  long mpiGathers() const { return halo_.numGathers(); }
+  long mpiRebuilds() const { return halo_->numRebuilds(); }
+  long mpiGathers() const { return halo_->numGathers(); }
   // Migrate ownership now so each rank holds a near-equal particle count. Safe to call at a step
   // boundary; returns this rank's new owned count. Exposed for manual / adaptive balancing.
-  int rebalance() { return halo_.rebalance(P_); }
+  int rebalance() { return halo_->rebalance(P_); }
   // Co-rebalance: migrate ownership onto the weighted ORB of per-cell weights `w` (the SAME partition
   // the coupled flow solver redistributes onto from the same weight field). Returns new owned count.
   int migrateToWeights(const std::vector<peclet::core::Real>& w) {
-    return halo_.migrateToWeights(P_, w);
+    return halo_->migrateToWeights(P_, w);
   }
   void stepMpi(int nsteps) {
     const double rcut = (mpiRcut_ > 0.0) ? mpiRcut_ : 1.0 * P_.globalScale;
     for (int s = 0; s < nsteps; ++s) {
       if (mpiRebalanceEvery_ > 0 && mpiStepCount_ % mpiRebalanceEvery_ == 0)
-        halo_.rebalance(P_);
-      demStepMpi(P_, halo_, rcut, mpiSyncEvery_, mpiForwardRotation_);
+        halo_->rebalance(P_);
+      demStepMpi(P_, *halo_, rcut, mpiSyncEvery_, mpiForwardRotation_);
       ++mpiStepCount_;
     }
   }
-  int rank() const { return halo_.rank(); }
-  int numGhost() const { return halo_.numGhost(); }
+  int rank() const { return halo_->rank(); }
+  int numGhost() const { return halo_->numGhost(); }
 #endif  // PECLET_DEM_MPI
 
   // SDF grid (get_sdf_grid): Eikonal reconstruction over the domain, flat x-fastest, negative
@@ -950,7 +982,7 @@ class Simulation {
   std::vector<float> wallGridHost_;
   F3 defaultInvI_{2.5f, 2.5f, 2.5f};
 #ifdef PECLET_DEM_MPI
-  ParticleHalo halo_;
+  std::unique_ptr<ParticleHalo> halo_ = std::make_unique<ParticleHalo>();
   double mpiRcut_ = 0.0;
   int mpiSyncEvery_ = 1;
   bool mpiForwardRotation_ = true;
