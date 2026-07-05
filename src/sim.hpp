@@ -43,10 +43,25 @@ inline int readInt(Kokkos::View<int, CpMem> v) {
   return h;
 }
 
+/// Largest effective particle radius over the owned set (= max scale × globalScale, growth included).
+/// The ghost band + broadphase margin are sized off THIS, not globalScale directly, so they scale with
+/// the actual grain size — set particles in SI (`radius = 1e-3`, globalScale left at 1) and the halo
+/// layer follows automatically. For the usual convention (globalScale ≈ grain size, scale ≈ 1) it is
+/// numerically identical to the old `1.0*globalScale`.
+inline float maxOwnedRadius(const Particles& P) {
+  if (P.numReal <= 0)
+    return P.globalScale * P.baseRadius;
+  float mx = 0.0f;
+  auto sc = P.scale;
+  Kokkos::parallel_reduce(
+      "peclet::dem::max_scale", Kokkos::RangePolicy<CpExec>(0, P.numReal),
+      KOKKOS_LAMBDA(int i, float& m) { m = sc(i) > m ? sc(i) : m; }, Kokkos::Max<float>(mx));
+  return mx * P.globalScale * P.baseRadius;
+}
+
 /// One full XPBD DEM substep over the particle SoA (mirrors simulation.cpp Simulation::step()).
 inline void demStep(Particles& P) {
   CpExec space;
-  const float margin = 0.1f * P.globalScale;
 
   // growth ramp (faithful to CUDA Simulation::step): factor *= exp(rate*dt), capped at 1, then
   // scale = targetScale * factor. (CUDA stores the unscaled target in d_target_scales.)
@@ -57,6 +72,11 @@ inline void demStep(Particles& P) {
   }
   if (P.growthFactor > 0.0f)
     updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
+
+  // ghost band + broadphase margin sized off the ACTUAL max grain radius (post-growth), so SI-unit
+  // particles just work; identical to the old 0.1/1.0*globalScale when globalScale ~ the grain size.
+  const float maxRad = maxOwnedRadius(P);
+  const float margin = 0.1f * maxRad;
 
   predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
                         P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
@@ -69,10 +89,9 @@ inline void demStep(Particles& P) {
         KOKKOS_LAMBDA(int i) { ri(i) = i; });
   }
   Kokkos::deep_copy(space, P.topGhost, P.numReal);
-  // periodic ghost band = max radius + margin (CUDA config.skin_width = 1.0*global_scale), NOT the
-  // small Verlet broadphase margin -- else particles farther than the Verlet skin from a periodic
-  // face are not ghosted and cross-boundary contacts are missed.
-  const float ghostBand = 1.0f * P.globalScale;
+  // periodic ghost band = max grain radius: the CLOSER particle of any cross-boundary contacting pair
+  // is within one radius of the face, so a band of maxRad ghosts it (sufficient for sphere-sphere).
+  const float ghostBand = maxRad;
   // Size the SoA for the ghost boundary layer BEFORE emitting (CUDA did this in initialize() via
   // calculate_capacity). Without it a Simulation(numReal) leaves capacity==numReal, so every ghost
   // overflows P.capacity in generateGhostsKokkos and cross-boundary contacts are never detected.
@@ -85,10 +104,10 @@ inline void demStep(Particles& P) {
   {
     auto sc = P.scale;
     auto rad = P.rad;
-    float gs = P.globalScale;
+    float gs = P.globalScale, bR = P.baseRadius;
     Kokkos::parallel_for(
         "rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
-        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; });
+        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
   }
   // Collision detection runs on the PREDICTED state (speculative positions/orientations), matching
   // the CUDA solver — the position solve then corrects posPred against these contacts.
@@ -160,7 +179,8 @@ inline void demStep(Particles& P) {
 /// the recorded max overlap. No solve.
 inline float computeOverlapsKokkos(Particles& P) {
   CpExec space;
-  const float margin = 0.1f * P.globalScale;
+  const float maxRad = maxOwnedRadius(P);
+  const float margin = 0.1f * maxRad;
   P.numParticles = P.numReal;
   Kokkos::deep_copy(P.posPred, P.pos);
   Kokkos::deep_copy(P.quatPred, P.quat);
@@ -171,7 +191,7 @@ inline float computeOverlapsKokkos(Particles& P) {
         KOKKOS_LAMBDA(int i) { ri(i) = i; });
   }
   Kokkos::deep_copy(space, P.topGhost, P.numReal);
-  const float ghostBand = 1.0f * P.globalScale;
+  const float ghostBand = maxRad;
   // Match demStep: ensure ghost-boundary-layer headroom so cross-boundary overlaps are counted (a
   // Simulation(numReal) otherwise has capacity==numReal and every ghost overflows). See demStep.
   P.ensureCapacity(calculateGhostCapacity(P.numReal, P.domain, ghostBand));
@@ -182,10 +202,10 @@ inline float computeOverlapsKokkos(Particles& P) {
   {
     auto sc = P.scale;
     auto rad = P.rad;
-    float gs = P.globalScale;
+    float gs = P.globalScale, bR = P.baseRadius;
     Kokkos::parallel_for(
         "rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
-        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; });
+        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
   }
   findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs,
                        P.pairCount);
@@ -227,7 +247,7 @@ inline float computeOverlapsKokkos(Particles& P) {
 inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEvery,
                        bool forwardRotation) {
   CpExec space;
-  const float margin = 0.1f * P.globalScale;
+  const float margin = 0.1f * maxOwnedRadius(P);
 
   if (P.growthFactor != -1.0f && P.growthRate != 0.0f) {
     P.growthFactor *= std::exp(P.growthRate * P.dt);
@@ -250,10 +270,10 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   {
     auto sc = P.scale;
     auto rad = P.rad;
-    float gs = P.globalScale;
+    float gs = P.globalScale, bR = P.baseRadius;
     Kokkos::parallel_for(
         "rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
-        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs; });
+        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
   }
 
   // 3. Broad/narrow phase + manifold reduction over owned + ghosts.
@@ -392,6 +412,7 @@ class Simulation {
   // peclet::dem::ShapeKind values (SPHERE=1, HOLLOW_CYLINDER=2, BOX=3).
   void initializeShape(int shape_type, float radius, float height, float thickness) {
     baseRadius_ = radius;
+    P_.baseRadius = radius;  // effective radius = scale*globalScale*baseRadius (broadphase + ghost band)
     F4 params{radius, 0, 0, 0};
     std::vector<F3> shell;
 
@@ -520,6 +541,7 @@ class Simulation {
     Kokkos::deep_copy(P_.shapes, h);
 
     baseRadius_ = boundingRadius;
+    P_.baseRadius = boundingRadius;
     defaultInvI_ = invInertia;
     shellPoints_ = nPts;
     ensureContactCapacity();
@@ -868,7 +890,7 @@ class Simulation {
     return halo_->migrateToWeights(P_, w);
   }
   void stepMpi(int nsteps) {
-    const double rcut = (mpiRcut_ > 0.0) ? mpiRcut_ : 1.0 * P_.globalScale;
+    const double rcut = (mpiRcut_ > 0.0) ? mpiRcut_ : maxOwnedRadius(P_);
     for (int s = 0; s < nsteps; ++s) {
       if (mpiRebalanceEvery_ > 0 && mpiStepCount_ % mpiRebalanceEvery_ == 0)
         halo_->rebalance(P_);
