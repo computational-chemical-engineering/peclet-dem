@@ -24,7 +24,11 @@ namespace peclet::dem {
 
 using FrManifoldCounts = Kokkos::View<float* [2], CpMem>;  // per body: .x = plane load, .y = count
 
-/// Body-body force-chain normal load: contacts(idx).friction_lambda_n += approach / w_n.
+/// Force-chain normal load, accumulated over the velocity iterations:
+/// contacts(idx).friction_lambda_n += approach / w_n. Body-body AND wall (boundary) contacts —
+/// a grain buried under the bed thus gets the WEIGHT TRANSMITTED FROM ABOVE pressing it into the
+/// wall, not just its own one-shot gravity approach (computePlaneLoad). Without this a deep bed
+/// slips against a moving wall instead of being dragged up (a rotating drum stays flat).
 inline void accumulateNormalImpulseKokkos(Kokkos::View<ContactC*, CpMem> contacts, int numContacts,
                                           Kokkos::View<const float*, CpMem> invMass,
                                           Kokkos::View<const float* [3], CpMem> invInertia,
@@ -38,8 +42,26 @@ inline void accumulateNormalImpulseKokkos(Kokkos::View<ContactC*, CpMem> contact
       "peclet::dem::fric_accum", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
       KOKKOS_LAMBDA(int idx) {
         ContactC c = contacts(idx);
-        if (c.bodyB < 0)
+        if (c.bodyB < 0) {
+          // Wall (boundary): accumulate the transmitted normal load on the owned grain (immovable
+          // wall -> A term only), relative to the wall's surface velocity. Indexed like
+          // computePlaneLoad (c.bodyA directly reads the ghost-augmented velPred slot).
+          const int idA = c.bodyA;
+          const float invMA = invMass(idA);
+          if (invMA <= 0.0f)
+            return;
+          const F3 invIA = ldF3(invInertia, idA);
+          const F3 rA{c.rA.x, c.rA.y, c.rA.z}, n{c.normal.x, c.normal.y, c.normal.z};
+          const F3 vAc = add3(ldF3(velPred, idA), cross3v(ldF3(angVelPred, idA), rA));
+          const F3 vWall{c.boundaryVel.x, c.boundaryVel.y, c.boundaryVel.z};
+          const float approach = -dot3(sub3(vAc, vWall), n);
+          if (approach <= 0.0f)
+            return;
+          const float w_n = computeW(rA, n, invMA, invIA);
+          if (w_n > 1e-6f)
+            contacts(idx).friction_lambda_n += approach / w_n;
           return;
+        }
         const int realA = realIdx(c.bodyA), realB = realIdx(c.bodyB);
         if (realA > realB)
           return;
@@ -164,7 +186,9 @@ inline void solveContactFrictionKokkos(
         if (w_t < 1e-6f)
           return;
 
-        const float bound = (idB < 0) ? planeFriction(idA, 0) : lambda_n;
+        // friction_lambda_n now carries the accumulated force-chain load for BOTH body-body and wall
+        // contacts (see accumulateNormalImpulseKokkos), so it is the Coulomb bound in both cases.
+        const float bound = lambda_n;
         const float nA = planeFriction(realA, 1);
         const float nB = (idB >= 0) ? planeFriction(realB, 1) : 0.0f;
         const float inv_n = 1.0f / Kokkos::fmax(Kokkos::fmax(nA, nB), 1.0f);
