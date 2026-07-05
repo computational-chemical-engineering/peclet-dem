@@ -774,6 +774,11 @@ class Simulation {
   // Migrate ownership now so each rank holds a near-equal particle count. Safe to call at a step
   // boundary; returns this rank's new owned count. Exposed for manual / adaptive balancing.
   int rebalance() { return halo_.rebalance(P_); }
+  // Co-rebalance: migrate ownership onto the weighted ORB of per-cell weights `w` (the SAME partition
+  // the coupled flow solver redistributes onto from the same weight field). Returns new owned count.
+  int migrateToWeights(const std::vector<peclet::core::Real>& w) {
+    return halo_.migrateToWeights(P_, w);
+  }
   void stepMpi(int nsteps) {
     const double rcut = (mpiRcut_ > 0.0) ? mpiRcut_ : 1.0 * P_.globalScale;
     for (int s = 0; s < nsteps; ++s) {

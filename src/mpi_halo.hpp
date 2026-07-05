@@ -343,6 +343,15 @@ class ParticleHalo {
     unpackState(P, pos, payload, newN);
     return (int)newN;
   }
+  // Migrate onto the weighted ORB of per-cell weights `w` (global x-fastest, matching the ORB grid).
+  // The Lagrangian half of the co-rebalance: dem builds the SAME deterministic partition flow does
+  // from the same weight field, so no BlockDecomposer object crosses the language boundary.
+  int migrateToWeights(Particles& P, const std::vector<peclet::core::Real>& w) {
+    int size = 1;
+    MPI_Comm_size(comm_, &size);
+    peclet::core::decomp::BlockDecomposer<3> newDec((std::size_t)size, dec_.globalSize(), w);
+    return migrateTo(P, newDec);
+  }
 
  private:
   // Download the committed state and pack it (position drives ownership; the rest is the payload).

@@ -337,6 +337,10 @@ NB_MODULE(_dem, m) {
       .def("rebalance", &Simulation::rebalance,
            "Re-decompose by particle count and migrate ownership now; returns this rank's new "
            "owned count.")
+      .def("migrate_to_weights", &Simulation::migrateToWeights, nb::arg("weights"),
+           "Co-rebalance: migrate ownership onto the weighted ORB of per-cell weights (global "
+           "x-fastest, matching the ORB grid) -- the SAME partition the coupled flow solver "
+           "redistributes onto from the same weight field. Returns this rank's new owned count.")
       .def("rank", &Simulation::rank, "Return this rank's MPI index.")
       .def("num_ghost", &Simulation::numGhost, "Return the number of ghost particles on this rank.")
       .def("mpi_rebuilds", &Simulation::mpiRebuilds,
