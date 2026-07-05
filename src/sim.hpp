@@ -103,12 +103,17 @@ inline void demStep(Particles& P) {
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                        P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
                        P.maxOverlap);
+  if (P.numWalls > 0)
+    detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
+                        P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
+                        P.contactCount, P.maxOverlap);
   const int nc = readInt(P.contactCount);
 
   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount);
   const int nm = readInt(P.manifoldCount);
 
-  const bool friction = (P.frictionDynamic > 0.0f);
+  // A frictional wall drives friction even when the body-body material is frictionless.
+  const bool friction = (P.frictionDynamic > 0.0f || P.wallFrictionMax > 0.0f);
   if (friction)
     computePlaneLoadKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
                            P.planeFriction);
@@ -191,6 +196,10 @@ inline float computeOverlapsKokkos(Particles& P) {
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                        P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
                        P.maxOverlap);
+  if (P.numWalls > 0)
+    detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
+                        P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
+                        P.contactCount, P.maxOverlap);
   P.numParticles = P.numReal;
   float h;
   Kokkos::deep_copy(h, P.maxOverlap);
@@ -259,6 +268,10 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                        P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
                        P.maxOverlap);
+  if (P.numWalls > 0)
+    detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
+                        P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
+                        P.contactCount, P.maxOverlap);
   const int nc = readInt(P.contactCount);
 
   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount);
@@ -372,6 +385,7 @@ class Simulation {
 
     // Upload the shell (resize the View; numPoints==0 => analytic single-probe like the sphere).
     const int nPts = static_cast<int>(shell.size());
+    shellPoints_ = nPts;
     if (nPts > 0) {
       P_.shell = Kokkos::View<float* [3], CpMem>("shell", nPts);
       auto hs = Kokkos::create_mirror_view(P_.shell);
@@ -475,21 +489,8 @@ class Simulation {
 
     baseRadius_ = boundingRadius;
     defaultInvI_ = invInertia;
-
-    // A point-shell shape emits up to ~(shell points in the contact patch) contacts per neighbour,
-    // far more than the analytic sphere's one-per-pair. The default contacts buffer (capacity*16)
-    // starves them: once it saturates, later contacts are dropped — and since boundary/wall contacts
-    // are appended AFTER the body-body ones, they vanish and particles tunnel through walls. Size the
-    // buffer so every shell point of every particle can record a contact (the realistic upper bound
-    // — a shell point sits inside at most ~one neighbour), floored at the analytic default. At
-    // ~72 B/contact this is a few MB even for large packings.
-    const int perParticle = std::max(16, nPts);
-    const int wantContacts = P_.capacity * perParticle;
-    if (wantContacts > P_.maxContacts) {
-      P_.maxContacts = wantContacts;
-      P_.contacts = Kokkos::View<ContactC*, CpMem>("contacts", wantContacts);
-      P_.manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", wantContacts);
-    }
+    shellPoints_ = nPts;
+    ensureContactCapacity();
   }
 
   void setDomain(float lx, float ly, float lz, bool px, bool py, bool pz) {
@@ -546,6 +547,61 @@ class Simulation {
     if (P_.numPlanes < static_cast<int>(P_.planes.extent(0)))
       h(P_.numPlanes++) = PlaneP{F3{px, py, pz}, F3{nx, ny, nz}};
     Kokkos::deep_copy(P_.planes, h);
+  }
+
+  // Add a static, world-space SDF wall/container the grains collide against (a drum barrel, hopper,
+  // vibrating tray). `grid` is a flat [nx*ny*nz] signed-distance field, x-fastest (idx = x + y*nx +
+  // z*nx*ny), sampled at world nodes origin + (x,y,z)*spacing — POSITIVE in the void where the grains
+  // live, NEGATIVE inside the solid wall (so a grain surface point reads the penetration depth and
+  // the outward gradient is the push-out normal). restitution/friction are the binary particle–wall
+  // material (independent of the body-body material). The wall is motionless but carries a rigid-body
+  // surface-velocity field (set via setWallVelocity) so a grain touching it feels the wall's motion.
+  // Returns the wall's index (for setWallVelocity). Add walls before stepping.
+  int addSdfWall(const std::vector<float>& grid, int nx, int ny, int nz, F3 origin, F3 spacing,
+                 float restitution, float friction) {
+    if (nx < 2 || ny < 2 || nz < 2)
+      throw std::runtime_error("addSdfWall: grid dims must be >= 2 on each axis");
+    if (static_cast<long>(nx) * ny * nz != static_cast<long>(grid.size()))
+      throw std::runtime_error("addSdfWall: grid.size() must equal nx*ny*nz");
+
+    WallSdf w{};
+    w.nx = nx;
+    w.ny = ny;
+    w.nz = nz;
+    w.gridOffset = static_cast<int>(wallGridHost_.size());
+    w.origin = origin;
+    w.invSpacing = F3{spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
+                      spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    w.restitution = restitution;
+    w.friction = friction;
+    const int idx = static_cast<int>(wallsHost_.size());
+    wallsHost_.push_back(w);
+    wallGridHost_.insert(wallGridHost_.end(), grid.begin(), grid.end());
+    // Upload the concatenated grid samples (only changes when a wall is added, not per step).
+    P_.wallGrid = Kokkos::View<float*, CpMem>("wallGrid", wallGridHost_.size());
+    auto hg = Kokkos::create_mirror_view(P_.wallGrid);
+    for (size_t i = 0; i < wallGridHost_.size(); ++i)
+      hg(i) = wallGridHost_[i];
+    Kokkos::deep_copy(P_.wallGrid, hg);
+    uploadWalls();
+    P_.numWalls = static_cast<int>(wallsHost_.size());
+    if (friction > P_.wallFrictionMax)
+      P_.wallFrictionMax = friction;
+    ensureContactCapacity();
+    return idx;
+  }
+
+  // Set a wall's rigid-body surface-velocity field v(x) = linVel + angVel × (x − center). A grain in
+  // contact feels this velocity even though the geometry never moves: set angVel for a rotating drum
+  // (about `center` on the axis), or drive linVel sinusoidally each step for a vibrating wall. Cheap
+  // (a few host scalars); safe to call every step.
+  void setWallVelocity(int wallIndex, F3 linVel, F3 angVel, F3 center) {
+    if (wallIndex < 0 || wallIndex >= static_cast<int>(wallsHost_.size()))
+      throw std::runtime_error("setWallVelocity: wall index out of range");
+    wallsHost_[wallIndex].linVel = linVel;
+    wallsHost_[wallIndex].angVel = angVel;
+    wallsHost_[wallIndex].center = center;
+    uploadWalls();
   }
 
   // positions: flat [n*3]; (re)sets the real-particle count and default state.
@@ -860,8 +916,38 @@ class Simulation {
   }
 
  private:
+  // (Re)upload just the small WallSdf array (velocity fields change every step for a vibrating wall;
+  // the grid samples are uploaded once in addSdfWall).
+  void uploadWalls() {
+    const int n = std::max<int>(1, static_cast<int>(wallsHost_.size()));
+    if (static_cast<int>(P_.walls.extent(0)) < n)
+      P_.walls = Kokkos::View<WallSdf*, CpMem>("walls", n);
+    auto h = Kokkos::create_mirror_view(P_.walls);
+    for (size_t i = 0; i < wallsHost_.size(); ++i)
+      h(i) = wallsHost_[i];
+    Kokkos::deep_copy(P_.walls, h);
+  }
+
+  // Size the contact/manifold buffers so no contact is dropped: a shell point sits inside at most one
+  // neighbour (body-body ~ capacity*shellPoints) plus one per wall it touches (capacity*shellPoints
+  // per wall). Boundary/wall contacts are appended AFTER body-body ones, so an undersized buffer
+  // silently drops them and grains tunnel through walls. Floored at the analytic default; grows only.
+  void ensureContactCapacity() {
+    const int perParticle = std::max(16, shellPoints_);
+    const long want = static_cast<long>(P_.capacity) * perParticle +
+                      static_cast<long>(P_.capacity) * std::max(1, shellPoints_) * P_.numWalls;
+    if (want > P_.maxContacts) {
+      P_.maxContacts = static_cast<int>(want);
+      P_.contacts = Kokkos::View<ContactC*, CpMem>("contacts", want);
+      P_.manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", want);
+    }
+  }
+
   Particles P_;
   float baseRadius_ = 1.0f;
+  int shellPoints_ = 0;  // surface-shell size of the active shape (contact-buffer sizing)
+  std::vector<WallSdf> wallsHost_;
+  std::vector<float> wallGridHost_;
   F3 defaultInvI_{2.5f, 2.5f, 2.5f};
 #ifdef PECLET_DEM_MPI
   ParticleHalo halo_;

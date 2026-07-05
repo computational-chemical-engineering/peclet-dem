@@ -84,7 +84,10 @@ inline void computePlaneLoadKokkos(Kokkos::View<ContactC*, CpMem> contacts, int 
         const F3 invIA = ldF3(invInertia, idA);
         const F3 rA{c.rA.x, c.rA.y, c.rA.z}, n{c.normal.x, c.normal.y, c.normal.z};
         const F3 vAc = add3(ldF3(velPred, idA), cross3v(ldF3(angVelPred, idA), rA));
-        const float approach = -dot3(vAc, n);
+        // Relative to the wall's surface velocity (0 for a static plane), so a wall pressing into a
+        // grain along its normal (a vibrating tray) registers the normal load that bounds friction.
+        const F3 vWall{c.boundaryVel.x, c.boundaryVel.y, c.boundaryVel.z};
+        const float approach = -dot3(sub3(vAc, vWall), n);
         if (approach <= 0.0f)
           return;
         const float w_n = computeW(rA, n, invMA, invIA);
@@ -144,6 +147,8 @@ inline void solveContactFrictionKokkos(
         F3 vBc{0, 0, 0};
         if (idB >= 0)
           vBc = add3(ldF3(velPred, realB), cross3v(ldF3(angVelPred, realB), rB));
+        else
+          vBc = F3{c.boundaryVel.x, c.boundaryVel.y, c.boundaryVel.z};  // moving wall drags the grain
         const F3 vrel = sub3(vAc, vBc);
         const float vn = dot3(vrel, n);
         const F3 vt = sub3(vrel, scale3(n, vn));
@@ -164,7 +169,10 @@ inline void solveContactFrictionKokkos(
         const float nB = (idB >= 0) ? planeFriction(realB, 1) : 0.0f;
         const float inv_n = 1.0f / Kokkos::fmax(Kokkos::fmax(nA, nB), 1.0f);
         float lt = -vt_len / w_t;
-        const float maxf = frictionDynamic * bound;
+        // Per-wall friction for a boundary contact (a < 0 sentinel keeps the global material — planes
+        // and body-body); grain-grain contacts always use the global coefficient.
+        const float mu = (idB < 0 && c.boundaryFriction >= 0.0f) ? c.boundaryFriction : frictionDynamic;
+        const float maxf = mu * bound;
         if (lt < -maxf)
           lt = -maxf;
         lt *= inv_n;

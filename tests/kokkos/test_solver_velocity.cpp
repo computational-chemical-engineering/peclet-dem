@@ -74,6 +74,19 @@ int main(int argc, char** argv) {
       m.rA_sum = F4{uf(rng), uf(rng), uf(rng), 0};
       m.rB_sum = F4{uf(rng), uf(rng), uf(rng), 0};
       m.num_points = 1 + (int)(rng() % 5);
+      // Boundary (idB<0) moving-wall extension: half the walls carry an explicit per-wall restitution
+      // + surface velocity (summed over num_points, count-averaged by the solve), half use the < 0
+      // sentinel = the global material + a static wall. Body-body manifolds never read these.
+      if (b < 0) {
+        if (rng() & 1u) {
+          const float wr = 0.5f * (uf(rng) + 1.0f);  // per-wall restitution in [0,1]
+          m.restitution_sum = wr * m.num_points;
+          m.wallVel_sum = F4{uf(rng), uf(rng), uf(rng), 0};
+        } else {
+          m.restitution_sum = -1.0f * m.num_points;  // sentinel -> global restitution, static wall
+          m.wallVel_sum = F4{0, 0, 0, 0};
+        }
+      }
       man[k] = m;
     }
 
@@ -169,9 +182,16 @@ int main(int argc, char** argv) {
       F4 qA = qOf(realA), qB = (idB >= 0) ? qOf(realB) : F4{0, 0, 0, 1};
       F3 vA{vx[realA], vy[realA], vz[realA]}, wA{wx[realA], wy[realA], wz[realA]};
       F3 vB{0, 0, 0}, wB{0, 0, 0};
+      float rest = restitution;
       if (idB >= 0) {
         vB = F3{vx[realB], vy[realB], vz[realB]};
         wB = F3{wx[realB], wy[realB], wz[realB]};
+      } else {
+        const float in = 1.f / (float)m.num_points;
+        vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, in);
+        const float ra = m.restitution_sum * in;
+        if (ra >= 0.f)
+          rest = ra;
       }
       F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
       F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
@@ -201,7 +221,7 @@ int main(int argc, char** argv) {
       float wT = wAn + wBn;
       if (wT <= 0)
         continue;
-      float lambda = (-restitution * vn - vn) / wT;
+      float lambda = (-rest * vn - vn) / wT;
       F3 Jlin = scale3(Nsum, lambda), JangA = scale3(TauA, lambda), JangB = scale3(TauB, lambda);
       rdv[3 * realA] += Jlin.x * invMA;
       rdv[3 * realA + 1] += Jlin.y * invMA;

@@ -77,6 +77,17 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
 
         const float invN = 1.0f / static_cast<float>(m.num_points);
+
+        // Moving-wall boundary (idB<0): the static "body B" carries the wall's surface velocity
+        // (count-averaged over the contact patch) so restitution is against the wall's motion, and
+        // its own restitution (a < 0 average keeps the global material — planes, body-body).
+        float restitution = restitutionNormal;
+        if (idB < 0) {
+          vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+          const float ra = m.restitution_sum * invN;
+          if (ra >= 0.0f)
+            restitution = ra;
+        }
         const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
         const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
 
@@ -107,7 +118,7 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         if (wTotal <= 0.0f)
           return;
 
-        const float lambda = (-restitutionNormal * vn - vn) / wTotal;
+        const float lambda = (-restitution * vn - vn) / wTotal;
 
         const F3 Jlin = scale3(Nsum, lambda);
         const F3 JangA = scale3(TauA, lambda);

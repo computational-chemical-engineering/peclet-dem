@@ -57,10 +57,16 @@ struct Particles {
   Kokkos::View<float* [3], CpMem> shell;
   Kokkos::View<PlaneP*, CpMem> planes;
   Kokkos::View<float*, CpMem> sdfGrid;  // concatenated grid-SDF samples (imported shapes)
+  // static world-space SDF walls (drum barrel, hopper, vibrating tray) + their concatenated samples.
+  Kokkos::View<WallSdf*, CpMem> walls;
+  Kokkos::View<float*, CpMem> wallGrid;
 
   // --- sizes & params (host) ---
   int capacity = 0, numReal = 0, numParticles = 0;
-  int maxPairs = 0, maxContacts = 0, numPlanes = 0;
+  int maxPairs = 0, maxContacts = 0, numPlanes = 0, numWalls = 0;
+  // max wall friction (host) — gates the friction path so a frictional wall works even with a
+  // frictionless body-body material (global frictionDynamic == 0).
+  float wallFrictionMax = 0.0f;
   Domain domain{};
   F3 gravity{0, 0, 0};
   float dt = 1e-3f, globalScale = 1.0f, growthRate = 0.0f, growthFactor = -1.0f;
@@ -108,7 +114,10 @@ struct Particles {
     shapes = Kokkos::View<ShapeDesc*, CpMem>("shapes", nShapes > 0 ? nShapes : 1);
     shell = Kokkos::View<float* [3], CpMem>("shell", nShell > 0 ? nShell : 1);
     planes = Kokkos::View<PlaneP*, CpMem>("planes", nPlanes > 0 ? nPlanes : 1);
-    sdfGrid = Kokkos::View<float*, CpMem>("sdfGrid", 1);  // resized by setSdfShape
+    sdfGrid = Kokkos::View<float*, CpMem>("sdfGrid", 1);    // resized by setSdfShape
+    walls = Kokkos::View<WallSdf*, CpMem>("walls", 1);      // resized by addSdfWall
+    wallGrid = Kokkos::View<float*, CpMem>("wallGrid", 1);  // concatenated wall samples
+    numWalls = 0;
   }
 
   // Grow the per-particle SoA to hold at least `newCap` particles (real + periodic-ghost headroom),

@@ -37,6 +37,11 @@ struct ContactC {
   float dist;  // signed penetration (>0 => inactive)
   float friction_lambda_n;
   float weight;
+  // --- moving / per-material boundary (idB<0) extension; sentinels for body-body & static planes so
+  // the solvers fall back to the global material and a zero wall velocity (unchanged behaviour). ---
+  F4 boundaryVel{0.0f, 0.0f, 0.0f, 0.0f};  // wall surface velocity at the contact point (xyz)
+  float boundaryRestitution{-1.0f};        // per-wall normal restitution; < 0 => use the global one
+  float boundaryFriction{-1.0f};           // per-wall Coulomb friction;   < 0 => use the global one
 };
 
 /// Portable mirror of ManifoldConstraint.
@@ -49,6 +54,11 @@ struct ManifoldC {
   F4 rA_sum;
   F4 rB_sum;
   int num_points;
+  // Σ over the manifold's active contacts of the boundary (idB<0) extension; the velocity solve
+  // averages by num_points. wallVel_sum -> the wall's surface velocity seen by this contact patch;
+  // restitution_sum -> per-wall restitution (a < 0 average keeps the global material).
+  F4 wallVel_sum{0.0f, 0.0f, 0.0f, 0.0f};
+  float restitution_sum{0.0f};
 };
 
 /// Canonical pair key: (min<<32)|max, or (idA<<32)|0xFFFFFFFF for a boundary (idB<0) contact.
@@ -100,6 +110,10 @@ KOKKOS_INLINE_FUNCTION ManifoldC transformContact(const ContactC& c) {
   m.torque_armB_sum = F4{tau_other.x, tau_other.y, tau_other.z, 0.0f};
   m.rA_sum = F4{r_can.x, r_can.y, r_can.z, 0.0f};
   m.rB_sum = F4{r_other.x, r_other.y, r_other.z, 0.0f};
+  // Boundary (idB<0) moving-wall extension: carry the wall velocity + per-wall restitution through
+  // to the (count-averaged) velocity solve. Zero / -1 sentinel for body-body & static planes.
+  m.wallVel_sum = F4{c.boundaryVel.x, c.boundaryVel.y, c.boundaryVel.z, 0.0f};
+  m.restitution_sum = c.boundaryRestitution;
   return m;
 }
 
@@ -180,6 +194,10 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
         Kokkos::atomic_add(&out(s).rB_sum.x, m.rB_sum.x);
         Kokkos::atomic_add(&out(s).rB_sum.y, m.rB_sum.y);
         Kokkos::atomic_add(&out(s).rB_sum.z, m.rB_sum.z);
+        Kokkos::atomic_add(&out(s).wallVel_sum.x, m.wallVel_sum.x);
+        Kokkos::atomic_add(&out(s).wallVel_sum.y, m.wallVel_sum.y);
+        Kokkos::atomic_add(&out(s).wallVel_sum.z, m.wallVel_sum.z);
+        Kokkos::atomic_add(&out(s).restitution_sum, m.restitution_sum);
       });
   space.fence();
 

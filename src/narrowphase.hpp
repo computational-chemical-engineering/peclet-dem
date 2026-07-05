@@ -43,6 +43,35 @@ struct PlaneP {
   F3 normal;
 };
 
+/// Static, world-space SDF container/geometry the particles collide against (a drum barrel, a hopper,
+/// a vibrating tray, ...). Unlike a particle grid SDF (canonical body space, `sdfEvalShape`), this
+/// field is sampled directly in WORLD coordinates, and its zero level set is the container wall.
+///
+/// SIGN: positive in the void where the grains live, negative inside the solid wall — so a grain
+/// surface point has SDF > 0 when clear and SDF < 0 when it has poked into the wall (the penetration
+/// depth), and the outward gradient points from the wall back into the void (the push-out normal).
+///
+/// The geometry never moves, but it carries a rigid-body SURFACE VELOCITY field
+///   v(x) = linVel + angVel × (x − center)
+/// evaluated at the contact point, so a grain touching the wall feels the wall's motion (a rotating
+/// drum drags grains up its rising side; a translating `linVel` set sinusoidally each step is a
+/// vibrating wall) even though the field itself is static. Plus a binary (particle–wall) material.
+struct WallSdf {
+  // world-space grid SDF samples live in Particles::wallGrid at [gridOffset, gridOffset+nx*ny*nz),
+  // x-fastest (idx = x + y*nx + z*nx*ny), at nodes q = origin + (x,y,z)/invSpacing.
+  int nx = 0, ny = 0, nz = 0;
+  int gridOffset = 0;
+  F3 origin{0, 0, 0};
+  F3 invSpacing{0, 0, 0};
+  // rigid-body surface velocity field v(x) = linVel + angVel × (x − center) (set from the host).
+  F3 linVel{0, 0, 0};
+  F3 angVel{0, 0, 0};
+  F3 center{0, 0, 0};
+  // binary particle–wall material (independent of the body-body material).
+  float restitution = 0.0f;
+  float friction = 0.0f;
+};
+
 // Convenience aliases for the SoA particle views the narrow-phase reads.
 using PosView = Kokkos::View<const float* [3], CpMem>;
 using QuatView = Kokkos::View<const float* [4], CpMem>;
@@ -90,6 +119,37 @@ KOKKOS_INLINE_FUNCTION float sampleGridSdf(F3 p, const ShapeDesc& d, GridView gr
   const float rx = (d.gridInvSpacing.x > 0.0f) ? (fx - cx) / d.gridInvSpacing.x : 0.0f;
   const float ry = (d.gridInvSpacing.y > 0.0f) ? (fy - cy) / d.gridInvSpacing.y : 0.0f;
   const float rz = (d.gridInvSpacing.z > 0.0f) ? (fz - cz) / d.gridInvSpacing.z : 0.0f;
+  return val + Kokkos::sqrt(rx * rx + ry * ry + rz * rz);
+}
+
+/// Trilinearly sample a static world-space wall SDF at world point `p` (same "clamp + residual"
+/// extension as sampleGridSdf, so a probe outside the stored box gets a well-signed growing distance
+/// and a sane central-difference normal at the boundary). Positive in the void, negative in the wall.
+KOKKOS_INLINE_FUNCTION float sampleWallSdf(F3 p, const WallSdf& w, GridView grid) {
+  const float fx = (p.x - w.origin.x) * w.invSpacing.x;
+  const float fy = (p.y - w.origin.y) * w.invSpacing.y;
+  const float fz = (p.z - w.origin.z) * w.invSpacing.z;
+  const float cx = Kokkos::fmin(Kokkos::fmax(fx, 0.0f), (float)(w.nx - 1));
+  const float cy = Kokkos::fmin(Kokkos::fmax(fy, 0.0f), (float)(w.ny - 1));
+  const float cz = Kokkos::fmin(Kokkos::fmax(fz, 0.0f), (float)(w.nz - 1));
+  const int ix = (int)cx, iy = (int)cy, iz = (int)cz;
+  const int ix1 = ix < w.nx - 1 ? ix + 1 : ix;
+  const int iy1 = iy < w.ny - 1 ? iy + 1 : iy;
+  const int iz1 = iz < w.nz - 1 ? iz + 1 : iz;
+  const float tx = cx - ix, ty = cy - iy, tz = cz - iz;
+  const long nxny = (long)w.nx * w.ny;
+  const int off = w.gridOffset;
+  auto at = [&](int x, int y, int z) { return grid(off + (long)z * nxny + (long)y * w.nx + x); };
+  const float c00 = at(ix, iy, iz) * (1 - tx) + at(ix1, iy, iz) * tx;
+  const float c10 = at(ix, iy1, iz) * (1 - tx) + at(ix1, iy1, iz) * tx;
+  const float c01 = at(ix, iy, iz1) * (1 - tx) + at(ix1, iy, iz1) * tx;
+  const float c11 = at(ix, iy1, iz1) * (1 - tx) + at(ix1, iy1, iz1) * tx;
+  const float c0 = c00 * (1 - ty) + c10 * ty;
+  const float c1 = c01 * (1 - ty) + c11 * ty;
+  const float val = c0 * (1 - tz) + c1 * tz;
+  const float rx = (w.invSpacing.x > 0.0f) ? (fx - cx) / w.invSpacing.x : 0.0f;
+  const float ry = (w.invSpacing.y > 0.0f) ? (fy - cy) / w.invSpacing.y : 0.0f;
+  const float rz = (w.invSpacing.z > 0.0f) ? (fz - cz) / w.invSpacing.z : 0.0f;
   return val + Kokkos::sqrt(rx * rx + ry * ry + rz * rz);
 }
 
@@ -178,6 +238,98 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
           c.friction_lambda_n = 0.0f;
           c.weight = 0.0f;
           outContacts(slot) = c;
+        }
+      });
+  space.fence();
+}
+
+/// Per-real-particle contacts against a static world-space wall SDF set (a drum barrel, hopper,
+/// vibrating tray, ...). Mirrors detectBoundaryKokkos but the boundary is the wall's zero level set:
+/// each surface point (or the sphere centre) is tested against sampleWallSdf, the outward gradient is
+/// the contact normal, and every emitted contact carries the wall's rigid-body surface velocity at
+/// the contact point plus the wall's binary (particle–wall) restitution/friction — so the moving-wall
+/// terms flow through the manifold velocity solve and the per-contact friction sweep. bodyB = -1
+/// (a boundary, like a plane); the wall surface point is stored in rB for the position solve's
+/// plane-linearised non-penetration constraint.
+inline void detectWallSdfKokkos(int numReal, int numWalls, PosView pos, QuatView quat, ScalarF scale,
+                                ScalarI shapeId, Kokkos::View<const ShapeDesc*, CpMem> shapes,
+                                ShellView shell, Kokkos::View<const WallSdf*, CpMem> walls,
+                                GridView wallGrid, float globalScale, float margin,
+                                Kokkos::View<ContactC*, CpMem> outContacts,
+                                Kokkos::View<int, CpMem> outCount,
+                                Kokkos::View<float, CpMem> maxOverlap) {
+  CpExec space;
+  const int maxContacts = static_cast<int>(outContacts.extent(0));
+  Kokkos::parallel_for(
+      "peclet::dem::np::wallsdf", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
+      KOKKOS_LAMBDA(int i) {
+        const F3 posA = loadF3(pos, i);
+        const float s = scale(i) * globalScale;
+        const ShapeDesc d = shapes(shapeId(i));
+        float baseR = d.params.x;
+        if (baseR == 0.0f)
+          baseR = 1.0f;
+        const float radius = baseR * s;  // analytic sphere radius (numPts == 0)
+        const int numPts = d.numPoints;
+        const F4 qA = loadF4(quat, i);
+        const float eps = 1e-4f;
+
+        for (int wi = 0; wi < numWalls; ++wi) {
+          const WallSdf w = walls(wi);
+          const int iter = (numPts > 0) ? numPts : 1;
+          for (int k = 0; k < iter; ++k) {
+            // World surface probe: a shell point (rotated + scaled) or, for a sphere, the centre.
+            F3 rA{0, 0, 0};
+            if (numPts > 0) {
+              const int si = d.shellOffset + k;
+              rA = rotateVector(qA, scale3(F3{shell(si, 0), shell(si, 1), shell(si, 2)}, s));
+            }
+            const F3 pw = add3(posA, rA);
+            const float sdf = sampleWallSdf(pw, w, wallGrid);
+            // Outward SDF gradient (central difference) = push-out normal (wall -> void).
+            F3 n{sampleWallSdf(F3{pw.x + eps, pw.y, pw.z}, w, wallGrid) -
+                     sampleWallSdf(F3{pw.x - eps, pw.y, pw.z}, w, wallGrid),
+                 sampleWallSdf(F3{pw.x, pw.y + eps, pw.z}, w, wallGrid) -
+                     sampleWallSdf(F3{pw.x, pw.y - eps, pw.z}, w, wallGrid),
+                 sampleWallSdf(F3{pw.x, pw.y, pw.z + eps}, w, wallGrid) -
+                     sampleWallSdf(F3{pw.x, pw.y, pw.z - eps}, w, wallGrid)};
+            const float ln = len3(n);
+            n = (ln > 1e-9f) ? scale3(n, 1.0f / ln) : F3{0, 1, 0};
+
+            // For a sphere the nearest surface point is one radius toward the wall (−normal); its
+            // signed gap to the wall is sdf − radius.
+            const float dist = (numPts > 0) ? sdf : sdf - radius;
+            if (dist >= margin)
+              continue;
+            const F3 rAeff = (numPts > 0) ? rA : scale3(n, -radius);
+            const F3 pSurfA = add3(posA, rAeff);           // particle surface point
+            const F3 pWall = sub3(pSurfA, scale3(n, dist));  // point on the wall along the normal
+
+            if (dist < 0.0f)
+              Kokkos::atomic_max(&maxOverlap(), -dist);
+            const int slot = Kokkos::atomic_fetch_add(&outCount(), 1);
+            if (slot >= maxContacts) {
+              Kokkos::atomic_add(&outCount(), -1);
+              continue;
+            }
+            // Rigid-body wall surface velocity at the contact point: linVel + angVel × (r − center).
+            const F3 r = sub3(pWall, w.center);
+            const F3 vWall = add3(w.linVel, cross3v(w.angVel, r));
+
+            ContactC c{};
+            c.bodyA = i;
+            c.bodyB = -1;
+            c.normal = F4{n.x, n.y, n.z, 0.0f};
+            c.rA = F4{rAeff.x, rAeff.y, rAeff.z, 0.0f};
+            c.rB = F4{pWall.x, pWall.y, pWall.z, 0.0f};
+            c.dist = dist;
+            c.friction_lambda_n = 0.0f;
+            c.weight = 0.0f;
+            c.boundaryVel = F4{vWall.x, vWall.y, vWall.z, 0.0f};
+            c.boundaryRestitution = w.restitution;
+            c.boundaryFriction = w.friction;
+            outContacts(slot) = c;
+          }
         }
       });
   space.fence();

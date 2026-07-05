@@ -32,7 +32,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-__all__ = ["ParticleShape", "build_particle"]
+__all__ = ["ParticleShape", "build_particle", "WallSDF", "build_wall_sdf"]
 
 
 @dataclass
@@ -359,4 +359,68 @@ def build_particle(
         bounding_radius=bounding_radius,
         vertices=np.ascontiguousarray(verts, dtype=np.float64),
         faces=np.ascontiguousarray(faces, dtype=np.int64),
+    )
+
+
+@dataclass
+class WallSDF:
+    """A static, world-space SDF wall/container the grains collide against (drum, hopper, tray).
+
+    Attributes
+    ----------
+    grid : np.ndarray
+        ``(nx, ny, nz)`` signed-distance samples in **world** coordinates at nodes
+        ``origin + (i, j, k) * spacing`` — **positive in the void** where the grains live, **negative
+        inside the solid wall** (the opposite sign convention to :func:`build_particle`, whose solid is
+        the particle).
+    origin, spacing : np.ndarray
+        ``(3,)`` world coordinate of node ``(0,0,0)`` and the per-axis node spacing.
+    """
+
+    grid: np.ndarray
+    origin: np.ndarray
+    spacing: np.ndarray
+
+    def add_to(self, sim, *, restitution: float = 0.0, friction: float = 0.0) -> int:
+        """Upload this wall onto a :class:`peclet.dem.Simulation` with the given binary particle–wall
+        material. Returns the wall index (pass it to ``sim.set_wall_velocity`` for a moving wall)."""
+        nx, ny, nz = self.grid.shape
+        grid_flat = np.asarray(self.grid, dtype=np.float32).ravel(order="F")  # x-fastest
+        return sim.add_sdf_wall(
+            grid_flat,
+            int(nx),
+            int(ny),
+            int(nz),
+            tuple(float(v) for v in self.origin),
+            tuple(float(v) for v in self.spacing),
+            float(restitution),
+            float(friction),
+        )
+
+
+def build_wall_sdf(f, bounds, resolution=64):
+    """Sample a static container/wall SDF onto a regular world-space lattice.
+
+    Give it ``f(points) -> distance`` (``points`` is ``(N, 3)`` world coordinates) that is **positive
+    in the void where the grains live and negative inside the solid wall**, over an axis-aligned box
+    ``bounds`` that spans the whole simulation domain (the grid must cover wherever a grain can reach).
+    Returns a :class:`WallSDF` ready for :meth:`WallSDF.add_to`.
+
+    Parameters
+    ----------
+    f : callable
+        ``f(points) -> distances``; positive in the void, negative in the wall.
+    bounds : ((xlo, ylo, zlo), (xhi, yhi, zhi))
+        Axis-aligned box covering the domain (typically the full ``set_domain`` box).
+    resolution : int or (nx, ny, nz)
+        Lattice resolution. 64–128 resolves a smooth curved wall well.
+    """
+    if not callable(f):
+        raise TypeError("f must be a callable f(points)->distance (positive in the void)")
+    lo, hi = np.asarray(bounds[0], float), np.asarray(bounds[1], float)
+    phi, origin, spacing, _coords = _sample(f, lo, hi, resolution)
+    return WallSDF(
+        grid=np.ascontiguousarray(phi, dtype=np.float32),
+        origin=np.asarray(origin, float),
+        spacing=np.asarray(spacing, float),
     )
