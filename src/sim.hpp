@@ -59,6 +59,30 @@ inline float maxOwnedRadius(const Particles& P) {
   return mx * P.globalScale * P.baseRadius;
 }
 
+/// Broad phase with an automatically-grown pair buffer.
+///
+/// `findCollisionsArborX` guards its pair WRITES at `maxPairs` but returns the RAW candidate count,
+/// which can exceed `P.pairs`' capacity once a bed compacts (more neighbour pairs than the buffer
+/// holds — e.g. a fluidized bed driven denser by the CFD-DEM drag). Feeding that raw count straight
+/// into `detectContactsKokkos` as its loop bound makes the narrowphase read `P.pairs` out of bounds
+/// → `cudaErrorIllegalAddress`. Here we detect the overflow, reallocate `P.pairs` (with headroom so
+/// an oscillating count doesn't realloc every step) and re-run once so no candidate pair is silently
+/// dropped, then clamp defensively so the returned count is ALWAYS ≤ the buffer extent — the
+/// narrowphase can never walk off the end regardless.
+inline int findCollisionsGrow(Particles& P, float margin) {
+  const float boxCap = std::max(std::max(P.domain.size.x, P.domain.size.y), P.domain.size.z);
+  int np = findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs,
+                                P.pairCount, boxCap);
+  if (np > static_cast<int>(P.pairs.extent(0))) {
+    const int grown = np + np / 2 + 64;  // 1.5× + slack
+    Kokkos::realloc(Kokkos::WithoutInitializing, P.pairs, grown);
+    P.maxPairs = grown;
+    np = findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs,
+                              P.pairCount, boxCap);
+  }
+  return std::min(np, static_cast<int>(P.pairs.extent(0)));
+}
+
 /// One full XPBD DEM substep over the particle SoA (mirrors simulation.cpp Simulation::step()).
 inline void demStep(Particles& P) {
   CpExec space;
@@ -111,11 +135,9 @@ inline void demStep(Particles& P) {
   }
   // Collision detection runs on the PREDICTED state (speculative positions/orientations), matching
   // the CUDA solver — the position solve then corrects posPred against these contacts.
-  // findCollisionsArborX already fences + reads the pair count back to host; reuse its return value
-  // rather than a second deep_copy of the same P.pairCount scalar (G2).
-  const int np = findCollisionsArborX(
-      P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount,
-      std::max(std::max(P.domain.size.x, P.domain.size.y), P.domain.size.z));  // OOM guard
+  // findCollisionsGrow fences + reads the pair count back to host and guarantees np ≤ P.pairs extent
+  // (growing the buffer on overflow) so the narrowphase never reads P.pairs out of bounds.
+  const int np = findCollisionsGrow(P, margin);
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
@@ -208,9 +230,7 @@ inline float computeOverlapsKokkos(Particles& P) {
         "rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
         KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
   }
-  findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount,
-                       std::max(std::max(P.domain.size.x, P.domain.size.y), P.domain.size.z));
-  const int np = readInt(P.pairCount);
+  const int np = findCollisionsGrow(P, margin);
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
@@ -278,11 +298,9 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   }
 
   // 3. Broad/narrow phase + manifold reduction over owned + ghosts.
-  // findCollisionsArborX already fences + reads the pair count back to host; reuse its return value
-  // rather than a second deep_copy of the same P.pairCount scalar (G2).
-  const int np = findCollisionsArborX(
-      P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs, P.pairCount,
-      std::max(std::max(P.domain.size.x, P.domain.size.y), P.domain.size.z));  // OOM guard
+  // findCollisionsGrow fences + reads the pair count back to host and guarantees np ≤ P.pairs extent
+  // (growing the buffer on overflow) so the narrowphase never reads P.pairs out of bounds.
+  const int np = findCollisionsGrow(P, margin);
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
