@@ -110,7 +110,8 @@ int main(int argc, char** argv) {
       // 1. predict velocity (gravity + gyroscopic), speculative position, clear deltas.
       predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
                             P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
-                            P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt);
+                            P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt,
+                            P.extForce);
       // 2. periodic ghosts from predicted state.
       Kokkos::deep_copy(space, P.topGhost, P.numReal);
       generateGhostsKokkos(P.numReal, P.capacity, P.domain, P.skin, P.pos, P.invMass, P.posPred,

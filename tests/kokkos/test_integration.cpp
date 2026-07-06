@@ -106,8 +106,10 @@ int main(int argc, char** argv) {
     Vi cc("cc", N);
 
     // --- device sequence ---
+    V3 extF("extF", N);  // zero external force (the CFD-DEM drag buffer; default no-op)
     predictVelocityKokkos(N, pos, invMass, vel, quat, angVel, invI, posPred, quatPred, velPred,
-                          angVelPred, deltaPos, deltaQuat, deltaVel, deltaAngVel, cc, gravity, dt);
+                          angVelPred, deltaPos, deltaQuat, deltaVel, deltaAngVel, cc, gravity, dt,
+                          extF);
     // inject delta velocities
     {
       auto h = Kokkos::create_mirror_view(deltaVel);
