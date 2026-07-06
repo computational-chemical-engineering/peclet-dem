@@ -19,4 +19,4 @@ from ._dem import *  # noqa: F401,F403
 # module still imports if scikit-image is absent (only build_particle needs it).
 from .particle_builder import ParticleShape, WallSDF, build_particle, build_wall_sdf  # noqa: F401
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"

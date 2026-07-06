@@ -12,8 +12,8 @@ authors:
     given-names: Frank
     email: e.a.j.f.peters@gmail.com
     affiliation: "Eindhoven University of Technology"
-version: 0.3.1
-date-released: "2026-07-04"
+version: 0.3.2
+date-released: 2026-07-06
 license: MIT
 doi: 10.5281/zenodo.21132441
 identifiers:
