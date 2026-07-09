@@ -165,10 +165,16 @@ inline void demStep(Particles& P) {
     if (friction)
       accumulateNormalImpulseKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred,
                                     P.angVelPred, P.realIndices, P.growthRate);
+    // Restitution threshold ~ the speed one substep of free fall gains: below it a contact is
+    // RESTING and bounces with e=0 (see solveVelocityKokkos — dense-pile energy-bomb guard).
+    const float vRest = 2.0f * P.dt *
+                        Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
+                                     P.gravity.z * P.gravity.z);
     solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                        P.realIndices, P.growthRate, P.restitutionNormal, P.deltaVel,
-                        P.deltaAngVel);
-    applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
+                        P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
+                        P.deltaAngVel, P.constraintCounts);
+    applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
+                                      P.deltaAngVel, P.constraintCounts);
   }
   if (friction) {
     countFrictionContactsKokkos(P.contacts, nc, P.realIndices, P.planeFriction);
@@ -335,10 +341,16 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
     if (friction)
       accumulateNormalImpulseKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred,
                                     P.angVelPred, P.realIndices, P.growthRate);
+    // Restitution threshold ~ the speed one substep of free fall gains: below it a contact is
+    // RESTING and bounces with e=0 (see solveVelocityKokkos — dense-pile energy-bomb guard).
+    const float vRest = 2.0f * P.dt *
+                        Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
+                                     P.gravity.z * P.gravity.z);
     solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                        P.realIndices, P.growthRate, P.restitutionNormal, P.deltaVel,
-                        P.deltaAngVel);
-    applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
+                        P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
+                        P.deltaAngVel, P.constraintCounts);
+    applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
+                                      P.deltaAngVel, P.constraintCounts);
     if ((it + 1) % syncEvery == 0 || it == P.velocityIterations - 1) {
       halo.forward(P.velPred);
       if (forwardRotation)

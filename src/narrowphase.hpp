@@ -122,9 +122,14 @@ KOKKOS_INLINE_FUNCTION float sampleGridSdf(F3 p, const ShapeDesc& d, GridView gr
   return val + Kokkos::sqrt(rx * rx + ry * ry + rz * rz);
 }
 
-/// Trilinearly sample a static world-space wall SDF at world point `p` (same "clamp + residual"
-/// extension as sampleGridSdf, so a probe outside the stored box gets a well-signed growing distance
-/// and a sane central-difference normal at the boundary). Positive in the void, negative in the wall.
+/// Trilinearly sample a static world-space wall SDF at world point `p`. Positive in the void,
+/// negative in the wall. The off-grid extension SUBTRACTS the clamp residual — the OPPOSITE of
+/// sampleGridSdf's object convention — because a wall SDF is a CONTAINER: the void is bounded and
+/// everything beyond the stored box is wall-side, so a probe outside the box must read an ever more
+/// negative (deeper-in-the-wall) distance. Adding the residual here (the old behaviour) made a
+/// grain pushed past the box boundary — e.g. squeezed through the floor plane, whose zero level
+/// sits exactly on the grid's lower face — read "clear" and free-fall out of the simulation
+/// forever: a 180k glass-bead pile lost 71k grains through the distributor during settling.
 KOKKOS_INLINE_FUNCTION float sampleWallSdf(F3 p, const WallSdf& w, GridView grid) {
   const float fx = (p.x - w.origin.x) * w.invSpacing.x;
   const float fy = (p.y - w.origin.y) * w.invSpacing.y;
@@ -150,7 +155,7 @@ KOKKOS_INLINE_FUNCTION float sampleWallSdf(F3 p, const WallSdf& w, GridView grid
   const float rx = (w.invSpacing.x > 0.0f) ? (fx - cx) / w.invSpacing.x : 0.0f;
   const float ry = (w.invSpacing.y > 0.0f) ? (fy - cy) / w.invSpacing.y : 0.0f;
   const float rz = (w.invSpacing.z > 0.0f) ? (fz - cz) / w.invSpacing.z : 0.0f;
-  return val + Kokkos::sqrt(rx * rx + ry * ry + rz * rz);
+  return val - Kokkos::sqrt(rx * rx + ry * ry + rz * rz);
 }
 
 /// Canonical-space SDF of a shape: analytic dispatch, or a trilinear grid sample for an imported

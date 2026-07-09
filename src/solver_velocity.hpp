@@ -35,8 +35,10 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                 Kokkos::View<const float* [3], CpMem> velPred,
                                 Kokkos::View<const float* [3], CpMem> angVelPred,
                                 Kokkos::View<const int*, CpMem> realIdx, float growthRate,
-                                float restitutionNormal, Kokkos::View<float* [3], CpMem> deltaVel,
-                                Kokkos::View<float* [3], CpMem> deltaAngVel) {
+                                float restitutionNormal, float restVelThreshold,
+                                Kokkos::View<float* [3], CpMem> deltaVel,
+                                Kokkos::View<float* [3], CpMem> deltaAngVel,
+                                Kokkos::View<int*, CpMem> velCounts) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -125,6 +127,16 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         if (wTotal <= 0.0f)
           return;
 
+        // Resting-contact regularization (the standard PBD/XPBD restitution threshold): bounce only
+        // when the physical approach speed |vn|/|Nsum| exceeds ~2 g dt (what one substep of free
+        // fall gains). Below it the contact is RESTING — its vn is integration noise, and bouncing
+        // it every substep across a dense pile's contact chains (impulses Jacobi-SUMMED per body,
+        // no mass splitting) pumps energy without bound: a settled 180k glass-bead bed switched to
+        // e=0.8 reached |v| ~ 3e6 cells/s within 15 substeps. With e=0 the impulse still cancels
+        // the approach velocity — exactly the quasi-static dissipation a resting pile needs.
+        if (Kokkos::fabs(vn) < restVelThreshold * lenN)
+          restitution = 0.0f;
+
         const float lambda = (-restitution * vn - vn) / wTotal;
 
         const F3 Jlin = scale3(Nsum, lambda);
@@ -154,7 +166,38 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           Kokkos::atomic_add(&deltaAngVel(realB, 0), dww.x);
           Kokkos::atomic_add(&deltaAngVel(realB, 1), dww.y);
           Kokkos::atomic_add(&deltaAngVel(realB, 2), dww.z);
+          Kokkos::atomic_add(&velCounts(realB), 1);
         }
+        Kokkos::atomic_add(&velCounts(realA), 1);
+      });
+  space.fence();
+}
+
+/// Apply the accumulated velocity deltas AVERAGED by the per-body manifold count — the velocity-
+/// solve twin of the position solve's constraint-count averaging (applyUpdatesKokkos). A body in a
+/// dense pile receives one full-strength impulse per touching manifold; the raw Jacobi SUM
+/// overshoots by ~the contact count and diverges hard for e ≳ 0.5 (a settled 180k glass-bead bed
+/// switched to e=0.8 grew |v| by ~5x per substep). A lone binary collision (count 1) is unchanged.
+template <class V3, class Vi>
+inline void applyVelocityDeltasAveragedKokkos(int n, V3 velPred, V3 angVelPred, V3 deltaVel,
+                                              V3 deltaAngVel, Vi velCounts) {
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::apply_vel_avg", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
+        const int count = velCounts(i);
+        if (count <= 0)
+          return;
+        // Over-relaxed average: omega=2 halves the convergence loss of plain 1/count averaging
+        // (the crush-dissipation rate) while staying far below the raw-sum overshoot (omega=count)
+        // that detonates a resting pile at e=0.8. count==1 (binary collision) stays exact.
+        const float f = Kokkos::fmin(1.0f, 2.0f / static_cast<float>(count));
+        for (int c = 0; c < 3; ++c) {
+          velPred(i, c) += deltaVel(i, c) * f;
+          angVelPred(i, c) += deltaAngVel(i, c) * f;
+          deltaVel(i, c) = 0.0f;
+          deltaAngVel(i, c) = 0.0f;
+        }
+        velCounts(i) = 0;
       });
   space.fence();
 }
