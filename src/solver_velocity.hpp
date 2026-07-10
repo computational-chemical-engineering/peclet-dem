@@ -324,7 +324,8 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
                                          Kokkos::View<float* [3], CpMem> velPred,
                                          Kokkos::View<float* [3], CpMem> angVelPred,
                                          Kokkos::View<const int*, CpMem> realIdx, float growthRate,
-                                         float restitutionNormal, float restVelThreshold) {
+                                         float restitutionNormal, float restVelThreshold,
+                                         Kokkos::View<float, CpMem> maxApproach) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -398,6 +399,10 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
           const float wTotal = wA_n + wB_n;
           if (wTotal <= 0.0f)
             return;
+
+          // Record this approaching pair's physical approach speed for the adaptive stop: the caller
+          // ends the velocity loop once no manifold approaches faster than the resting threshold.
+          Kokkos::atomic_max(&maxApproach(), Kokkos::fabs(vn) / lenN);
 
           if (Kokkos::fabs(vn) < restVelThreshold * lenN)
             restitution = 0.0f;

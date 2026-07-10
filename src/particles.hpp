@@ -60,6 +60,10 @@ struct Particles {
   // --- atomic counters / scalars (rank-0 Views) ---
   Kokkos::View<int, CpMem> pairCount, contactCount, manifoldCount, topGhost;
   Kokkos::View<float, CpMem> maxOverlap;
+  // Max physical approach speed among approaching manifolds in the last velocity sweep — drives the
+  // colored-GS velocity loop's adaptive stop (converged once no pair approaches above the resting
+  // threshold). maxOverlap plays the same role for the position loop.
+  Kokkos::View<float, CpMem> maxApproach;
 
   // --- static geometry ---
   Kokkos::View<ShapeDesc*, CpMem> shapes;
@@ -129,6 +133,7 @@ struct Particles {
     manifoldCount = Kokkos::View<int, CpMem>("manifoldCount");
     topGhost = Kokkos::View<int, CpMem>("topGhost");
     maxOverlap = Kokkos::View<float, CpMem>("maxOverlap");
+    maxApproach = Kokkos::View<float, CpMem>("maxApproach");
     shapes = Kokkos::View<ShapeDesc*, CpMem>("shapes", nShapes > 0 ? nShapes : 1);
     shell = Kokkos::View<float* [3], CpMem>("shell", nShell > 0 ? nShell : 1);
     planes = Kokkos::View<PlaneP*, CpMem>("planes", nPlanes > 0 ? nPlanes : 1);

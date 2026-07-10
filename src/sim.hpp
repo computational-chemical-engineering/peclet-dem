@@ -42,6 +42,11 @@ inline int readInt(Kokkos::View<int, CpMem> v) {
   Kokkos::deep_copy(h, v);
   return h;
 }
+inline float readFloat(Kokkos::View<float, CpMem> v) {
+  float h;
+  Kokkos::deep_copy(h, v);
+  return h;
+}
 
 /// Largest effective particle radius over the owned set (= max scale × globalScale, growth included).
 /// The ghost band + broadphase margin are sized off THIS, not globalScale directly, so they scale with
@@ -178,9 +183,14 @@ inline void demStep(Particles& P) {
                         Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
                                      P.gravity.z * P.gravity.z);
     if (P.velocityUseGS) {
+      Kokkos::deep_copy(P.maxApproach, 0.0f);
       solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
                                    P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
-                                   P.growthRate, P.restitutionNormal, vRest);
+                                   P.growthRate, P.restitutionNormal, vRest, P.maxApproach);
+      // Adaptive stop: end once no pair approaches above the resting threshold (the sweep just run
+      // already applied the impulses that brought them there). Fixed velocityIterations is the cap.
+      if (readFloat(P.maxApproach) <= vRest)
+        break;
     } else {
       solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
                           P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
@@ -207,10 +217,17 @@ inline void demStep(Particles& P) {
           ? colorContactsKokkos(P.contacts, nc, P.numParticles, P.contactColor, P.bodyWinner,
                                 P.bodyColorMask)
           : 0;
+  // Overlap resolved once the deepest penetration falls below ~0.01% of a particle radius.
+  const float posTol = 1e-4f * P.baseRadius * P.globalScale;
   for (int it = 0; it < P.positionIterations; ++it) {
     if (P.velocityUseGS) {
+      Kokkos::deep_copy(P.maxOverlap, 0.0f);  // per-sweep so the readback is this sweep's residual
       solvePositionColoredGSKokkos(P.contacts, nc, P.contactColor, numPosColors, P.invMass,
                                    P.posPred, P.quatPred, P.quat, P.invInertia, P.maxOverlap);
+      // Adaptive stop: end once no contact overlaps by more than posTol. Fixed positionIterations
+      // is the cap.
+      if (readFloat(P.maxOverlap) < posTol)
+        break;
     } else {
       solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
                           P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
