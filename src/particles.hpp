@@ -52,8 +52,9 @@ struct Particles {
   // Graph-colouring scratch for the single-GPU colored Gauss–Seidel velocity solve: per-manifold
   // colour (maxContacts; -2 inactive, -1 uncoloured, >=0 colour), plus per-body arbitration winner
   // and committed-colour bitmask (both indexed by REAL body index, sized capacity).
-  Kokkos::View<int*, CpMem> manifoldColor;      // per-manifold colour
-  Kokkos::View<int*, CpMem> bodyWinner;         // per-body round winner (max manifold idx)
+  Kokkos::View<int*, CpMem> manifoldColor;      // per-manifold colour (velocity solve)
+  Kokkos::View<int*, CpMem> contactColor;       // per-contact colour (position solve)
+  Kokkos::View<int*, CpMem> bodyWinner;         // per-body round winner (shared colouring scratch)
   Kokkos::View<std::uint64_t*, CpMem> bodyColorMask;  // per-body committed-colour bitmask
 
   // --- atomic counters / scalars (rank-0 Views) ---
@@ -83,8 +84,9 @@ struct Particles {
         thermostatKB = 1.0f;  // Berendsen (tau>0 enables)
   float frictionDynamic = 0.0f, restitutionNormal = 0.0f, skin = 0.1f;
   int positionIterations = 10, velocityIterations = 0;
-  // Single-GPU restitution solve: true = colored Gauss–Seidel (correct multi-contact dissipation,
-  // default), false = count-averaged Jacobi (the legacy robust path, still used by step_mpi).
+  // Single-GPU collision solves: true = colored Gauss–Seidel for BOTH the restitution (velocity) and
+  // the overlap (position) solve — correct coupled multi-contact impulses + non-penetration, default;
+  // false = count-averaged Jacobi (the legacy robust path, still used by step_mpi).
   bool velocityUseGS = true;
 
   // nPlanes is the plane-array CAPACITY; numPlanes (the live count) stays 0 until planes are added.
@@ -119,6 +121,7 @@ struct Particles {
     contacts = Kokkos::View<ContactC*, CpMem>("contacts", maxContacts);
     manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", maxContacts);
     manifoldColor = Kokkos::View<int*, CpMem>("manifoldColor", maxContacts);
+    contactColor = Kokkos::View<int*, CpMem>("contactColor", maxContacts);
     bodyWinner = Vi("bodyWinner", cap);
     bodyColorMask = Kokkos::View<std::uint64_t*, CpMem>("bodyColorMask", cap);
     pairCount = Kokkos::View<int, CpMem>("pairCount");

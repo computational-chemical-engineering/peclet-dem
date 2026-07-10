@@ -200,11 +200,23 @@ inline void demStep(Particles& P) {
   applyVelocityAndPredictPositionKokkos(P.numParticles, P.pos, P.invMass, P.vel, P.quat, P.velPred,
                                         P.angVelPred, P.posPred, P.quatPred, P.angVel, P.dt);
 
+  // Colour the contact graph ONCE (topology-only; reused across the position sweeps), then remove
+  // overlap with colored Gauss–Seidel (true sequential projection, no count-averaging softening).
+  const int numPosColors =
+      P.velocityUseGS
+          ? colorContactsKokkos(P.contacts, nc, P.numParticles, P.contactColor, P.bodyWinner,
+                                P.bodyColorMask)
+          : 0;
   for (int it = 0; it < P.positionIterations; ++it) {
-    solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
-                        P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
-    applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
-                       P.constraintCounts);
+    if (P.velocityUseGS) {
+      solvePositionColoredGSKokkos(P.contacts, nc, P.contactColor, numPosColors, P.invMass,
+                                   P.posPred, P.quatPred, P.quat, P.invInertia, P.maxOverlap);
+    } else {
+      solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
+                          P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
+      applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
+                         P.constraintCounts);
+    }
   }
 
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
@@ -627,8 +639,8 @@ class Simulation {
     P_.positionIterations = pos;
     P_.velocityIterations = vel;
   }
-  // Select the single-GPU restitution solve: true (default) = colored Gauss–Seidel (correct
-  // multi-contact dissipation), false = count-averaged Jacobi (legacy). For A/B validation.
+  // Select the single-GPU collision solves: true (default) = colored Gauss–Seidel for both the
+  // restitution and the overlap solve, false = count-averaged Jacobi (legacy). For A/B validation.
   void setVelocityUseGS(bool useGS) { P_.velocityUseGS = useGS; }
   void setGlobalScale(float s) {
     P_.globalScale = s;

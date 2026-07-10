@@ -248,7 +248,6 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         }
         mColor(idx) = -1;
       });
-  space.fence();
 
   int remaining = 1;
   const int maxRounds = numReal + 2;  // safety bound; converges in ~max-degree rounds in practice
@@ -266,7 +265,6 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           if (m.bodyB >= 0)
             Kokkos::atomic_max(&bodyWinner(realIdx(m.bodyB)), idx);
         });
-    space.fence();
     int rem = 0;
     Kokkos::parallel_reduce(
         "peclet::dem::color_commit", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -434,8 +432,11 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
             angVelPred(realB, 2) += dww.z;
           }
         });
-    space.fence();  // Gauss–Seidel barrier: colour c+1 must observe colour c's in-place writes
+    // No host fence here: consecutive parallel_for on one execution space are stream-ordered on the
+    // device, so colour c+1's kernel already observes colour c's in-place writes (the Gauss–Seidel
+    // dependency). A per-colour fence would only stall the host. One fence after the sweep suffices.
   }
+  space.fence();
 }
 
 }  // namespace peclet::dem
