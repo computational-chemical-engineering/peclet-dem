@@ -161,6 +161,13 @@ inline void demStep(Particles& P) {
     computePlaneLoadKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
                            P.planeFriction);
 
+  // Colour the manifold graph ONCE (topology-only; reused across the sweeps), then normal
+  // restitution as colored Gauss–Seidel: correct multi-contact dissipation with no count-averaging
+  // (see solver_velocity.hpp). count==1 binary collisions are identical to the old Jacobi path.
+  const int numColors =
+      P.velocityUseGS ? colorManifoldsKokkos(P.manifolds, nm, P.realIndices, P.numReal,
+                                             P.manifoldColor, P.bodyWinner, P.bodyColorMask)
+                      : 0;
   for (int it = 0; it < P.velocityIterations; ++it) {
     if (friction)
       accumulateNormalImpulseKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred,
@@ -170,11 +177,17 @@ inline void demStep(Particles& P) {
     const float vRest = 2.0f * P.dt *
                         Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
                                      P.gravity.z * P.gravity.z);
-    solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                        P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
-                        P.deltaAngVel, P.constraintCounts);
-    applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
-                                      P.deltaAngVel, P.constraintCounts);
+    if (P.velocityUseGS) {
+      solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
+                                   P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
+                                   P.growthRate, P.restitutionNormal, vRest);
+    } else {
+      solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                          P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
+                          P.deltaAngVel, P.constraintCounts);
+      applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
+                                        P.deltaAngVel, P.constraintCounts);
+    }
   }
   if (friction) {
     countFrictionContactsKokkos(P.contacts, nc, P.realIndices, P.planeFriction);
@@ -614,6 +627,9 @@ class Simulation {
     P_.positionIterations = pos;
     P_.velocityIterations = vel;
   }
+  // Select the single-GPU restitution solve: true (default) = colored Gauss–Seidel (correct
+  // multi-contact dissipation), false = count-averaged Jacobi (legacy). For A/B validation.
+  void setVelocityUseGS(bool useGS) { P_.velocityUseGS = useGS; }
   void setGlobalScale(float s) {
     P_.globalScale = s;
     P_.skin = 0.1f * s;

@@ -132,6 +132,9 @@ NB_MODULE(_dem, m) {
            "Enable a Berendsen-style velocity thermostat (target temperature, coupling time tau).")
       .def("set_solver_iterations", &Simulation::setSolverIterations, nb::arg("pos"),
            nb::arg("vel"), "Set the XPBD position- and velocity-solve iteration counts.")
+      .def("set_velocity_use_gs", &Simulation::setVelocityUseGS, nb::arg("use_gs"),
+           "Select the single-GPU restitution solve: True (default) = colored Gauss–Seidel "
+           "(correct multi-contact dissipation), False = count-averaged Jacobi (legacy).")
       .def("set_global_scale", &Simulation::setGlobalScale,
            "Set a global length scale applied to all particles.")
       .def("set_dt", &Simulation::setDt, "Set the time step dt.")

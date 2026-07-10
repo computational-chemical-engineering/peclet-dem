@@ -202,6 +202,242 @@ inline void applyVelocityDeltasAveragedKokkos(int n, V3 velPred, V3 angVelPred, 
   space.fence();
 }
 
+// ============================ colored Gauss–Seidel velocity solve ============================
+// The Jacobi solve above sums every touching manifold's impulse onto a body, then relaxes the sum by
+// the contact count to stay stable — a stable but UNDER-converged approximation that under-dissipates
+// in dense multi-contact regions (effective restitution rises above the prescribed e). The colored
+// Gauss–Seidel path removes that approximation: graph-colour the manifolds so no two sharing a real
+// body share a colour, then sweep colour-by-colour applying each impulse IN PLACE (read the current
+// velocity, apply, write) — a body sees the updates of every previously-solved contact in the same
+// sweep. Within a colour the manifolds are an independent set (no shared body), so the in-place
+// read-modify-write is race-free WITHOUT atomics or averaging, and the fixed-point is the true
+// coupled multi-contact solution, so the dissipation is correct by construction. count==1 (a binary
+// collision) is identical to the Jacobi path; the difference is confined to dense clusters.
+
+/// Greedy graph-colour the manifolds: no two manifolds sharing a real body get the same colour.
+/// Round-based max-index (Jones–Plassmann) arbitration, no adjacency lists: each round every still-
+/// uncoloured manifold contends for its endpoint bodies via atomicMax(bodyWinner, idx); a manifold
+/// that wins BOTH endpoints has no uncoloured conflict this round, so it commits the lowest colour
+/// free at either endpoint (a per-body bitmask) — and, as the unique winner of those bodies, updates
+/// the masks race-free. Inactive manifolds (empty, or the periodic-dedup duplicate realA>realB) are
+/// tagged -2 and skipped by the solve. Runs once per step; the colouring is reused across the
+/// velocity sweeps. Returns the number of colours used (0 if no active manifolds).
+inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                                Kokkos::View<const int*, CpMem> realIdx, int numReal,
+                                Kokkos::View<int*, CpMem> mColor,
+                                Kokkos::View<int*, CpMem> bodyWinner,
+                                Kokkos::View<std::uint64_t*, CpMem> bodyMask) {
+  CpExec space;
+  if (numManifolds <= 0 || numReal <= 0)
+    return 0;
+  Kokkos::parallel_for(
+      "peclet::dem::color_init_bodies", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
+      KOKKOS_LAMBDA(int i) { bodyMask(i) = 0; });
+  // -2 inactive (skip forever), -1 uncoloured, >=0 committed colour.
+  Kokkos::parallel_for(
+      "peclet::dem::color_init_manifolds", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        const ManifoldC m = manifolds(idx);
+        if (m.num_points <= 0) {
+          mColor(idx) = -2;
+          return;
+        }
+        if (m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB)) {
+          mColor(idx) = -2;  // periodic dedup: the (realA<=realB) twin carries this contact
+          return;
+        }
+        mColor(idx) = -1;
+      });
+  space.fence();
+
+  int remaining = 1;
+  const int maxRounds = numReal + 2;  // safety bound; converges in ~max-degree rounds in practice
+  for (int round = 0; round < maxRounds && remaining > 0; ++round) {
+    Kokkos::parallel_for(
+        "peclet::dem::color_reset_winner", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
+        KOKKOS_LAMBDA(int i) { bodyWinner(i) = -1; });
+    Kokkos::parallel_for(
+        "peclet::dem::color_contend", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+        KOKKOS_LAMBDA(int idx) {
+          if (mColor(idx) != -1)
+            return;
+          const ManifoldC m = manifolds(idx);
+          Kokkos::atomic_max(&bodyWinner(realIdx(m.bodyA)), idx);
+          if (m.bodyB >= 0)
+            Kokkos::atomic_max(&bodyWinner(realIdx(m.bodyB)), idx);
+        });
+    space.fence();
+    int rem = 0;
+    Kokkos::parallel_reduce(
+        "peclet::dem::color_commit", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+        KOKKOS_LAMBDA(int idx, int& acc) {
+          if (mColor(idx) != -1)
+            return;
+          const ManifoldC m = manifolds(idx);
+          const int ea = realIdx(m.bodyA);
+          const int eb = (m.bodyB >= 0) ? realIdx(m.bodyB) : -1;
+          // Winner iff it holds BOTH its endpoints -> no uncoloured conflict, sole writer of ea/eb.
+          if (bodyWinner(ea) != idx || (eb >= 0 && bodyWinner(eb) != idx)) {
+            acc += 1;
+            return;
+          }
+          std::uint64_t forbidden = bodyMask(ea);
+          if (eb >= 0)
+            forbidden |= bodyMask(eb);
+          int c = 0;
+          while (c < 62 && (forbidden & (std::uint64_t(1) << c)))
+            ++c;  // lowest free colour (cap 63; dense sphere degree ~12, far below)
+          mColor(idx) = c;
+          const std::uint64_t bit = std::uint64_t(1) << c;
+          bodyMask(ea) |= bit;
+          if (eb >= 0)
+            bodyMask(eb) |= bit;
+        },
+        rem);
+    space.fence();
+    remaining = rem;
+  }
+
+  int maxc = -1;
+  Kokkos::parallel_reduce(
+      "peclet::dem::color_max", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx, int& mx) {
+        if (mColor(idx) > mx)
+          mx = mColor(idx);
+      },
+      Kokkos::Max<int>(maxc));
+  space.fence();
+  return maxc + 1;
+}
+
+/// Colored Gauss–Seidel normal-restitution solve: sweep the `numColors` colour classes in order,
+/// applying each manifold's impulse directly to velPred/angVelPred (in place). Same per-manifold
+/// impulse math as solveVelocityKokkos (growth-velocity term, approach gate, resting-contact e=0
+/// threshold, and the R·(invI_local·(Rᵀ J))·… world-space angular update) — only the write-back
+/// differs (in-place RMW instead of atomic-accumulate + count-average). Race-free because a colour is
+/// an independent set of manifolds. One outer call = one full sweep over all colours; the caller
+/// loops it velocityIterations times.
+inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                         int numManifolds,
+                                         Kokkos::View<const int*, CpMem> mColor, int numColors,
+                                         Kokkos::View<const float*, CpMem> invMass,
+                                         Kokkos::View<const float* [3], CpMem> invInertia,
+                                         Kokkos::View<const float* [4], CpMem> quat,
+                                         Kokkos::View<float* [3], CpMem> velPred,
+                                         Kokkos::View<float* [3], CpMem> angVelPred,
+                                         Kokkos::View<const int*, CpMem> realIdx, float growthRate,
+                                         float restitutionNormal, float restVelThreshold) {
+  using detail::genInvMass;
+  using detail::ld3;
+  CpExec space;
+  for (int color = 0; color < numColors; ++color) {
+    Kokkos::parallel_for(
+        "peclet::dem::solve_velocity_gs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+        KOKKOS_LAMBDA(int idx) {
+          if (mColor(idx) != color)
+            return;
+          const ManifoldC m = manifolds(idx);
+
+          const int idA = m.bodyA, idB = m.bodyB;
+          const int realA = realIdx(idA);
+          const int realB = (idB >= 0) ? realIdx(idB) : idB;
+
+          const float invMassA = invMass(realA);
+          const float invMassB = (idB >= 0) ? invMass(realB) : 0.0f;
+          const F3 invIA = ld3(invInertia, realA);
+          const F3 invIB = (idB >= 0) ? ld3(invInertia, realB) : F3{0, 0, 0};
+          const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
+          const F4 qB = (idB >= 0)
+                            ? F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)}
+                            : F4{0, 0, 0, 1};
+
+          const F3 vA = ld3(velPred, realA), wA = ld3(angVelPred, realA);
+          F3 vB{0, 0, 0}, wB{0, 0, 0};
+          if (idB >= 0) {
+            vB = ld3(velPred, realB);
+            wB = ld3(angVelPred, realB);
+          }
+
+          const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
+          const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
+          const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
+
+          const float invN = 1.0f / static_cast<float>(m.num_points);
+
+          float restitution = restitutionNormal;
+          if (idB < 0) {
+            vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+            const float ra = m.restitution_sum * invN;
+            if (ra >= 0.0f)
+              restitution = ra;
+          }
+          const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
+          const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
+
+          const float lenN = Kokkos::sqrt(dot3(Nsum, Nsum));
+          if (lenN < 1e-9f)
+            return;
+
+          const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
+          const F3 vGrowth = scale3(diffCenters, growthRate);
+
+          float vn = dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
+                     dot3(wB, TauB);
+          vn += dot3(vGrowth, Nsum);
+
+          const float alignment = dot3(Nsum, diffCenters);
+          if (alignment > 0.0f) {
+            if (vn < 0.0f)
+              return;
+          } else {
+            if (vn > 0.0f)
+              return;
+          }
+
+          const float Nsq = dot3(Nsum, Nsum);
+          const float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
+          const float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
+          const float wTotal = wA_n + wB_n;
+          if (wTotal <= 0.0f)
+            return;
+
+          if (Kokkos::fabs(vn) < restVelThreshold * lenN)
+            restitution = 0.0f;
+
+          const float lambda = (-restitution * vn - vn) / wTotal;
+
+          const F3 Jlin = scale3(Nsum, lambda);
+          const F3 JangA = scale3(TauA, lambda);
+          const F3 JangB = scale3(TauB, lambda);
+
+          // Linear + angular delta on A (dw_world = R (invI_local * (R^T Jang))), applied in place.
+          velPred(realA, 0) += Jlin.x * invMassA;
+          velPred(realA, 1) += Jlin.y * invMassA;
+          velPred(realA, 2) += Jlin.z * invMassA;
+          {
+            const F3 Jl = invRotateVector(qA, JangA);
+            const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
+            const F3 dww = rotateVector(qA, dwl);
+            angVelPred(realA, 0) += dww.x;
+            angVelPred(realA, 1) += dww.y;
+            angVelPred(realA, 2) += dww.z;
+          }
+          if (idB >= 0) {
+            velPred(realB, 0) += -Jlin.x * invMassB;
+            velPred(realB, 1) += -Jlin.y * invMassB;
+            velPred(realB, 2) += -Jlin.z * invMassB;
+            const F3 Jl = invRotateVector(qB, JangB);
+            const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
+            const F3 dww = rotateVector(qB, dwl);
+            angVelPred(realB, 0) += dww.x;
+            angVelPred(realB, 1) += dww.y;
+            angVelPred(realB, 2) += dww.z;
+          }
+        });
+    space.fence();  // Gauss–Seidel barrier: colour c+1 must observe colour c's in-place writes
+  }
+}
+
 }  // namespace peclet::dem
 
 #endif  // DEM_SOLVER_VELOCITY_HPP

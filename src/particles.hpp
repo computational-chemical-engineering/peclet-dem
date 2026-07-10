@@ -10,6 +10,8 @@
 #ifndef DEM_PARTICLES_HPP
 #define DEM_PARTICLES_HPP
 
+#include <cstdint>
+
 #include <Kokkos_Core.hpp>
 
 #include "contact_preprocessing.hpp"  // ContactC, ManifoldC
@@ -47,6 +49,12 @@ struct Particles {
   Kokkos::View<int* [2], CpMem> pairs;        // broadphase candidates (maxPairs)
   Kokkos::View<ContactC*, CpMem> contacts;    // narrowphase output (maxContacts)
   Kokkos::View<ManifoldC*, CpMem> manifolds;  // reduction output (maxContacts)
+  // Graph-colouring scratch for the single-GPU colored Gauss–Seidel velocity solve: per-manifold
+  // colour (maxContacts; -2 inactive, -1 uncoloured, >=0 colour), plus per-body arbitration winner
+  // and committed-colour bitmask (both indexed by REAL body index, sized capacity).
+  Kokkos::View<int*, CpMem> manifoldColor;      // per-manifold colour
+  Kokkos::View<int*, CpMem> bodyWinner;         // per-body round winner (max manifold idx)
+  Kokkos::View<std::uint64_t*, CpMem> bodyColorMask;  // per-body committed-colour bitmask
 
   // --- atomic counters / scalars (rank-0 Views) ---
   Kokkos::View<int, CpMem> pairCount, contactCount, manifoldCount, topGhost;
@@ -75,6 +83,9 @@ struct Particles {
         thermostatKB = 1.0f;  // Berendsen (tau>0 enables)
   float frictionDynamic = 0.0f, restitutionNormal = 0.0f, skin = 0.1f;
   int positionIterations = 10, velocityIterations = 0;
+  // Single-GPU restitution solve: true = colored Gauss–Seidel (correct multi-contact dissipation,
+  // default), false = count-averaged Jacobi (the legacy robust path, still used by step_mpi).
+  bool velocityUseGS = true;
 
   // nPlanes is the plane-array CAPACITY; numPlanes (the live count) stays 0 until planes are added.
   void allocate(int cap, int maxPairs_, int maxContacts_, int nShapes, int nShell, int nPlanes) {
@@ -107,6 +118,9 @@ struct Particles {
     pairs = Kokkos::View<int* [2], CpMem>("pairs", maxPairs);
     contacts = Kokkos::View<ContactC*, CpMem>("contacts", maxContacts);
     manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", maxContacts);
+    manifoldColor = Kokkos::View<int*, CpMem>("manifoldColor", maxContacts);
+    bodyWinner = Vi("bodyWinner", cap);
+    bodyColorMask = Kokkos::View<std::uint64_t*, CpMem>("bodyColorMask", cap);
     pairCount = Kokkos::View<int, CpMem>("pairCount");
     contactCount = Kokkos::View<int, CpMem>("contactCount");
     manifoldCount = Kokkos::View<int, CpMem>("manifoldCount");
@@ -150,6 +164,8 @@ struct Particles {
     Kokkos::resize(deltaAngVel, newCap);
     Kokkos::resize(constraintCounts, newCap);
     Kokkos::resize(realIndices, newCap);
+    Kokkos::resize(bodyWinner, newCap);
+    Kokkos::resize(bodyColorMask, newCap);
     Kokkos::resize(planeFriction, newCap);
     Kokkos::resize(rad, newCap);
     Kokkos::resize(extForce, newCap);
