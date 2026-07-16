@@ -297,6 +297,14 @@ NB_MODULE(_dem, m) {
           "Zero-copy (N,3) device array of the per-particle external force (NumPy view on host, "
           "DLPack/CuPy on GPU) — write fluid drag here directly to avoid a host round-trip.")
       .def(
+          "get_inv_mass_view",
+          [](const Simulation& s) {
+            return peclet::core::python::view_to_ndarray(
+                Kokkos::subview(s.invMassView(), Kokkos::make_pair(0, s.numParticles())));
+          },
+          "Zero-copy (N,) device array of per-particle inverse mass (NumPy view on host, "
+          "DLPack/CuPy on GPU) — read-only use; needed for stiff-safe drag integration.")
+      .def(
           "get_quaternions", [](const Simulation& s) { return rows(s.getQuaternions(), 4); },
           "Return particle orientation quaternions as an (N,4) numpy array.")
       .def(

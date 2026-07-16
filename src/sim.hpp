@@ -813,6 +813,7 @@ class Simulation {
   }
   void clearExternalForces() { Kokkos::deep_copy(P_.extForce, 0.0f); }
   const V3& externalForcesView() const { return P_.extForce; }
+  const Vf& invMassView() const { return P_.invMass; }
   // rigid-body rotation state (the pipeline integrates the gyroscopic Euler term + quaternion
   // already)
   void setQuaternions(const std::vector<float>& q) {
