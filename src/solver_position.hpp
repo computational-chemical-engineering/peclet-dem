@@ -149,7 +149,7 @@ inline void solvePositionKokkos(Kokkos::View<const ContactC*, CpMem> contacts, i
 /// independently). Returns the number of colours used.
 inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
                                int numBodies, Kokkos::View<int*, CpMem> cColor,
-                               Kokkos::View<int*, CpMem> bodyWinner,
+                               Kokkos::View<long long*, CpMem> bodyWinner,
                                Kokkos::View<std::uint64_t*, CpMem> bodyMask) {
   CpExec space;
   if (numContacts <= 0 || numBodies <= 0)
@@ -173,9 +173,10 @@ inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, in
           if (cColor(idx) != -1)
             return;
           const ContactC c = contacts(idx);
-          Kokkos::atomic_max(&bodyWinner(c.bodyA), idx);
+          const long long key = colorKey(idx);  // hashed priority (see solver_velocity.hpp)
+          Kokkos::atomic_max(&bodyWinner(c.bodyA), key);
           if (c.bodyB >= 0)
-            Kokkos::atomic_max(&bodyWinner(c.bodyB), idx);
+            Kokkos::atomic_max(&bodyWinner(c.bodyB), key);
         });
     int rem = 0;
     Kokkos::parallel_reduce(
@@ -186,7 +187,8 @@ inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, in
           const ContactC c = contacts(idx);
           const int ea = c.bodyA;
           const int eb = c.bodyB;  // <0 for a wall/boundary contact
-          if (bodyWinner(ea) != idx || (eb >= 0 && bodyWinner(eb) != idx)) {
+          const long long key = colorKey(idx);
+          if (bodyWinner(ea) != key || (eb >= 0 && bodyWinner(eb) != key)) {
             acc += 1;
             return;
           }

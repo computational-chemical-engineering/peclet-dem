@@ -225,7 +225,7 @@ inline void applyVelocityDeltasAveragedKokkos(int n, V3 velPred, V3 angVelPred, 
 inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
                                 Kokkos::View<const int*, CpMem> realIdx, int numReal,
                                 Kokkos::View<int*, CpMem> mColor,
-                                Kokkos::View<int*, CpMem> bodyWinner,
+                                Kokkos::View<long long*, CpMem> bodyWinner,
                                 Kokkos::View<std::uint64_t*, CpMem> bodyMask) {
   CpExec space;
   if (numManifolds <= 0 || numReal <= 0)
@@ -261,9 +261,10 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           if (mColor(idx) != -1)
             return;
           const ManifoldC m = manifolds(idx);
-          Kokkos::atomic_max(&bodyWinner(realIdx(m.bodyA)), idx);
+          const long long key = colorKey(idx);
+          Kokkos::atomic_max(&bodyWinner(realIdx(m.bodyA)), key);
           if (m.bodyB >= 0)
-            Kokkos::atomic_max(&bodyWinner(realIdx(m.bodyB)), idx);
+            Kokkos::atomic_max(&bodyWinner(realIdx(m.bodyB)), key);
         });
     int rem = 0;
     Kokkos::parallel_reduce(
@@ -275,7 +276,8 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           const int ea = realIdx(m.bodyA);
           const int eb = (m.bodyB >= 0) ? realIdx(m.bodyB) : -1;
           // Winner iff it holds BOTH its endpoints -> no uncoloured conflict, sole writer of ea/eb.
-          if (bodyWinner(ea) != idx || (eb >= 0 && bodyWinner(eb) != idx)) {
+          const long long key = colorKey(idx);
+          if (bodyWinner(ea) != key || (eb >= 0 && bodyWinner(eb) != key)) {
             acc += 1;
             return;
           }

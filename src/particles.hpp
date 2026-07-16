@@ -54,7 +54,11 @@ struct Particles {
   // and committed-colour bitmask (both indexed by REAL body index, sized capacity).
   Kokkos::View<int*, CpMem> manifoldColor;      // per-manifold colour (velocity solve)
   Kokkos::View<int*, CpMem> contactColor;       // per-contact colour (position solve)
-  Kokkos::View<int*, CpMem> bodyWinner;         // per-body round winner (shared colouring scratch)
+  // Per-body round-winner key for the colouring arbitration. 64-bit: hashed-random priority in the
+  // high word (splitmix32 of the edge index), the unique edge index in the low word. Random
+  // priorities give O(log n) arbitration rounds w.h.p.; RAW indices are adversarial for poured
+  // lattice beds (monotone index chains -> O(chain) rounds -> minutes per step at 1M grains).
+  Kokkos::View<long long*, CpMem> bodyWinner;
   Kokkos::View<std::uint64_t*, CpMem> bodyColorMask;  // per-body committed-colour bitmask
 
   // --- atomic counters / scalars (rank-0 Views) ---
@@ -126,7 +130,7 @@ struct Particles {
     manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", maxContacts);
     manifoldColor = Kokkos::View<int*, CpMem>("manifoldColor", maxContacts);
     contactColor = Kokkos::View<int*, CpMem>("contactColor", maxContacts);
-    bodyWinner = Vi("bodyWinner", cap);
+    bodyWinner = Kokkos::View<long long*, CpMem>("bodyWinner", cap);
     bodyColorMask = Kokkos::View<std::uint64_t*, CpMem>("bodyColorMask", cap);
     pairCount = Kokkos::View<int, CpMem>("pairCount");
     contactCount = Kokkos::View<int, CpMem>("contactCount");

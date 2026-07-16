@@ -61,6 +61,18 @@ struct ManifoldC {
   float restitution_sum{0.0f};
 };
 
+/// splitmix32 finalizer: a well-mixed pseudo-random priority per edge index. Random priorities make
+/// the Jones-Plassmann arbitration finish in O(log n) rounds w.h.p.; RAW indices are adversarial for
+/// lattice-ordered dense packs (monotone index chains -> one win per round -> O(chain) rounds).
+KOKKOS_INLINE_FUNCTION long long colorKey(int idx) {
+  unsigned int z = static_cast<unsigned>(idx) + 0x9e3779b9u;
+  z = (z ^ (z >> 16)) * 0x21f0aaadu;
+  z = (z ^ (z >> 15)) * 0x735a2d97u;
+  z ^= (z >> 15);
+  // priority in the high word, unique index in the low word (unique key per edge; >= 0)
+  return (static_cast<long long>(z & 0x7fffffffu) << 32) | static_cast<unsigned>(idx);
+}
+
 /// Canonical pair key: (min<<32)|max, or (idA<<32)|0xFFFFFFFF for a boundary (idB<0) contact.
 KOKKOS_INLINE_FUNCTION std::uint64_t pairKey(const ContactC& c) {
   const int idA = c.bodyA, idB = c.bodyB;
