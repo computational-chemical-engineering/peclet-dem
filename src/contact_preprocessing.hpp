@@ -61,6 +61,65 @@ struct ManifoldC {
   float restitution_sum{0.0f};
 };
 
+/// Persistent-contact detection for the gravity-gated restitution rule. Key = (min real body,
+/// max real body) packed in 64 bits; boundary manifolds (bodyB = -1: planes + SDF walls, merged per
+/// particle) use lo = 0xFFFFFFFF. Flags each manifold whose pair already existed in the PREVIOUS
+/// substep (prevKeys sorted, device binary search). Real indices are stable within a single-GPU
+/// run, so the key identifies the physical pair across substeps.
+KOKKOS_INLINE_FUNCTION unsigned long long pairKeyOf(const ManifoldC& m,
+                                                    Kokkos::View<const int*, CpMem> realIdx) {
+  const unsigned a = static_cast<unsigned>(realIdx(m.bodyA));
+  const unsigned b = (m.bodyB >= 0) ? static_cast<unsigned>(realIdx(m.bodyB)) : 0xFFFFFFFFu;
+  const unsigned hi = a < b ? a : b, lo = a < b ? b : a;
+  return (static_cast<unsigned long long>(hi) << 32) | lo;
+}
+
+inline void markPersistentManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                          int numManifolds,
+                                          Kokkos::View<const int*, CpMem> realIdx,
+                                          Kokkos::View<const unsigned long long*, CpMem> prevKeys,
+                                          int prevCount,
+                                          Kokkos::View<unsigned long long*, CpMem> outKeys,
+                                          Kokkos::View<unsigned char*, CpMem> outFlags) {
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::mark_persistent", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        const ManifoldC m = manifolds(idx);
+        if (m.num_points <= 0) {
+          outKeys(idx) = ~0ull;  // hi = 0xFFFFFFFF: can never match a live manifold's key
+          outFlags(idx) = 0;
+          return;
+        }
+        const unsigned long long k = pairKeyOf(m, realIdx);
+        outKeys(idx) = k;
+        int lo = 0, hi = prevCount;
+        while (lo < hi) {  // lower_bound on the sorted previous-substep keys
+          const int mid = (lo + hi) >> 1;
+          if (prevKeys(mid) < k)
+            lo = mid + 1;
+          else
+            hi = mid;
+        }
+        outFlags(idx) = (lo < prevCount && prevKeys(lo) == k) ? 1 : 0;
+      });
+  space.fence();
+}
+
+/// Copy this substep's keys into prevKeys and sort them for next substep's binary search.
+inline void commitPairKeysKokkos(Kokkos::View<const unsigned long long*, CpMem> keys,
+                                 Kokkos::View<unsigned long long*, CpMem> prevKeys,
+                                 int numManifolds) {
+  if (numManifolds <= 0)
+    return;
+  CpExec space;
+  auto src = Kokkos::subview(keys, Kokkos::pair<int, int>(0, numManifolds));
+  auto dst = Kokkos::subview(prevKeys, Kokkos::pair<int, int>(0, numManifolds));
+  Kokkos::deep_copy(space, dst, src);
+  Kokkos::sort(space, dst);
+  space.fence();
+}
+
 /// splitmix32 finalizer: a well-mixed pseudo-random priority per edge index. Random priorities make
 /// the Jones-Plassmann arbitration finish in O(log n) rounds w.h.p.; RAW indices are adversarial for
 /// lattice-ordered dense packs (monotone index chains -> one win per round -> O(chain) rounds).

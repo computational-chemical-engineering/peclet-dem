@@ -175,6 +175,24 @@ inline void demStep(Particles& P) {
                                              P.manifoldColor, P.bodyWinner, P.bodyColorMask,
                                              velLeftover)
                       : 0;
+  // Persistent-contact restitution, gravity-gated (|g| = 0 leaves behaviour untouched: growth
+  // packing / HCS bit-identical). A pair already in contact LAST substep is loaded, not impacting:
+  // it gets e = 0 (the impulse still cancels the approach — pure inelastic support), so the
+  // velocity solve carries a pile's static weight through impulse chains and a settling column
+  // actually cools; material/wall restitution stays reserved for newly formed contacts.
+  const bool usePersist = (P.gravity.x != 0.0f || P.gravity.y != 0.0f || P.gravity.z != 0.0f);
+  const float gMagP = Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
+                                   P.gravity.z * P.gravity.z);
+  const F3 gHat = usePersist ? F3{P.gravity.x / gMagP, P.gravity.y / gMagP, P.gravity.z / gMagP}
+                             : F3{0, 0, 0};
+  Kokkos::View<const unsigned char*, CpMem> persistView;
+  if (usePersist) {
+    markPersistentManifoldsKokkos(P.manifolds, nm, P.realIndices, P.prevPairKeys, P.prevPairCount,
+                                  P.pairKeys, P.manifoldPersistent);
+    commitPairKeysKokkos(P.pairKeys, P.prevPairKeys, nm);
+    P.prevPairCount = nm;
+    persistView = P.manifoldPersistent;
+  }
   for (int it = 0; it < P.velocityIterations; ++it) {
     if (friction)
       accumulateNormalImpulseKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred,
@@ -188,7 +206,8 @@ inline void demStep(Particles& P) {
       Kokkos::deep_copy(P.maxApproach, 0.0f);
       solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
                                    P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
-                                   P.growthRate, P.restitutionNormal, vRest, P.maxApproach);
+                                   P.growthRate, P.restitutionNormal, vRest, P.maxApproach,
+                                   persistView, P.posPred, gHat);
       // Colour-mask saturation fallback (interpenetration degree > 62): the manifolds the colouring
       // could not place are applied with the count-averaged Jacobi pass — stable, and only active
       // in pathologically crushed regions; without it those manifolds were silently skipped and
@@ -197,7 +216,8 @@ inline void demStep(Particles& P) {
         solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred,
                             P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRest,
                             P.deltaVel, P.deltaAngVel, P.constraintCounts,
-                            Kokkos::View<const int*, CpMem>(P.manifoldColor), -1);
+                            Kokkos::View<const int*, CpMem>(P.manifoldColor), -1, persistView,
+                            P.posPred, gHat);
         applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
                                           P.deltaAngVel, P.constraintCounts);
       }
@@ -208,7 +228,7 @@ inline void demStep(Particles& P) {
     } else {
       solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
                           P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
-                          P.deltaAngVel, P.constraintCounts);
+                          P.deltaAngVel, P.constraintCounts, {}, 0, persistView, P.posPred, gHat);
       applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
                                         P.deltaAngVel, P.constraintCounts);
     }
@@ -234,7 +254,6 @@ inline void demStep(Particles& P) {
           : 0;
   // Overlap resolved once the deepest penetration falls below ~0.01% of a particle radius.
   const float posTol = 1e-4f * P.baseRadius * P.globalScale;
-  Kokkos::deep_copy(P.posPreSolve, P.posPred);  // static-support back-coupling baseline
   for (int it = 0; it < P.positionIterations; ++it) {
     if (P.velocityUseGS) {
       Kokkos::deep_copy(P.maxOverlap, 0.0f);  // per-sweep so the readback is this sweep's residual
@@ -261,10 +280,6 @@ inline void demStep(Particles& P) {
     }
   }
 
-  const float gMag = Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
-                                  P.gravity.z * P.gravity.z);
-  applyStaticSupportKokkos(P.numReal, P.vel, P.invMass, P.posPred, P.posPreSolve, P.dt,
-                           4.0f * gMag * P.dt);
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
 
   // Berendsen thermostat at the end of the step (CUDA Simulation::step), tau>0 enables.
@@ -449,7 +464,6 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
 
   // 6. Position solve (Projected Jacobi); refresh ghost predicted pose every syncEvery iters (+
   // last).
-  Kokkos::deep_copy(P.posPreSolve, P.posPred);  // static-support back-coupling baseline
   for (int it = 0; it < P.positionIterations; ++it) {
     solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
                         P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
@@ -463,10 +477,6 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   }
 
   // 7. Commit (owned results kept; ghosts discarded, re-gathered next substep).
-  const float gMag = Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
-                                  P.gravity.z * P.gravity.z);
-  applyStaticSupportKokkos(P.numReal, P.vel, P.invMass, P.posPred, P.posPreSolve, P.dt,
-                           4.0f * gMag * P.dt);
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
 
   if (P.thermostatTau > 0.0f && P.dt > 0.0f)

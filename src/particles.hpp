@@ -35,7 +35,6 @@ struct Particles {
   V4 quatPred;
   V3 velPred;
   V3 angVelPred;
-  V3 posPreSolve;  // posPred snapshot before the position solve (static-support back-coupling)
   V3 deltaPos;
   V4 deltaQuat;
   V3 deltaVel;
@@ -54,6 +53,15 @@ struct Particles {
   // colour (maxContacts; -2 inactive, -1 uncoloured, >=0 colour), plus per-body arbitration winner
   // and committed-colour bitmask (both indexed by REAL body index, sized capacity).
   Kokkos::View<int*, CpMem> manifoldColor;      // per-manifold colour (velocity solve)
+  // Persistent-contact restitution (gravity-gated): pair keys of this/last substep's manifolds +
+  // the per-manifold "existed last substep" flag. A persistent contact is LOADED, not a fresh
+  // impact — it gets e = 0 (the impulse still cancels the approach: pure inelastic support), which
+  // is how the velocity solve carries a pile's static weight through impulse chains. Restitution
+  // stays reserved for newly formed contacts (genuine impacts). |g| = 0 leaves all of this idle.
+  Kokkos::View<unsigned long long*, CpMem> pairKeys;
+  Kokkos::View<unsigned long long*, CpMem> prevPairKeys;
+  Kokkos::View<unsigned char*, CpMem> manifoldPersistent;
+  int prevPairCount = 0;
   Kokkos::View<int*, CpMem> contactColor;       // per-contact colour (position solve)
   // Per-body round-winner key for the colouring arbitration. 64-bit: hashed-random priority in the
   // high word (splitmix32 of the edge index), the unique edge index in the low word. Random
@@ -117,7 +125,6 @@ struct Particles {
     quatPred = V4("quatPred", cap);
     velPred = V3("velPred", cap);
     angVelPred = V3("angVelPred", cap);
-    posPreSolve = V3("posPreSolve", cap);
     deltaPos = V3("deltaPos", cap);
     deltaQuat = V4("deltaQuat", cap);
     deltaVel = V3("deltaVel", cap);
@@ -131,6 +138,10 @@ struct Particles {
     contacts = Kokkos::View<ContactC*, CpMem>("contacts", maxContacts);
     manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", maxContacts);
     manifoldColor = Kokkos::View<int*, CpMem>("manifoldColor", maxContacts);
+    pairKeys = Kokkos::View<unsigned long long*, CpMem>("pairKeys", maxContacts);
+    prevPairKeys = Kokkos::View<unsigned long long*, CpMem>("prevPairKeys", maxContacts);
+    manifoldPersistent = Kokkos::View<unsigned char*, CpMem>("manifoldPersistent", maxContacts);
+    prevPairCount = 0;
     contactColor = Kokkos::View<int*, CpMem>("contactColor", maxContacts);
     bodyWinner = Kokkos::View<long long*, CpMem>("bodyWinner", cap);
     bodyColorMask = Kokkos::View<std::uint64_t*, CpMem>("bodyColorMask", cap);
@@ -172,7 +183,6 @@ struct Particles {
     Kokkos::resize(quatPred, newCap);
     Kokkos::resize(velPred, newCap);
     Kokkos::resize(angVelPred, newCap);
-    Kokkos::resize(posPreSolve, newCap);
     Kokkos::resize(deltaPos, newCap);
     Kokkos::resize(deltaQuat, newCap);
     Kokkos::resize(deltaVel, newCap);

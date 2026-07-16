@@ -40,11 +40,14 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                 Kokkos::View<float* [3], CpMem> deltaAngVel,
                                 Kokkos::View<int*, CpMem> velCounts,
                                 Kokkos::View<const int*, CpMem> onlyColor = {},
-                                int colorFilter = 0) {
+                                int colorFilter = 0,
+                                Kokkos::View<const unsigned char*, CpMem> persistent = {},
+                                Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {}) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
   const bool filt = onlyColor.extent(0) > 0;
+  const bool usePersist = persistent.extent(0) > 0;
   Kokkos::parallel_for(
       "peclet::dem::solve_velocity", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
       KOKKOS_LAMBDA(int idx) {
@@ -95,6 +98,12 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           if (ra >= 0.0f)
             restitution = ra;
         }
+        // Persistent (loaded) contact: pure inelastic support — restitution is reserved for NEWLY
+        // formed contacts (genuine impacts). This is how the velocity solve carries a pile's static
+        // weight through impulse chains without the sink-and-project energy pump (a hot column's
+        // every approach otherwise re-bounces at material e, and the pile never cools).
+        if (usePersist && persistent(idx) != 0)
+          restitution = 0.0f;
         const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
         const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
 
@@ -126,8 +135,34 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         }
 
         const float Nsq = dot3(Nsum, Nsum);
-        const float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
-        const float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
+        float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
+        float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
+        // Shock propagation (Guendelman et al. 2003) for persistent LOADED body-body contacts: an
+        // inelastic pairwise solve conserves momentum, so a deep column merely homogenises its fall
+        // (the floor drains one layer per sweep and the pile never cools -- the phantom-fall state).
+        // Treating the LOWER body of a loaded contact as static drains the column's momentum
+        // through the support chain into the ground: the upper body is corrected, the lower keeps
+        // its (already supported) velocity. Near-horizontal pairs stay symmetric; new contacts and
+        // g = 0 runs are untouched (momentum-conserving impacts with material restitution).
+        // ... but ONLY when the lower body is not moving UPWARD: correcting the upper body against
+        // a static or FALLING support strictly removes momentum (monotone drainage into the
+        // ground), while one-sidedness against a RISING support copies its bounce velocity up the
+        // chain with no mass penalty and fountains the whole column. Rising supports (floor
+        // bounces, bubble eruptions) therefore keep the symmetric momentum-conserving impulse.
+        bool applyA = true, applyB = true;
+        if (usePersist && persistent(idx) != 0 && idB >= 0) {
+          const F3 dx = sub3(ldF3(posPred, idA), ldF3(posPred, idB));  // ghost-aware pair geometry
+          const float up = -(dx.x * gHat.x + dx.y * gHat.y + dx.z * gHat.z);  // >0: A above B
+          const float thr = 0.3f * Kokkos::sqrt(dot3(dx, dx));
+          const float riseThr = 4.0f * restVelThreshold;  // rise = -v.gHat (gHat points down-gravity)
+          if (up > thr && -dot3(vB, gHat) <= riseThr) {
+            wB_n = 0.0f;
+            applyB = false;
+          } else if (up < -thr && -dot3(vA, gHat) <= riseThr) {
+            wA_n = 0.0f;
+            applyA = false;
+          }
+        }
         const float wTotal = wA_n + wB_n;
         if (wTotal <= 0.0f)
           return;
@@ -149,6 +184,7 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         const F3 JangB = scale3(TauB, lambda);
 
         // Linear delta on A.
+        if (applyA) {
         Kokkos::atomic_add(&deltaVel(realA, 0), Jlin.x * invMassA);
         Kokkos::atomic_add(&deltaVel(realA, 1), Jlin.y * invMassA);
         Kokkos::atomic_add(&deltaVel(realA, 2), Jlin.z * invMassA);
@@ -161,7 +197,8 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           Kokkos::atomic_add(&deltaAngVel(realA, 1), dww.y);
           Kokkos::atomic_add(&deltaAngVel(realA, 2), dww.z);
         }
-        if (idB >= 0) {
+        }
+        if (idB >= 0 && applyB) {
           Kokkos::atomic_add(&deltaVel(realB, 0), -Jlin.x * invMassB);
           Kokkos::atomic_add(&deltaVel(realB, 1), -Jlin.y * invMassB);
           Kokkos::atomic_add(&deltaVel(realB, 2), -Jlin.z * invMassB);
@@ -173,7 +210,8 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           Kokkos::atomic_add(&deltaAngVel(realB, 2), dww.z);
           Kokkos::atomic_add(&velCounts(realB), 1);
         }
-        Kokkos::atomic_add(&velCounts(realA), 1);
+        if (applyA)
+          Kokkos::atomic_add(&velCounts(realA), 1);
       });
   space.fence();
 }
@@ -343,10 +381,14 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
                                          Kokkos::View<float* [3], CpMem> angVelPred,
                                          Kokkos::View<const int*, CpMem> realIdx, float growthRate,
                                          float restitutionNormal, float restVelThreshold,
-                                         Kokkos::View<float, CpMem> maxApproach) {
+                                         Kokkos::View<float, CpMem> maxApproach,
+                                         Kokkos::View<const unsigned char*, CpMem> persistent = {},
+                                         Kokkos::View<const float* [3], CpMem> posPred = {},
+                                         F3 gHat = {}) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
+  const bool usePersist = persistent.extent(0) > 0;
   for (int color = 0; color < numColors; ++color) {
     Kokkos::parallel_for(
         "peclet::dem::solve_velocity_gs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -388,6 +430,9 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
             if (ra >= 0.0f)
               restitution = ra;
           }
+          // Persistent (loaded) contact: e = 0 — see solveVelocityKokkos.
+          if (usePersist && persistent(idx) != 0)
+            restitution = 0.0f;
           const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
           const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
 
@@ -412,8 +457,23 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
           }
 
           const float Nsq = dot3(Nsum, Nsum);
-          const float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
-          const float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
+          float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
+          float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
+          // Shock propagation for persistent loaded contacts -- see solveVelocityKokkos.
+          bool applyA = true, applyB = true;
+          if (usePersist && persistent(idx) != 0 && idB >= 0) {
+            const F3 dx = sub3(ldF3(posPred, idA), ldF3(posPred, idB));
+            const float up = -(dx.x * gHat.x + dx.y * gHat.y + dx.z * gHat.z);
+            const float thr = 0.3f * Kokkos::sqrt(dot3(dx, dx));
+            const float riseThr = 4.0f * restVelThreshold;  // non-rising-support gate: see solveVelocityKokkos
+            if (up > thr && -dot3(vB, gHat) <= riseThr) {
+              wB_n = 0.0f;
+              applyB = false;
+            } else if (up < -thr && -dot3(vA, gHat) <= riseThr) {
+              wA_n = 0.0f;
+              applyA = false;
+            }
+          }
           const float wTotal = wA_n + wB_n;
           if (wTotal <= 0.0f)
             return;
@@ -432,6 +492,7 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
           const F3 JangB = scale3(TauB, lambda);
 
           // Linear + angular delta on A (dw_world = R (invI_local * (R^T Jang))), applied in place.
+          if (applyA) {
           velPred(realA, 0) += Jlin.x * invMassA;
           velPred(realA, 1) += Jlin.y * invMassA;
           velPred(realA, 2) += Jlin.z * invMassA;
@@ -443,7 +504,8 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
             angVelPred(realA, 1) += dww.y;
             angVelPred(realA, 2) += dww.z;
           }
-          if (idB >= 0) {
+          }
+          if (idB >= 0 && applyB) {
             velPred(realB, 0) += -Jlin.x * invMassB;
             velPred(realB, 1) += -Jlin.y * invMassB;
             velPred(realB, 2) += -Jlin.z * invMassB;

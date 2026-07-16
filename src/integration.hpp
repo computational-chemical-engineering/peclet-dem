@@ -183,35 +183,6 @@ inline void applyUpdatesKokkos(int n, V3 posPred, V3 velPred, V3 deltaPos, V3 de
   space.fence();
 }
 
-/// Static-support velocity back-coupling: feed the position solve's net displacement back into the
-/// committed velocity, clamped to the quasi-static scale (a few g dt). Without it a gravity-loaded
-/// pile keeps a phantom collective fall: neighbours co-move (zero relative approach, so the velocity
-/// solve has nothing to dissipate), the position solve silently lifts the column back each step, and
-/// hard floor approaches re-bounce at full restitution instead of resting -- measured as a settled
-/// 113-layer bed whose velocity field stays at free-fall magnitudes and crushes its bottom layers.
-/// Statics need exactly +g dt per step, far inside the clamp; ballistic impacts produce dx/dt of
-/// impact-speed size and are clamped to ~capMag, so no energy is injected (restitution stays owned
-/// by the velocity solve). g = 0 => capMag 0 => disabled: growth-driven packing and HCS unchanged.
-inline void applyStaticSupportKokkos(int numReal, V3 vel, Vf invMass, V3 posPred, V3 posPreSolve,
-                                     float dt, float capMag) {
-  if (!(capMag > 0.0f) || !(dt > 0.0f))
-    return;
-  CpExec space;
-  const float idt = 1.0f / dt;
-  Kokkos::parallel_for(
-      "peclet::dem::static_support", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
-      KOKKOS_LAMBDA(int i) {
-        if (invMass(i) <= 0.0f)
-          return;
-        F3 dv = scale3(sub3(ldF3(posPred, i), ldF3(posPreSolve, i)), idt);
-        const float m2 = dot3(dv, dv);
-        if (m2 > capMag * capMag)
-          dv = scale3(dv, capMag / Kokkos::sqrt(m2));
-        detail::st3(vel, i, add3(ldF3(vel, i), dv));
-      });
-  space.fence();
-}
-
 /// Final commit: periodic wrap of the predicted position into the domain, commit position + quat.
 inline void finalCommitKokkos(int n, V3 pos, Vf invMass, V3 posPred, V4 quat, V4 quatPred,
                               Domain dom) {
