@@ -40,12 +40,17 @@ inline void solvePositionKokkos(Kokkos::View<const ContactC*, CpMem> contacts, i
                                 Kokkos::View<float* [3], CpMem> deltaPos,
                                 Kokkos::View<float* [4], CpMem> deltaQuat,
                                 Kokkos::View<int*, CpMem> constraintCounts,
-                                Kokkos::View<float, CpMem> maxOverlap) {
+                                Kokkos::View<float, CpMem> maxOverlap,
+                                Kokkos::View<const int*, CpMem> onlyColor = {},
+                                int colorFilter = 0) {
   using detail::computeW;
   CpExec space;
+  const bool filt = onlyColor.extent(0) > 0;
   Kokkos::parallel_for(
       "peclet::dem::solve_position", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
       KOKKOS_LAMBDA(int idx) {
+        if (filt && onlyColor(idx) != colorFilter)
+          return;  // Jacobi fallback pass: only the contacts the colouring could not place
         const ContactC c = contacts(idx);
         const int idA = c.bodyA, idB = c.bodyB;
         const float invMassA = invMass(idA);
@@ -150,7 +155,8 @@ inline void solvePositionKokkos(Kokkos::View<const ContactC*, CpMem> contacts, i
 inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
                                int numBodies, Kokkos::View<int*, CpMem> cColor,
                                Kokkos::View<long long*, CpMem> bodyWinner,
-                               Kokkos::View<std::uint64_t*, CpMem> bodyMask) {
+                               Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover) {
+  leftover = 0;
   CpExec space;
   if (numContacts <= 0 || numBodies <= 0)
     return 0;
@@ -161,7 +167,7 @@ inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, in
       "peclet::dem::pcolor_init_contacts", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
       KOKKOS_LAMBDA(int idx) { cColor(idx) = -1; });
 
-  int remaining = 1;
+  int remaining = 1, prevRemaining = -1;
   const int maxRounds = numBodies + 2;
   for (int round = 0; round < maxRounds && remaining > 0; ++round) {
     Kokkos::parallel_for(
@@ -206,6 +212,12 @@ inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, in
         },
         rem);
     space.fence();
+    // Stall detection: a body whose 62-colour mask fills (interpenetration degree > 62) can never
+    // host a new colour — without this break the loop would spin maxRounds (~numBodies) times doing
+    // nothing. The stuck contacts stay -1 and are handled by the Jacobi fallback in the solve.
+    if (rem == prevRemaining)
+      break;
+    prevRemaining = rem;
     remaining = rem;
   }
 
@@ -217,6 +229,13 @@ inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, in
           mx = cColor(idx);
       },
       Kokkos::Max<int>(maxc));
+  Kokkos::parallel_reduce(
+      "peclet::dem::pcolor_leftover", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
+      KOKKOS_LAMBDA(int idx, int& acc) {
+        if (cColor(idx) == -1)
+          acc += 1;
+      },
+      leftover);
   space.fence();
   return maxc + 1;
 }

@@ -35,6 +35,7 @@ struct Particles {
   V4 quatPred;
   V3 velPred;
   V3 angVelPred;
+  V3 posPreSolve;  // posPred snapshot before the position solve (static-support back-coupling)
   V3 deltaPos;
   V4 deltaQuat;
   V3 deltaVel;
@@ -116,6 +117,7 @@ struct Particles {
     quatPred = V4("quatPred", cap);
     velPred = V3("velPred", cap);
     angVelPred = V3("angVelPred", cap);
+    posPreSolve = V3("posPreSolve", cap);
     deltaPos = V3("deltaPos", cap);
     deltaQuat = V4("deltaQuat", cap);
     deltaVel = V3("deltaVel", cap);
@@ -170,6 +172,7 @@ struct Particles {
     Kokkos::resize(quatPred, newCap);
     Kokkos::resize(velPred, newCap);
     Kokkos::resize(angVelPred, newCap);
+    Kokkos::resize(posPreSolve, newCap);
     Kokkos::resize(deltaPos, newCap);
     Kokkos::resize(deltaQuat, newCap);
     Kokkos::resize(deltaVel, newCap);

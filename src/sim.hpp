@@ -169,9 +169,11 @@ inline void demStep(Particles& P) {
   // Colour the manifold graph ONCE (topology-only; reused across the sweeps), then normal
   // restitution as colored Gauss–Seidel: correct multi-contact dissipation with no count-averaging
   // (see solver_velocity.hpp). count==1 binary collisions are identical to the old Jacobi path.
+  int velLeftover = 0;
   const int numColors =
       P.velocityUseGS ? colorManifoldsKokkos(P.manifolds, nm, P.realIndices, P.numReal,
-                                             P.manifoldColor, P.bodyWinner, P.bodyColorMask)
+                                             P.manifoldColor, P.bodyWinner, P.bodyColorMask,
+                                             velLeftover)
                       : 0;
   for (int it = 0; it < P.velocityIterations; ++it) {
     if (friction)
@@ -187,6 +189,18 @@ inline void demStep(Particles& P) {
       solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
                                    P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
                                    P.growthRate, P.restitutionNormal, vRest, P.maxApproach);
+      // Colour-mask saturation fallback (interpenetration degree > 62): the manifolds the colouring
+      // could not place are applied with the count-averaged Jacobi pass — stable, and only active
+      // in pathologically crushed regions; without it those manifolds were silently skipped and
+      // deep overlap could never resolve.
+      if (velLeftover > 0) {
+        solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred,
+                            P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRest,
+                            P.deltaVel, P.deltaAngVel, P.constraintCounts,
+                            Kokkos::View<const int*, CpMem>(P.manifoldColor), -1);
+        applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
+                                          P.deltaAngVel, P.constraintCounts);
+      }
       // Adaptive stop: end once no pair approaches above the resting threshold (the sweep just run
       // already applied the impulses that brought them there). Fixed velocityIterations is the cap.
       if (readFloat(P.maxApproach) <= vRest)
@@ -212,18 +226,29 @@ inline void demStep(Particles& P) {
 
   // Colour the contact graph ONCE (topology-only; reused across the position sweeps), then remove
   // overlap with colored Gauss–Seidel (true sequential projection, no count-averaging softening).
+  int posLeftover = 0;
   const int numPosColors =
       P.velocityUseGS
           ? colorContactsKokkos(P.contacts, nc, P.numParticles, P.contactColor, P.bodyWinner,
-                                P.bodyColorMask)
+                                P.bodyColorMask, posLeftover)
           : 0;
   // Overlap resolved once the deepest penetration falls below ~0.01% of a particle radius.
   const float posTol = 1e-4f * P.baseRadius * P.globalScale;
+  Kokkos::deep_copy(P.posPreSolve, P.posPred);  // static-support back-coupling baseline
   for (int it = 0; it < P.positionIterations; ++it) {
     if (P.velocityUseGS) {
       Kokkos::deep_copy(P.maxOverlap, 0.0f);  // per-sweep so the readback is this sweep's residual
       solvePositionColoredGSKokkos(P.contacts, nc, P.contactColor, numPosColors, P.invMass,
                                    P.posPred, P.quatPred, P.quat, P.invInertia, P.maxOverlap);
+      // Colour-mask saturation fallback: contacts the colouring could not place (degree > 62 in
+      // crushed regions) get the count-averaged Jacobi projection so deep overlap still resolves.
+      if (posLeftover > 0) {
+        solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
+                            P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap,
+                            Kokkos::View<const int*, CpMem>(P.contactColor), -1);
+        applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
+                           P.constraintCounts);
+      }
       // Adaptive stop: end once no contact overlaps by more than posTol. Fixed positionIterations
       // is the cap.
       if (readFloat(P.maxOverlap) < posTol)
@@ -236,6 +261,10 @@ inline void demStep(Particles& P) {
     }
   }
 
+  const float gMag = Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
+                                  P.gravity.z * P.gravity.z);
+  applyStaticSupportKokkos(P.numReal, P.vel, P.invMass, P.posPred, P.posPreSolve, P.dt,
+                           4.0f * gMag * P.dt);
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
 
   // Berendsen thermostat at the end of the step (CUDA Simulation::step), tau>0 enables.
@@ -420,6 +449,7 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
 
   // 6. Position solve (Projected Jacobi); refresh ghost predicted pose every syncEvery iters (+
   // last).
+  Kokkos::deep_copy(P.posPreSolve, P.posPred);  // static-support back-coupling baseline
   for (int it = 0; it < P.positionIterations; ++it) {
     solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
                         P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
@@ -433,6 +463,10 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   }
 
   // 7. Commit (owned results kept; ghosts discarded, re-gathered next substep).
+  const float gMag = Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
+                                  P.gravity.z * P.gravity.z);
+  applyStaticSupportKokkos(P.numReal, P.vel, P.invMass, P.posPred, P.posPreSolve, P.dt,
+                           4.0f * gMag * P.dt);
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
 
   if (P.thermostatTau > 0.0f && P.dt > 0.0f)

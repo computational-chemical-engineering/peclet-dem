@@ -38,13 +38,18 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                 float restitutionNormal, float restVelThreshold,
                                 Kokkos::View<float* [3], CpMem> deltaVel,
                                 Kokkos::View<float* [3], CpMem> deltaAngVel,
-                                Kokkos::View<int*, CpMem> velCounts) {
+                                Kokkos::View<int*, CpMem> velCounts,
+                                Kokkos::View<const int*, CpMem> onlyColor = {},
+                                int colorFilter = 0) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
+  const bool filt = onlyColor.extent(0) > 0;
   Kokkos::parallel_for(
       "peclet::dem::solve_velocity", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
       KOKKOS_LAMBDA(int idx) {
+        if (filt && onlyColor(idx) != colorFilter)
+          return;  // Jacobi fallback pass: only the manifolds the colouring could not place
         const ManifoldC m = manifolds(idx);
         if (m.num_points <= 0)
           return;
@@ -226,7 +231,8 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                 Kokkos::View<const int*, CpMem> realIdx, int numReal,
                                 Kokkos::View<int*, CpMem> mColor,
                                 Kokkos::View<long long*, CpMem> bodyWinner,
-                                Kokkos::View<std::uint64_t*, CpMem> bodyMask) {
+                                Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover) {
+  leftover = 0;
   CpExec space;
   if (numManifolds <= 0 || numReal <= 0)
     return 0;
@@ -249,7 +255,7 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         mColor(idx) = -1;
       });
 
-  int remaining = 1;
+  int remaining = 1, prevRemaining = -1;
   const int maxRounds = numReal + 2;  // safety bound; converges in ~max-degree rounds in practice
   for (int round = 0; round < maxRounds && remaining > 0; ++round) {
     Kokkos::parallel_for(
@@ -295,6 +301,9 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         },
         rem);
     space.fence();
+    if (rem == prevRemaining)
+      break;  // colour-mask saturation (degree > 62): leftovers stay -1, Jacobi fallback applies them
+    prevRemaining = rem;
     remaining = rem;
   }
 
@@ -306,6 +315,13 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           mx = mColor(idx);
       },
       Kokkos::Max<int>(maxc));
+  Kokkos::parallel_reduce(
+      "peclet::dem::color_leftover", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx, int& acc) {
+        if (mColor(idx) == -1)
+          acc += 1;
+      },
+      leftover);
   space.fence();
   return maxc + 1;
 }
