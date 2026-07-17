@@ -120,6 +120,53 @@ inline void commitPairKeysKokkos(Kokkos::View<const unsigned long long*, CpMem> 
   space.fence();
 }
 
+/// Guendelman support levels, warm-started: decay every body's level by `decay`, re-seed 255 at
+/// wall/plane contacts, then `sweeps` monotone propagation passes lower -> upper (255 -> 254 -> ...)
+/// through the manifold graph. Warm start makes a few sweeps per substep track slowly-moving
+/// support fronts; the decay retires groundedness ~32 substeps after lift-off. Geometry-only (no
+/// persistence / velocity condition): grounded means "has a contact path down to the floor".
+inline void updateGroundedLevelsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                       int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
+                                       Kokkos::View<const float* [3], CpMem> posPred, F3 gHat,
+                                       Kokkos::View<unsigned char*, CpMem> grounded, int numReal,
+                                       int sweeps, int decay) {
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::grounded_decay", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
+      KOKKOS_LAMBDA(int i) {
+        const int g = static_cast<int>(grounded(i)) - decay;
+        grounded(i) = static_cast<unsigned char>(g > 0 ? g : 0);
+      });
+  for (int s = 0; s < sweeps; ++s) {
+    Kokkos::parallel_for(
+        "peclet::dem::grounded_sweep", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+        KOKKOS_LAMBDA(int idx) {
+          const ManifoldC m = manifolds(idx);
+          if (m.num_points <= 0)
+            return;
+          const int realA = realIdx(m.bodyA);
+          if (m.bodyB < 0) {
+            Kokkos::atomic_max(&grounded(realA), static_cast<unsigned char>(255));
+            return;
+          }
+          const int realB = realIdx(m.bodyB);
+          const F3 dx = sub3(ldF3(posPred, m.bodyA), ldF3(posPred, m.bodyB));
+          const float up = -(dx.x * gHat.x + dx.y * gHat.y + dx.z * gHat.z);  // >0: A above B
+          const float thr = 0.3f * Kokkos::sqrt(dot3(dx, dx));
+          if (up > thr) {  // B supports A
+            const int lvl = static_cast<int>(grounded(realB)) - 1;
+            if (lvl > 0)
+              Kokkos::atomic_max(&grounded(realA), static_cast<unsigned char>(lvl));
+          } else if (up < -thr) {  // A supports B
+            const int lvl = static_cast<int>(grounded(realA)) - 1;
+            if (lvl > 0)
+              Kokkos::atomic_max(&grounded(realB), static_cast<unsigned char>(lvl));
+          }
+        });
+  }
+  space.fence();
+}
+
 /// splitmix32 finalizer: a well-mixed pseudo-random priority per edge index. Random priorities make
 /// the Jones-Plassmann arbitration finish in O(log n) rounds w.h.p.; RAW indices are adversarial for
 /// lattice-ordered dense packs (monotone index chains -> one win per round -> O(chain) rounds).

@@ -62,6 +62,12 @@ struct Particles {
   Kokkos::View<unsigned long long*, CpMem> prevPairKeys;
   Kokkos::View<unsigned char*, CpMem> manifoldPersistent;
   int prevPairCount = 0;
+  // Grounded level per REAL body (Guendelman support levels, warm-started + decayed): 255 at a
+  // wall/plane contact, propagated lower -> upper through the contact graph a few sweeps per
+  // substep. One-sided (shock-propagation) impulses require the LOWER body grounded > 0, so a
+  // gas-borne emulsion or lifted slug (no path to the floor) keeps momentum-conserving impulses
+  // and its weight stays on the gas -- only genuinely supported chains drain into the ground.
+  Kokkos::View<unsigned char*, CpMem> groundedLevel;
   Kokkos::View<int*, CpMem> contactColor;       // per-contact colour (position solve)
   // Per-body round-winner key for the colouring arbitration. 64-bit: hashed-random priority in the
   // high word (splitmix32 of the edge index), the unique edge index in the low word. Random
@@ -145,6 +151,7 @@ struct Particles {
     contactColor = Kokkos::View<int*, CpMem>("contactColor", maxContacts);
     bodyWinner = Kokkos::View<long long*, CpMem>("bodyWinner", cap);
     bodyColorMask = Kokkos::View<std::uint64_t*, CpMem>("bodyColorMask", cap);
+    groundedLevel = Kokkos::View<unsigned char*, CpMem>("groundedLevel", cap);
     pairCount = Kokkos::View<int, CpMem>("pairCount");
     contactCount = Kokkos::View<int, CpMem>("contactCount");
     manifoldCount = Kokkos::View<int, CpMem>("manifoldCount");
@@ -191,6 +198,7 @@ struct Particles {
     Kokkos::resize(realIndices, newCap);
     Kokkos::resize(bodyWinner, newCap);
     Kokkos::resize(bodyColorMask, newCap);
+    Kokkos::resize(groundedLevel, newCap);
     Kokkos::resize(planeFriction, newCap);
     Kokkos::resize(rad, newCap);
     Kokkos::resize(extForce, newCap);

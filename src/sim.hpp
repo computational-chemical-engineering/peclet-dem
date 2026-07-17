@@ -192,6 +192,8 @@ inline void demStep(Particles& P) {
     commitPairKeysKokkos(P.pairKeys, P.prevPairKeys, nm);
     P.prevPairCount = nm;
     persistView = P.manifoldPersistent;
+    updateGroundedLevelsKokkos(P.manifolds, nm, P.realIndices, P.posPred, gHat, P.groundedLevel,
+                               P.numReal, /*sweeps*/ 8, /*decay*/ 8);
   }
   for (int it = 0; it < P.velocityIterations; ++it) {
     if (friction)
@@ -207,7 +209,7 @@ inline void demStep(Particles& P) {
       solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
                                    P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
                                    P.growthRate, P.restitutionNormal, vRest, P.maxApproach,
-                                   persistView, P.posPred, gHat);
+                                   persistView, P.posPred, gHat, P.groundedLevel);
       // Colour-mask saturation fallback (interpenetration degree > 62): the manifolds the colouring
       // could not place are applied with the count-averaged Jacobi pass — stable, and only active
       // in pathologically crushed regions; without it those manifolds were silently skipped and
@@ -217,7 +219,7 @@ inline void demStep(Particles& P) {
                             P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRest,
                             P.deltaVel, P.deltaAngVel, P.constraintCounts,
                             Kokkos::View<const int*, CpMem>(P.manifoldColor), -1, persistView,
-                            P.posPred, gHat);
+                            P.posPred, gHat, P.groundedLevel);
         applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
                                           P.deltaAngVel, P.constraintCounts);
       }
@@ -228,7 +230,8 @@ inline void demStep(Particles& P) {
     } else {
       solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
                           P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
-                          P.deltaAngVel, P.constraintCounts, {}, 0, persistView, P.posPred, gHat);
+                          P.deltaAngVel, P.constraintCounts, {}, 0, persistView, P.posPred, gHat,
+                          P.groundedLevel);
       applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
                                         P.deltaAngVel, P.constraintCounts);
     }

@@ -42,7 +42,8 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                 Kokkos::View<const int*, CpMem> onlyColor = {},
                                 int colorFilter = 0,
                                 Kokkos::View<const unsigned char*, CpMem> persistent = {},
-                                Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {}) {
+                                Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {},
+                                Kokkos::View<const unsigned char*, CpMem> grounded = {}) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -98,12 +99,6 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           if (ra >= 0.0f)
             restitution = ra;
         }
-        // Persistent (loaded) contact: pure inelastic support — restitution is reserved for NEWLY
-        // formed contacts (genuine impacts). This is how the velocity solve carries a pile's static
-        // weight through impulse chains without the sink-and-project energy pump (a hot column's
-        // every approach otherwise re-bounces at material e, and the pile never cools).
-        if (usePersist && persistent(idx) != 0)
-          restitution = 0.0f;
         const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
         const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
 
@@ -155,12 +150,18 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           const float up = -(dx.x * gHat.x + dx.y * gHat.y + dx.z * gHat.z);  // >0: A above B
           const float thr = 0.3f * Kokkos::sqrt(dot3(dx, dx));
           const float riseThr = 4.0f * restVelThreshold;  // rise = -v.gHat (gHat points down-gravity)
-          if (up > thr && -dot3(vB, gHat) <= riseThr) {
+          // ... and the support must be GROUNDED (contact path to the floor): a gas-borne emulsion
+          // or lifted slug keeps symmetric momentum-conserving impulses, so its weight stays on
+          // the gas -- only genuinely supported chains drain into the ground.
+          if (up > thr && -dot3(vB, gHat) <= riseThr && grounded(realB) > 0) {
             wB_n = 0.0f;
             applyB = false;
-          } else if (up < -thr && -dot3(vA, gHat) <= riseThr) {
+            restitution = 0.0f;  // shock pass is inelastic: e > 0 one-sided would bounce bodies
+                                 // off the ground with unpaid momentum
+          } else if (up < -thr && -dot3(vA, gHat) <= riseThr && grounded(realA) > 0) {
             wA_n = 0.0f;
             applyA = false;
+            restitution = 0.0f;
           }
         }
         const float wTotal = wA_n + wB_n;
@@ -384,7 +385,8 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
                                          Kokkos::View<float, CpMem> maxApproach,
                                          Kokkos::View<const unsigned char*, CpMem> persistent = {},
                                          Kokkos::View<const float* [3], CpMem> posPred = {},
-                                         F3 gHat = {}) {
+                                         F3 gHat = {},
+                                         Kokkos::View<const unsigned char*, CpMem> grounded = {}) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -430,9 +432,6 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
             if (ra >= 0.0f)
               restitution = ra;
           }
-          // Persistent (loaded) contact: e = 0 — see solveVelocityKokkos.
-          if (usePersist && persistent(idx) != 0)
-            restitution = 0.0f;
           const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
           const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
 
@@ -465,13 +464,15 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
             const F3 dx = sub3(ldF3(posPred, idA), ldF3(posPred, idB));
             const float up = -(dx.x * gHat.x + dx.y * gHat.y + dx.z * gHat.z);
             const float thr = 0.3f * Kokkos::sqrt(dot3(dx, dx));
-            const float riseThr = 4.0f * restVelThreshold;  // non-rising-support gate: see solveVelocityKokkos
-            if (up > thr && -dot3(vB, gHat) <= riseThr) {
+            const float riseThr = 4.0f * restVelThreshold;  // non-rising + grounded support gate
+            if (up > thr && -dot3(vB, gHat) <= riseThr && grounded(realB) > 0) {
               wB_n = 0.0f;
               applyB = false;
-            } else if (up < -thr && -dot3(vA, gHat) <= riseThr) {
+              restitution = 0.0f;  // shock pass is inelastic — see solveVelocityKokkos
+            } else if (up < -thr && -dot3(vA, gHat) <= riseThr && grounded(realA) > 0) {
               wA_n = 0.0f;
               applyA = false;
+              restitution = 0.0f;
             }
           }
           const float wTotal = wA_n + wB_n;
