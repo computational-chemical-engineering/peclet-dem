@@ -181,19 +181,31 @@ inline void demStep(Particles& P) {
   // velocity solve carries a pile's static weight through impulse chains and a settling column
   // actually cools; material/wall restitution stays reserved for newly formed contacts.
   const bool usePersist = (P.gravity.x != 0.0f || P.gravity.y != 0.0f || P.gravity.z != 0.0f);
+  // Warm-started PGS velocity solve (|g| > 0): gather each manifold's previous-substep converged
+  // push impulse by pair key, record the pre-solve approach (restitution bias), and apply the warm
+  // impulses up front -- a static pile's force network is re-established in ~one sweep. g = 0
+  // keeps the original one-shot colored-GS path bit-identical (HCS, growth packing).
+  const bool usePGS = usePersist && P.velocityUseGS;
   const float gMagP = Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
                                    P.gravity.z * P.gravity.z);
   const F3 gHat = usePersist ? F3{P.gravity.x / gMagP, P.gravity.y / gMagP, P.gravity.z / gMagP}
                              : F3{0, 0, 0};
-  Kokkos::View<const unsigned char*, CpMem> persistView;
-  if (usePersist) {
+  if (usePGS) {
+    gatherWarmLambdaKokkos(P.manifolds, nm, P.realIndices, P.prevPairKeys, P.prevLambda,
+                           P.prevPairCount, P.pairKeys, P.lambdaAcc);
     markPersistentManifoldsKokkos(P.manifolds, nm, P.realIndices, P.prevPairKeys, P.prevPairCount,
                                   P.pairKeys, P.manifoldPersistent);
-    commitPairKeysKokkos(P.pairKeys, P.prevPairKeys, nm);
-    P.prevPairCount = nm;
-    persistView = P.manifoldPersistent;
     updateGroundedLevelsKokkos(P.manifolds, nm, P.realIndices, P.posPred, gHat, P.groundedLevel,
                                P.numReal, /*sweeps*/ 8, /*decay*/ 8);
+    // Decide sidedness once (also zeroes warm impulses on one-sided contacts), THEN record the
+    // restitution bias and apply the remaining (symmetric) warm impulses.
+    computeSideFlagsKokkos(P.manifolds, nm, P.realIndices,
+                           Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent),
+                           Kokkos::View<const unsigned char*, CpMem>(P.groundedLevel), P.posPred,
+                           P.velPred, gHat, 8.0f * P.dt * gMagP, P.manifoldPersistent, P.lambdaAcc);
+    computeVn0Kokkos(P.manifolds, nm, P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.vn0);
+    warmStartApplyKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                         P.realIndices, P.lambdaAcc);
   }
   for (int it = 0; it < P.velocityIterations; ++it) {
     if (friction)
@@ -206,10 +218,15 @@ inline void demStep(Particles& P) {
                                      P.gravity.z * P.gravity.z);
     if (P.velocityUseGS) {
       Kokkos::deep_copy(P.maxApproach, 0.0f);
-      solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
-                                   P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
-                                   P.growthRate, P.restitutionNormal, vRest, P.maxApproach,
-                                   persistView, P.posPred, gHat, P.groundedLevel);
+      if (usePGS)
+        solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia,
+                               P.quat, P.velPred, P.angVelPred, P.realIndices, P.growthRate,
+                               P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
+                               Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent));
+      else
+        solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
+                                     P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
+                                     P.growthRate, P.restitutionNormal, vRest, P.maxApproach);
       // Colour-mask saturation fallback (interpenetration degree > 62): the manifolds the colouring
       // could not place are applied with the count-averaged Jacobi pass — stable, and only active
       // in pathologically crushed regions; without it those manifolds were silently skipped and
@@ -218,23 +235,29 @@ inline void demStep(Particles& P) {
         solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred,
                             P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRest,
                             P.deltaVel, P.deltaAngVel, P.constraintCounts,
-                            Kokkos::View<const int*, CpMem>(P.manifoldColor), -1, persistView,
-                            P.posPred, gHat, P.groundedLevel);
+                            Kokkos::View<const int*, CpMem>(P.manifoldColor), -1);
         applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
                                           P.deltaAngVel, P.constraintCounts);
       }
-      // Adaptive stop: end once no pair approaches above the resting threshold (the sweep just run
-      // already applied the impulses that brought them there). Fixed velocityIterations is the cap.
-      if (readFloat(P.maxApproach) <= vRest)
+      // Adaptive stop. One-shot GS: end once no pair approaches above the resting threshold. PGS:
+      // maxApproach records the largest APPLIED correction, and meaningful increments are ~g dt
+      // (they propagate a chain one link per sweep), so the tolerance must sit well below vRest or
+      // the stop starves deep-chain convergence permanently (measured: a 113-layer pile plateaued
+      // at vz ~ -5 with the vRest stop). Once the warm-started network is converged the first
+      // sweep's correction is ~0 and the loop still exits immediately.
+      if (readFloat(P.maxApproach) <= (usePGS ? 0.02f * vRest : vRest))
         break;
     } else {
       solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
                           P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
-                          P.deltaAngVel, P.constraintCounts, {}, 0, persistView, P.posPred, gHat,
-                          P.groundedLevel);
+                          P.deltaAngVel, P.constraintCounts);
       applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
                                         P.deltaAngVel, P.constraintCounts);
     }
+  }
+  if (usePGS) {  // save the converged force network for next substep's warm start
+    commitPairKeysLambdaKokkos(P.pairKeys, P.lambdaAcc, P.prevPairKeys, P.prevLambda, nm);
+    P.prevPairCount = nm;
   }
   if (friction) {
     countFrictionContactsKokkos(P.contacts, nc, P.realIndices, P.planeFriction);

@@ -365,6 +365,308 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
   return maxc + 1;
 }
 
+/// ---- Warm-started projected Gauss-Seidel (PGS) velocity solve ----
+/// Nonsmooth contact dynamics (Moreau-Jean; Stewart-Trinkle LCP): per manifold an ACCUMULATED
+/// push impulse p >= 0 along the manifold normal, updated by colored GS sweeps and projected to
+/// p >= 0 (a contact may push, never pull; over-push is retracted in later sweeps). At convergence
+/// the p's are the contact force network (x dt): a resting pile's chains carry exactly the weight
+/// above them, all velocities -> 0 -- statics with no notion of "lower body" or gravity direction,
+/// momentum-conserving at every contact (the wall provides the reaction). Deep-pile convergence is
+/// bought by WARM STARTING: p is seeded from the previous substep's converged value (matched by
+/// pair key) and applied up front, so a static network is re-established in ~1 sweep per substep.
+/// Restitution enters as the target relative velocity -e*vn0 on the PRE-SOLVE approach vn0 (with
+/// the resting threshold), so fresh binary impacts reproduce the one-shot impulse exactly.
+
+/// Pre-solve approach velocity per manifold (the restitution bias), measured BEFORE the warm-start
+/// application. Same kinematics as the sweep kernel.
+inline void computeVn0Kokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                             Kokkos::View<const float* [3], CpMem> velPred,
+                             Kokkos::View<const float* [3], CpMem> angVelPred,
+                             Kokkos::View<const int*, CpMem> realIdx, float growthRate,
+                             Kokkos::View<float*, CpMem> vn0) {
+  using detail::ld3;
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::pgs_vn0", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        const ManifoldC m = manifolds(idx);
+        if (m.num_points <= 0)
+          return;
+        const int idA = m.bodyA, idB = m.bodyB;
+        const int realA = realIdx(idA);
+        if (idB >= 0 && realA > realIdx(idB))
+          return;  // periodic dedup
+        const float invN = 1.0f / static_cast<float>(m.num_points);
+        const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
+        const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
+        const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
+        const F3 vA = ld3(velPred, realA), wA = ld3(angVelPred, realA);
+        F3 vB{0, 0, 0}, wB{0, 0, 0};
+        if (idB >= 0) {
+          vB = ld3(velPred, realIdx(idB));
+          wB = ld3(angVelPred, realIdx(idB));
+        } else {
+          vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+        }
+        const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
+        const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
+        const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
+        const F3 vGrowth = scale3(diffCenters, growthRate);
+        float vn = dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
+                   dot3(wB, TauB);
+        vn += dot3(vGrowth, Nsum);
+        vn0(idx) = vn;
+      });
+  space.fence();
+}
+
+/// Decide each persistent contact's treatment ONCE per substep (before any impulse is applied):
+/// 0 = symmetric momentum-conserving PGS, 1 = one-sided with B as the held ground side, 2 = A held.
+/// One-sided requires the ground side grounded (contact path to the floor) and not rising. Flagged
+/// contacts get their warm impulse ZEROED: their ground side is held externally (recursively down
+/// to the floor), so the correct per-substep impulse is only the ~m g dt refill, accumulated from
+/// zero -- warm-applying last substep's chain impulse one-sidedly would inject the whole column
+/// weight as upward velocity (measured: instant crush + churn from the inconsistent ledger).
+inline void computeSideFlagsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                   int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
+                                   Kokkos::View<const unsigned char*, CpMem> persistent,
+                                   Kokkos::View<const unsigned char*, CpMem> grounded,
+                                   Kokkos::View<const float* [3], CpMem> posPred,
+                                   Kokkos::View<const float* [3], CpMem> velPred, F3 gHat,
+                                   float riseThr, Kokkos::View<unsigned char*, CpMem> sideFlag,
+                                   Kokkos::View<float*, CpMem> lambdaAcc) {
+  using detail::ld3;
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::pgs_side_flags", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        const unsigned char wasPersistent = persistent(idx);  // read BEFORE the write: the caller
+        sideFlag(idx) = 0;  // may alias persistent and sideFlag (flag reuses the persistence view)
+        const ManifoldC m = manifolds(idx);
+        if (m.num_points <= 0 || m.bodyB < 0 || wasPersistent == 0)
+          return;
+        const int realA = realIdx(m.bodyA), realB = realIdx(m.bodyB);
+        if (realA > realB)
+          return;  // periodic dedup
+        const F3 dx = sub3(ldF3(posPred, m.bodyA), ldF3(posPred, m.bodyB));
+        const float up = -(dx.x * gHat.x + dx.y * gHat.y + dx.z * gHat.z);  // >0: A above B
+        const float thr = 0.3f * Kokkos::sqrt(dot3(dx, dx));
+        if (up > thr && -dot3(ld3(velPred, realB), gHat) <= riseThr && grounded(realB) > 0) {
+          sideFlag(idx) = 1;
+          lambdaAcc(idx) = 0.0f;
+        } else if (up < -thr && -dot3(ld3(velPred, realA), gHat) <= riseThr &&
+                   grounded(realA) > 0) {
+          sideFlag(idx) = 2;
+          lambdaAcc(idx) = 0.0f;
+        }
+      });
+  space.fence();
+}
+
+/// Apply the warm-start impulses up front (order-independent: fixed impulses, atomic adds).
+inline void warmStartApplyKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                                 Kokkos::View<const float*, CpMem> invMass,
+                                 Kokkos::View<const float* [3], CpMem> invInertia,
+                                 Kokkos::View<const float* [4], CpMem> quat,
+                                 Kokkos::View<float* [3], CpMem> velPred,
+                                 Kokkos::View<float* [3], CpMem> angVelPred,
+                                 Kokkos::View<const int*, CpMem> realIdx,
+                                 Kokkos::View<const float*, CpMem> warmP) {
+  using detail::ld3;
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::pgs_warm_apply", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        const float p = warmP(idx);
+        if (p == 0.0f)
+          return;
+        const ManifoldC m = manifolds(idx);
+        if (m.num_points <= 0)
+          return;
+        const int idA = m.bodyA, idB = m.bodyB;
+        const int realA = realIdx(idA);
+        const int realB = (idB >= 0) ? realIdx(idB) : idB;
+        if (idB >= 0 && realA > realB)
+          return;  // periodic dedup (warmP is 0 for dups anyway)
+        const float invN = 1.0f / static_cast<float>(m.num_points);
+        const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
+        const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
+        const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
+        const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
+        const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
+        const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
+        const float alignment = dot3(Nsum, diffCenters);
+        const float sgn = (alignment > 0.0f) ? 1.0f : -1.0f;
+        const float lambda = -sgn * p;
+        const F3 Jlin = scale3(Nsum, lambda);
+        const float invMassA = invMass(realA);
+        const float invMassB = (idB >= 0) ? invMass(realB) : 0.0f;
+        Kokkos::atomic_add(&velPred(realA, 0), Jlin.x * invMassA);
+        Kokkos::atomic_add(&velPred(realA, 1), Jlin.y * invMassA);
+        Kokkos::atomic_add(&velPred(realA, 2), Jlin.z * invMassA);
+        {
+          const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
+          const F3 Jl = invRotateVector(qA, scale3(TauA, lambda));
+          const F3 invIA = ld3(invInertia, realA);
+          const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
+          const F3 dww = rotateVector(qA, dwl);
+          Kokkos::atomic_add(&angVelPred(realA, 0), dww.x);
+          Kokkos::atomic_add(&angVelPred(realA, 1), dww.y);
+          Kokkos::atomic_add(&angVelPred(realA, 2), dww.z);
+        }
+        if (idB >= 0) {
+          Kokkos::atomic_add(&velPred(realB, 0), -Jlin.x * invMassB);
+          Kokkos::atomic_add(&velPred(realB, 1), -Jlin.y * invMassB);
+          Kokkos::atomic_add(&velPred(realB, 2), -Jlin.z * invMassB);
+          const F4 qB = F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)};
+          const F3 Jl = invRotateVector(qB, scale3(TauB, lambda));
+          const F3 invIB = ld3(invInertia, realB);
+          const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
+          const F3 dww = rotateVector(qB, dwl);
+          Kokkos::atomic_add(&angVelPred(realB, 0), dww.x);
+          Kokkos::atomic_add(&angVelPred(realB, 1), dww.y);
+          Kokkos::atomic_add(&angVelPred(realB, 2), dww.z);
+        }
+      });
+  space.fence();
+}
+
+/// One full colored PGS sweep. Per manifold: current approach vtil = s*vn, restitution target
+/// -e*max(vtil0,0) (e via the resting threshold on vn0), incremental impulse dp = (vtil-target)/w,
+/// accumulator projection p := max(0, p+dp), apply the applied difference in place. maxApproach
+/// records the largest applied velocity correction (physical units) for the adaptive stop.
+inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                   int numManifolds, Kokkos::View<const int*, CpMem> mColor,
+                                   int numColors, Kokkos::View<const float*, CpMem> invMass,
+                                   Kokkos::View<const float* [3], CpMem> invInertia,
+                                   Kokkos::View<const float* [4], CpMem> quat,
+                                   Kokkos::View<float* [3], CpMem> velPred,
+                                   Kokkos::View<float* [3], CpMem> angVelPred,
+                                   Kokkos::View<const int*, CpMem> realIdx, float growthRate,
+                                   float restitutionNormal, float restVelThreshold,
+                                   Kokkos::View<float, CpMem> maxApproach,
+                                   Kokkos::View<float*, CpMem> lambdaAcc,
+                                   Kokkos::View<const float*, CpMem> vn0,
+                                   Kokkos::View<const unsigned char*, CpMem> sideFlag) {
+  using detail::genInvMass;
+  using detail::ld3;
+  CpExec space;
+  for (int color = 0; color < numColors; ++color) {
+    Kokkos::parallel_for(
+        "peclet::dem::solve_velocity_pgs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+        KOKKOS_LAMBDA(int idx) {
+          if (mColor(idx) != color)
+            return;
+          const ManifoldC m = manifolds(idx);
+          const int idA = m.bodyA, idB = m.bodyB;
+          const int realA = realIdx(idA);
+          const int realB = (idB >= 0) ? realIdx(idB) : idB;
+          const float invMassA = invMass(realA);
+          const float invMassB = (idB >= 0) ? invMass(realB) : 0.0f;
+          const F3 invIA = ld3(invInertia, realA);
+          const F3 invIB = (idB >= 0) ? ld3(invInertia, realB) : F3{0, 0, 0};
+          const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
+          const F4 qB = (idB >= 0)
+                            ? F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)}
+                            : F4{0, 0, 0, 1};
+          const F3 vA = ld3(velPred, realA), wA = ld3(angVelPred, realA);
+          F3 vB{0, 0, 0}, wB{0, 0, 0};
+          const float invN = 1.0f / static_cast<float>(m.num_points);
+          float restitution = restitutionNormal;
+          if (idB >= 0) {
+            vB = ld3(velPred, realB);
+            wB = ld3(angVelPred, realB);
+          } else {
+            vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+            const float ra = m.restitution_sum * invN;
+            if (ra >= 0.0f)
+              restitution = ra;
+          }
+          const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
+          const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
+          const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
+          const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
+          const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
+          const float lenN = Kokkos::sqrt(dot3(Nsum, Nsum));
+          if (lenN < 1e-9f)
+            return;
+          const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
+          const F3 vGrowth = scale3(diffCenters, growthRate);
+          float vn = dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
+                     dot3(wB, TauB);
+          vn += dot3(vGrowth, Nsum);
+          const float alignment = dot3(Nsum, diffCenters);
+          const float sgn = (alignment > 0.0f) ? 1.0f : -1.0f;
+          const float Nsq = dot3(Nsum, Nsum);
+          float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
+          float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
+          // Shock propagation INSIDE the PGS sweep (Guendelman staged solve, per-contact form):
+          // sidedness was decided ONCE this substep (computeSideFlagsKokkos) so the warm start,
+          // accumulator and every sweep share one consistent ledger. The held ground side absorbs
+          // the reaction (recursively down to the floor); e is forced 0 on one-sided contacts.
+          bool applyA = true, applyB = true;
+          const unsigned char sf = sideFlag(idx);
+          if (sf == 1) {
+            wB_n = 0.0f;
+            applyB = false;
+            restitution = 0.0f;
+          } else if (sf == 2) {
+            wA_n = 0.0f;
+            applyA = false;
+            restitution = 0.0f;
+          }
+          const float wTotal = wA_n + wB_n;
+          if (wTotal <= 0.0f)
+            return;
+          // Restitution bias on the PRE-SOLVE approach (resting threshold as in the one-shot path).
+          const float v0til = sgn * vn0(idx);
+          if (Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN)
+            restitution = 0.0f;
+          const float target = (v0til > 0.0f) ? -restitution * v0til : 0.0f;
+          const float vtil = sgn * vn;
+          const float dp = (vtil - target) / wTotal;
+          const float pOld = lambdaAcc(idx);
+          float pNew = pOld + dp;
+          if (pNew < 0.0f)
+            pNew = 0.0f;
+          const float dApplied = pNew - pOld;
+          if (dApplied == 0.0f)
+            return;
+          lambdaAcc(idx) = pNew;
+          Kokkos::atomic_max(&maxApproach(), Kokkos::fabs(dApplied) * wTotal / lenN);
+          const float lambda = -sgn * dApplied;
+          const F3 Jlin = scale3(Nsum, lambda);
+          const F3 JangA = scale3(TauA, lambda);
+          const F3 JangB = scale3(TauB, lambda);
+          if (applyA) {
+          velPred(realA, 0) += Jlin.x * invMassA;
+          velPred(realA, 1) += Jlin.y * invMassA;
+          velPred(realA, 2) += Jlin.z * invMassA;
+          {
+            const F3 Jl = invRotateVector(qA, JangA);
+            const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
+            const F3 dww = rotateVector(qA, dwl);
+            angVelPred(realA, 0) += dww.x;
+            angVelPred(realA, 1) += dww.y;
+            angVelPred(realA, 2) += dww.z;
+          }
+          }
+          if (idB >= 0 && applyB) {
+            velPred(realB, 0) += -Jlin.x * invMassB;
+            velPred(realB, 1) += -Jlin.y * invMassB;
+            velPred(realB, 2) += -Jlin.z * invMassB;
+            const F3 Jl = invRotateVector(qB, JangB);
+            const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
+            const F3 dww = rotateVector(qB, dwl);
+            angVelPred(realB, 0) += dww.x;
+            angVelPred(realB, 1) += dww.y;
+            angVelPred(realB, 2) += dww.z;
+          }
+        });
+  }
+  space.fence();
+}
+
 /// Colored Gauss–Seidel normal-restitution solve: sweep the `numColors` colour classes in order,
 /// applying each manifold's impulse directly to velPred/angVelPred (in place). Same per-manifold
 /// impulse math as solveVelocityKokkos (growth-velocity term, approach gate, resting-contact e=0

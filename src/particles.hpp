@@ -68,6 +68,13 @@ struct Particles {
   // gas-borne emulsion or lifted slug (no path to the floor) keeps momentum-conserving impulses
   // and its weight stays on the gas -- only genuinely supported chains drain into the ground.
   Kokkos::View<unsigned char*, CpMem> groundedLevel;
+  // Warm-started PGS (projected Gauss-Seidel) velocity solve: per-manifold accumulated push
+  // impulse (this substep), the previous substep's converged impulses (sorted alongside
+  // prevPairKeys for the warm-start gather), and the pre-solve approach velocity (restitution
+  // bias). At convergence lambdaAcc IS the contact force network (x dt).
+  Kokkos::View<float*, CpMem> lambdaAcc;
+  Kokkos::View<float*, CpMem> prevLambda;
+  Kokkos::View<float*, CpMem> vn0;
   Kokkos::View<int*, CpMem> contactColor;       // per-contact colour (position solve)
   // Per-body round-winner key for the colouring arbitration. 64-bit: hashed-random priority in the
   // high word (splitmix32 of the edge index), the unique edge index in the low word. Random
@@ -152,6 +159,9 @@ struct Particles {
     bodyWinner = Kokkos::View<long long*, CpMem>("bodyWinner", cap);
     bodyColorMask = Kokkos::View<std::uint64_t*, CpMem>("bodyColorMask", cap);
     groundedLevel = Kokkos::View<unsigned char*, CpMem>("groundedLevel", cap);
+    lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", maxContacts);
+    prevLambda = Kokkos::View<float*, CpMem>("prevLambda", maxContacts);
+    vn0 = Kokkos::View<float*, CpMem>("vn0", maxContacts);
     pairCount = Kokkos::View<int, CpMem>("pairCount");
     contactCount = Kokkos::View<int, CpMem>("contactCount");
     manifoldCount = Kokkos::View<int, CpMem>("manifoldCount");

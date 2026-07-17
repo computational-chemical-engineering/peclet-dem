@@ -106,6 +106,60 @@ inline void markPersistentManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> 
   space.fence();
 }
 
+/// Warm-start gather for the PGS velocity solve: per manifold, write its pair key and look up the
+/// previous substep's converged push impulse (0 for a new contact). Periodic-ghost duplicate
+/// manifolds (realA > realB twin) get key ~0 and warm 0 -- the canonical twin carries the impulse.
+inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                   int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
+                                   Kokkos::View<const unsigned long long*, CpMem> prevKeys,
+                                   Kokkos::View<const float*, CpMem> prevLambda, int prevCount,
+                                   Kokkos::View<unsigned long long*, CpMem> outKeys,
+                                   Kokkos::View<float*, CpMem> outWarm) {
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::gather_warm", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        const ManifoldC m = manifolds(idx);
+        bool dup = false;
+        if (m.num_points > 0 && m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB))
+          dup = true;
+        if (m.num_points <= 0 || dup) {
+          outKeys(idx) = ~0ull;
+          outWarm(idx) = 0.0f;
+          return;
+        }
+        const unsigned long long k = pairKeyOf(m, realIdx);
+        outKeys(idx) = k;
+        int lo = 0, hi = prevCount;
+        while (lo < hi) {
+          const int mid = (lo + hi) >> 1;
+          if (prevKeys(mid) < k)
+            lo = mid + 1;
+          else
+            hi = mid;
+        }
+        outWarm(idx) = (lo < prevCount && prevKeys(lo) == k) ? prevLambda(lo) : 0.0f;
+      });
+  space.fence();
+}
+
+/// Save this substep's keys + converged impulses and key-sort them for next substep's gather.
+inline void commitPairKeysLambdaKokkos(Kokkos::View<const unsigned long long*, CpMem> keys,
+                                       Kokkos::View<const float*, CpMem> lambda,
+                                       Kokkos::View<unsigned long long*, CpMem> prevKeys,
+                                       Kokkos::View<float*, CpMem> prevLambda, int numManifolds) {
+  if (numManifolds <= 0)
+    return;
+  CpExec space;
+  const auto rng = Kokkos::pair<int, int>(0, numManifolds);
+  auto kd = Kokkos::subview(prevKeys, rng);
+  auto ld = Kokkos::subview(prevLambda, rng);
+  Kokkos::deep_copy(space, kd, Kokkos::subview(keys, rng));
+  Kokkos::deep_copy(space, ld, Kokkos::subview(lambda, rng));
+  Kokkos::Experimental::sort_by_key(space, kd, ld);
+  space.fence();
+}
+
 /// Copy this substep's keys into prevKeys and sort them for next substep's binary search.
 inline void commitPairKeysKokkos(Kokkos::View<const unsigned long long*, CpMem> keys,
                                  Kokkos::View<unsigned long long*, CpMem> prevKeys,
