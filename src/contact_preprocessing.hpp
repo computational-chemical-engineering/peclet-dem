@@ -59,6 +59,7 @@ struct ManifoldC {
   // restitution_sum -> per-wall restitution (a < 0 average keeps the global material).
   F4 wallVel_sum{0.0f, 0.0f, 0.0f, 0.0f};
   float restitution_sum{0.0f};
+  float friction_sum{0.0f};  // per-contact mu (pair table / wall); a < 0 average = global material
 };
 
 /// Persistent-contact detection for the gravity-gated restitution rule. Key = (min real body,
@@ -112,9 +113,11 @@ inline void markPersistentManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> 
 inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                    int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
                                    Kokkos::View<const unsigned long long*, CpMem> prevKeys,
-                                   Kokkos::View<const float*, CpMem> prevLambda, int prevCount,
+                                   Kokkos::View<const float*, CpMem> prevLambda,
+                                   Kokkos::View<const float* [3], CpMem> prevLambdaT, int prevCount,
                                    Kokkos::View<unsigned long long*, CpMem> outKeys,
-                                   Kokkos::View<float*, CpMem> outWarm) {
+                                   Kokkos::View<float*, CpMem> outWarm,
+                                   Kokkos::View<float* [3], CpMem> outWarmT) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::gather_warm", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -126,6 +129,7 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
         if (m.num_points <= 0 || dup) {
           outKeys(idx) = ~0ull;
           outWarm(idx) = 0.0f;
+          outWarmT(idx, 0) = outWarmT(idx, 1) = outWarmT(idx, 2) = 0.0f;
           return;
         }
         const unsigned long long k = pairKeyOf(m, realIdx);
@@ -138,25 +142,48 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
           else
             hi = mid;
         }
-        outWarm(idx) = (lo < prevCount && prevKeys(lo) == k) ? prevLambda(lo) : 0.0f;
+        const bool hit = (lo < prevCount && prevKeys(lo) == k);
+        outWarm(idx) = hit ? prevLambda(lo) : 0.0f;
+        outWarmT(idx, 0) = hit ? prevLambdaT(lo, 0) : 0.0f;
+        outWarmT(idx, 1) = hit ? prevLambdaT(lo, 1) : 0.0f;
+        outWarmT(idx, 2) = hit ? prevLambdaT(lo, 2) : 0.0f;
       });
   space.fence();
 }
 
-/// Save this substep's keys + converged impulses and key-sort them for next substep's gather.
+/// Save this substep's keys + converged impulses (normal AND tangential) and key-sort them for
+/// next substep's gather. A permutation sort carries both value arrays through one key sort.
 inline void commitPairKeysLambdaKokkos(Kokkos::View<const unsigned long long*, CpMem> keys,
                                        Kokkos::View<const float*, CpMem> lambda,
+                                       Kokkos::View<const float* [3], CpMem> lambdaT,
                                        Kokkos::View<unsigned long long*, CpMem> prevKeys,
-                                       Kokkos::View<float*, CpMem> prevLambda, int numManifolds) {
+                                       Kokkos::View<float*, CpMem> prevLambda,
+                                       Kokkos::View<float* [3], CpMem> prevLambdaT,
+                                       int numManifolds) {
   if (numManifolds <= 0)
     return;
   CpExec space;
-  const auto rng = Kokkos::pair<int, int>(0, numManifolds);
+  const int n = numManifolds;
+  const auto rng = Kokkos::pair<int, int>(0, n);
   auto kd = Kokkos::subview(prevKeys, rng);
-  auto ld = Kokkos::subview(prevLambda, rng);
   Kokkos::deep_copy(space, kd, Kokkos::subview(keys, rng));
-  Kokkos::deep_copy(space, ld, Kokkos::subview(lambda, rng));
-  Kokkos::Experimental::sort_by_key(space, kd, ld);
+  Kokkos::View<int*, CpMem> perm(
+      Kokkos::view_alloc(space, "peclet::dem::commit_perm", Kokkos::WithoutInitializing), n);
+  Kokkos::parallel_for(
+      "peclet::dem::commit_iota", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int i) { perm(i) = i; });
+  Kokkos::Experimental::sort_by_key(space, kd, perm);
+  Kokkos::View<float*, CpMem> pl = prevLambda;
+  Kokkos::View<float* [3], CpMem> plt = prevLambdaT;
+  Kokkos::parallel_for(
+      "peclet::dem::commit_gather", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int i) {
+        const int j = perm(i);
+        pl(i) = lambda(j);
+        plt(i, 0) = lambdaT(j, 0);
+        plt(i, 1) = lambdaT(j, 1);
+        plt(i, 2) = lambdaT(j, 2);
+      });
   space.fence();
 }
 
@@ -286,6 +313,7 @@ KOKKOS_INLINE_FUNCTION ManifoldC transformContact(const ContactC& c) {
   // to the (count-averaged) velocity solve. Zero / -1 sentinel for body-body & static planes.
   m.wallVel_sum = F4{c.boundaryVel.x, c.boundaryVel.y, c.boundaryVel.z, 0.0f};
   m.restitution_sum = c.boundaryRestitution;
+  m.friction_sum = c.boundaryFriction;
   return m;
 }
 
@@ -371,6 +399,7 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
         Kokkos::atomic_add(&out(s).wallVel_sum.y, m.wallVel_sum.y);
         Kokkos::atomic_add(&out(s).wallVel_sum.z, m.wallVel_sum.z);
         Kokkos::atomic_add(&out(s).restitution_sum, m.restitution_sum);
+        Kokkos::atomic_add(&out(s).friction_sum, m.friction_sum);
       });
   // Optional contact -> manifold slot map (PGS friction bound reads lambdaAcc through it).
   if (contactSlot.extent(0) >= (size_t)n) {

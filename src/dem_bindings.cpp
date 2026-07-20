@@ -132,6 +132,10 @@ NB_MODULE(_dem, m) {
            "Enable a Berendsen-style velocity thermostat (target temperature, coupling time tau).")
       .def("set_solver_iterations", &Simulation::setSolverIterations, nb::arg("pos"),
            nb::arg("vel"), "Set the XPBD position- and velocity-solve iteration counts.")
+      .def("set_stabilization", &Simulation::setStabilization, nb::arg("enabled"),
+           "Enable/disable the one-sided grounded stabilization pass of the staged velocity "
+           "solve (default True). Off = pure momentum-conserving PGS everywhere: exact ballistic "
+           "response, but a deep static column mid-collapse cannot be arrested.")
       .def("set_velocity_use_gs", &Simulation::setVelocityUseGS, nb::arg("use_gs"),
            "Select the single-GPU restitution solve: True (default) = colored Gauss–Seidel "
            "(correct multi-contact dissipation), False = count-averaged Jacobi (legacy).")

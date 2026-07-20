@@ -435,7 +435,7 @@ inline void computeSideFlagsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
                                    Kokkos::View<const float* [3], CpMem> posPred,
                                    Kokkos::View<const float* [3], CpMem> velPred, F3 gHat,
                                    float riseThr, Kokkos::View<unsigned char*, CpMem> sideFlag,
-                                   Kokkos::View<float*, CpMem> lambdaAcc) {
+                                   Kokkos::View<const float*, CpMem> vn0, float approachThr) {
   using detail::ld3;
   CpExec space;
   Kokkos::parallel_for(
@@ -446,6 +446,13 @@ inline void computeSideFlagsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
         const ManifoldC m = manifolds(idx);
         if (m.num_points <= 0 || m.bodyB < 0 || wasPersistent == 0)
           return;
+        // BALLISTIC GATE: one-sided grounding is a statics device -- a pair whose pre-solve
+        // relative normal speed exceeds the quasi-static scale (a few substeps of free fall)
+        // is shock-loaded or shearing and must stay momentum-conserving. Without this, a fast
+        // impactor meets an infinite-mass bed (measured: a 5 m/s ball stops at the surface of a
+        // 25k bed) and flowing regions over-resist (silo discharge -24%).
+        if (Kokkos::fabs(vn0(idx)) > approachThr)
+          return;
         const int realA = realIdx(m.bodyA), realB = realIdx(m.bodyB);
         if (realA > realB)
           return;  // periodic dedup
@@ -454,11 +461,9 @@ inline void computeSideFlagsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
         const float thr = 0.3f * Kokkos::sqrt(dot3(dx, dx));
         if (up > thr && -dot3(ld3(velPred, realB), gHat) <= riseThr && grounded(realB) > 0) {
           sideFlag(idx) = 1;
-          lambdaAcc(idx) = 0.0f;
         } else if (up < -thr && -dot3(ld3(velPred, realA), gHat) <= riseThr &&
                    grounded(realA) > 0) {
           sideFlag(idx) = 2;
-          lambdaAcc(idx) = 0.0f;
         }
       });
   space.fence();
@@ -472,14 +477,17 @@ inline void warmStartApplyKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds
                                  Kokkos::View<float* [3], CpMem> velPred,
                                  Kokkos::View<float* [3], CpMem> angVelPred,
                                  Kokkos::View<const int*, CpMem> realIdx,
-                                 Kokkos::View<const float*, CpMem> warmP) {
+                                 Kokkos::View<const float*, CpMem> warmP,
+                                 Kokkos::View<float* [3], CpMem> warmT) {
   using detail::ld3;
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::pgs_warm_apply", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
       KOKKOS_LAMBDA(int idx) {
         const float p = warmP(idx);
-        if (p == 0.0f)
+        F3 lt{warmT(idx, 0), warmT(idx, 1), warmT(idx, 2)};
+        const bool hasT = (lt.x != 0.0f || lt.y != 0.0f || lt.z != 0.0f);
+        if (p == 0.0f && !hasT)
           return;
         const ManifoldC m = manifolds(idx);
         if (m.num_points <= 0)
@@ -528,6 +536,45 @@ inline void warmStartApplyKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds
           Kokkos::atomic_add(&angVelPred(realB, 1), dww.y);
           Kokkos::atomic_add(&angVelPred(realB, 2), dww.z);
         }
+        // Tangential warm impulse: project the stored world-frame accumulator onto the CURRENT
+        // tangent plane (the normal moved a little between substeps), write it back so the sweep
+        // accumulator starts consistent, then apply +lt on A / -lt on B at the averaged arms.
+        if (hasT) {
+          const float lenN2 = Kokkos::sqrt(dot3(Nsum, Nsum));
+          if (lenN2 > 1e-9f) {
+            const F3 nhat = scale3(Nsum, 1.0f / lenN2);
+            lt = sub3(lt, scale3(nhat, dot3(lt, nhat)));
+          }
+          warmT(idx, 0) = lt.x;
+          warmT(idx, 1) = lt.y;
+          warmT(idx, 2) = lt.z;
+          Kokkos::atomic_add(&velPred(realA, 0), lt.x * invMassA);
+          Kokkos::atomic_add(&velPred(realA, 1), lt.y * invMassA);
+          Kokkos::atomic_add(&velPred(realA, 2), lt.z * invMassA);
+          {
+            const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
+            const F3 Jl = invRotateVector(qA, cross3v(rAavg, lt));
+            const F3 invIA = ld3(invInertia, realA);
+            const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
+            const F3 dww = rotateVector(qA, dwl);
+            Kokkos::atomic_add(&angVelPred(realA, 0), dww.x);
+            Kokkos::atomic_add(&angVelPred(realA, 1), dww.y);
+            Kokkos::atomic_add(&angVelPred(realA, 2), dww.z);
+          }
+          if (idB >= 0) {
+            Kokkos::atomic_add(&velPred(realB, 0), -lt.x * invMassB);
+            Kokkos::atomic_add(&velPred(realB, 1), -lt.y * invMassB);
+            Kokkos::atomic_add(&velPred(realB, 2), -lt.z * invMassB);
+            const F4 qB = F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)};
+            const F3 Jl = invRotateVector(qB, cross3v(rBavg, scale3(lt, -1.0f)));
+            const F3 invIB = ld3(invInertia, realB);
+            const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
+            const F3 dww = rotateVector(qB, dwl);
+            Kokkos::atomic_add(&angVelPred(realB, 0), dww.x);
+            Kokkos::atomic_add(&angVelPred(realB, 1), dww.y);
+            Kokkos::atomic_add(&angVelPred(realB, 2), dww.z);
+          }
+        }
       });
   space.fence();
 }
@@ -548,7 +595,9 @@ inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
                                    Kokkos::View<float, CpMem> maxApproach,
                                    Kokkos::View<float*, CpMem> lambdaAcc,
                                    Kokkos::View<const float*, CpMem> vn0,
-                                   Kokkos::View<const unsigned char*, CpMem> sideFlag) {
+                                   Kokkos::View<const unsigned char*, CpMem> sideFlag,
+                                   Kokkos::View<float* [3], CpMem> lambdaT,
+                                   float frictionDynamic) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -633,8 +682,7 @@ inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
           if (pNew < 0.0f)
             pNew = 0.0f;
           const float dApplied = pNew - pOld;
-          if (dApplied == 0.0f)
-            return;
+          if (dApplied != 0.0f) {
           lambdaAcc(idx) = pNew;
           Kokkos::atomic_max(&maxApproach(), Kokkos::fabs(dApplied) * wTotal / lenN);
           const float lambda = -sgn * dApplied;
@@ -664,6 +712,90 @@ inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
             angVelPred(realB, 0) += dww.x;
             angVelPred(realB, 1) += dww.y;
             angVelPred(realB, 2) += dww.z;
+          }
+          }  // dApplied != 0
+
+          // ---- Friction cone (sequential tangential impulse) ----
+          // Accumulated world-frame tangential impulse lambdaT on body A, updated by the same
+          // colored nonlinear GS: incremental impulse -vt/w_t along the current slip direction,
+          // then projection onto the Coulomb disc |lambdaT| <= mu * lambdaN (physical impulse:
+          // the normal accumulator is scaled by |Nsum|). Static stick falls out naturally: at
+          // vt = 0 the accumulator holds whatever tangential load the cone admits. Sidedness
+          // mirrors the normal solve (a held side neither moves nor adds compliance).
+          {
+            float mu = frictionDynamic;
+            const float fa = m.friction_sum * invN;
+            if (fa >= 0.0f)
+              mu = fa;
+            F3 ltOld{lambdaT(idx, 0), lambdaT(idx, 1), lambdaT(idx, 2)};
+            const bool haveOld =
+                (ltOld.x != 0.0f || ltOld.y != 0.0f || ltOld.z != 0.0f);
+            if (mu > 0.0f || haveOld) {
+              const F3 nhat = scale3(Nsum, 1.0f / lenN);
+              const F3 vA2 = ld3(velPred, realA), wA2 = ld3(angVelPred, realA);
+              F3 vB2{0, 0, 0}, wB2{0, 0, 0};
+              if (idB >= 0) {
+                vB2 = ld3(velPred, realB);
+                wB2 = ld3(angVelPred, realB);
+              } else {
+                vB2 = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+              }
+              const F3 vrel = sub3(add3(vA2, cross3v(wA2, rAavg)),
+                                   add3(vB2, cross3v(wB2, rBavg)));
+              const F3 vt = sub3(vrel, scale3(nhat, dot3(vrel, nhat)));
+              const float vtLen = Kokkos::sqrt(dot3(vt, vt));
+              F3 ltNew = ltOld;
+              float wT = invMassA + invMassB;
+              if (vtLen > 1e-9f) {
+                const F3 that = scale3(vt, 1.0f / vtLen);
+                float wAt =
+                    (sf == 2) ? 0.0f
+                              : invMassA + genInvMass(cross3v(rAavg, that), invIA, qA);
+                float wBt = (sf == 1 || idB < 0)
+                                ? 0.0f
+                                : invMassB + genInvMass(cross3v(rBavg, that), invIB, qB);
+                wT = wAt + wBt;
+                if (wT > 1e-9f)
+                  ltNew = add3(ltOld, scale3(that, -vtLen / wT));
+              }
+              ltNew = sub3(ltNew, scale3(nhat, dot3(ltNew, nhat)));
+              const float bound = mu * Kokkos::fmax(lambdaAcc(idx), 0.0f) * lenN;
+              const float ltLen = Kokkos::sqrt(dot3(ltNew, ltNew));
+              if (ltLen > bound)
+                ltNew = (bound > 0.0f) ? scale3(ltNew, bound / ltLen) : F3{0, 0, 0};
+              const F3 dApp = sub3(ltNew, ltOld);
+              if (dApp.x != 0.0f || dApp.y != 0.0f || dApp.z != 0.0f) {
+                lambdaT(idx, 0) = ltNew.x;
+                lambdaT(idx, 1) = ltNew.y;
+                lambdaT(idx, 2) = ltNew.z;
+                const float dLen = Kokkos::sqrt(dot3(dApp, dApp));
+                if (wT > 1e-9f)
+                  Kokkos::atomic_max(&maxApproach(), dLen * wT);
+                if (applyA) {
+                  velPred(realA, 0) += dApp.x * invMassA;
+                  velPred(realA, 1) += dApp.y * invMassA;
+                  velPred(realA, 2) += dApp.z * invMassA;
+                  const F3 Jl = invRotateVector(qA, cross3v(rAavg, dApp));
+                  const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
+                  const F3 dww = rotateVector(qA, dwl);
+                  angVelPred(realA, 0) += dww.x;
+                  angVelPred(realA, 1) += dww.y;
+                  angVelPred(realA, 2) += dww.z;
+                }
+                if (idB >= 0 && applyB) {
+                  velPred(realB, 0) += -dApp.x * invMassB;
+                  velPred(realB, 1) += -dApp.y * invMassB;
+                  velPred(realB, 2) += -dApp.z * invMassB;
+                  const F3 Jl =
+                      invRotateVector(qB, cross3v(rBavg, scale3(dApp, -1.0f)));
+                  const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
+                  const F3 dww = rotateVector(qB, dwl);
+                  angVelPred(realB, 0) += dww.x;
+                  angVelPred(realB, 1) += dww.y;
+                  angVelPred(realB, 2) += dww.z;
+                }
+              }
+            }
           }
         });
   }

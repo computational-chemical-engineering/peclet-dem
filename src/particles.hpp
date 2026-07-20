@@ -75,6 +75,16 @@ struct Particles {
   Kokkos::View<float*, CpMem> lambdaAcc;
   Kokkos::View<float*, CpMem> prevLambda;
   Kokkos::View<float*, CpMem> vn0;
+  // Friction-cone PGS: per-manifold accumulated tangential impulse (world frame, kept in the
+  // contact tangent plane by projection) and the previous substep's converged values (sorted
+  // alongside prevPairKeys for the warm-start gather). |lambdaT| <= mu * lambdaAcc at all times.
+  Kokkos::View<float* [3], CpMem> lambdaT;
+  Kokkos::View<float* [3], CpMem> prevLambdaT;
+  // Side flags for the STABILIZATION pass (0 = symmetric): zeroed for the main momentum-
+  // conserving sweeps, filled from persistence+grounding only if statics fail to converge.
+  Kokkos::View<unsigned char*, CpMem> sideFlags;
+  // One-sided grounded stabilization pass (Phase B of the staged velocity solve); see sim.hpp.
+  bool stabilization = true;
   // Per-particle material id + flat pair-material table [kMaxMaterials^2 * 2] of (restitution,
   // friction) rows; zero-length pairMaterials = feature off (global material everywhere).
   Kokkos::View<unsigned char*, CpMem> materialId;
@@ -166,6 +176,9 @@ struct Particles {
     groundedLevel = Kokkos::View<unsigned char*, CpMem>("groundedLevel", cap);
     materialId = Kokkos::View<unsigned char*, CpMem>("materialId", cap);
     lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", maxContacts);
+    lambdaT = Kokkos::View<float* [3], CpMem>("lambdaT", maxContacts);
+    sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", maxContacts);
+    prevLambdaT = Kokkos::View<float* [3], CpMem>("prevLambdaT", maxContacts);
     contactSlot = Kokkos::View<int*, CpMem>("contactSlot", maxContacts);
     prevLambda = Kokkos::View<float*, CpMem>("prevLambda", maxContacts);
     vn0 = Kokkos::View<float*, CpMem>("vn0", maxContacts);

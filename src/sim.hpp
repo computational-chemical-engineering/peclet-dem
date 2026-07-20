@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <Kokkos_Core.hpp>
 #include <memory>
@@ -163,7 +164,9 @@ inline void demStep(Particles& P) {
 
   // A frictional wall drives friction even when the body-body material is frictionless.
   const bool friction = (P.frictionDynamic > 0.0f || P.wallFrictionMax > 0.0f);
-  if (friction)
+  const bool usePersistPre = (P.gravity.x != 0.0f || P.gravity.y != 0.0f || P.gravity.z != 0.0f);
+  const bool legacyFriction = friction && !(usePersistPre && P.velocityUseGS);
+  if (legacyFriction)
     computePlaneLoadKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
                            P.planeFriction);
 
@@ -193,23 +196,26 @@ inline void demStep(Particles& P) {
                              : F3{0, 0, 0};
   if (usePGS) {
     gatherWarmLambdaKokkos(P.manifolds, nm, P.realIndices, P.prevPairKeys, P.prevLambda,
-                           P.prevPairCount, P.pairKeys, P.lambdaAcc);
+                           P.prevLambdaT, P.prevPairCount, P.pairKeys, P.lambdaAcc, P.lambdaT);
     markPersistentManifoldsKokkos(P.manifolds, nm, P.realIndices, P.prevPairKeys, P.prevPairCount,
                                   P.pairKeys, P.manifoldPersistent);
     updateGroundedLevelsKokkos(P.manifolds, nm, P.realIndices, P.posPred, gHat, P.groundedLevel,
                                P.numReal, /*sweeps*/ 8, /*decay*/ 8);
-    // Decide sidedness once (also zeroes warm impulses on one-sided contacts), THEN record the
-    // restitution bias and apply the remaining (symmetric) warm impulses.
-    computeSideFlagsKokkos(P.manifolds, nm, P.realIndices,
-                           Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent),
-                           Kokkos::View<const unsigned char*, CpMem>(P.groundedLevel), P.posPred,
-                           P.velPred, gHat, 8.0f * P.dt * gMagP, P.manifoldPersistent, P.lambdaAcc);
+    // STAGED SOLVE (Guendelman): the main sweeps are fully momentum-conserving (side flags all
+    // zero) -- ballistic impact, discharge and shear see correct physics. One-sided grounding is
+    // reserved for the STABILIZATION pass below, which runs only if the main sweeps leave an
+    // unconverged residual (a deep column mid-collapse that symmetric GS cannot arrest within the
+    // iteration budget).
+    {
+      auto flags = Kokkos::subview(P.sideFlags, Kokkos::pair<int, int>(0, nm));
+      Kokkos::deep_copy(flags, static_cast<unsigned char>(0));
+    }
     computeVn0Kokkos(P.manifolds, nm, P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.vn0);
     warmStartApplyKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                         P.realIndices, P.lambdaAcc);
+                         P.realIndices, P.lambdaAcc, P.lambdaT);
   }
   for (int it = 0; it < P.velocityIterations; ++it) {
-    if (friction)
+    if (legacyFriction)
       accumulateNormalImpulseKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred,
                                     P.angVelPred, P.realIndices, P.growthRate);
     // Restitution threshold ~ the speed one substep of free fall gains: below it a contact is
@@ -223,7 +229,8 @@ inline void demStep(Particles& P) {
         solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia,
                                P.quat, P.velPred, P.angVelPred, P.realIndices, P.growthRate,
                                P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
-                               Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent));
+                               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
+                               P.lambdaT, P.frictionDynamic);
       else
         solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
                                      P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
@@ -256,19 +263,41 @@ inline void demStep(Particles& P) {
                                         P.deltaAngVel, P.constraintCounts);
     }
   }
+  // STABILIZATION PASS: if the symmetric sweeps could not drain the residual (a collapsing
+  // column needs ~one sweep per layer to carry its weight to the floor -- unaffordable), arrest
+  // the remaining quasi-static approach with grounded one-sided sweeps. In dynamic scenes the
+  // residual is below the threshold and this pass never runs, so impact/discharge/shear keep
+  // pure momentum-conserving physics. (PECLET_DEM_SYMMETRIC_PGS=1 disables the pass -- sandbox
+  // A/B toggle.)
+  if (usePGS) {
+    const float vRestS = 2.0f * P.dt * gMagP;
+    if (P.stabilization && readFloat(P.maxApproach) > vRestS) {
+      computeSideFlagsKokkos(P.manifolds, nm, P.realIndices,
+                             Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent),
+                             Kokkos::View<const unsigned char*, CpMem>(P.groundedLevel), P.posPred,
+                             P.velPred, gHat, 8.0f * P.dt * gMagP, P.sideFlags, P.vn0,
+                             8.0f * P.dt * gMagP);
+      // Arrest budget: 2x the main budget -- the pass must out-pace a violent collapse, and it
+      // only ever runs when the residual says one is happening (adaptive stop ends it early).
+      for (int it = 0; it < 2 * P.velocityIterations; ++it) {
+        Kokkos::deep_copy(P.maxApproach, 0.0f);
+        solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
+                               P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
+                               P.growthRate, P.restitutionNormal, vRestS, P.maxApproach,
+                               P.lambdaAcc, P.vn0,
+                               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+                               P.frictionDynamic);
+        if (readFloat(P.maxApproach) <= vRestS)
+          break;
+      }
+    }
+  }
   if (usePGS) {  // save the converged force network for next substep's warm start
-    commitPairKeysLambdaKokkos(P.pairKeys, P.lambdaAcc, P.prevPairKeys, P.prevLambda, nm);
+    commitPairKeysLambdaKokkos(P.pairKeys, P.lambdaAcc, P.lambdaT, P.prevPairKeys, P.prevLambda,
+                               P.prevLambdaT, nm);
     P.prevPairCount = nm;
   }
-  if (friction && usePGS) {
-    // The legacy approach-velocity friction bound is ~0 once the warm start has cancelled the
-    // approaches (accumulateNormalImpulseKokkos sees a converged network) -- rebound each contact
-    // by its manifold's converged PGS impulse instead, shared equally over the manifold's points.
-    // Periodic-ghost duplicate manifolds carry lambda 0 (their canonical twin holds it) -- their
-    // contacts lose friction; acceptable for containers, revisit for periodic boxes.
-    frictionBoundFromLambdaKokkos(P.contacts, nc, P.contactSlot, P.manifolds, P.lambdaAcc);
-  }
-  if (friction) {
+  if (legacyFriction) {
     countFrictionContactsKokkos(P.contacts, nc, P.realIndices, P.planeFriction);
     solveContactFrictionKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
                                P.realIndices, P.planeFriction, P.frictionDynamic, P.deltaVel,
@@ -748,6 +777,10 @@ class Simulation {
   // Select the single-GPU collision solves: true (default) = colored Gauss–Seidel for both the
   // restitution and the overlap solve, false = count-averaged Jacobi (legacy). For A/B validation.
   void setVelocityUseGS(bool useGS) { P_.velocityUseGS = useGS; }
+  /// Enable/disable the one-sided grounded stabilization pass (default on). Off = pure
+  /// momentum-conserving PGS everywhere -- exact ballistic response, but deep static columns
+  /// mid-collapse cannot be arrested within the iteration budget.
+  void setStabilization(bool enabled) { P_.stabilization = enabled; }
   void setGlobalScale(float s) {
     P_.globalScale = s;
     P_.skin = 0.1f * s;
