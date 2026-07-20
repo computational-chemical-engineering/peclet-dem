@@ -93,8 +93,9 @@ inline void solveVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         // (count-averaged over the contact patch) so restitution is against the wall's motion, and
         // its own restitution (a < 0 average keeps the global material — planes, body-body).
         float restitution = restitutionNormal;
-        if (idB < 0) {
+        if (idB < 0)
           vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+        {  // per-wall AND per-pair material override (a < 0 average keeps the global material)
           const float ra = m.restitution_sum * invN;
           if (ra >= 0.0f)
             restitution = ra;
@@ -578,6 +579,8 @@ inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
             wB = ld3(angVelPred, realB);
           } else {
             vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+          }
+          {  // per-wall AND per-pair material override (a < 0 average keeps the global material)
             const float ra = m.restitution_sum * invN;
             if (ra >= 0.0f)
               restitution = ra;
@@ -728,8 +731,9 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
           const float invN = 1.0f / static_cast<float>(m.num_points);
 
           float restitution = restitutionNormal;
-          if (idB < 0) {
+          if (idB < 0)
             vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+          {  // per-wall AND per-pair material override (a < 0 average keeps the global material)
             const float ra = m.restitution_sum * invN;
             if (ra >= 0.0f)
               restitution = ra;

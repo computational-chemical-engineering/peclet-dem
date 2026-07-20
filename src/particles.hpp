@@ -75,6 +75,11 @@ struct Particles {
   Kokkos::View<float*, CpMem> lambdaAcc;
   Kokkos::View<float*, CpMem> prevLambda;
   Kokkos::View<float*, CpMem> vn0;
+  // Per-particle material id + flat pair-material table [kMaxMaterials^2 * 2] of (restitution,
+  // friction) rows; zero-length pairMaterials = feature off (global material everywhere).
+  Kokkos::View<unsigned char*, CpMem> materialId;
+  Kokkos::View<float*, CpMem> pairMaterials;
+  Kokkos::View<int*, CpMem> contactSlot;  // contact -> manifold slot (PGS friction bound)
   Kokkos::View<int*, CpMem> contactColor;       // per-contact colour (position solve)
   // Per-body round-winner key for the colouring arbitration. 64-bit: hashed-random priority in the
   // high word (splitmix32 of the edge index), the unique edge index in the low word. Random
@@ -159,7 +164,9 @@ struct Particles {
     bodyWinner = Kokkos::View<long long*, CpMem>("bodyWinner", cap);
     bodyColorMask = Kokkos::View<std::uint64_t*, CpMem>("bodyColorMask", cap);
     groundedLevel = Kokkos::View<unsigned char*, CpMem>("groundedLevel", cap);
+    materialId = Kokkos::View<unsigned char*, CpMem>("materialId", cap);
     lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", maxContacts);
+    contactSlot = Kokkos::View<int*, CpMem>("contactSlot", maxContacts);
     prevLambda = Kokkos::View<float*, CpMem>("prevLambda", maxContacts);
     vn0 = Kokkos::View<float*, CpMem>("vn0", maxContacts);
     pairCount = Kokkos::View<int, CpMem>("pairCount");

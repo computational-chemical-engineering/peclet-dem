@@ -141,6 +141,16 @@ NB_MODULE(_dem, m) {
       .def("set_material_params", &Simulation::setMaterialParams, nb::arg("restitution_normal"),
            nb::arg("restitution_tangent") = 0.0f, nb::arg("friction") = 0.0f,
            "Set normal/tangential restitution and the Coulomb friction coefficient.")
+      .def("set_material_ids", &Simulation::setMaterialIds, nb::arg("ids"),
+           "Per-particle material ids (0..7). Pair (e, mu) values come from set_pair_material; "
+           "without any set_pair_material call the global material applies everywhere.")
+      .def("set_pair_material", &Simulation::setPairMaterial, nb::arg("a"), nb::arg("b"),
+           nb::arg("restitution"), nb::arg("friction"),
+           "Symmetric pair material (restitution, friction) for material ids (a, b). The first "
+           "call seeds every pair from the current global material.")
+      .def("set_wall_material_id", &Simulation::setWallMaterialId, nb::arg("wid"), nb::arg("mat"),
+           "Give an SDF wall a material id so particle-wall (e, mu) resolves via the pair table "
+           "instead of the wall's binary material.")
       .def("add_plane", &Simulation::addPlane, "Add a boundary wall plane (px,py,pz, nx,ny,nz).")
       // CUDA-API overload: add_plane(point, normal) as 3-sequences.
       .def(

@@ -293,7 +293,8 @@ KOKKOS_INLINE_FUNCTION ManifoldC transformContact(const ContactC& c) {
 /// least the number of unique pairs; returns that count (also written to outCount).
 inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, int n,
                                            Kokkos::View<ManifoldC*, CpMem> outManifolds,
-                                           Kokkos::View<int, CpMem> outCount) {
+                                           Kokkos::View<int, CpMem> outCount,
+                                           Kokkos::View<int*, CpMem> contactSlot = {}) {
   CpExec space;
   if (n == 0) {
     Kokkos::deep_copy(space, outCount, 0);
@@ -371,10 +372,38 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
         Kokkos::atomic_add(&out(s).wallVel_sum.z, m.wallVel_sum.z);
         Kokkos::atomic_add(&out(s).restitution_sum, m.restitution_sum);
       });
+  // Optional contact -> manifold slot map (PGS friction bound reads lambdaAcc through it).
+  if (contactSlot.extent(0) >= (size_t)n) {
+    Kokkos::View<int*, CpMem> cs = contactSlot;
+    Kokkos::parallel_for(
+        "peclet::dem::cp::slotmap", Kokkos::RangePolicy<CpExec>(space, 0, n),
+        KOKKOS_LAMBDA(int p) { cs(pm(p)) = sid(p); });
+  }
   space.fence();
 
   Kokkos::deep_copy(space, outCount, numSeg);
   return numSeg;
+}
+
+
+/// PGS friction bound: overwrite each contact's friction_lambda_n with its manifold's converged
+/// PGS push impulse (lambdaAcc, shared equally over the manifold's contact points). The legacy
+/// accumulateNormalImpulse bound derives from approach velocities, which the PGS warm start has
+/// already cancelled -- without this the Coulomb bound is ~0 and friction is inert.
+inline void frictionBoundFromLambdaKokkos(Kokkos::View<ContactC*, CpMem> contacts, int numContacts,
+                                          Kokkos::View<const int*, CpMem> contactSlot,
+                                          Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                          Kokkos::View<const float*, CpMem> lambdaAcc) {
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::cp::pgs_friction_bound", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
+      KOKKOS_LAMBDA(int i) {
+        const int s = contactSlot(i);
+        const ManifoldC m = manifolds(s);
+        const int np = (m.num_points > 0) ? m.num_points : 1;
+        contacts(i).friction_lambda_n = lambdaAcc(s) / static_cast<float>(np);
+      });
+  space.fence();
 }
 
 }  // namespace peclet::dem

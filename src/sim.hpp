@@ -147,17 +147,18 @@ inline void demStep(Particles& P) {
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
-                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid);
+                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid,
+                       P.materialId, P.pairMaterials);
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                        P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
                        P.maxOverlap);
   if (P.numWalls > 0)
     detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                         P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
-                        P.contactCount, P.maxOverlap);
+                        P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials);
   const int nc = readInt(P.contactCount);
 
-  reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount);
+  reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot);
   const int nm = readInt(P.manifoldCount);
 
   // A frictional wall drives friction even when the body-body material is frictionless.
@@ -259,6 +260,14 @@ inline void demStep(Particles& P) {
     commitPairKeysLambdaKokkos(P.pairKeys, P.lambdaAcc, P.prevPairKeys, P.prevLambda, nm);
     P.prevPairCount = nm;
   }
+  if (friction && usePGS) {
+    // The legacy approach-velocity friction bound is ~0 once the warm start has cancelled the
+    // approaches (accumulateNormalImpulseKokkos sees a converged network) -- rebound each contact
+    // by its manifold's converged PGS impulse instead, shared equally over the manifold's points.
+    // Periodic-ghost duplicate manifolds carry lambda 0 (their canonical twin holds it) -- their
+    // contacts lose friction; acceptable for containers, revisit for periodic boxes.
+    frictionBoundFromLambdaKokkos(P.contacts, nc, P.contactSlot, P.manifolds, P.lambdaAcc);
+  }
   if (friction) {
     countFrictionContactsKokkos(P.contacts, nc, P.realIndices, P.planeFriction);
     solveContactFrictionKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
@@ -352,14 +361,15 @@ inline float computeOverlapsKokkos(Particles& P) {
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
-                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid);
+                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid,
+                       P.materialId, P.pairMaterials);
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                        P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
                        P.maxOverlap);
   if (P.numWalls > 0)
     detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                         P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
-                        P.contactCount, P.maxOverlap);
+                        P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials);
   P.numParticles = P.numReal;
   float h;
   Kokkos::deep_copy(h, P.maxOverlap);
@@ -431,14 +441,15 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
-                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid);
+                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid,
+                       P.materialId, P.pairMaterials);
   detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                        P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
                        P.maxOverlap);
   if (P.numWalls > 0)
     detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
                         P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
-                        P.contactCount, P.maxOverlap);
+                        P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials);
   const int nc = readInt(P.contactCount);
 
   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount);
@@ -749,6 +760,48 @@ class Simulation {
     P_.restitutionNormal = restitution_normal;
     P_.frictionDynamic = friction;
     (void)restitution_tangent;
+  }
+  /// Per-particle material ids (0..kMaxMaterials-1); pair (e, mu) values come from
+  /// setPairMaterial. Ids default to 0; without any setPairMaterial call the global material
+  /// applies everywhere.
+  void setMaterialIds(const std::vector<int>& ids) {
+    auto h = Kokkos::create_mirror_view(P_.materialId);
+    Kokkos::deep_copy(h, P_.materialId);
+    for (int i = 0; i < P_.numReal && i < (int)ids.size(); ++i)
+      h(i) = static_cast<unsigned char>(ids[i]);
+    Kokkos::deep_copy(P_.materialId, h);
+  }
+  /// Set the symmetric pair material (restitution, friction) for material ids (a, b). The first
+  /// call allocates the pair table, initialised from the current global material for every pair.
+  void setPairMaterial(int a, int b, float restitution, float friction) {
+    if (a < 0 || b < 0 || a >= kMaxMaterials || b >= kMaxMaterials)
+      throw std::invalid_argument("material id out of range");
+    if (P_.pairMaterials.extent(0) == 0) {
+      P_.pairMaterials =
+          Kokkos::View<float*, CpMem>("pairMaterials", kMaxMaterials * kMaxMaterials * 2);
+      auto h0 = Kokkos::create_mirror_view(P_.pairMaterials);
+      for (int i = 0; i < kMaxMaterials * kMaxMaterials; ++i) {
+        h0(2 * i) = P_.restitutionNormal;
+        h0(2 * i + 1) = P_.frictionDynamic;
+      }
+      Kokkos::deep_copy(P_.pairMaterials, h0);
+    }
+    auto h = Kokkos::create_mirror_view(P_.pairMaterials);
+    Kokkos::deep_copy(h, P_.pairMaterials);
+    for (auto xy : {std::pair<int, int>{a, b}, std::pair<int, int>{b, a}}) {
+      h((xy.first * kMaxMaterials + xy.second) * 2) = restitution;
+      h((xy.first * kMaxMaterials + xy.second) * 2 + 1) = friction;
+    }
+    Kokkos::deep_copy(P_.pairMaterials, h);
+  }
+  /// Give an SDF wall a material id so particle-wall (e, mu) also resolves via the pair table.
+  void setWallMaterialId(int wid, int mat) {
+    if (wid < 0 || wid >= P_.numWalls)
+      throw std::invalid_argument("wall index out of range");
+    auto h = Kokkos::create_mirror_view(P_.walls);
+    Kokkos::deep_copy(h, P_.walls);
+    h(wid).materialId = mat;
+    Kokkos::deep_copy(P_.walls, h);
   }
   void addPlane(float px, float py, float pz, float nx, float ny, float nz) {
     auto h = Kokkos::create_mirror_view(P_.planes);

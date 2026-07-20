@@ -70,7 +70,15 @@ struct WallSdf {
   // binary particle–wall material (independent of the body-body material).
   float restitution = 0.0f;
   float friction = 0.0f;
+  // Optional material id: >= 0 and a pair table set -> particle-wall (e, mu) comes from the
+  // pair table row (materialId(particle), materialId) instead of the binary values above.
+  int materialId = -1;
 };
+
+/// Pair-material lookup: flat [K*K*2] table, entry ((a*K + b)*2) = restitution, +1 = friction.
+constexpr int kMaxMaterials = 8;
+using PairTableView = Kokkos::View<const float*, CpMem>;
+using MatIdView = Kokkos::View<const unsigned char*, CpMem>;
 
 // Convenience aliases for the SoA particle views the narrow-phase reads.
 using PosView = Kokkos::View<const float* [3], CpMem>;
@@ -174,7 +182,8 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
                                  float globalScale, float margin,
                                  Kokkos::View<ContactC*, CpMem> outContacts,
                                  Kokkos::View<int, CpMem> outCount,
-                                 Kokkos::View<float, CpMem> maxOverlap, GridView sdfGrid = GridView{}) {
+                                 Kokkos::View<float, CpMem> maxOverlap, GridView sdfGrid = GridView{},
+                                 MatIdView matId = MatIdView{}, PairTableView pairTable = PairTableView{}) {
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
@@ -247,6 +256,11 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
           c.dist = effDist;
           c.friction_lambda_n = 0.0f;
           c.weight = 0.0f;
+          if (pairTable.extent(0) > 0) {  // per-pair body-body material
+            const int t = (int(matId(idA)) * kMaxMaterials + int(matId(idB))) * 2;
+            c.boundaryRestitution = pairTable(t);
+            c.boundaryFriction = pairTable(t + 1);
+          }
           outContacts(slot) = c;
         }
       });
@@ -267,7 +281,8 @@ inline void detectWallSdfKokkos(int numReal, int numWalls, PosView pos, QuatView
                                 GridView wallGrid, float globalScale, float margin,
                                 Kokkos::View<ContactC*, CpMem> outContacts,
                                 Kokkos::View<int, CpMem> outCount,
-                                Kokkos::View<float, CpMem> maxOverlap) {
+                                Kokkos::View<float, CpMem> maxOverlap,
+                                MatIdView matId = MatIdView{}, PairTableView pairTable = PairTableView{}) {
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
@@ -336,8 +351,14 @@ inline void detectWallSdfKokkos(int numReal, int numWalls, PosView pos, QuatView
             c.friction_lambda_n = 0.0f;
             c.weight = 0.0f;
             c.boundaryVel = F4{vWall.x, vWall.y, vWall.z, 0.0f};
-            c.boundaryRestitution = w.restitution;
-            c.boundaryFriction = w.friction;
+            if (w.materialId >= 0 && pairTable.extent(0) > 0) {
+              const int t = (int(matId(i)) * kMaxMaterials + w.materialId) * 2;
+              c.boundaryRestitution = pairTable(t);
+              c.boundaryFriction = pairTable(t + 1);
+            } else {
+              c.boundaryRestitution = w.restitution;
+              c.boundaryFriction = w.friction;
+            }
             outContacts(slot) = c;
           }
         }

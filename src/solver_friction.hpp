@@ -193,9 +193,9 @@ inline void solveContactFrictionKokkos(
         const float nB = (idB >= 0) ? planeFriction(realB, 1) : 0.0f;
         const float inv_n = 1.0f / Kokkos::fmax(Kokkos::fmax(nA, nB), 1.0f);
         float lt = -vt_len / w_t;
-        // Per-wall friction for a boundary contact (a < 0 sentinel keeps the global material — planes
-        // and body-body); grain-grain contacts always use the global coefficient.
-        const float mu = (idB < 0 && c.boundaryFriction >= 0.0f) ? c.boundaryFriction : frictionDynamic;
+        // Per-wall AND per-pair friction (a < 0 sentinel keeps the global material — planes and
+        // body-body contacts without a pair table).
+        const float mu = (c.boundaryFriction >= 0.0f) ? c.boundaryFriction : frictionDynamic;
         const float maxf = mu * bound;
         if (lt < -maxf)
           lt = -maxf;
