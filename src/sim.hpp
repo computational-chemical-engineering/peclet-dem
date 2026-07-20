@@ -367,14 +367,22 @@ inline float computeOverlapsKokkos(Particles& P) {
 }
 
 #ifdef PECLET_DEM_MPI
-/// One distributed XPBD DEM substep (faithful port of Simulation::step_mpi). Identical to demStep
-/// EXCEPT: the periodic ghost generation is replaced by a cross-rank gather (halo.gather, ghosts
-/// carrying REAL mass), and the owners refresh their ghost copies (velPred/angVelPred, then
-/// posPred/quatPred) every `syncEvery` solver iterations (and the last). Each owned particle thus
-/// sees all its neighbours -- owned or ghost -- and computes its full serial delta locally; the
-/// ghost deltas land on self-mapped slots and are discarded. Mirrors the CUDA distributed scheme,
-/// which (like step_mpi) carries NO body-body friction passes -- the velocity solve is pure normal
-/// restitution. `forwardRotation`=false (spheres) skips the angular/quaternion forwards.
+/// One distributed XPBD DEM substep. The periodic ghost generation of the single-rank step is
+/// replaced by a cross-rank gather (halo.gather, ghosts carrying REAL mass), and the owners
+/// refresh their ghost copies (velPred/angVelPred, then posPred/quatPred) every `syncEvery`
+/// solver iterations (and the last). Each owned particle thus sees all its neighbours -- owned
+/// or ghost -- and computes its full serial delta locally; the ghost deltas land on self-mapped
+/// slots and are discarded. Friction (wall + body-body Coulomb) IS carried, same kernels as the
+/// single-rank step. `forwardRotation`=false (spheres) skips the angular/quaternion forwards.
+///
+/// SOLVER PARITY GAP (open): this path still runs the older count-averaged JACOBI velocity and
+/// position solves (solveVelocityKokkos/solvePositionKokkos). The newer single-rank solver stack
+/// -- graph-colored Gauss-Seidel (colorManifoldsKokkos + solveVelocityColoredGSKokkos /
+/// solvePositionColoredGSKokkos), warm-started PGS with persistent contacts
+/// (prevPairKeys/prevLambda), gravity statics (grounded shock propagation), and the adaptive
+/// stop -- is NOT wired in here, and MigratePack does not carry the persistent-contact state
+/// across a rebalance. Distributing that stack (rank-local coloring + the syncEvery ghost
+/// refresh) is the main remaining dem MPI work item.
 ///
 /// PERIODICITY: cross-rank ghosts supply the wrap on DECOMPOSED axes; LOCAL periodic self-ghosts
 /// (ParticleHalo build with includePeriodicSelf) supply it on UNDECOMPOSED periodic axes (a "x1"

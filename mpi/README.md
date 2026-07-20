@@ -39,13 +39,17 @@ sim.rebalance()                                          # force a load rebalanc
   `peclet::core::halo::ParticleHaloTopology<3>` (host topology + periodic image shift), `peclet::core::halo::ParticleHalo<3>`
   (on-device gather/scatter + host-staged MPI), `peclet::core::halo::ParticleMigrator`, and the
   weighted-ORB `particle_rebalance` path. Rebuilt each substep from the owned positions.
-- `src/sim.hpp` (`demStepMpi`) — the distributed substep. Identical to the single-rank `demStep` except
-  the periodic ghost generation is replaced by a cross-rank gather (ghosts carry **real** mass), and the
+- `src/sim.hpp` (`demStepMpi`) — the distributed substep. The periodic ghost generation of the
+  single-rank step is replaced by a cross-rank gather (ghosts carry **real** mass), and the
   owners refresh their ghost copies (velPred/angVelPred, then posPred/quatPred) every `sync_every`
   solver iterations (and the last). Each owned particle therefore sees all its neighbours — owned or
-  ghost — and computes its **full serial XPBD delta locally**; the ghost deltas land on self-mapped
-  slots and are discarded. Like the single-rank step's reference, `step_mpi` carries **no body-body
-  friction passes** — its velocity solve is pure normal restitution.
+  ghost — and computes its **full XPBD delta locally**; the ghost deltas land on self-mapped
+  slots and are discarded. Friction (wall + body-body Coulomb) **is** carried — same kernels as the
+  single-rank step. **Solver parity gap (open):** the velocity/position solves here are still the
+  older count-averaged **Jacobi** kernels; the newer single-rank stack (graph-colored Gauss–Seidel,
+  warm-started PGS with persistent contacts, gravity statics / grounded shock propagation, adaptive
+  stop) is not yet wired into the MPI path, and `MigratePack` does not carry persistent-contact
+  state across a rebalance.
 - **Periodicity:** cross-rank ghosts supply the wrap on *decomposed* axes; local periodic self-ghosts
   (the halo built with `includePeriodicSelf`) supply it on *undecomposed* periodic axes.
 
