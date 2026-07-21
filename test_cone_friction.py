@@ -139,6 +139,54 @@ rv, rw = roll_ratio()
 print(f"   v/v0 = {rv:.3f}  wr/v0 = {rw:.3f}  (theory 5/7 = {5/7:.3f})")
 assert abs(rv - 5 / 7) < 0.03 and abs(rw - 5 / 7) < 0.05
 
+def oblique(vx, vz, e=0.6, mu=0.4, beta=0.5, steps=400, dt=0.002):
+    """Sphere strikes a frictional floor obliquely with no spin: the Walton (e, mu, beta)
+    impact law in closed form. Stick regime ((2/7)(1+beta)|vx| <= mu(1+e)vz): post-impact
+    tangential SURFACE velocity u_t' = -beta*vx. Slide regime: vx' = vx - mu(1+e)vz."""
+    from peclet.dem import build_wall_sdf
+    r = 0.5
+    s = dem.Simulation(2)
+    s.set_sphere_shape(r)
+    lo, hi = (0, 0, -1.0), (40, 8, 12)
+    s.set_domain(lo, hi)
+    s.enable_periodicity(False, False, False)
+    wall = build_wall_sdf(lambda p: p[:, 2], (lo, hi), resolution=(64, 16, 24))
+    wall.add_to(s, restitution=e, friction=mu)
+    s.set_positions(np.array([[6, 4, 0.62]], np.float32))
+    s.set_scales_uniform(1.0)
+    s.set_inv_mass(np.ones(1, np.float32))
+    s.set_inv_inertia(np.full((1, 3), 1.0 / (0.4 * 1.0 * r * r), np.float32))
+    s.set_velocities(np.array([[vx, 0, -vz]], np.float32))
+    s.set_gravity(0.0, 0.0, -0.02)  # tiny: enables the PGS path, negligible over the bounce
+    s.set_material_params(e, beta, mu)
+    s.set_thermostat(0, 0)
+    s.set_solver_iterations(12, 8)
+    for _ in range(steps):
+        s.step(dt)
+    v = s.get_velocities()[0]
+    w = s.get_angular_velocities()[0]
+    return float(v[0]), float(v[2]), float(v[0] - w[1] * r)  # vx', vz', surface u_t'
+
+
+print("== 5. oblique impact: Walton (e, mu, beta) closed forms ==")
+e, mu, beta = 0.6, 0.4, 0.5
+# stick regime: vx/vz = 0.5 < 7*mu*(1+e)/(2*(1+beta)) = 1.49
+vxp, vzp, utp = oblique(1.0, 2.0, e, mu, beta)
+print(f"   stick: vz'={vzp:+.3f} (want {e*2.0:+.3f})  u_t'={utp:+.3f} (want {-beta*1.0:+.3f})  "
+      f"vx'={vxp:+.3f} (want {1.0*(1-(2/7)*(1+beta)):+.3f})")
+assert abs(vzp - e * 2.0) < 0.03
+assert abs(utp - (-beta * 1.0)) < 0.04
+assert abs(vxp - (1 - (2 / 7) * (1 + beta))) < 0.04
+# slide regime: vx/vz = 3 > 1.49 -> pure Coulomb: vx' = vx - mu(1+e)vz
+vxp, vzp, utp = oblique(6.0, 2.0, e, mu, beta)
+print(f"   slide: vz'={vzp:+.3f} (want {e*2.0:+.3f})  vx'={vxp:+.3f} (want {6.0-mu*(1+e)*2.0:+.3f})")
+assert abs(vzp - e * 2.0) < 0.03
+assert abs(vxp - (6.0 - mu * (1 + e) * 2.0)) < 0.06
+# beta = 0 reproduces the pre-beta model: u_t' = 0 in the stick regime
+vxp, vzp, utp = oblique(1.0, 2.0, e, mu, 0.0)
+print(f"   beta=0: u_t'={utp:+.3f} (want 0)  vx'={vxp:+.3f} (want {1.0*(1-2/7):+.3f})")
+assert abs(utp) < 0.03 and abs(vxp - (1 - 2 / 7)) < 0.04
+
 print("== 4. binary restitution with friction active ==")
 for e in (0.2, 0.8):
     ee = binary_e(e)

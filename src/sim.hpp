@@ -210,7 +210,8 @@ inline void demStep(Particles& P) {
       auto flags = Kokkos::subview(P.sideFlags, Kokkos::pair<int, int>(0, nm));
       Kokkos::deep_copy(flags, static_cast<unsigned char>(0));
     }
-    computeVn0Kokkos(P.manifolds, nm, P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.vn0);
+    computeVn0Kokkos(P.manifolds, nm, P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.vn0,
+                     P.vt0);
     warmStartApplyKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
                          P.realIndices, P.lambdaAcc, P.lambdaT);
   }
@@ -230,7 +231,7 @@ inline void demStep(Particles& P) {
                                P.quat, P.velPred, P.angVelPred, P.realIndices, P.growthRate,
                                P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
                                Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
-                               P.lambdaT, P.frictionDynamic);
+                               P.lambdaT, P.frictionDynamic, P.vt0, P.restitutionTangent);
       else
         solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
                                      P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
@@ -286,7 +287,7 @@ inline void demStep(Particles& P) {
                                P.growthRate, P.restitutionNormal, vRestS, P.maxApproach,
                                P.lambdaAcc, P.vn0,
                                Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
-                               P.frictionDynamic);
+                               P.frictionDynamic, P.vt0, P.restitutionTangent);
         if (readFloat(P.maxApproach) <= vRestS)
           break;
       }
@@ -792,7 +793,7 @@ class Simulation {
   void setMaterialParams(float restitution_normal, float restitution_tangent, float friction) {
     P_.restitutionNormal = restitution_normal;
     P_.frictionDynamic = friction;
-    (void)restitution_tangent;
+    P_.restitutionTangent = restitution_tangent;  // Walton beta (impact law, cone-clamped)
   }
   /// Per-particle material ids (0..kMaxMaterials-1); pair (e, mu) values come from
   /// setPairMaterial. Ids default to 0; without any setPairMaterial call the global material

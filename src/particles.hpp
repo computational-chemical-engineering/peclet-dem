@@ -75,6 +75,7 @@ struct Particles {
   Kokkos::View<float*, CpMem> lambdaAcc;
   Kokkos::View<float*, CpMem> prevLambda;
   Kokkos::View<float*, CpMem> vn0;
+  Kokkos::View<float* [3], CpMem> vt0;  // pre-solve tangential surface velocity (beta reference)
   // Friction-cone PGS: per-manifold accumulated tangential impulse (world frame, kept in the
   // contact tangent plane by projection) and the previous substep's converged values (sorted
   // alongside prevPairKeys for the warm-start gather). |lambdaT| <= mu * lambdaAcc at all times.
@@ -128,6 +129,9 @@ struct Particles {
   float thermostatTau = 0.0f, thermostatTemp = 0.0f,
         thermostatKB = 1.0f;  // Berendsen (tau>0 enables)
   float frictionDynamic = 0.0f, restitutionNormal = 0.0f, skin = 0.1f;
+  // Walton tangential restitution beta (0 = tangentially dead stick, the pre-beta behaviour;
+  // > 0 reverses the pre-collision tangential surface velocity of COLLIDING contacts).
+  float restitutionTangent = 0.0f;
   int positionIterations = 10, velocityIterations = 0;
   // Single-GPU collision solves: true = colored Gauss–Seidel for BOTH the restitution (velocity) and
   // the overlap (position) solve — correct coupled multi-contact impulses + non-penetration, default;
@@ -182,6 +186,7 @@ struct Particles {
     contactSlot = Kokkos::View<int*, CpMem>("contactSlot", maxContacts);
     prevLambda = Kokkos::View<float*, CpMem>("prevLambda", maxContacts);
     vn0 = Kokkos::View<float*, CpMem>("vn0", maxContacts);
+    vt0 = Kokkos::View<float* [3], CpMem>("vt0", maxContacts);
     pairCount = Kokkos::View<int, CpMem>("pairCount");
     contactCount = Kokkos::View<int, CpMem>("contactCount");
     manifoldCount = Kokkos::View<int, CpMem>("manifoldCount");

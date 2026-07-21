@@ -22,6 +22,9 @@ KOKKOS_INLINE_FUNCTION F3 ld3(Kokkos::View<const float* [3], CpMem> v, int i) {
 }
 // v^T I_world^-1 v with I_world^-1 = R I_local^-1 R^T  ->  (R^T v) diag(invI_local) (R^T v).
 KOKKOS_INLINE_FUNCTION float genInvMass(F3 tau, F3 invIlocal, F4 q) {
+  // Isotropic inertia (spheres): the principal frame is irrelevant -- skip both rotations.
+  if (invIlocal.x == invIlocal.y && invIlocal.y == invIlocal.z)
+    return dot3(tau, tau) * invIlocal.x;
   const F3 t = invRotateVector(q, tau);
   return t.x * t.x * invIlocal.x + t.y * t.y * invIlocal.y + t.z * t.z * invIlocal.z;
 }
@@ -384,7 +387,8 @@ inline void computeVn0Kokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, in
                              Kokkos::View<const float* [3], CpMem> velPred,
                              Kokkos::View<const float* [3], CpMem> angVelPred,
                              Kokkos::View<const int*, CpMem> realIdx, float growthRate,
-                             Kokkos::View<float*, CpMem> vn0) {
+                             Kokkos::View<float*, CpMem> vn0,
+                             Kokkos::View<float* [3], CpMem> vt0) {
   using detail::ld3;
   CpExec space;
   Kokkos::parallel_for(
@@ -417,6 +421,23 @@ inline void computeVn0Kokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, in
                    dot3(wB, TauB);
         vn += dot3(vGrowth, Nsum);
         vn0(idx) = vn;
+        // Pre-solve tangential surface velocity at the averaged contact point (physical units):
+        // the reference for the tangential-restitution target -beta * vt0 (Walton impact law).
+        {
+          const float lenN = Kokkos::sqrt(dot3(Nsum, Nsum));
+          F3 vt{0, 0, 0};
+          if (lenN > 1e-9f) {
+            const F3 nhat = scale3(Nsum, 1.0f / lenN);
+            const int realB2 = (idB >= 0) ? realIdx(idB) : -1;
+            const F3 wAv = ld3(angVelPred, realA);
+            const F3 wBv = (realB2 >= 0) ? ld3(angVelPred, realB2) : F3{0, 0, 0};
+            const F3 vrel = sub3(add3(vA, cross3v(wAv, rAavg)), add3(vB, cross3v(wBv, rBavg)));
+            vt = sub3(vrel, scale3(nhat, dot3(vrel, nhat)));
+          }
+          vt0(idx, 0) = vt.x;
+          vt0(idx, 1) = vt.y;
+          vt0(idx, 2) = vt.z;
+        }
       });
   space.fence();
 }
@@ -597,7 +618,9 @@ inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
                                    Kokkos::View<const float*, CpMem> vn0,
                                    Kokkos::View<const unsigned char*, CpMem> sideFlag,
                                    Kokkos::View<float* [3], CpMem> lambdaT,
-                                   float frictionDynamic) {
+                                   float frictionDynamic,
+                                   Kokkos::View<const float* [3], CpMem> vt0 = {},
+                                   float restitutionTangent = 0.0f) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -743,11 +766,26 @@ inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
               const F3 vrel = sub3(add3(vA2, cross3v(wA2, rAavg)),
                                    add3(vB2, cross3v(wB2, rBavg)));
               const F3 vt = sub3(vrel, scale3(nhat, dot3(vrel, nhat)));
-              const float vtLen = Kokkos::sqrt(dot3(vt, vt));
+              // Walton tangential restitution: for a COLLIDING contact the target surface
+              // velocity is -beta * vt0 (pre-solve tangential velocity); sustained contacts
+              // (below the resting threshold) and one-sided stabilization contacts run beta = 0
+              // -- the same event classification that gates normal restitution. The cone clamp
+              // below turns this into the stick/slide transition of the (e, mu, beta) law.
+              float beta = restitutionTangent;
+              if (beta != 0.0f &&
+                  (sf != 0 || Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN))
+                beta = 0.0f;
+              F3 vtErr = vt;
+              if (beta != 0.0f && vt0.extent(0) > 0) {
+                F3 v0{vt0(idx, 0), vt0(idx, 1), vt0(idx, 2)};
+                v0 = sub3(v0, scale3(nhat, dot3(v0, nhat)));  // current tangent plane
+                vtErr = add3(vt, scale3(v0, beta));
+              }
+              const float vtLen = Kokkos::sqrt(dot3(vtErr, vtErr));
               F3 ltNew = ltOld;
               float wT = invMassA + invMassB;
               if (vtLen > 1e-9f) {
-                const F3 that = scale3(vt, 1.0f / vtLen);
+                const F3 that = scale3(vtErr, 1.0f / vtLen);
                 float wAt =
                     (sf == 2) ? 0.0f
                               : invMassA + genInvMass(cross3v(rAavg, that), invIA, qA);
