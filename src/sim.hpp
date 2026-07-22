@@ -1057,6 +1057,8 @@ class Simulation {
     const int n = static_cast<int>(xyz.size() / 3);
     P_.numReal = n;
     P_.numParticles = n;
+    P_.hertzNumPairs = -1;  // particle indices changed: invalidate the hertz pair cache
+    P_.hertzPrevCount = 0;
     auto pos = Kokkos::create_mirror_view(P_.pos);
     auto q = Kokkos::create_mirror_view(P_.quat);
     auto im = Kokkos::create_mirror_view(P_.invMass);
