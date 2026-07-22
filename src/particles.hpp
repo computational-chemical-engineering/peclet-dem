@@ -84,6 +84,18 @@ struct Particles {
   // Side flags for the STABILIZATION pass (0 = symmetric): zeroed for the main momentum-
   // conserving sweeps, filled from persistence+grounding only if statics fail to converge.
   Kokkos::View<unsigned char*, CpMem> sideFlags;
+  // --- Hertz-Mindlin soft-sphere engine (solver_hertz.hpp): cached Verlet pair list state ---
+  Kokkos::View<float* [3], CpMem> hertzXi;        // per cached pair: Mindlin shear history
+  Kokkos::View<unsigned long long*, CpMem> hertzKeys;      // keys of the cached pairs
+  Kokkos::View<unsigned long long*, CpMem> hertzPrevKeys;  // sorted keys of the PREVIOUS list
+  Kokkos::View<float* [3], CpMem> hertzPrevXi;             // xi aligned with hertzPrevKeys
+  Kokkos::View<float* [3], CpMem> hertzXiWall;    // per (particle, wall) shear history
+  Kokkos::View<float* [3], CpMem> hertzRefPos;    // positions at the last pair build
+  Kokkos::View<float, CpMem> hertzDispMax;        // max |pos-ref|^2 since the build
+  Kokkos::View<float*, CpMem> hertzE, hertzNu;    // per-material Young / Poisson
+  int hertzNumPairs = -1;                          // -1: no valid cached list
+  int hertzPrevCount = 0;
+  static constexpr int kHertzMaxWalls = 4;
   // One-sided grounded stabilization pass (Phase B of the staged velocity solve); see sim.hpp.
   bool stabilization = true;
   // Per-particle material id + flat pair-material table [kMaxMaterials^2 * 2] of (restitution,
@@ -182,6 +194,21 @@ struct Particles {
     lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", maxContacts);
     lambdaT = Kokkos::View<float* [3], CpMem>("lambdaT", maxContacts);
     sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", maxContacts);
+    hertzXiWall = Kokkos::View<float* [3], CpMem>("hertzXiWall", cap * kHertzMaxWalls);
+    hertzRefPos = Kokkos::View<float* [3], CpMem>("hertzRefPos", cap);
+    hertzDispMax = Kokkos::View<float, CpMem>("hertzDispMax");
+    hertzE = Kokkos::View<float*, CpMem>("hertzE", 8);
+    hertzNu = Kokkos::View<float*, CpMem>("hertzNu", 8);
+    {
+      auto he = Kokkos::create_mirror_view(hertzE);
+      auto hn = Kokkos::create_mirror_view(hertzNu);
+      for (int i = 0; i < 8; ++i) {
+        he(i) = 1.0e9f;
+        hn(i) = 0.25f;
+      }
+      Kokkos::deep_copy(hertzE, he);
+      Kokkos::deep_copy(hertzNu, hn);
+    }
     prevLambdaT = Kokkos::View<float* [3], CpMem>("prevLambdaT", maxContacts);
     contactSlot = Kokkos::View<int*, CpMem>("contactSlot", maxContacts);
     prevLambda = Kokkos::View<float*, CpMem>("prevLambda", maxContacts);

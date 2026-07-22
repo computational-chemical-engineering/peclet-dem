@@ -132,6 +132,15 @@ NB_MODULE(_dem, m) {
            "Enable a Berendsen-style velocity thermostat (target temperature, coupling time tau).")
       .def("set_solver_iterations", &Simulation::setSolverIterations, nb::arg("pos"),
            nb::arg("vel"), "Set the XPBD position- and velocity-solve iteration counts.")
+      .def("set_hertz_material", &Simulation::setHertzMaterial, nb::arg("mat"),
+           nb::arg("youngs"), nb::arg("poisson"),
+           "Per-material Young's modulus and Poisson ratio for the soft-sphere Hertz-Mindlin "
+           "engine (material ids as in set_material_ids).")
+      .def("step_hertz", &Simulation::stepHertz, nb::arg("dt"), nb::arg("substeps") = 1,
+           nb::arg("skin_frac") = 0.3f,
+           "Advance explicit soft-sphere Hertz-Mindlin steps (spheres, SDF walls, non-periodic): "
+           "viscoelastic Hertz normal force + Mindlin shear-history spring, Coulomb-clamped; "
+           "(e, mu) from the pair-material tables, stiffness from set_hertz_material.")
       .def("set_stabilization", &Simulation::setStabilization, nb::arg("enabled"),
            "Enable/disable the one-sided grounded stabilization pass of the staged velocity "
            "solve (default True). Off = pure momentum-conserving PGS everywhere: exact ballistic "

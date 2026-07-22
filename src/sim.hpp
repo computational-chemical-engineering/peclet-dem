@@ -29,6 +29,7 @@
 #include "periodicity.hpp"
 #include "shapes_portable.hpp"
 #include "solver_friction.hpp"
+#include "solver_hertz.hpp"
 #include "solver_position.hpp"
 #include "solver_velocity.hpp"
 
@@ -404,6 +405,137 @@ inline float computeOverlapsKokkos(Particles& P) {
   float h;
   Kokkos::deep_copy(h, P.maxOverlap);
   return h;
+}
+
+/// Rebuild the Hertz cached pair list with margin `skin`, carrying the Mindlin shear history
+/// across by pair key (permutation sort of the OLD list, binary search from the NEW).
+inline void hertzRebuildPairs(Particles& P, float skin) {
+  CpExec space;
+  Kokkos::deep_copy(space, P.posPred, P.pos);  // broadphase reads posPred
+  const int np = findCollisionsGrow(P, skin);
+  const size_t need = P.pairs.extent(0);
+  if (P.hertzXi.extent(0) < need) {
+    P.hertzXi = Kokkos::View<float* [3], CpMem>("hertzXi", need);
+    P.hertzKeys = Kokkos::View<unsigned long long*, CpMem>("hertzKeys", need);
+    P.hertzPrevKeys = Kokkos::View<unsigned long long*, CpMem>("hertzPrevKeys", need);
+    P.hertzPrevXi = Kokkos::View<float* [3], CpMem>("hertzPrevXi", need);
+  }
+  // keys for the new list + history carry from the previous sorted list
+  {
+    auto pairs = P.pairs;
+    auto keys = P.hertzKeys;
+    auto xi = P.hertzXi;
+    auto pk = P.hertzPrevKeys;
+    auto px = P.hertzPrevXi;
+    const int pc = P.hertzPrevCount;
+    Kokkos::parallel_for(
+        "peclet::dem::hertz_carry", Kokkos::RangePolicy<CpExec>(space, 0, np),
+        KOKKOS_LAMBDA(int idx) {
+          const unsigned a = (unsigned)pairs(idx, 0), b = (unsigned)pairs(idx, 1);
+          const unsigned lo = a < b ? a : b, hi = a < b ? b : a;
+          const unsigned long long k = ((unsigned long long)hi << 32) | lo;
+          keys(idx) = k;
+          int l = 0, h = pc;
+          while (l < h) {
+            const int m = (l + h) >> 1;
+            if (pk(m) < k)
+              l = m + 1;
+            else
+              h = m;
+          }
+          const bool hit = (l < pc && pk(l) == k);
+          xi(idx, 0) = hit ? px(l, 0) : 0.0f;
+          xi(idx, 1) = hit ? px(l, 1) : 0.0f;
+          xi(idx, 2) = hit ? px(l, 2) : 0.0f;
+        });
+  }
+  P.hertzNumPairs = np;
+  Kokkos::deep_copy(space, P.hertzRefPos, P.pos);
+  Kokkos::deep_copy(space, P.hertzDispMax, 0.0f);
+  space.fence();
+}
+
+/// Save the current list (sorted by key) so the NEXT rebuild can carry the history.
+inline void hertzCommitHistory(Particles& P) {
+  const int n = P.hertzNumPairs;
+  if (n <= 0) {
+    P.hertzPrevCount = 0;
+    return;
+  }
+  CpExec space;
+  const auto rng = Kokkos::pair<int, int>(0, n);
+  auto kd = Kokkos::subview(P.hertzPrevKeys, rng);
+  Kokkos::deep_copy(space, kd, Kokkos::subview(P.hertzKeys, rng));
+  Kokkos::View<int*, CpMem> perm(
+      Kokkos::view_alloc(space, "peclet::dem::hertz_perm", Kokkos::WithoutInitializing), n);
+  Kokkos::parallel_for(
+      "peclet::dem::hertz_iota", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int i) { perm(i) = i; });
+  Kokkos::Experimental::sort_by_key(space, kd, perm);
+  auto xi = P.hertzXi;
+  auto px = P.hertzPrevXi;
+  Kokkos::parallel_for(
+      "peclet::dem::hertz_gather", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int i) {
+        const int j = perm(i);
+        px(i, 0) = xi(j, 0);
+        px(i, 1) = xi(j, 1);
+        px(i, 2) = xi(j, 2);
+      });
+  P.hertzPrevCount = n;
+  space.fence();
+}
+
+/// `nsteps` of the soft-sphere Hertz-Mindlin engine (spheres, SDF walls, non-periodic).
+inline void demStepHertz(Particles& P, float dt, int nsteps, float skinFrac) {
+  if (P.domain.periodic_x || P.domain.periodic_y || P.domain.periodic_z)
+    throw std::runtime_error("step_hertz: periodic domains not supported");
+  if (P.numPlanes > 0)
+    throw std::runtime_error("step_hertz: analytic planes not supported (use an SDF wall)");
+  if (P.numWalls > Particles::kHertzMaxWalls)
+    throw std::runtime_error("step_hertz: too many SDF walls");
+  {  // world radii (the impulse step fills these; the hertz path must too)
+    CpExec space;
+    auto sc = P.scale;
+    auto rad = P.rad;
+    float gs = P.globalScale, bR = P.baseRadius;
+    Kokkos::parallel_for(
+        "peclet::dem::hertz_rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numReal),
+        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
+    space.fence();
+  }
+  const float maxRad = maxOwnedRadius(P);
+  const float skin = skinFrac * maxRad;
+  const float rebuildAt = 0.25f * skin * skin;  // (skin/2)^2 on |dx|^2
+  const F3 g = P.gravity;
+  bool rebuild = (P.hertzNumPairs < 0);
+  for (int k = 0; k < nsteps; ++k) {
+    if (rebuild) {
+      hertzCommitHistory(P);
+      hertzRebuildPairs(P, skin);
+      rebuild = false;
+    }
+    hertzPairForcesKokkos(P.pairs, P.hertzNumPairs, P.pos, P.vel, P.angVel, P.rad, P.invMass,
+                          MatIdView(P.materialId), PairTableView(P.pairMaterials),
+                          P.restitutionNormal, P.frictionDynamic, P.hertzE, P.hertzNu, dt,
+                          P.hertzXi, P.deltaVel, P.deltaAngVel);
+    if (P.numWalls > 0)
+      hertzWallForcesKokkos(P.numReal, P.numWalls, P.walls, P.wallGrid, P.pos, P.vel, P.angVel,
+                            P.rad, P.invMass, MatIdView(P.materialId),
+                            PairTableView(P.pairMaterials), P.restitutionNormal, P.frictionDynamic,
+                            P.hertzE, P.hertzNu, dt, P.hertzXiWall, Particles::kHertzMaxWalls,
+                            P.deltaVel, P.deltaAngVel);
+    hertzIntegrateKokkos(P.numReal, P.deltaVel, P.deltaAngVel, P.invMass, P.invInertia, g, dt,
+                         P.vel, P.angVel, P.pos, P.hertzRefPos, P.hertzDispMax);
+    if ((k & 15) == 15 || k == nsteps - 1) {
+      if (readFloat(P.hertzDispMax) > rebuildAt)
+        rebuild = true;
+    }
+  }
+  CpExec space;
+  Kokkos::deep_copy(space, P.posPred, P.pos);  // keep the impulse-path views coherent
+  Kokkos::deep_copy(space, P.velPred, P.vel);
+  space.fence();
 }
 
 #ifdef PECLET_DEM_MPI
@@ -782,6 +914,26 @@ class Simulation {
   /// momentum-conserving PGS everywhere -- exact ballistic response, but deep static columns
   /// mid-collapse cannot be arrested within the iteration budget.
   void setStabilization(bool enabled) { P_.stabilization = enabled; }
+  /// Per-material Young's modulus + Poisson ratio for the Hertz-Mindlin engine (material ids as
+  /// in setMaterialIds; without ids every particle is material 0).
+  void setHertzMaterial(int mat, float youngs, float poisson) {
+    if (mat < 0 || mat >= 8)
+      throw std::invalid_argument("material id out of range");
+    auto he = Kokkos::create_mirror_view(P_.hertzE);
+    auto hn = Kokkos::create_mirror_view(P_.hertzNu);
+    Kokkos::deep_copy(he, P_.hertzE);
+    Kokkos::deep_copy(hn, P_.hertzNu);
+    he(mat) = youngs;
+    hn(mat) = poisson;
+    Kokkos::deep_copy(P_.hertzE, he);
+    Kokkos::deep_copy(P_.hertzNu, hn);
+  }
+  /// Advance `substeps` explicit soft-sphere Hertz-Mindlin steps of size dt (device-side loop;
+  /// the (e, mu) pairs come from the impulse solver's material tables).
+  void stepHertz(float dt, int substeps, float skin_frac) {
+    P_.dt = dt;
+    demStepHertz(P_, dt, substeps, skin_frac);
+  }
   void setGlobalScale(float s) {
     P_.globalScale = s;
     P_.skin = 0.1f * s;
