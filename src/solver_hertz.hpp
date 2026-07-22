@@ -226,9 +226,7 @@ inline void hertzIntegrateKokkos(int numReal, Kokkos::View<float* [3], CpMem> fo
                                  Kokkos::View<const float* [3], CpMem> invInertia, F3 gravity,
                                  float dt, Kokkos::View<float* [3], CpMem> vel,
                                  Kokkos::View<float* [3], CpMem> angVel,
-                                 Kokkos::View<float* [3], CpMem> pos,
-                                 Kokkos::View<const float* [3], CpMem> refPos,
-                                 Kokkos::View<float, CpMem> dispMax) {
+                                 Kokkos::View<float* [3], CpMem> pos) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::hertz_integrate", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
@@ -243,10 +241,27 @@ inline void hertzIntegrateKokkos(int numReal, Kokkos::View<float* [3], CpMem> fo
         }
         force(i, 0) = force(i, 1) = force(i, 2) = 0.0f;
         torque(i, 0) = torque(i, 1) = torque(i, 2) = 0.0f;
-        const F3 d = sub3(loadF3(pos, i), loadF3(refPos, i));
-        Kokkos::atomic_max(&dispMax(), dot3(d, d));
       });
   space.fence();
+}
+
+/// Max squared displacement since the last pair build (called only at rebuild checks --
+/// keeping this out of the integrate kernel avoids a per-step single-address atomic).
+inline float hertzMaxDisp2Kokkos(int numReal, Kokkos::View<const float* [3], CpMem> pos,
+                                 Kokkos::View<const float* [3], CpMem> refPos) {
+  CpExec space;
+  float m = 0.0f;
+  Kokkos::parallel_reduce(
+      "peclet::dem::hertz_maxdisp", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
+      KOKKOS_LAMBDA(int i, float& acc) {
+        const F3 d = sub3(loadF3(pos, i), loadF3(refPos, i));
+        const float dd = dot3(d, d);
+        if (dd > acc)
+          acc = dd;
+      },
+      Kokkos::Max<float>(m));
+  space.fence();
+  return m;
 }
 
 }  // namespace peclet::dem

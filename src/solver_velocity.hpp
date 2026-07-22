@@ -620,7 +620,8 @@ inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
                                    Kokkos::View<float* [3], CpMem> lambdaT,
                                    float frictionDynamic,
                                    Kokkos::View<const float* [3], CpMem> vt0 = {},
-                                   float restitutionTangent = 0.0f) {
+                                   float restitutionTangent = 0.0f,
+                                   Kokkos::View<const float*, CpMem> posImpulse = {}) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -797,7 +798,17 @@ inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
                   ltNew = add3(ltOld, scale3(that, -vtLen / wT));
               }
               ltNew = sub3(ltNew, scale3(nhat, dot3(ltNew, nhat)));
-              const float bound = mu * Kokkos::fmax(lambdaAcc(idx), 0.0f) * lenN;
+              // Coulomb bound = mu * TOTAL normal load: velocity-impulse channel (lambdaAcc,
+              // physical impulse = lambdaAcc * |Nsum|) + the position-projection channel carried
+              // from last substep (already physical impulse units).
+              float nTot = Kokkos::fmax(lambdaAcc(idx), 0.0f) * lenN;
+              // The carry is a QUASI-STATIC corrector: for colliding contacts the one-substep lag
+              // double-counts (crater contacts already carry a large velocity impulse) -- gate by
+              // the same event classification as e and beta.
+              if (posImpulse.extent(0) > 0 &&
+                  Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN)
+                nTot += Kokkos::fmax(posImpulse(idx), 0.0f);
+              const float bound = mu * nTot;
               const float ltLen = Kokkos::sqrt(dot3(ltNew, ltNew));
               if (ltLen > bound)
                 ltNew = (bound > 0.0f) ? scale3(ltNew, bound / ltLen) : F3{0, 0, 0};

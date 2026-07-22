@@ -114,10 +114,12 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
                                    int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
                                    Kokkos::View<const unsigned long long*, CpMem> prevKeys,
                                    Kokkos::View<const float*, CpMem> prevLambda,
-                                   Kokkos::View<const float* [3], CpMem> prevLambdaT, int prevCount,
+                                   Kokkos::View<const float* [3], CpMem> prevLambdaT,
+                                   Kokkos::View<const float*, CpMem> prevPosImpulse, int prevCount,
                                    Kokkos::View<unsigned long long*, CpMem> outKeys,
                                    Kokkos::View<float*, CpMem> outWarm,
-                                   Kokkos::View<float* [3], CpMem> outWarmT) {
+                                   Kokkos::View<float* [3], CpMem> outWarmT,
+                                   Kokkos::View<float*, CpMem> outPosImpulse) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::gather_warm", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -130,6 +132,7 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
           outKeys(idx) = ~0ull;
           outWarm(idx) = 0.0f;
           outWarmT(idx, 0) = outWarmT(idx, 1) = outWarmT(idx, 2) = 0.0f;
+          outPosImpulse(idx) = 0.0f;
           return;
         }
         const unsigned long long k = pairKeyOf(m, realIdx);
@@ -147,6 +150,7 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
         outWarmT(idx, 0) = hit ? prevLambdaT(lo, 0) : 0.0f;
         outWarmT(idx, 1) = hit ? prevLambdaT(lo, 1) : 0.0f;
         outWarmT(idx, 2) = hit ? prevLambdaT(lo, 2) : 0.0f;
+        outPosImpulse(idx) = hit ? prevPosImpulse(lo) : 0.0f;
       });
   space.fence();
 }
@@ -431,6 +435,52 @@ inline void frictionBoundFromLambdaKokkos(Kokkos::View<ContactC*, CpMem> contact
         const ManifoldC m = manifolds(s);
         const int np = (m.num_points > 0) ? m.num_points : 1;
         contacts(i).friction_lambda_n = lambdaAcc(s) / static_cast<float>(np);
+      });
+  space.fence();
+}
+
+
+/// After the position solve: convert the per-contact positional lambdas into an impulse-
+/// equivalent per manifold (lambda_pos / dt has force units; x dt back to impulse => just
+/// lambda_pos * m_eff... the positional lambda already carries 1/w mass weighting, so the
+/// impulse equivalent over the substep is lambda_pos / dt * dt = lambda_pos / (w*...) -- we
+/// store lambda_pos/dt * dt = lambda_pos scaled by 1/dt to velocity-impulse units) and write
+/// it into the sorted prev-store so next substep's warm gather can top up the Coulomb bound.
+inline void commitPosImpulseKokkos(Kokkos::View<const float*, CpMem> posLambdaContact,
+                                   int numContacts, Kokkos::View<const int*, CpMem> contactSlot,
+                                   Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                   int numManifolds,
+                                   Kokkos::View<const unsigned long long*, CpMem> keys,
+                                   Kokkos::View<const unsigned long long*, CpMem> prevKeysSorted,
+                                   int prevCount, float dt,
+                                   Kokkos::View<float*, CpMem> scratchManifold,
+                                   Kokkos::View<float*, CpMem> prevPosImpulse) {
+  CpExec space;
+  auto sm = Kokkos::subview(scratchManifold, Kokkos::pair<int, int>(0, numManifolds));
+  Kokkos::deep_copy(space, sm, 0.0f);
+  Kokkos::parallel_for(
+      "peclet::dem::pos_load_reduce", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
+      KOKKOS_LAMBDA(int i) {
+        const float l = posLambdaContact(i);
+        if (l != 0.0f)
+          Kokkos::atomic_add(&scratchManifold(contactSlot(i)), l / dt);
+      });
+  Kokkos::parallel_for(
+      "peclet::dem::pos_load_scatter", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        const unsigned long long k = keys(idx);
+        if (k == ~0ull)
+          return;
+        int lo = 0, hi = prevCount;
+        while (lo < hi) {
+          const int m = (lo + hi) >> 1;
+          if (prevKeysSorted(m) < k)
+            lo = m + 1;
+          else
+            hi = m;
+        }
+        if (lo < prevCount && prevKeysSorted(lo) == k)
+          prevPosImpulse(lo) = scratchManifold(idx);
       });
   space.fence();
 }

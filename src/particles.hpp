@@ -81,6 +81,12 @@ struct Particles {
   // alongside prevPairKeys for the warm-start gather). |lambdaT| <= mu * lambdaAcc at all times.
   Kokkos::View<float* [3], CpMem> lambdaT;
   Kokkos::View<float* [3], CpMem> prevLambdaT;
+  // Position-channel normal load (see solvePositionColoredGSKokkos): per-contact positional
+  // lambda this substep, its per-manifold impulse-equivalent, the previous substep's value
+  // (warm-gathered) that tops up the friction cone's Coulomb bound, and the sorted store.
+  Kokkos::View<float*, CpMem> posLambdaContact;
+  Kokkos::View<float*, CpMem> posImpulse;      // gathered: LAST substep's position-channel load
+  Kokkos::View<float*, CpMem> prevPosImpulse;  // sorted alongside prevPairKeys
   // Side flags for the STABILIZATION pass (0 = symmetric): zeroed for the main momentum-
   // conserving sweeps, filled from persistence+grounding only if statics fail to converge.
   Kokkos::View<unsigned char*, CpMem> sideFlags;
@@ -193,6 +199,9 @@ struct Particles {
     materialId = Kokkos::View<unsigned char*, CpMem>("materialId", cap);
     lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", maxContacts);
     lambdaT = Kokkos::View<float* [3], CpMem>("lambdaT", maxContacts);
+    posLambdaContact = Kokkos::View<float*, CpMem>("posLambdaContact", maxContacts);
+    posImpulse = Kokkos::View<float*, CpMem>("posImpulse", maxContacts);
+    prevPosImpulse = Kokkos::View<float*, CpMem>("prevPosImpulse", maxContacts);
     sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", maxContacts);
     hertzXiWall = Kokkos::View<float* [3], CpMem>("hertzXiWall", cap * kHertzMaxWalls);
     hertzRefPos = Kokkos::View<float* [3], CpMem>("hertzRefPos", cap);

@@ -252,7 +252,8 @@ inline void solvePositionColoredGSKokkos(Kokkos::View<const ContactC*, CpMem> co
                                          Kokkos::View<const float* [4], CpMem> quatPred,
                                          Kokkos::View<const float* [4], CpMem> quatStatic,
                                          Kokkos::View<const float* [3], CpMem> invInertia,
-                                         Kokkos::View<float, CpMem> maxOverlap) {
+                                         Kokkos::View<float, CpMem> maxOverlap,
+                                         Kokkos::View<float*, CpMem> posLambdaAcc = {}) {
   using detail::computeW;
   CpExec space;
   for (int color = 0; color < numColors; ++color) {
@@ -304,6 +305,13 @@ inline void solvePositionColoredGSKokkos(Kokkos::View<const ContactC*, CpMem> co
           if (wTotal < 1e-6f)
             return;
           const float dLambda = -C / wTotal;
+          // Position-channel normal load bookkeeping: the friction cone must see the TOTAL normal
+          // force; whatever de-penetration flows through this projection (instead of the velocity
+          // impulses) is accumulated here, converted to impulse units by the caller, and carried
+          // into the next substep's Coulomb bound (else a jostled bed's bound under-counts and
+          // stick leaks -- measured as 99% sliding wall contacts in the benchmark drum).
+          if (posLambdaAcc.extent(0) > 0)
+            Kokkos::atomic_add(&posLambdaAcc(idx), dLambda);
 
           // Translation-only correction, in place (rotation discarded to match applyUpdatesKokkos).
           posPred(idA, 0) += n.x * dLambda * invMassA;

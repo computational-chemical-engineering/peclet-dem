@@ -197,7 +197,8 @@ inline void demStep(Particles& P) {
                              : F3{0, 0, 0};
   if (usePGS) {
     gatherWarmLambdaKokkos(P.manifolds, nm, P.realIndices, P.prevPairKeys, P.prevLambda,
-                           P.prevLambdaT, P.prevPairCount, P.pairKeys, P.lambdaAcc, P.lambdaT);
+                           P.prevLambdaT, P.prevPosImpulse, P.prevPairCount, P.pairKeys,
+                           P.lambdaAcc, P.lambdaT, P.posImpulse);
     markPersistentManifoldsKokkos(P.manifolds, nm, P.realIndices, P.prevPairKeys, P.prevPairCount,
                                   P.pairKeys, P.manifoldPersistent);
     updateGroundedLevelsKokkos(P.manifolds, nm, P.realIndices, P.posPred, gHat, P.groundedLevel,
@@ -232,7 +233,8 @@ inline void demStep(Particles& P) {
                                P.quat, P.velPred, P.angVelPred, P.realIndices, P.growthRate,
                                P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
                                Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
-                               P.lambdaT, P.frictionDynamic, P.vt0, P.restitutionTangent);
+                               P.lambdaT, P.frictionDynamic, P.vt0, P.restitutionTangent,
+                               Kokkos::View<const float*, CpMem>(P.posImpulse));
       else
         solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
                                      P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
@@ -288,7 +290,8 @@ inline void demStep(Particles& P) {
                                P.growthRate, P.restitutionNormal, vRestS, P.maxApproach,
                                P.lambdaAcc, P.vn0,
                                Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
-                               P.frictionDynamic, P.vt0, P.restitutionTangent);
+                               P.frictionDynamic, P.vt0, P.restitutionTangent,
+                               Kokkos::View<const float*, CpMem>(P.posImpulse));
         if (readFloat(P.maxApproach) <= vRestS)
           break;
       }
@@ -320,11 +323,16 @@ inline void demStep(Particles& P) {
           : 0;
   // Overlap resolved once the deepest penetration falls below ~0.01% of a particle radius.
   const float posTol = 1e-4f * P.baseRadius * P.globalScale;
+  {
+    auto pc = Kokkos::subview(P.posLambdaContact, Kokkos::pair<int, int>(0, nc));
+    Kokkos::deep_copy(pc, 0.0f);
+  }
   for (int it = 0; it < P.positionIterations; ++it) {
     if (P.velocityUseGS) {
       Kokkos::deep_copy(P.maxOverlap, 0.0f);  // per-sweep so the readback is this sweep's residual
       solvePositionColoredGSKokkos(P.contacts, nc, P.contactColor, numPosColors, P.invMass,
-                                   P.posPred, P.quatPred, P.quat, P.invInertia, P.maxOverlap);
+                                   P.posPred, P.quatPred, P.quat, P.invInertia, P.maxOverlap,
+                                   P.posLambdaContact);
       // Colour-mask saturation fallback: contacts the colouring could not place (degree > 62 in
       // crushed regions) get the count-averaged Jacobi projection so deep overlap still resolves.
       if (posLeftover > 0) {
@@ -345,6 +353,13 @@ inline void demStep(Particles& P) {
                          P.constraintCounts);
     }
   }
+  // Position-channel Coulomb-bound carry (PGS path): next substep's friction cone sees
+  // mu * (velocity-impulse channel + this position-channel load). Without it a jostled bed's
+  // bound under-counts the true normal force and stick leaks (measured: 99% sliding wall
+  // contacts in the benchmark drum while the Hertz reference sticks).
+  if (usePGS && nm > 0)
+    commitPosImpulseKokkos(P.posLambdaContact, nc, P.contactSlot, P.manifolds, nm, P.pairKeys,
+                           P.prevPairKeys, P.prevPairCount, P.dt, P.vn0, P.prevPosImpulse);
 
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
 
@@ -504,8 +519,24 @@ inline void demStepHertz(Particles& P, float dt, int nsteps, float skinFrac) {
         KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
     space.fence();
   }
-  const float maxRad = maxOwnedRadius(P);
-  const float skin = skinFrac * maxRad;
+  float minRad = 0.0f;
+  {
+    CpExec space;
+    auto rad = P.rad;
+    float m = 3.4e38f;
+    Kokkos::parallel_reduce(
+        "peclet::dem::hertz_minrad", Kokkos::RangePolicy<CpExec>(space, 0, P.numReal),
+        KOKKOS_LAMBDA(int i, float& acc) {
+          if (rad(i) < acc)
+            acc = rad(i);
+        },
+        Kokkos::Min<float>(m));
+    space.fence();
+    minRad = m;
+  }
+  // Skin off the SMALLEST radius: a max-radius skin inflates every small-grain pair cutoff by
+  // the big body's margin (measured ~15x more cached pairs in the ball-impact case).
+  const float skin = skinFrac * minRad;
   const float rebuildAt = 0.25f * skin * skin;  // (skin/2)^2 on |dx|^2
   const F3 g = P.gravity;
   bool rebuild = (P.hertzNumPairs < 0);
@@ -526,9 +557,9 @@ inline void demStepHertz(Particles& P, float dt, int nsteps, float skinFrac) {
                             P.hertzE, P.hertzNu, dt, P.hertzXiWall, Particles::kHertzMaxWalls,
                             P.deltaVel, P.deltaAngVel);
     hertzIntegrateKokkos(P.numReal, P.deltaVel, P.deltaAngVel, P.invMass, P.invInertia, g, dt,
-                         P.vel, P.angVel, P.pos, P.hertzRefPos, P.hertzDispMax);
+                         P.vel, P.angVel, P.pos);
     if ((k & 15) == 15 || k == nsteps - 1) {
-      if (readFloat(P.hertzDispMax) > rebuildAt)
+      if (hertzMaxDisp2Kokkos(P.numReal, P.pos, P.hertzRefPos) > rebuildAt)
         rebuild = true;
     }
   }
