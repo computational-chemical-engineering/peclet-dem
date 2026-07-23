@@ -431,30 +431,53 @@ inline void demStepHertz(Particles& P, float dt, int nsteps, float skinFrac) {
 }
 
 #ifdef PECLET_DEM_MPI
+/// MPI hooks for the shared contact-solve driver (demSolveContacts): the distributed step is the
+/// processor-block Gauss-Seidel form of the SAME modern sequence the single-GPU step runs. The
+/// colouring and the sweeps stay rank-local over owned + ghost bodies (ghost pairs are solved
+/// redundantly on both owners -- each rank keeps only its owned bodies' updates, the ghost copies
+/// are overwritten at the next refresh), the owners re-publish their ghost state every `syncEvery`
+/// solver iterations plus once after every solve phase, and each adaptive-stop residual is
+/// Allreduce-MAXed so all ranks take the same break (the refreshes are collective -- a rank-local
+/// break would deadlock them).
+struct MpiSolveHooks {
+  static constexpr bool distributed = true;
+  ParticleHalo& halo;
+  int syncEvery;
+  bool forwardRotation;
+  float allMax(float v) const {
+    float g = v;
+    MPI_Allreduce(&v, &g, 1, MPI_FLOAT, MPI_MAX, halo.comm());
+    return g;
+  }
+  bool syncPoint(int it) const { return (it + 1) % syncEvery == 0; }
+  void syncVelocities(Particles& P) const {
+    halo.forward(P.velPred);
+    if (forwardRotation)
+      halo.forward(P.angVelPred);
+  }
+  void syncPositions(Particles& P) const {
+    halo.forwardPositions(P.posPred);
+    if (forwardRotation)
+      halo.forward4(P.quatPred);
+  }
+};
+
 /// One distributed XPBD DEM substep. The periodic ghost generation of the single-rank step is
-/// replaced by a cross-rank gather (halo.gather, ghosts carrying REAL mass), and the owners
-/// refresh their ghost copies (velPred/angVelPred, then posPred/quatPred) every `syncEvery`
-/// solver iterations (and the last). Each owned particle thus sees all its neighbours -- owned
-/// or ghost -- and computes its full serial delta locally; the ghost deltas land on self-mapped
-/// slots and are discarded. Friction (wall + body-body Coulomb) IS carried, same kernels as the
-/// single-rank step. `forwardRotation`=false (spheres) skips the angular/quaternion forwards.
-///
-/// SOLVER PARITY GAP (open): this path still runs the older count-averaged JACOBI velocity and
-/// position solves (solveVelocityKokkos/solvePositionKokkos). The newer single-rank solver stack
-/// -- graph-colored Gauss-Seidel (colorManifoldsKokkos + solveVelocityColoredGSKokkos /
-/// solvePositionColoredGSKokkos), warm-started PGS with persistent contacts
-/// (prevPairKeys/prevLambda), gravity statics (grounded shock propagation), and the adaptive
-/// stop -- is NOT wired in here, and MigratePack does not carry the persistent-contact state
-/// across a rebalance. Distributing that stack (rank-local coloring + the syncEvery ghost
-/// refresh) is the main remaining dem MPI work item.
+/// replaced by a cross-rank gather (halo.gather, ghosts carrying REAL mass + the owner's gid /
+/// material / grounded level), then the FULL modern solve sequence runs through demSolveContacts
+/// with MpiSolveHooks -- graph-colored Gauss-Seidel restitution, warm-started PGS with
+/// persistent contacts (pair keys built from GLOBAL ids, so they survive halo rebuilds and
+/// ownership migration), gravity statics (grounded shock propagation / stabilization passes),
+/// friction cone, colored-GS overlap projection and the adaptive stops -- identical physics to
+/// the single-GPU demStep, same fixed point, not bit-exact (rank-local sweep order differs).
+/// `forwardRotation`=false (spheres) skips the angular/quaternion forwards.
 ///
 /// PERIODICITY: cross-rank ghosts supply the wrap on DECOMPOSED axes; LOCAL periodic self-ghosts
 /// (ParticleHalo build with includePeriodicSelf) supply it on UNDECOMPOSED periodic axes (a "x1"
 /// ORB axis, e.g. z of a 2x2x1 layout, or np=1). Correct for any layout, including np=1 fully
-/// periodic (it matches the single-GPU demStep to ~roundoff). CAPACITY: a periodic box needs a
-/// thick ghost boundary layer -- a fully periodic box at this rcut needs ~no + (boundary layer)
-/// ghost slots, well above the no*2 the closed case wants -- so size the Simulation capacity for
-/// the worst-case ghost band; gather() throws on overflow rather than corrupting the SoA.
+/// periodic. CAPACITY: a periodic box needs a thick ghost boundary layer -- size the Simulation
+/// capacity for the worst-case ghost band; gather() throws on overflow rather than corrupting the
+/// SoA.
 inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEvery,
                        bool forwardRotation) {
   CpExec space;
@@ -474,7 +497,8 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
                         P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
                         P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce);
 
-  // 2. Gather ghosts (real mass) from owners over the halo: full state into the ghost slots; sets
+  // 2. Gather ghosts (real mass) from owners over the halo: full state -- including gid,
+  //    materialId and the warm grounded level -- into the ghost slots; sets
   //    P.numParticles = numReal + numGhost and self-maps realIndices.
   halo.gather(P, rcut);
 
@@ -487,9 +511,10 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
         KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
   }
 
-  // 3. Broad/narrow phase + manifold reduction over owned + ghosts.
-  // findCollisionsGrow fences + reads the pair count back to host and guarantees np ≤ P.pairs extent
-  // (growing the buffer on overflow) so the narrowphase never reads P.pairs out of bounds.
+  // 3. Broad/narrow phase + manifold reduction over owned + ghosts (contactSlot map included:
+  // the PGS friction bound and the position-channel Coulomb carry read through it).
+  // findCollisionsGrow fences + reads the pair count back to host and guarantees np <= P.pairs
+  // extent (growing the buffer on overflow) so the narrowphase never reads P.pairs out of bounds.
   const int np = findCollisionsGrow(P, margin);
 
   Kokkos::deep_copy(space, P.contactCount, 0);
@@ -506,74 +531,14 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
                         P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials);
   const int nc = readInt(P.contactCount);
 
-  reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount);
+  reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot);
   const int nm = readInt(P.manifoldCount);
 
-  // 4. Velocity solve: normal restitution + Coulomb friction; refresh ghost velocities every
-  // syncEvery iters (+ last). Unlike the original CUDA distributed scheme (pure normal restitution),
-  // the friction cluster runs here too, so a frictional/moving wall drives the distributed step —
-  // e.g. a rotating drum lifts its bed under MPI exactly as single-rank. WALL friction (boundary
-  // contacts, bodyB<0) touches only the OWNED particle, so it is exact across ranks; body-body
-  // friction near a rank boundary uses the ghost's LOCAL contact count in the count-average, so it is
-  // a close approximation there (bounded by the Coulomb clamp), not bit-exact. The gathered ghosts
-  // carry current velPred (forwarded each syncEvery iter), so the force-chain load sees neighbours.
-  const bool friction = (P.frictionDynamic > 0.0f || P.wallFrictionMax > 0.0f);
-  if (friction)
-    computePlaneLoadKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
-                           P.planeFriction);
-
-  for (int it = 0; it < P.velocityIterations; ++it) {
-    if (friction)
-      accumulateNormalImpulseKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred,
-                                    P.angVelPred, P.realIndices, P.growthRate);
-    // Restitution threshold ~ the speed one substep of free fall gains: below it a contact is
-    // RESTING and bounces with e=0 (see solveVelocityKokkos — dense-pile energy-bomb guard).
-    const float vRest = 2.0f * P.dt *
-                        Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
-                                     P.gravity.z * P.gravity.z);
-    solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                        P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
-                        P.deltaAngVel, P.constraintCounts);
-    applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
-                                      P.deltaAngVel, P.constraintCounts);
-    if ((it + 1) % syncEvery == 0 || it == P.velocityIterations - 1) {
-      halo.forward(P.velPred);
-      if (forwardRotation)
-        halo.forward(P.angVelPred);
-    }
-  }
-  if (friction) {
-    countFrictionContactsKokkos(P.contacts, nc, P.realIndices, P.planeFriction);
-    solveContactFrictionKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
-                               P.realIndices, P.planeFriction, P.frictionDynamic, P.deltaVel,
-                               P.deltaAngVel);
-    applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
-    halo.forward(P.velPred);  // publish the friction velocity update to the ghosts
-    if (forwardRotation)
-      halo.forward(P.angVelPred);
-  }
-
-  // 5. Apply velocity & predict position, then refresh ghost predicted positions (+ pose if
-  // rotating).
-  applyVelocityAndPredictPositionKokkos(P.numParticles, P.pos, P.invMass, P.vel, P.quat, P.velPred,
-                                        P.angVelPred, P.posPred, P.quatPred, P.angVel, P.dt);
-  halo.forwardPositions(P.posPred);
-  if (forwardRotation)
-    halo.forward4(P.quatPred);
-
-  // 6. Position solve (Projected Jacobi); refresh ghost predicted pose every syncEvery iters (+
-  // last).
-  for (int it = 0; it < P.positionIterations; ++it) {
-    solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
-                        P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
-    applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
-                       P.constraintCounts);
-    if ((it + 1) % syncEvery == 0 || it == P.positionIterations - 1) {
-      halo.forwardPositions(P.posPred);
-      if (forwardRotation)
-        halo.forward4(P.quatPred);
-    }
-  }
+  // 4-6. The shared modern velocity + position solve, distributed: rank-local colouring over the
+  // owned + ghost body slots (nBodies = numParticles; realIndices are self-mapped, so ghost
+  // copies evolve in place between refreshes), persistent-pair keys from the global ids.
+  demSolveContacts(P, nc, nm, P.numParticles, P.gid,
+                   MpiSolveHooks{halo, syncEvery < 1 ? 1 : syncEvery, forwardRotation});
 
   // 7. Commit (owned results kept; ghosts discarded, re-gathered next substep).
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
@@ -974,6 +939,10 @@ class Simulation {
     P_.numParticles = n;
     P_.hertzNumPairs = -1;  // particle indices changed: invalidate the hertz pair cache
     P_.hertzPrevCount = 0;
+    P_.prevPairCount = 0;  // stale persistent-pair ledger must not warm-start the new set
+#ifdef PECLET_DEM_MPI
+    mpiGidsGlobal_ = false;  // new particle set -> re-base the global ids at the next stepMpi
+#endif
     auto pos = Kokkos::create_mirror_view(P_.pos);
     auto q = Kokkos::create_mirror_view(P_.quat);
     auto im = Kokkos::create_mirror_view(P_.invMass);
@@ -1206,6 +1175,17 @@ class Simulation {
   }
   void stepMpi(int nsteps) {
     const double rcut = (mpiRcut_ > 0.0) ? mpiRcut_ : maxOwnedRadius(P_);
+    // Globally-unique particle ids (persistent-pair keys are gid-based): re-base each rank's
+    // identity ids by an exclusive scan of the owned counts, once per particle set. Migration and
+    // rebalance carry gids, so the ids stay stable afterwards; set_positions resets the flag.
+    if (!mpiGidsGlobal_) {
+      long base = 0, mine = P_.numReal;
+      MPI_Exscan(&mine, &base, 1, MPI_LONG, MPI_SUM, halo_->comm());
+      if (halo_->rank() == 0)
+        base = 0;  // MPI_Exscan leaves rank 0's recvbuf undefined
+      fillGidBaseKokkos(P_.gid, P_.numReal, static_cast<int>(base));
+      mpiGidsGlobal_ = true;
+    }
     for (int s = 0; s < nsteps; ++s) {
       if (mpiRebalanceEvery_ > 0 && mpiStepCount_ % mpiRebalanceEvery_ == 0)
         halo_->rebalance(P_);
@@ -1350,6 +1330,7 @@ class Simulation {
   bool mpiForwardRotation_ = true;
   int mpiRebalanceEvery_ = 0;
   long mpiStepCount_ = 0;
+  bool mpiGidsGlobal_ = false;  // gids re-based to a global Exscan offset (once per particle set)
 #endif
 };
 

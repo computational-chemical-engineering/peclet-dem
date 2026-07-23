@@ -42,14 +42,21 @@ foreach(t demstep_mpi rebalance_mpi)
   add_executable(test_${t} test_${t}.cpp)
   target_include_directories(test_${t} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${TPX_DIR}/include)
-  target_compile_definitions(test_${t} PRIVATE DEM_MPI)
+  target_compile_definitions(test_${t} PRIVATE PECLET_DEM_MPI)
   target_link_libraries(test_${t} PRIVATE ArborX::ArborX Kokkos::kokkos MPI::MPI_CXX)
-  foreach(np 1 2 4)
-    # closed (non-periodic) box + fully-periodic lattice (the periodic case exercises the local
-    # periodic self-ghosts on undecomposed axes, e.g. z of the np=4 2x2x1 ORB layout).
-    add_test(NAME ${t}_closed_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} -np ${np} $<TARGET_FILE:test_${t}> closed)
-    add_test(NAME ${t}_periodic_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} -np ${np} $<TARGET_FILE:test_${t}> periodic)
+endforeach()
+
+foreach(np 1 2 4)
+  # jacobi_* : legacy count-averaged Jacobi solves (velocityUseGS off) vs the SAME stepMpi on
+  #            MPI_COMM_SELF — the exact-redundant baseline (tight tolerances). The periodic case
+  #            exercises the local periodic self-ghosts on undecomposed axes.
+  # modern   : the full modern solver stack (gravity + per-pair materials + friction + warm-started
+  #            PGS + statics) vs the REAL single-rank demStep, tolerance-based.
+  # modern_rebal : modern + periodic ownership rebalancing mid-run (persistent-ledger carry).
+  foreach(mode jacobi_closed jacobi_periodic modern modern_rebal)
+    add_test(NAME demstep_${mode}_np${np}
+             COMMAND ${MPIEXEC_EXECUTABLE} -np ${np} $<TARGET_FILE:test_demstep_mpi> ${mode})
   endforeach()
+  add_test(NAME rebalance_np${np}
+           COMMAND ${MPIEXEC_EXECUTABLE} -np ${np} $<TARGET_FILE:test_rebalance_mpi>)
 endforeach()

@@ -19,11 +19,14 @@
 
 #include <mpi.h>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <Kokkos_Core.hpp>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "dem_portable.hpp"  // F3, F4
@@ -48,18 +51,43 @@ struct MpiGatherPack {
   F4 quat, quatPred;
   float scale, invMass;
   int shape;
+  // Modern-solver state a ghost must mirror from its owner: the global id (persistent-pair keys
+  // are gid-based — local slots are not stable identities across ranks / halo rebuilds), the
+  // material id (the narrowphase reads matId by RAW slot index), and the owner's warm grounded
+  // level (Guendelman support levels; the rank-local propagation sweeps continue from it, so a
+  // support chain crossing a rank boundary stays grounded).
+  int gid;
+  unsigned char material, grounded;
 };
+
+// One persistent-contact ledger entry carried through an ownership migration: the gid-based pair
+// key plus the previous substep's converged normal / tangential impulses and position-channel
+// load (the warm start + Coulomb-bound carry). POD => MPI_BYTE-copyable.
+struct WarmPairEntry {
+  unsigned long long key;
+  float lambda;
+  float lambdaT[3];
+  float posImpulse;
+};
+// Per-particle cap on carried pairs (sphere kissing number 12 + wall; lowest-weight entries are
+// dropped beyond it — a dropped entry only costs the receiving rank a cold warm-start there).
+inline constexpr int kWarmCarryMax = 14;
 
 // The committed per-particle state that defines a particle across steps — everything except its
 // position (which drives ownership and travels as the migrator's coordinate) and the predicted /
 // delta / ghost scratch the step rebuilds. This is the payload moved when a particle changes owner
-// during a load re-balance. POD => MPI_BYTE-copyable.
+// during a load re-balance. POD => MPI_BYTE-copyable. Carries the particle's slice of the
+// persistent-contact ledger (each pair rides on BOTH endpoints; the unpack dedupes by key) plus
+// its grounded level, so a rebalance does not cold-restart the statics force network.
 struct MigratePack {
   F4 quat;
   F3 vel, angVel, invInertia;
   float invMass, scale, targetScale;
   int shapeId;
   float planeFric0, planeFric1;
+  int gid;
+  unsigned char materialId, groundedLevel, numWarm;
+  WarmPairEntry warm[kWarmCarryMax];
 };
 
 // --- free-function pack/unpack kernels (namespace scope: nvcc forbids KOKKOS_LAMBDA in member fns)
@@ -102,7 +130,9 @@ inline void haloUnpackF4(V4 field, peclet::core::View<F4> ghost, int no, int ng)
 }
 
 inline void haloPackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invInertia, V4 quat,
-                           V4 quatPred, Vf scale, Vf invMass, Vi shapeId,
+                           V4 quatPred, Vf scale, Vf invMass, Vi shapeId, Vi gid,
+                           Kokkos::View<unsigned char*, CpMem> materialId,
+                           Kokkos::View<unsigned char*, CpMem> grounded,
                            peclet::core::View<MpiGatherPack> owned, int n) {
   Kokkos::parallel_for(
       "peclet::dem::halo::packGather", Kokkos::RangePolicy<CpExec>(0, n), KOKKOS_LAMBDA(int i) {
@@ -117,6 +147,9 @@ inline void haloPackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invI
         g.scale = scale(i);
         g.invMass = invMass(i);
         g.shape = shapeId(i);
+        g.gid = gid(i);
+        g.material = materialId(i);
+        g.grounded = grounded(i);
         owned(i) = g;
       });
 }
@@ -124,7 +157,9 @@ inline void haloPackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invI
 // owner is remote, so velocity/position deltas landing on the ghost slot are discarded next
 // forward).
 inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invInertia, V4 quat,
-                             V4 quatPred, Vf scale, Vf invMass, Vi shapeId, Vi realIndices,
+                             V4 quatPred, Vf scale, Vf invMass, Vi shapeId, Vi realIndices, Vi gid,
+                             Kokkos::View<unsigned char*, CpMem> materialId,
+                             Kokkos::View<unsigned char*, CpMem> grounded,
                              peclet::core::View<MpiGatherPack> ghost, int no, int ng) {
   Kokkos::parallel_for(
       "peclet::dem::halo::unpackGather", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
@@ -157,6 +192,9 @@ inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 in
         invMass(s) = p.invMass;
         shapeId(s) = p.shape;
         realIndices(s) = s;
+        gid(s) = p.gid;
+        materialId(s) = p.material;
+        grounded(s) = p.grounded;
       });
 }
 
@@ -299,12 +337,16 @@ class ParticleHalo {
     // (3) all other state packed into one record -> single exchange -> ghost slots + self-mapped
     // idx.
     haloPackGather(P.vel, P.velPred, P.angVel, P.angVelPred, P.invInertia, P.quat, P.quatPred,
-                   P.scale, P.invMass, P.shapeId, ownedPack_, no);
+                   P.scale, P.invMass, P.shapeId, P.gid, P.materialId, P.groundedLevel, ownedPack_,
+                   no);
     dev_.forward(ownedPack_, ghostPack_);
     haloUnpackGather(P.vel, P.velPred, P.angVel, P.angVelPred, P.invInertia, P.quat, P.quatPred,
-                     P.scale, P.invMass, P.shapeId, P.realIndices, ghostPack_, no, ng);
+                     P.scale, P.invMass, P.shapeId, P.realIndices, P.gid, P.materialId,
+                     P.groundedLevel, ghostPack_, no, ng);
     return no + ng;
   }
+
+  MPI_Comm comm() const { return comm_; }
 
   // Dynamic load re-balance: re-decompose the ORB by per-block particle COUNT (weighted ORB) and
   // migrate each owned particle, with its committed state, to its new owner. A pure redistribution
@@ -355,6 +397,7 @@ class ParticleHalo {
 
  private:
   // Download the committed state and pack it (position drives ownership; the rest is the payload).
+  // Each particle also carries its slice of the persistent-contact ledger (see MigratePack).
   void packState(Particles& P, std::vector<peclet::core::Vec<3>>& pos, std::vector<char>& payload) {
     const int no = P.numReal;
     auto h_pos = Kokkos::create_mirror_view(P.pos);
@@ -367,6 +410,9 @@ class ParticleHalo {
     auto h_tScale = Kokkos::create_mirror_view(P.targetScale);
     auto h_shape = Kokkos::create_mirror_view(P.shapeId);
     auto h_pf = Kokkos::create_mirror_view(P.planeFriction);
+    auto h_gid = Kokkos::create_mirror_view(P.gid);
+    auto h_mat = Kokkos::create_mirror_view(P.materialId);
+    auto h_grd = Kokkos::create_mirror_view(P.groundedLevel);
     Kokkos::deep_copy(h_pos, P.pos);
     Kokkos::deep_copy(h_quat, P.quat);
     Kokkos::deep_copy(h_vel, P.vel);
@@ -377,11 +423,17 @@ class ParticleHalo {
     Kokkos::deep_copy(h_tScale, P.targetScale);
     Kokkos::deep_copy(h_shape, P.shapeId);
     Kokkos::deep_copy(h_pf, P.planeFriction);
+    Kokkos::deep_copy(h_gid, P.gid);
+    Kokkos::deep_copy(h_mat, P.materialId);
+    Kokkos::deep_copy(h_grd, P.groundedLevel);
     pos.assign((std::size_t)no, peclet::core::Vec<3>{});
     payload.assign((std::size_t)no * sizeof(MigratePack), 0);
+    std::vector<MigratePack> packs((std::size_t)no);
+    std::unordered_map<unsigned, int> gidToLocal;
+    gidToLocal.reserve((std::size_t)no * 2);
     for (int i = 0; i < no; ++i) {
       pos[(std::size_t)i] = peclet::core::Vec<3>{h_pos(i, 0), h_pos(i, 1), h_pos(i, 2)};
-      MigratePack m;
+      MigratePack& m = packs[(std::size_t)i];
       m.quat = F4{h_quat(i, 0), h_quat(i, 1), h_quat(i, 2), h_quat(i, 3)};
       m.vel = F3{h_vel(i, 0), h_vel(i, 1), h_vel(i, 2)};
       m.angVel = F3{h_angVel(i, 0), h_angVel(i, 1), h_angVel(i, 2)};
@@ -392,10 +444,77 @@ class ParticleHalo {
       m.shapeId = h_shape(i);
       m.planeFric0 = h_pf(i, 0);
       m.planeFric1 = h_pf(i, 1);
-      std::memcpy(&payload[(std::size_t)i * sizeof(MigratePack)], &m, sizeof(MigratePack));
+      m.gid = h_gid(i);
+      m.materialId = h_mat(i);
+      m.groundedLevel = h_grd(i);
+      m.numWarm = 0;
+      gidToLocal.emplace(static_cast<unsigned>(h_gid(i)), i);
     }
+    // Distribute the previous-substep converged ledger onto its endpoint particles: each pair
+    // rides on BOTH locally-owned endpoints (the redundant ghost-pair pattern means either owner
+    // may need it; the unpack dedupes by key). Beyond kWarmCarryMax the lowest-|impulse| entry is
+    // evicted — a dropped pair merely warm-starts cold on the receiving rank.
+    if (P.prevPairCount > 0) {
+      const int pc = P.prevPairCount;
+      // Full-view mirrors (not row-range subviews): a row range of a LayoutLeft float*[3] view is
+      // non-contiguous, and a device->host deep_copy of it has no copy mechanism on CUDA.
+      auto h_k = Kokkos::create_mirror_view(P.prevPairKeys);
+      auto h_l = Kokkos::create_mirror_view(P.prevLambda);
+      auto h_lt = Kokkos::create_mirror_view(P.prevLambdaT);
+      auto h_pi = Kokkos::create_mirror_view(P.prevPosImpulse);
+      Kokkos::deep_copy(h_k, P.prevPairKeys);
+      Kokkos::deep_copy(h_l, P.prevLambda);
+      Kokkos::deep_copy(h_lt, P.prevLambdaT);
+      Kokkos::deep_copy(h_pi, P.prevPosImpulse);
+      auto attach = [&](int i, const WarmPairEntry& e, float w) {
+        MigratePack& m = packs[(std::size_t)i];
+        if (m.numWarm < kWarmCarryMax) {
+          m.warm[m.numWarm++] = e;
+          return;
+        }
+        int worst = 0;
+        float worstW = 1e30f;
+        for (int s = 0; s < kWarmCarryMax; ++s) {
+          const float ws = std::fabs(m.warm[s].lambda) + std::fabs(m.warm[s].posImpulse);
+          if (ws < worstW) {
+            worstW = ws;
+            worst = s;
+          }
+        }
+        if (w > worstW)
+          m.warm[worst] = e;
+      };
+      for (int e = 0; e < pc; ++e) {
+        const unsigned long long k = h_k(e);
+        if (k == ~0ull)
+          continue;
+        WarmPairEntry we;
+        we.key = k;
+        we.lambda = h_l(e);
+        we.lambdaT[0] = h_lt(e, 0);
+        we.lambdaT[1] = h_lt(e, 1);
+        we.lambdaT[2] = h_lt(e, 2);
+        we.posImpulse = h_pi(e);
+        if (we.lambda == 0.0f && we.posImpulse == 0.0f && we.lambdaT[0] == 0.0f &&
+            we.lambdaT[1] == 0.0f && we.lambdaT[2] == 0.0f)
+          continue;  // dead entry: carrying it only evicts live ones
+        const float w = std::fabs(we.lambda) + std::fabs(we.posImpulse);
+        const unsigned hi = static_cast<unsigned>(k >> 32);
+        const unsigned lo = static_cast<unsigned>(k & 0xFFFFFFFFu);
+        if (auto it = gidToLocal.find(hi); it != gidToLocal.end())
+          attach(it->second, we, w);
+        if (lo != 0xFFFFFFFFu)
+          if (auto it = gidToLocal.find(lo); it != gidToLocal.end())
+            attach(it->second, we, w);
+      }
+    }
+    for (int i = 0; i < no; ++i)
+      std::memcpy(&payload[(std::size_t)i * sizeof(MigratePack)], &packs[(std::size_t)i],
+                  sizeof(MigratePack));
   }
-  // Unpack the migrated particles back into the SoA [0,newN) and upload.
+  // Unpack the migrated particles back into the SoA [0,newN) and upload; rebuild the rank's
+  // persistent-contact ledger (prevPairKeys sorted + aligned impulse stores) from the union of the
+  // arriving particles' carried slices.
   void unpackState(Particles& P, const std::vector<peclet::core::Vec<3>>& pos,
                    const std::vector<char>& payload, std::size_t newN) {
     auto h_pos = Kokkos::create_mirror_view(P.pos);
@@ -408,6 +527,11 @@ class ParticleHalo {
     auto h_tScale = Kokkos::create_mirror_view(P.targetScale);
     auto h_shape = Kokkos::create_mirror_view(P.shapeId);
     auto h_pf = Kokkos::create_mirror_view(P.planeFriction);
+    auto h_gid = Kokkos::create_mirror_view(P.gid);
+    auto h_mat = Kokkos::create_mirror_view(P.materialId);
+    auto h_grd = Kokkos::create_mirror_view(P.groundedLevel);
+    std::vector<WarmPairEntry> ledger;
+    ledger.reserve(newN * 4);
     for (std::size_t i = 0; i < newN; ++i) {
       h_pos((int)i, 0) = pos[i][0];
       h_pos((int)i, 1) = pos[i][1];
@@ -433,6 +557,11 @@ class ParticleHalo {
       h_shape((int)i) = m.shapeId;
       h_pf((int)i, 0) = m.planeFric0;
       h_pf((int)i, 1) = m.planeFric1;
+      h_gid((int)i) = m.gid;
+      h_mat((int)i) = m.materialId;
+      h_grd((int)i) = m.groundedLevel;
+      for (int s = 0; s < (int)m.numWarm && s < kWarmCarryMax; ++s)
+        ledger.push_back(m.warm[s]);
     }
     Kokkos::deep_copy(P.pos, h_pos);
     Kokkos::deep_copy(P.quat, h_quat);
@@ -444,6 +573,44 @@ class ParticleHalo {
     Kokkos::deep_copy(P.targetScale, h_tScale);
     Kokkos::deep_copy(P.shapeId, h_shape);
     Kokkos::deep_copy(P.planeFriction, h_pf);
+    Kokkos::deep_copy(P.gid, h_gid);
+    Kokkos::deep_copy(P.materialId, h_mat);
+    Kokkos::deep_copy(P.groundedLevel, h_grd);
+
+    // Ledger rebuild: sort by key, dedupe (a pair arrives once per locally-received endpoint; the
+    // duplicates carry identical values), clamp to the store capacity, upload sorted + aligned —
+    // exactly the layout the warm-start gather's binary search expects.
+    std::sort(ledger.begin(), ledger.end(),
+              [](const WarmPairEntry& a, const WarmPairEntry& b) { return a.key < b.key; });
+    ledger.erase(std::unique(ledger.begin(), ledger.end(),
+                             [](const WarmPairEntry& a, const WarmPairEntry& b) {
+                               return a.key == b.key;
+                             }),
+                 ledger.end());
+    const int nl = std::min<int>((int)ledger.size(), (int)P.prevPairKeys.extent(0));
+    {
+      auto hk = Kokkos::create_mirror_view(P.prevPairKeys);
+      auto hl = Kokkos::create_mirror_view(P.prevLambda);
+      auto hlt = Kokkos::create_mirror_view(P.prevLambdaT);
+      auto hpi = Kokkos::create_mirror_view(P.prevPosImpulse);
+      Kokkos::deep_copy(hk, P.prevPairKeys);  // preserve tail entries beyond nl
+      Kokkos::deep_copy(hl, P.prevLambda);
+      Kokkos::deep_copy(hlt, P.prevLambdaT);
+      Kokkos::deep_copy(hpi, P.prevPosImpulse);
+      for (int e = 0; e < nl; ++e) {
+        hk(e) = ledger[(std::size_t)e].key;
+        hl(e) = ledger[(std::size_t)e].lambda;
+        hlt(e, 0) = ledger[(std::size_t)e].lambdaT[0];
+        hlt(e, 1) = ledger[(std::size_t)e].lambdaT[1];
+        hlt(e, 2) = ledger[(std::size_t)e].lambdaT[2];
+        hpi(e) = ledger[(std::size_t)e].posImpulse;
+      }
+      Kokkos::deep_copy(P.prevPairKeys, hk);
+      Kokkos::deep_copy(P.prevLambda, hl);
+      Kokkos::deep_copy(P.prevLambdaT, hlt);
+      Kokkos::deep_copy(P.prevPosImpulse, hpi);
+    }
+    P.prevPairCount = nl;
 
     P.numReal = (int)newN;
     P.numParticles = (int)newN;

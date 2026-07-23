@@ -1,4 +1,4 @@
-// dem — distributed load re-balancing test (KokkosSim::rebalance / enable_mpi_step
+// dem — distributed load re-balancing test (Simulation::rebalance / enable_mpi_step
 // rebalance_every).
 //
 // A skewed particle cloud (density concentrated toward x=0) is distributed over the ORB blocks, so
@@ -24,12 +24,12 @@
 #include <vector>
 
 #include "sim.hpp"
-#include "tpx/common/types.hpp"
-#include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/halo/particle_migrator.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/decomp/block_decomposer.hpp"
+#include "peclet/core/halo/particle_migrator.hpp"
 
-using dem::KokkosSim;
-using tpx::IVec;
+using peclet::dem::Simulation;
+using peclet::core::IVec;
 
 static constexpr double R = 1.0, GS = 1.0;
 static constexpr int GX = 16;      // ORB cell grid per axis
@@ -83,7 +83,7 @@ static std::array<float, 4> fQuat(float x, float y, float z) {
   return {q[0] / n, q[1] / n, q[2] / n, q[3] / n};
 }
 
-static void configure(KokkosSim& sim) {
+static void configure(Simulation& sim) {
   sim.setDomain(L, L, L, false, false, false);
   sim.setGlobalScale(GS);
   sim.setSphereShape(R);
@@ -94,7 +94,7 @@ static void configure(KokkosSim& sim) {
 }
 
 // Set each owned particle's committed state from f(position).
-static void setStateFromPos(KokkosSim& sim, const std::vector<float>& pos) {
+static void setStateFromPos(Simulation& sim, const std::vector<float>& pos) {
   const int n = (int)(pos.size() / 3);
   std::vector<float> vel(n * 3), ang(n * 3), invI(n * 3), quat(n * 4), scale(n);
   for (int i = 0; i < n; ++i) {
@@ -120,7 +120,7 @@ static void setStateFromPos(KokkosSim& sim, const std::vector<float>& pos) {
 }
 
 // Verify this rank's owned particles all carry f(position) bit-for-bit. Returns mismatch count.
-static int verifyState(KokkosSim& sim) {
+static int verifyState(Simulation& sim) {
   const std::vector<float> pos = sim.getPositions(), vel = sim.getVelocities(),
                            ang = sim.getAngularVelocities(), invI = sim.getInvInertia(),
                            quat = sim.getQuaternions(), scale = sim.getScales();
@@ -172,18 +172,18 @@ int main(int argc, char** argv) {
     const std::tuple<bool, bool, bool> per{false, false, false};
 
     // Which global particles this rank owns under the equal-cell ORB.
-    tpx::decomp::BlockDecomposer<3> dec((std::size_t)size, IVec<3>{GX, GX, GX});
-    tpx::halo::DomainMap<3> map;
+    peclet::core::decomp::BlockDecomposer<3> dec((std::size_t)size, IVec<3>{GX, GX, GX});
+    peclet::core::halo::DomainMap<3> map;
     for (int i = 0; i < 3; ++i) {
       map.origin[i] = 0;
       map.cellSize[i] = L / GX;
       map.periodic[i] = false;
     }
-    tpx::halo::ParticleMigrator<3> mig;
+    peclet::core::halo::ParticleMigrator<3> mig;
     mig.init(dec, rank, map, MPI_COMM_WORLD);
     std::vector<float> ownedPos;
     for (int g = 0; g < N; ++g) {
-      tpx::Vec<3> x{gpos[3 * g], gpos[3 * g + 1], gpos[3 * g + 2]};
+      peclet::core::Vec<3> x{gpos[3 * g], gpos[3 * g + 1], gpos[3 * g + 2]};
       if (mig.ownerOf(x) == rank) {
         ownedPos.push_back(gpos[3 * g]);
         ownedPos.push_back(gpos[3 * g + 1]);
@@ -193,7 +193,7 @@ int main(int argc, char** argv) {
     const int nOwned = (int)(ownedPos.size() / 3);
     const int cap = 4 * N;  // generous: peak per-rank owned + ghost headroom
 
-    KokkosSim sim(cap);
+    Simulation sim(cap);
     configure(sim);
     sim.setPositions(ownedPos);
     setStateFromPos(sim, ownedPos);
@@ -243,25 +243,25 @@ int main(int argc, char** argv) {
     const std::tuple<double, double, double> origin{0, 0, 0}, dsize{L, L, L};
     const std::tuple<long, long, long> gsize{GX, GX, GX};
     const std::tuple<bool, bool, bool> per{false, false, false};
-    tpx::decomp::BlockDecomposer<3> dec((std::size_t)size, IVec<3>{GX, GX, GX});
-    tpx::halo::DomainMap<3> map;
+    peclet::core::decomp::BlockDecomposer<3> dec((std::size_t)size, IVec<3>{GX, GX, GX});
+    peclet::core::halo::DomainMap<3> map;
     for (int i = 0; i < 3; ++i) {
       map.origin[i] = 0;
       map.cellSize[i] = L / GX;
       map.periodic[i] = false;
     }
-    tpx::halo::ParticleMigrator<3> mig;
+    peclet::core::halo::ParticleMigrator<3> mig;
     mig.init(dec, rank, map, MPI_COMM_WORLD);
     std::vector<float> ownedPos;
     for (int g = 0; g < N; ++g) {
-      tpx::Vec<3> x{gpos[3 * g], gpos[3 * g + 1], gpos[3 * g + 2]};
+      peclet::core::Vec<3> x{gpos[3 * g], gpos[3 * g + 1], gpos[3 * g + 2]};
       if (mig.ownerOf(x) == rank) {
         ownedPos.push_back(gpos[3 * g]);
         ownedPos.push_back(gpos[3 * g + 1]);
         ownedPos.push_back(gpos[3 * g + 2]);
       }
     }
-    KokkosSim sim(4 * N);
+    Simulation sim(4 * N);
     configure(sim);
     sim.setPositions(ownedPos);
     sim.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);

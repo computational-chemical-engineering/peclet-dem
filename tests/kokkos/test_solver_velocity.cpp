@@ -86,6 +86,13 @@ int main(int argc, char** argv) {
           m.restitution_sum = -1.0f * m.num_points;  // sentinel -> global restitution, static wall
           m.wallVel_sum = F4{0, 0, 0, 0};
         }
+      } else {
+        // Body-body: the production reduction emits the < 0 sentinel when no pair-material table
+        // is set (transformContact copies boundaryRestitution = -1); the solve applies the
+        // override to EVERY manifold since per-pair materials landed, so a zero-initialised sum
+        // would silently mean "per-pair restitution 0", not "global".
+        m.restitution_sum = -1.0f * m.num_points;
+        m.friction_sum = -1.0f * m.num_points;
       }
       man[k] = m;
     }
@@ -139,9 +146,12 @@ int main(int argc, char** argv) {
       Kokkos::deep_copy(dMan, h);
     }
     Kokkos::View<float* [3], CpMem> dDV("dv", N), dDW("dw", N);  // zero-initialised
+    Kokkos::View<int*, CpMem> dCounts("counts", N);              // zero-initialised
 
+    // restVelThreshold = 0: every approaching contact keeps the prescribed restitution — the
+    // pre-threshold semantics this host reference encodes.
     solveVelocityKokkos(dMan, M, dInvMass, dInvI, dQuat, dVel, dAng, dReal, growthRate, restitution,
-                        dDV, dDW);
+                        /*restVelThreshold=*/0.0f, dDV, dDW, dCounts);
 
     std::vector<float> gdv(3 * N), gdw(3 * N);
     {

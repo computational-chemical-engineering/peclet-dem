@@ -48,6 +48,15 @@ inline float readFloat(Kokkos::View<float, CpMem> v) {
   return h;
 }
 
+/// gid(i) = base + i over [0, n) — the per-rank global-id re-base of the distributed step
+/// (namespace scope: nvcc forbids KOKKOS_LAMBDA in member functions).
+inline void fillGidBaseKokkos(Vi gid, int n, int base) {
+  Kokkos::parallel_for(
+      "peclet::dem::gid_base", Kokkos::RangePolicy<CpExec>(0, n),
+      KOKKOS_LAMBDA(int i) { gid(i) = base + i; });
+  Kokkos::fence();
+}
+
 /// Single-GPU hooks: no ghost refresh, residuals are already global. Everything inlines away.
 struct SoloSolveHooks {
   static constexpr bool distributed = false;
