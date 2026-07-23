@@ -1482,8 +1482,30 @@ class Simulation {
                       static_cast<long>(P_.capacity) * std::max(1, shellPoints_) * P_.numWalls;
     if (want > P_.maxContacts) {
       P_.maxContacts = static_cast<int>(want);
+      // Reallocate EVERY maxContacts-sized view, not just contacts/manifolds: the solve writes all
+      // of them up to the live contact/manifold count, so any view left at the old size is an
+      // out-of-bounds write once the count grows past it (silent device corruption on GPU, heap
+      // corruption on host backends). Warm-start history is cleared by the fresh zeroed views —
+      // growth happens at setup (shape/wall registration), so nothing warm is lost mid-run.
       P_.contacts = Kokkos::View<ContactC*, CpMem>("contacts", want);
       P_.manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", want);
+      P_.manifoldColor = Kokkos::View<int*, CpMem>("manifoldColor", want);
+      P_.pairKeys = Kokkos::View<unsigned long long*, CpMem>("pairKeys", want);
+      P_.prevPairKeys = Kokkos::View<unsigned long long*, CpMem>("prevPairKeys", want);
+      P_.manifoldPersistent = Kokkos::View<unsigned char*, CpMem>("manifoldPersistent", want);
+      P_.contactColor = Kokkos::View<int*, CpMem>("contactColor", want);
+      P_.lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", want);
+      P_.lambdaT = Kokkos::View<float* [3], CpMem>("lambdaT", want);
+      P_.posLambdaContact = Kokkos::View<float*, CpMem>("posLambdaContact", want);
+      P_.posImpulse = Kokkos::View<float*, CpMem>("posImpulse", want);
+      P_.prevPosImpulse = Kokkos::View<float*, CpMem>("prevPosImpulse", want);
+      P_.sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", want);
+      P_.prevLambdaT = Kokkos::View<float* [3], CpMem>("prevLambdaT", want);
+      P_.contactSlot = Kokkos::View<int*, CpMem>("contactSlot", want);
+      P_.prevLambda = Kokkos::View<float*, CpMem>("prevLambda", want);
+      P_.vn0 = Kokkos::View<float*, CpMem>("vn0", want);
+      P_.vt0 = Kokkos::View<float* [3], CpMem>("vt0", want);
+      P_.prevPairCount = 0;  // the cleared prevPairKeys must not be gathered against
     }
   }
 
