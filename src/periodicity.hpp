@@ -43,7 +43,8 @@ inline int calculateGhostCapacity(int nReal, Domain dom, float skin) {
 inline void generateGhostsKokkos(int numReal, int capacity, Domain dom, float skin, V3 pos,
                                  Vf invMass, V3 posPred, V3 vel, V3 velPred, V4 quat, V4 quatPred,
                                  V3 angVel, V3 angVelPred, Vf scale, Vi shapeId, Vi realIndices,
-                                 Kokkos::View<int, CpMem> topGhost) {
+                                 Kokkos::View<int, CpMem> topGhost, Vi gid = Vi{},
+                                 Kokkos::View<unsigned char*, CpMem> materialId = {}) {
   using detail::st3;
   using detail::st4;
   CpExec space;
@@ -88,6 +89,13 @@ inline void generateGhostsKokkos(int numReal, int capacity, Domain dom, float sk
               scale(slot) = scale(i);
               shapeId(slot) = shapeId(i);
               realIndices(slot) = i;
+              if (gid.extent(0) > 0)
+                gid(slot) = gid(i);
+              // Ghost slots must carry the owner's material id: the narrowphase reads matId by RAW
+              // slot index, so a stale/zero ghost entry silently applied material 0's pair row to
+              // every cross-periodic-boundary contact.
+              if (materialId.extent(0) > 0)
+                materialId(slot) = materialId(i);
             }
       });
   space.fence();

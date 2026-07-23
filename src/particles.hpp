@@ -41,6 +41,10 @@ struct Particles {
   V3 deltaAngVel;
   Vi constraintCounts;
   Vi realIndices;
+  // Global particle id (stable across halo rebuilds and MPI ownership migration; identity == local
+  // index on the single-GPU path). The distributed step builds the persistent-contact pair keys
+  // from it — local slots are not stable identities there. Ghost slots carry the owner's gid.
+  Vi gid;
   Kokkos::View<float* [2], CpMem> planeFriction;
   Vf rad;      // effective broadphase radius scratch (scale * globalScale)
   V3 extForce;  // per-particle external FORCE (e.g. fluid drag); F=ma => dv = extForce*invMass*dt
@@ -215,6 +219,7 @@ struct Particles {
     deltaAngVel = V3("deltaAngVel", cap);
     constraintCounts = Vi("constraintCounts", cap);
     realIndices = Vi("realIndices", cap);
+    gid = Vi("gid", cap);
     planeFriction = Kokkos::View<float* [2], CpMem>("planeFriction", cap);
     rad = Vf("rad", cap);
     extForce = V3("extForce", cap);  // zero-initialised => no external force by default
@@ -316,6 +321,7 @@ struct Particles {
     Kokkos::resize(deltaAngVel, newCap);
     Kokkos::resize(constraintCounts, newCap);
     Kokkos::resize(realIndices, newCap);
+    Kokkos::resize(gid, newCap);
     Kokkos::resize(bodyWinner, newCap);
     Kokkos::resize(bodyColorMask, newCap);
     Kokkos::resize(groundedLevel, newCap);

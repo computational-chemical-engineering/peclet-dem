@@ -75,13 +75,18 @@ KOKKOS_INLINE_FUNCTION unsigned long long pairKeyOf(const ManifoldC& m,
   return (static_cast<unsigned long long>(hi) << 32) | lo;
 }
 
+/// `keyIdx` maps a body slot to the identity the pair key is built from: the REAL index map on the
+/// single-GPU path (stable within a run), or the GLOBAL particle id under MPI (stable across ranks,
+/// halo rebuilds and ownership migration — local slots are neither).
 inline void markPersistentManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                           int numManifolds,
                                           Kokkos::View<const int*, CpMem> realIdx,
+                                          Kokkos::View<const int*, CpMem> keyIdx,
                                           Kokkos::View<const unsigned long long*, CpMem> prevKeys,
                                           int prevCount,
                                           Kokkos::View<unsigned long long*, CpMem> outKeys,
                                           Kokkos::View<unsigned char*, CpMem> outFlags) {
+  (void)realIdx;
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::mark_persistent", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -92,7 +97,7 @@ inline void markPersistentManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> 
           outFlags(idx) = 0;
           return;
         }
-        const unsigned long long k = pairKeyOf(m, realIdx);
+        const unsigned long long k = pairKeyOf(m, keyIdx);
         outKeys(idx) = k;
         int lo = 0, hi = prevCount;
         while (lo < hi) {  // lower_bound on the sorted previous-substep keys
@@ -110,8 +115,11 @@ inline void markPersistentManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> 
 /// Warm-start gather for the PGS velocity solve: per manifold, write its pair key and look up the
 /// previous substep's converged push impulse (0 for a new contact). Periodic-ghost duplicate
 /// manifolds (realA > realB twin) get key ~0 and warm 0 -- the canonical twin carries the impulse.
+/// `keyIdx`: see markPersistentManifoldsKokkos (realIdx keeps the periodic-dedup role; keyIdx
+/// builds the cross-substep pair identity).
 inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                    int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
+                                   Kokkos::View<const int*, CpMem> keyIdx,
                                    Kokkos::View<const unsigned long long*, CpMem> prevKeys,
                                    Kokkos::View<const float*, CpMem> prevLambda,
                                    Kokkos::View<const float* [3], CpMem> prevLambdaT,
@@ -135,7 +143,7 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
           outPosImpulse(idx) = 0.0f;
           return;
         }
-        const unsigned long long k = pairKeyOf(m, realIdx);
+        const unsigned long long k = pairKeyOf(m, keyIdx);
         outKeys(idx) = k;
         int lo = 0, hi = prevCount;
         while (lo < hi) {
