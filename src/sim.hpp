@@ -431,6 +431,7 @@ inline void hertzRebuildPairs(Particles& P, float skin) {
   const size_t need = P.pairs.extent(0);
   if (P.hertzXi.extent(0) < need) {
     P.hertzXi = Kokkos::View<float* [3], CpMem>("hertzXi", need);
+    P.hertzSnPair = Kokkos::View<float*, CpMem>("hertzSnPair", need);
     P.hertzKeys = Kokkos::View<unsigned long long*, CpMem>("hertzKeys", need);
     P.hertzPrevKeys = Kokkos::View<unsigned long long*, CpMem>("hertzPrevKeys", need);
     P.hertzPrevXi = Kokkos::View<float* [3], CpMem>("hertzPrevXi", need);
@@ -465,6 +466,10 @@ inline void hertzRebuildPairs(Particles& P, float skin) {
         });
   }
   P.hertzNumPairs = np;
+  {  // lagged patch-stiffness store: reset at rebuild (one mis-damped step, harmless)
+    auto sn = Kokkos::subview(P.hertzSnPair, Kokkos::pair<int, int>(0, np));
+    Kokkos::deep_copy(space, sn, 0.0f);
+  }
   Kokkos::deep_copy(space, P.hertzRefPos, P.pos);
   Kokkos::deep_copy(space, P.hertzDispMax, 0.0f);
   space.fence();
@@ -540,29 +545,86 @@ inline void demStepHertz(Particles& P, float dt, int nsteps, float skinFrac) {
   const float rebuildAt = 0.25f * skin * skin;  // (skin/2)^2 on |dx|^2
   const F3 g = P.gravity;
   bool rebuild = (P.hertzNumPairs < 0);
+  // Non-spherical dispatch: any shape with a point shell routes pairs through the per-point
+  // Hertz kernel and enables orientation integration.
+  bool hasShapes = false;
+  {
+    auto hs = Kokkos::create_mirror_view(P.shapes);
+    Kokkos::deep_copy(hs, P.shapes);
+    for (size_t si = 0; si < hs.extent(0); ++si)
+      if (hs(si).numPoints > 0)
+        hasShapes = true;
+  }
+  static const bool profile = std::getenv("PECLET_DEM_HERTZ_PROFILE") != nullptr;
+  double tPair = 0, tWall = 0, tInt = 0, tRebuild = 0, tCheck = 0;
+  int nRebuilds = 0;
+  Kokkos::Timer timer;
   for (int k = 0; k < nsteps; ++k) {
     if (rebuild) {
       hertzCommitHistory(P);
       hertzRebuildPairs(P, skin);
+      if (P.numWalls > 0)
+        P.hertzNumWallCand = hertzBuildWallCandidatesKokkos(
+            P.numReal, P.numWalls, P.walls, P.wallGrid, P.pos, P.rad, skin, P.hertzWallCand,
+            P.hertzWallCandCount);
       rebuild = false;
+      ++nRebuilds;
+      if (profile) {
+        tRebuild += timer.seconds();
+        timer.reset();
+      }
     }
-    hertzPairForcesKokkos(P.pairs, P.hertzNumPairs, P.pos, P.vel, P.angVel, P.rad, P.invMass,
-                          MatIdView(P.materialId), PairTableView(P.pairMaterials),
-                          P.restitutionNormal, P.frictionDynamic, P.hertzE, P.hertzNu, dt,
-                          P.hertzXi, P.deltaVel, P.deltaAngVel);
-    if (P.numWalls > 0)
-      hertzWallForcesKokkos(P.numReal, P.numWalls, P.walls, P.wallGrid, P.pos, P.vel, P.angVel,
+    if (hasShapes)
+      hertzShapePairForcesKokkos(P.pairs, P.hertzNumPairs, P.pos, P.quat, P.vel, P.angVel,
+                                 P.scale, P.shapeId, P.shapes, P.shell, P.sdfGrid, P.globalScale,
+                                 P.hertzContactRadiusFrac, P.invMass, MatIdView(P.materialId),
+                                 PairTableView(P.pairMaterials), P.restitutionNormal,
+                                 P.frictionDynamic, P.hertzE, P.hertzNu, dt, P.hertzXi,
+                                 P.hertzSnPair, P.deltaVel, P.deltaAngVel);
+    else
+      hertzPairForcesKokkos(P.pairs, P.hertzNumPairs, P.pos, P.vel, P.angVel, P.rad, P.invMass,
+                            MatIdView(P.materialId), PairTableView(P.pairMaterials),
+                            P.restitutionNormal, P.frictionDynamic, P.hertzE, P.hertzNu, dt,
+                            P.hertzXi, P.deltaVel, P.deltaAngVel);
+    if (profile) {
+      tPair += timer.seconds();
+      timer.reset();
+    }
+    if (P.numWalls > 0 && P.hertzNumWallCand > 0)
+      hertzWallForcesKokkos(Kokkos::View<const int*, CpMem>(P.hertzWallCand), P.hertzNumWallCand,
+                            P.walls, P.wallGrid, P.pos, P.vel, P.angVel,
                             P.rad, P.invMass, MatIdView(P.materialId),
                             PairTableView(P.pairMaterials), P.restitutionNormal, P.frictionDynamic,
                             P.hertzE, P.hertzNu, dt, P.hertzXiWall, Particles::kHertzMaxWalls,
-                            P.deltaVel, P.deltaAngVel);
+                            P.deltaVel, P.deltaAngVel,
+                            Kokkos::View<const float* [4], CpMem>(P.quat),
+                            Kokkos::View<const float*, CpMem>(P.scale), P.shapeId, P.shapes,
+                            P.shell, P.globalScale, P.hertzContactRadiusFrac, hasShapes,
+                            P.hertzSnWall);
+    if (profile) {
+      tWall += timer.seconds();
+      timer.reset();
+    }
     hertzIntegrateKokkos(P.numReal, P.deltaVel, P.deltaAngVel, P.invMass, P.invInertia, g, dt,
-                         P.vel, P.angVel, P.pos);
+                         P.vel, P.angVel, P.pos, P.quat, hasShapes);
+    if (profile) {
+      tInt += timer.seconds();
+      timer.reset();
+    }
     if ((k & 15) == 15 || k == nsteps - 1) {
       if (hertzMaxDisp2Kokkos(P.numReal, P.pos, P.hertzRefPos) > rebuildAt)
         rebuild = true;
+      if (profile) {
+        tCheck += timer.seconds();
+        timer.reset();
+      }
     }
   }
+  if (profile)
+    std::printf("[hertz profile] steps=%d pairs=%d wallcand=%d rebuilds=%d | pair %.3fs wall %.3fs "
+                "integrate %.3fs check %.3fs rebuild %.3fs\n",
+                nsteps, P.hertzNumPairs, P.hertzNumWallCand, nRebuilds, tPair, tWall, tInt, tCheck,
+                tRebuild);
   CpExec space;
   Kokkos::deep_copy(space, P.posPred, P.pos);  // keep the impulse-path views coherent
   Kokkos::deep_copy(space, P.velPred, P.vel);

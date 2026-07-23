@@ -225,6 +225,37 @@ def _mass_properties(phi, coords, density):
     return mass, com, tensor
 
 
+def _resolve_degenerate_frame(evals, evecs, rel_tol=1e-2):
+    """Among the principal frames of a (partially) degenerate inertia tensor, pick the one
+    closest to the input axes.
+
+    ``eigh`` returns an arbitrary basis inside a (near-)equal eigenvalue cluster: a cube comes
+    back in a randomly rotated body frame (e.g. edge-down), which is a valid principal frame but
+    maximally surprising for the user placing the particle. Any orthonormal basis of a degenerate
+    subspace is principal, so within each cluster we rotate the basis onto the input axes with the
+    largest projection into that subspace (orthogonal Procrustes / polar factor). A fully
+    degenerate tensor (sphere, cube) yields exactly the input frame; non-degenerate axes are
+    untouched.
+    """
+    scale = max(float(evals.max()), 1e-30)
+    R = evecs.copy()
+    i = 0
+    while i < 3:
+        j = i + 1
+        while j < 3 and (evals[j] - evals[j - 1]) <= rel_tol * scale:
+            j += 1
+        k = j - i
+        if k > 1:
+            V = R[:, i:j]  # (3, k) orthonormal basis of the degenerate subspace
+            # The k input axes most contained in the subspace (row norms of V = projection sizes).
+            sel = np.sort(np.argsort(-np.linalg.norm(V, axis=1))[:k])
+            M = V.T[:, sel]  # (k, k) = V^T @ E_sel
+            U, _, Wt = np.linalg.svd(M)
+            R[:, i:j] = V @ (U @ Wt)  # closest orthonormal subspace basis to the chosen axes
+        i = j
+    return R
+
+
 def build_particle(
     f,
     bounds,
@@ -288,7 +319,7 @@ def build_particle(
     phi0, origin0, spacing0, coords0 = _sample(f, lo0, hi0, resolution)
     mass0, com, tensor = _mass_properties(phi0, coords0, density)
     evals, evecs = np.linalg.eigh(tensor)  # ascending eigenvalues; columns = principal axes
-    R = evecs
+    R = _resolve_degenerate_frame(evals, evecs)
     if np.linalg.det(R) < 0:  # keep a proper (right-handed) rotation
         R[:, 0] = -R[:, 0]
 

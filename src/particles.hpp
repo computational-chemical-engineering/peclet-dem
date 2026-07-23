@@ -84,6 +84,8 @@ struct Particles {
   // Position-channel normal load (see solvePositionColoredGSKokkos): per-contact positional
   // lambda this substep, its per-manifold impulse-equivalent, the previous substep's value
   // (warm-gathered) that tops up the friction cone's Coulomb bound, and the sorted store.
+  Kokkos::View<float*, CpMem> hertzSnPair;   // per cached pair: last step's patch stiffness sum
+  Kokkos::View<float*, CpMem> hertzSnWall;   // per (particle, wall): same, for wall patches
   Kokkos::View<float*, CpMem> posLambdaContact;
   Kokkos::View<float*, CpMem> posImpulse;      // gathered: LAST substep's position-channel load
   Kokkos::View<float*, CpMem> prevPosImpulse;  // sorted alongside prevPairKeys
@@ -96,6 +98,12 @@ struct Particles {
   Kokkos::View<unsigned long long*, CpMem> hertzPrevKeys;  // sorted keys of the PREVIOUS list
   Kokkos::View<float* [3], CpMem> hertzPrevXi;             // xi aligned with hertzPrevKeys
   Kokkos::View<float* [3], CpMem> hertzXiWall;    // per (particle, wall) shear history
+  Kokkos::View<int*, CpMem> hertzWallCand;   // near-wall candidate slots (i * 8 + wallIdx)
+  Kokkos::View<int, CpMem> hertzWallCandCount;
+  int hertzNumWallCand = 0;
+  // Effective Hertz contact-curvature radius for non-spherical shapes, as a fraction of the
+  // bounding radius (true curvature is undefined at faces/edges; spheres use their real radius).
+  float hertzContactRadiusFrac = 0.5f;
   Kokkos::View<float* [3], CpMem> hertzRefPos;    // positions at the last pair build
   Kokkos::View<float, CpMem> hertzDispMax;        // max |pos-ref|^2 since the build
   Kokkos::View<float*, CpMem> hertzE, hertzNu;    // per-material Young / Poisson
@@ -204,6 +212,9 @@ struct Particles {
     prevPosImpulse = Kokkos::View<float*, CpMem>("prevPosImpulse", maxContacts);
     sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", maxContacts);
     hertzXiWall = Kokkos::View<float* [3], CpMem>("hertzXiWall", cap * kHertzMaxWalls);
+    hertzWallCand = Kokkos::View<int*, CpMem>("hertzWallCand", cap * 2);
+    hertzSnWall = Kokkos::View<float*, CpMem>("hertzSnWall", cap * kHertzMaxWalls);
+    hertzWallCandCount = Kokkos::View<int, CpMem>("hertzWallCandCount");
     hertzRefPos = Kokkos::View<float* [3], CpMem>("hertzRefPos", cap);
     hertzDispMax = Kokkos::View<float, CpMem>("hertzDispMax");
     hertzE = Kokkos::View<float*, CpMem>("hertzE", 8);
