@@ -92,6 +92,24 @@ struct Particles {
   // Side flags for the STABILIZATION pass (0 = symmetric): zeroed for the main momentum-
   // conserving sweeps, filled from persistence+grounding only if statics fail to converge.
   Kokkos::View<unsigned char*, CpMem> sideFlags;
+  // Level-ordered ("ordered") stabilization: per-REAL-body height-from-floor BFS level
+  // (recomputed fresh each time the pass triggers) + the per-manifold (level, colour) bucket
+  // key and permutation the ordered sweeps iterate through.
+  Kokkos::View<int*, CpMem> heightLevel;
+  Kokkos::View<int*, CpMem> levelKey;
+  Kokkos::View<int*, CpMem> levelPerm;
+  // Multilevel (GraphMG) stabilization scratch (solver_multilevel.hpp): packed per-manifold
+  // 6-bit colour per level, pooled parent maps / group mass / group velocity arrays (levels
+  // shrink >= 10% each, so the pools hold every level), the composed body -> group map, and
+  // the matching scratch.
+  Kokkos::View<long long*, CpMem> mlColorPacked;
+  Kokkos::View<int*, CpMem> mlParent;
+  Kokkos::View<float*, CpMem> mlInvMassG;
+  Kokkos::View<float* [3], CpMem> mlVelG;
+  Kokkos::View<float* [3], CpMem> mlVelG0;
+  Kokkos::View<float*, CpMem> mlMassG;
+  Kokkos::View<int*, CpMem> mlGrp;
+  Kokkos::View<int*, CpMem> mlMate;
   // --- Hertz-Mindlin soft-sphere engine (solver_hertz.hpp): cached Verlet pair list state ---
   Kokkos::View<float* [3], CpMem> hertzXi;        // per cached pair: Mindlin shear history
   Kokkos::View<unsigned long long*, CpMem> hertzKeys;      // keys of the cached pairs
@@ -110,8 +128,11 @@ struct Particles {
   int hertzNumPairs = -1;                          // -1: no valid cached list
   int hertzPrevCount = 0;
   static constexpr int kHertzMaxWalls = 4;
-  // One-sided grounded stabilization pass (Phase B of the staged velocity solve); see sim.hpp.
-  bool stabilization = true;
+  // Stabilization mode of the staged velocity solve (Phase B; see sim.hpp): 0 = off (pure
+  // symmetric PGS), 1 = one-sided grounded pass (default), 2 = multilevel (level-ordered
+  // symmetric sweeps -- momentum is transported, never deleted), 3 = escalate (extra symmetric
+  // sweeps; diagnostic/fallback).
+  int stabilizationMode = 1;
   // Per-particle material id + flat pair-material table [kMaxMaterials^2 * 2] of (restitution,
   // friction) rows; zero-length pairMaterials = feature off (global material everywhere).
   Kokkos::View<unsigned char*, CpMem> materialId;
@@ -132,6 +153,11 @@ struct Particles {
   // colored-GS velocity loop's adaptive stop (converged once no pair approaches above the resting
   // threshold). maxOverlap plays the same role for the position loop.
   Kokkos::View<float, CpMem> maxApproach;
+  // Quasi-static share of maxApproach (corrections on contacts with |vn0| <= 4 vRest): the
+  // multilevel stabilization loop's stop criterion -- flowing scenes keep ballistic churn out
+  // of it, so the pass ends after ~one cycle instead of burning its full budget as an
+  // over-convergence brake on discharge.
+  Kokkos::View<float, CpMem> maxApproachQS;
 
   // --- static geometry ---
   Kokkos::View<ShapeDesc*, CpMem> shapes;
@@ -211,6 +237,17 @@ struct Particles {
     posImpulse = Kokkos::View<float*, CpMem>("posImpulse", maxContacts);
     prevPosImpulse = Kokkos::View<float*, CpMem>("prevPosImpulse", maxContacts);
     sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", maxContacts);
+    heightLevel = Kokkos::View<int*, CpMem>("heightLevel", cap);
+    levelKey = Kokkos::View<int*, CpMem>("levelKey", maxContacts);
+    levelPerm = Kokkos::View<int*, CpMem>("levelPerm", maxContacts);
+    mlColorPacked = Kokkos::View<long long*, CpMem>("mlColorPacked", maxContacts);
+    mlParent = Kokkos::View<int*, CpMem>("mlParent", 5 * cap);
+    mlInvMassG = Kokkos::View<float*, CpMem>("mlInvMassG", 4 * cap);
+    mlVelG = Kokkos::View<float* [3], CpMem>("mlVelG", 4 * cap);
+    mlVelG0 = Kokkos::View<float* [3], CpMem>("mlVelG0", 4 * cap);
+    mlMassG = Kokkos::View<float*, CpMem>("mlMassG", 4 * cap);
+    mlGrp = Kokkos::View<int*, CpMem>("mlGrp", cap);
+    mlMate = Kokkos::View<int*, CpMem>("mlMate", cap);
     hertzXiWall = Kokkos::View<float* [3], CpMem>("hertzXiWall", cap * kHertzMaxWalls);
     hertzWallCand = Kokkos::View<int*, CpMem>("hertzWallCand", cap * 2);
     hertzSnWall = Kokkos::View<float*, CpMem>("hertzSnWall", cap * kHertzMaxWalls);
@@ -240,6 +277,7 @@ struct Particles {
     topGhost = Kokkos::View<int, CpMem>("topGhost");
     maxOverlap = Kokkos::View<float, CpMem>("maxOverlap");
     maxApproach = Kokkos::View<float, CpMem>("maxApproach");
+    maxApproachQS = Kokkos::View<float, CpMem>("maxApproachQS");
     shapes = Kokkos::View<ShapeDesc*, CpMem>("shapes", nShapes > 0 ? nShapes : 1);
     shell = Kokkos::View<float* [3], CpMem>("shell", nShell > 0 ? nShell : 1);
     planes = Kokkos::View<PlaneP*, CpMem>("planes", nPlanes > 0 ? nPlanes : 1);
@@ -281,6 +319,7 @@ struct Particles {
     Kokkos::resize(bodyWinner, newCap);
     Kokkos::resize(bodyColorMask, newCap);
     Kokkos::resize(groundedLevel, newCap);
+    Kokkos::resize(heightLevel, newCap);
     Kokkos::resize(planeFriction, newCap);
     Kokkos::resize(rad, newCap);
     Kokkos::resize(extForce, newCap);

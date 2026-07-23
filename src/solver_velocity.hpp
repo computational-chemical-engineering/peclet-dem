@@ -9,6 +9,10 @@
 #ifndef DEM_SOLVER_VELOCITY_HPP
 #define DEM_SOLVER_VELOCITY_HPP
 
+#include <climits>
+#include <utility>
+#include <vector>
+
 #include <Kokkos_Core.hpp>
 
 #include "contact_preprocessing.hpp"  // ManifoldC, CpExec/CpMem
@@ -604,116 +608,124 @@ inline void warmStartApplyKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds
 /// -e*max(vtil0,0) (e via the resting threshold on vn0), incremental impulse dp = (vtil-target)/w,
 /// accumulator projection p := max(0, p+dp), apply the applied difference in place. maxApproach
 /// records the largest applied velocity correction (physical units) for the adaptive stop.
-inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                   int numManifolds, Kokkos::View<const int*, CpMem> mColor,
-                                   int numColors, Kokkos::View<const float*, CpMem> invMass,
-                                   Kokkos::View<const float* [3], CpMem> invInertia,
-                                   Kokkos::View<const float* [4], CpMem> quat,
-                                   Kokkos::View<float* [3], CpMem> velPred,
-                                   Kokkos::View<float* [3], CpMem> angVelPred,
-                                   Kokkos::View<const int*, CpMem> realIdx, float growthRate,
-                                   float restitutionNormal, float restVelThreshold,
-                                   Kokkos::View<float, CpMem> maxApproach,
-                                   Kokkos::View<float*, CpMem> lambdaAcc,
-                                   Kokkos::View<const float*, CpMem> vn0,
-                                   Kokkos::View<const unsigned char*, CpMem> sideFlag,
-                                   Kokkos::View<float* [3], CpMem> lambdaT,
-                                   float frictionDynamic,
-                                   Kokkos::View<const float* [3], CpMem> vt0 = {},
-                                   float restitutionTangent = 0.0f,
-                                   Kokkos::View<const float*, CpMem> posImpulse = {}) {
-  using detail::genInvMass;
-  using detail::ld3;
-  CpExec space;
-  for (int color = 0; color < numColors; ++color) {
-    Kokkos::parallel_for(
-        "peclet::dem::solve_velocity_pgs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-        KOKKOS_LAMBDA(int idx) {
-          if (mColor(idx) != color)
-            return;
-          const ManifoldC m = manifolds(idx);
-          const int idA = m.bodyA, idB = m.bodyB;
-          const int realA = realIdx(idA);
-          const int realB = (idB >= 0) ? realIdx(idB) : idB;
-          const float invMassA = invMass(realA);
-          const float invMassB = (idB >= 0) ? invMass(realB) : 0.0f;
-          const F3 invIA = ld3(invInertia, realA);
-          const F3 invIB = (idB >= 0) ? ld3(invInertia, realB) : F3{0, 0, 0};
-          const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
-          const F4 qB = (idB >= 0)
-                            ? F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)}
-                            : F4{0, 0, 0, 1};
-          const F3 vA = ld3(velPred, realA), wA = ld3(angVelPred, realA);
-          F3 vB{0, 0, 0}, wB{0, 0, 0};
-          const float invN = 1.0f / static_cast<float>(m.num_points);
-          float restitution = restitutionNormal;
-          if (idB >= 0) {
-            vB = ld3(velPred, realB);
-            wB = ld3(angVelPred, realB);
-          } else {
-            vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
-          }
-          {  // per-wall AND per-pair material override (a < 0 average keeps the global material)
-            const float ra = m.restitution_sum * invN;
-            if (ra >= 0.0f)
-              restitution = ra;
-          }
-          const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
-          const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
-          const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
-          const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
-          const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
-          const float lenN = Kokkos::sqrt(dot3(Nsum, Nsum));
-          if (lenN < 1e-9f)
-            return;
-          const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
-          const F3 vGrowth = scale3(diffCenters, growthRate);
-          float vn = dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
-                     dot3(wB, TauB);
-          vn += dot3(vGrowth, Nsum);
-          const float alignment = dot3(Nsum, diffCenters);
-          const float sgn = (alignment > 0.0f) ? 1.0f : -1.0f;
-          const float Nsq = dot3(Nsum, Nsum);
-          float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
-          float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
-          // Shock propagation INSIDE the PGS sweep (Guendelman staged solve, per-contact form):
-          // sidedness was decided ONCE this substep (computeSideFlagsKokkos) so the warm start,
-          // accumulator and every sweep share one consistent ledger. The held ground side absorbs
-          // the reaction (recursively down to the floor); e is forced 0 on one-sided contacts.
-          bool applyA = true, applyB = true;
-          const unsigned char sf = sideFlag(idx);
-          if (sf == 1) {
-            wB_n = 0.0f;
-            applyB = false;
-            restitution = 0.0f;
-          } else if (sf == 2) {
-            wA_n = 0.0f;
-            applyA = false;
-            restitution = 0.0f;
-          }
-          const float wTotal = wA_n + wB_n;
-          if (wTotal <= 0.0f)
-            return;
-          // Restitution bias on the PRE-SOLVE approach (resting threshold as in the one-shot path).
-          const float v0til = sgn * vn0(idx);
-          if (Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN)
-            restitution = 0.0f;
-          const float target = (v0til > 0.0f) ? -restitution * v0til : 0.0f;
-          const float vtil = sgn * vn;
-          const float dp = (vtil - target) / wTotal;
-          const float pOld = lambdaAcc(idx);
-          float pNew = pOld + dp;
-          if (pNew < 0.0f)
-            pNew = 0.0f;
-          const float dApplied = pNew - pOld;
-          if (dApplied != 0.0f) {
-          lambdaAcc(idx) = pNew;
-          Kokkos::atomic_max(&maxApproach(), Kokkos::fabs(dApplied) * wTotal / lenN);
-          const float lambda = -sgn * dApplied;
-          const F3 Jlin = scale3(Nsum, lambda);
-          const F3 JangA = scale3(TauA, lambda);
-          const F3 JangB = scale3(TauB, lambda);
-          if (applyA) {
+///
+/// The per-manifold solve body lives in PGSManifoldSweep so the colored sweep and the
+/// level-ordered ("multilevel") bucket sweep share it verbatim: solveOne(idx) must only run
+/// concurrently on manifolds that are body-disjoint within one launch (a colour class, or a
+/// (level, colour) bucket -- a subset of a colour class).
+struct PGSManifoldSweep {
+  Kokkos::View<const ManifoldC*, CpMem> manifolds;
+  Kokkos::View<const float*, CpMem> invMass;
+  Kokkos::View<const float* [3], CpMem> invInertia;
+  Kokkos::View<const float* [4], CpMem> quat;
+  Kokkos::View<float* [3], CpMem> velPred;
+  Kokkos::View<float* [3], CpMem> angVelPred;
+  Kokkos::View<const int*, CpMem> realIdx;
+  float growthRate;
+  float restitutionNormal;
+  float restVelThreshold;
+  Kokkos::View<float, CpMem> maxApproach;
+  // Quasi-static residual (corrections on contacts with |vn0| <= 4 restVelThreshold): the
+  // multilevel pass's stop criterion. The colored caller aliases this to maxApproach (the
+  // duplicate atomic_max is idempotent), so main-loop behaviour is unchanged.
+  Kokkos::View<float, CpMem> maxApproachQS;
+  Kokkos::View<float*, CpMem> lambdaAcc;
+  Kokkos::View<const float*, CpMem> vn0;
+  Kokkos::View<const unsigned char*, CpMem> sideFlag;
+  Kokkos::View<float* [3], CpMem> lambdaT;
+  float frictionDynamic;
+  Kokkos::View<const float* [3], CpMem> vt0;
+  float restitutionTangent;
+  Kokkos::View<const float*, CpMem> posImpulse;
+
+  KOKKOS_FUNCTION void solveOne(int idx) const {
+    using detail::genInvMass;
+    using detail::ld3;
+    {
+      const ManifoldC m = manifolds(idx);
+      const int idA = m.bodyA, idB = m.bodyB;
+      const int realA = realIdx(idA);
+      const int realB = (idB >= 0) ? realIdx(idB) : idB;
+      const float invMassA = invMass(realA);
+      const float invMassB = (idB >= 0) ? invMass(realB) : 0.0f;
+      const F3 invIA = ld3(invInertia, realA);
+      const F3 invIB = (idB >= 0) ? ld3(invInertia, realB) : F3{0, 0, 0};
+      const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
+      const F4 qB = (idB >= 0) ? F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)}
+                               : F4{0, 0, 0, 1};
+      const F3 vA = ld3(velPred, realA), wA = ld3(angVelPred, realA);
+      F3 vB{0, 0, 0}, wB{0, 0, 0};
+      const float invN = 1.0f / static_cast<float>(m.num_points);
+      float restitution = restitutionNormal;
+      if (idB >= 0) {
+        vB = ld3(velPred, realB);
+        wB = ld3(angVelPred, realB);
+      } else {
+        vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+      }
+      {  // per-wall AND per-pair material override (a < 0 average keeps the global material)
+        const float ra = m.restitution_sum * invN;
+        if (ra >= 0.0f)
+          restitution = ra;
+      }
+      const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
+      const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
+      const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
+      const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
+      const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
+      const float lenN = Kokkos::sqrt(dot3(Nsum, Nsum));
+      if (lenN < 1e-9f)
+        return;
+      const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
+      const F3 vGrowth = scale3(diffCenters, growthRate);
+      float vn = dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
+                 dot3(wB, TauB);
+      vn += dot3(vGrowth, Nsum);
+      const float alignment = dot3(Nsum, diffCenters);
+      const float sgn = (alignment > 0.0f) ? 1.0f : -1.0f;
+      const float Nsq = dot3(Nsum, Nsum);
+      float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
+      float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
+      // Shock propagation INSIDE the PGS sweep (Guendelman staged solve, per-contact form):
+      // sidedness was decided ONCE this substep (computeSideFlagsKokkos) so the warm start,
+      // accumulator and every sweep share one consistent ledger. The held ground side absorbs
+      // the reaction (recursively down to the floor); e is forced 0 on one-sided contacts.
+      bool applyA = true, applyB = true;
+      const unsigned char sf = sideFlag(idx);
+      if (sf == 1) {
+        wB_n = 0.0f;
+        applyB = false;
+        restitution = 0.0f;
+      } else if (sf == 2) {
+        wA_n = 0.0f;
+        applyA = false;
+        restitution = 0.0f;
+      }
+      const float wTotal = wA_n + wB_n;
+      if (wTotal <= 0.0f)
+        return;
+      // Restitution bias on the PRE-SOLVE approach (resting threshold as in the one-shot path).
+      const float v0til = sgn * vn0(idx);
+      if (Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN)
+        restitution = 0.0f;
+      const float target = (v0til > 0.0f) ? -restitution * v0til : 0.0f;
+      const float vtil = sgn * vn;
+      const float dp = (vtil - target) / wTotal;
+      const float pOld = lambdaAcc(idx);
+      float pNew = pOld + dp;
+      if (pNew < 0.0f)
+        pNew = 0.0f;
+      const float dApplied = pNew - pOld;
+      if (dApplied != 0.0f) {
+        lambdaAcc(idx) = pNew;
+        Kokkos::atomic_max(&maxApproach(), Kokkos::fabs(dApplied) * wTotal / lenN);
+        if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
+          Kokkos::atomic_max(&maxApproachQS(), Kokkos::fabs(dApplied) * wTotal / lenN);
+        const float lambda = -sgn * dApplied;
+        const F3 Jlin = scale3(Nsum, lambda);
+        const F3 JangA = scale3(TauA, lambda);
+        const F3 JangB = scale3(TauB, lambda);
+        if (applyA) {
           velPred(realA, 0) += Jlin.x * invMassA;
           velPred(realA, 1) += Jlin.y * invMassA;
           velPred(realA, 2) += Jlin.z * invMassA;
@@ -725,128 +737,244 @@ inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
             angVelPred(realA, 1) += dww.y;
             angVelPred(realA, 2) += dww.z;
           }
-          }
-          if (idB >= 0 && applyB) {
-            velPred(realB, 0) += -Jlin.x * invMassB;
-            velPred(realB, 1) += -Jlin.y * invMassB;
-            velPred(realB, 2) += -Jlin.z * invMassB;
-            const F3 Jl = invRotateVector(qB, JangB);
-            const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
-            const F3 dww = rotateVector(qB, dwl);
-            angVelPred(realB, 0) += dww.x;
-            angVelPred(realB, 1) += dww.y;
-            angVelPred(realB, 2) += dww.z;
-          }
-          }  // dApplied != 0
+        }
+        if (idB >= 0 && applyB) {
+          velPred(realB, 0) += -Jlin.x * invMassB;
+          velPred(realB, 1) += -Jlin.y * invMassB;
+          velPred(realB, 2) += -Jlin.z * invMassB;
+          const F3 Jl = invRotateVector(qB, JangB);
+          const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
+          const F3 dww = rotateVector(qB, dwl);
+          angVelPred(realB, 0) += dww.x;
+          angVelPred(realB, 1) += dww.y;
+          angVelPred(realB, 2) += dww.z;
+        }
+      }  // dApplied != 0
 
-          // ---- Friction cone (sequential tangential impulse) ----
-          // Accumulated world-frame tangential impulse lambdaT on body A, updated by the same
-          // colored nonlinear GS: incremental impulse -vt/w_t along the current slip direction,
-          // then projection onto the Coulomb disc |lambdaT| <= mu * lambdaN (physical impulse:
-          // the normal accumulator is scaled by |Nsum|). Static stick falls out naturally: at
-          // vt = 0 the accumulator holds whatever tangential load the cone admits. Sidedness
-          // mirrors the normal solve (a held side neither moves nor adds compliance).
-          {
-            float mu = frictionDynamic;
-            const float fa = m.friction_sum * invN;
-            if (fa >= 0.0f)
-              mu = fa;
-            F3 ltOld{lambdaT(idx, 0), lambdaT(idx, 1), lambdaT(idx, 2)};
-            const bool haveOld =
-                (ltOld.x != 0.0f || ltOld.y != 0.0f || ltOld.z != 0.0f);
-            if (mu > 0.0f || haveOld) {
-              const F3 nhat = scale3(Nsum, 1.0f / lenN);
-              const F3 vA2 = ld3(velPred, realA), wA2 = ld3(angVelPred, realA);
-              F3 vB2{0, 0, 0}, wB2{0, 0, 0};
-              if (idB >= 0) {
-                vB2 = ld3(velPred, realB);
-                wB2 = ld3(angVelPred, realB);
-              } else {
-                vB2 = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
-              }
-              const F3 vrel = sub3(add3(vA2, cross3v(wA2, rAavg)),
-                                   add3(vB2, cross3v(wB2, rBavg)));
-              const F3 vt = sub3(vrel, scale3(nhat, dot3(vrel, nhat)));
-              // Walton tangential restitution: for a COLLIDING contact the target surface
-              // velocity is -beta * vt0 (pre-solve tangential velocity); sustained contacts
-              // (below the resting threshold) and one-sided stabilization contacts run beta = 0
-              // -- the same event classification that gates normal restitution. The cone clamp
-              // below turns this into the stick/slide transition of the (e, mu, beta) law.
-              float beta = restitutionTangent;
-              if (beta != 0.0f &&
-                  (sf != 0 || Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN))
-                beta = 0.0f;
-              F3 vtErr = vt;
-              if (beta != 0.0f && vt0.extent(0) > 0) {
-                F3 v0{vt0(idx, 0), vt0(idx, 1), vt0(idx, 2)};
-                v0 = sub3(v0, scale3(nhat, dot3(v0, nhat)));  // current tangent plane
-                vtErr = add3(vt, scale3(v0, beta));
-              }
-              const float vtLen = Kokkos::sqrt(dot3(vtErr, vtErr));
-              F3 ltNew = ltOld;
-              float wT = invMassA + invMassB;
-              if (vtLen > 1e-9f) {
-                const F3 that = scale3(vtErr, 1.0f / vtLen);
-                float wAt =
-                    (sf == 2) ? 0.0f
-                              : invMassA + genInvMass(cross3v(rAavg, that), invIA, qA);
-                float wBt = (sf == 1 || idB < 0)
-                                ? 0.0f
-                                : invMassB + genInvMass(cross3v(rBavg, that), invIB, qB);
-                wT = wAt + wBt;
-                if (wT > 1e-9f)
-                  ltNew = add3(ltOld, scale3(that, -vtLen / wT));
-              }
-              ltNew = sub3(ltNew, scale3(nhat, dot3(ltNew, nhat)));
-              // Coulomb bound = mu * TOTAL normal load: velocity-impulse channel (lambdaAcc,
-              // physical impulse = lambdaAcc * |Nsum|) + the position-projection channel carried
-              // from last substep (already physical impulse units).
-              float nTot = Kokkos::fmax(lambdaAcc(idx), 0.0f) * lenN;
-              // The carry is a QUASI-STATIC corrector: for colliding contacts the one-substep lag
-              // double-counts (crater contacts already carry a large velocity impulse) -- gate by
-              // the same event classification as e and beta.
-              if (posImpulse.extent(0) > 0 &&
-                  Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN)
-                nTot += Kokkos::fmax(posImpulse(idx), 0.0f);
-              const float bound = mu * nTot;
-              const float ltLen = Kokkos::sqrt(dot3(ltNew, ltNew));
-              if (ltLen > bound)
-                ltNew = (bound > 0.0f) ? scale3(ltNew, bound / ltLen) : F3{0, 0, 0};
-              const F3 dApp = sub3(ltNew, ltOld);
-              if (dApp.x != 0.0f || dApp.y != 0.0f || dApp.z != 0.0f) {
-                lambdaT(idx, 0) = ltNew.x;
-                lambdaT(idx, 1) = ltNew.y;
-                lambdaT(idx, 2) = ltNew.z;
-                const float dLen = Kokkos::sqrt(dot3(dApp, dApp));
-                if (wT > 1e-9f)
-                  Kokkos::atomic_max(&maxApproach(), dLen * wT);
-                if (applyA) {
-                  velPred(realA, 0) += dApp.x * invMassA;
-                  velPred(realA, 1) += dApp.y * invMassA;
-                  velPred(realA, 2) += dApp.z * invMassA;
-                  const F3 Jl = invRotateVector(qA, cross3v(rAavg, dApp));
-                  const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
-                  const F3 dww = rotateVector(qA, dwl);
-                  angVelPred(realA, 0) += dww.x;
-                  angVelPred(realA, 1) += dww.y;
-                  angVelPred(realA, 2) += dww.z;
-                }
-                if (idB >= 0 && applyB) {
-                  velPred(realB, 0) += -dApp.x * invMassB;
-                  velPred(realB, 1) += -dApp.y * invMassB;
-                  velPred(realB, 2) += -dApp.z * invMassB;
-                  const F3 Jl =
-                      invRotateVector(qB, cross3v(rBavg, scale3(dApp, -1.0f)));
-                  const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
-                  const F3 dww = rotateVector(qB, dwl);
-                  angVelPred(realB, 0) += dww.x;
-                  angVelPred(realB, 1) += dww.y;
-                  angVelPred(realB, 2) += dww.z;
-                }
-              }
+      // ---- Friction cone (sequential tangential impulse) ----
+      // Accumulated world-frame tangential impulse lambdaT on body A, updated by the same
+      // colored nonlinear GS: incremental impulse -vt/w_t along the current slip direction,
+      // then projection onto the Coulomb disc |lambdaT| <= mu * lambdaN (physical impulse:
+      // the normal accumulator is scaled by |Nsum|). Static stick falls out naturally: at
+      // vt = 0 the accumulator holds whatever tangential load the cone admits. Sidedness
+      // mirrors the normal solve (a held side neither moves nor adds compliance).
+      {
+        float mu = frictionDynamic;
+        const float fa = m.friction_sum * invN;
+        if (fa >= 0.0f)
+          mu = fa;
+        F3 ltOld{lambdaT(idx, 0), lambdaT(idx, 1), lambdaT(idx, 2)};
+        const bool haveOld = (ltOld.x != 0.0f || ltOld.y != 0.0f || ltOld.z != 0.0f);
+        if (mu > 0.0f || haveOld) {
+          const F3 nhat = scale3(Nsum, 1.0f / lenN);
+          const F3 vA2 = ld3(velPred, realA), wA2 = ld3(angVelPred, realA);
+          F3 vB2{0, 0, 0}, wB2{0, 0, 0};
+          if (idB >= 0) {
+            vB2 = ld3(velPred, realB);
+            wB2 = ld3(angVelPred, realB);
+          } else {
+            vB2 = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+          }
+          const F3 vrel = sub3(add3(vA2, cross3v(wA2, rAavg)), add3(vB2, cross3v(wB2, rBavg)));
+          const F3 vt = sub3(vrel, scale3(nhat, dot3(vrel, nhat)));
+          // Walton tangential restitution: for a COLLIDING contact the target surface
+          // velocity is -beta * vt0 (pre-solve tangential velocity); sustained contacts
+          // (below the resting threshold) and one-sided stabilization contacts run beta = 0
+          // -- the same event classification that gates normal restitution. The cone clamp
+          // below turns this into the stick/slide transition of the (e, mu, beta) law.
+          float beta = restitutionTangent;
+          if (beta != 0.0f && (sf != 0 || Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN))
+            beta = 0.0f;
+          F3 vtErr = vt;
+          if (beta != 0.0f && vt0.extent(0) > 0) {
+            F3 v0{vt0(idx, 0), vt0(idx, 1), vt0(idx, 2)};
+            v0 = sub3(v0, scale3(nhat, dot3(v0, nhat)));  // current tangent plane
+            vtErr = add3(vt, scale3(v0, beta));
+          }
+          const float vtLen = Kokkos::sqrt(dot3(vtErr, vtErr));
+          F3 ltNew = ltOld;
+          float wT = invMassA + invMassB;
+          if (vtLen > 1e-9f) {
+            const F3 that = scale3(vtErr, 1.0f / vtLen);
+            float wAt = (sf == 2) ? 0.0f : invMassA + genInvMass(cross3v(rAavg, that), invIA, qA);
+            float wBt = (sf == 1 || idB < 0)
+                            ? 0.0f
+                            : invMassB + genInvMass(cross3v(rBavg, that), invIB, qB);
+            wT = wAt + wBt;
+            if (wT > 1e-9f)
+              ltNew = add3(ltOld, scale3(that, -vtLen / wT));
+          }
+          ltNew = sub3(ltNew, scale3(nhat, dot3(ltNew, nhat)));
+          // Coulomb bound = mu * TOTAL normal load: velocity-impulse channel (lambdaAcc,
+          // physical impulse = lambdaAcc * |Nsum|) + the position-projection channel carried
+          // from last substep (already physical impulse units).
+          float nTot = Kokkos::fmax(lambdaAcc(idx), 0.0f) * lenN;
+          // The carry is a QUASI-STATIC corrector: for colliding contacts the one-substep lag
+          // double-counts (crater contacts already carry a large velocity impulse) -- gate by
+          // the same event classification as e and beta.
+          if (posImpulse.extent(0) > 0 && Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN)
+            nTot += Kokkos::fmax(posImpulse(idx), 0.0f);
+          const float bound = mu * nTot;
+          const float ltLen = Kokkos::sqrt(dot3(ltNew, ltNew));
+          if (ltLen > bound)
+            ltNew = (bound > 0.0f) ? scale3(ltNew, bound / ltLen) : F3{0, 0, 0};
+          const F3 dApp = sub3(ltNew, ltOld);
+          if (dApp.x != 0.0f || dApp.y != 0.0f || dApp.z != 0.0f) {
+            lambdaT(idx, 0) = ltNew.x;
+            lambdaT(idx, 1) = ltNew.y;
+            lambdaT(idx, 2) = ltNew.z;
+            const float dLen = Kokkos::sqrt(dot3(dApp, dApp));
+            if (wT > 1e-9f) {
+              Kokkos::atomic_max(&maxApproach(), dLen * wT);
+              if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
+                Kokkos::atomic_max(&maxApproachQS(), dLen * wT);
+            }
+            if (applyA) {
+              velPred(realA, 0) += dApp.x * invMassA;
+              velPred(realA, 1) += dApp.y * invMassA;
+              velPred(realA, 2) += dApp.z * invMassA;
+              const F3 Jl = invRotateVector(qA, cross3v(rAavg, dApp));
+              const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
+              const F3 dww = rotateVector(qA, dwl);
+              angVelPred(realA, 0) += dww.x;
+              angVelPred(realA, 1) += dww.y;
+              angVelPred(realA, 2) += dww.z;
+            }
+            if (idB >= 0 && applyB) {
+              velPred(realB, 0) += -dApp.x * invMassB;
+              velPred(realB, 1) += -dApp.y * invMassB;
+              velPred(realB, 2) += -dApp.z * invMassB;
+              const F3 Jl = invRotateVector(qB, cross3v(rBavg, scale3(dApp, -1.0f)));
+              const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
+              const F3 dww = rotateVector(qB, dwl);
+              angVelPred(realB, 0) += dww.x;
+              angVelPred(realB, 1) += dww.y;
+              angVelPred(realB, 2) += dww.z;
             }
           }
+        }
+      }
+    }
+  }
+};
+
+inline void solveVelocityPGSKokkos(
+    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+    Kokkos::View<const int*, CpMem> mColor, int numColors,
+    Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
+    Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<float* [3], CpMem> velPred,
+    Kokkos::View<float* [3], CpMem> angVelPred, Kokkos::View<const int*, CpMem> realIdx,
+    float growthRate, float restitutionNormal, float restVelThreshold,
+    Kokkos::View<float, CpMem> maxApproach, Kokkos::View<float*, CpMem> lambdaAcc,
+    Kokkos::View<const float*, CpMem> vn0, Kokkos::View<const unsigned char*, CpMem> sideFlag,
+    Kokkos::View<float* [3], CpMem> lambdaT, float frictionDynamic,
+    Kokkos::View<const float* [3], CpMem> vt0 = {}, float restitutionTangent = 0.0f,
+    Kokkos::View<const float*, CpMem> posImpulse = {},
+    Kokkos::View<float, CpMem> maxApproachQS = {}) {
+  CpExec space;
+  const PGSManifoldSweep f{manifolds,
+                           invMass,
+                           invInertia,
+                           quat,
+                           velPred,
+                           angVelPred,
+                           realIdx,
+                           growthRate,
+                           restitutionNormal,
+                           restVelThreshold,
+                           maxApproach,
+                           maxApproachQS.data() ? maxApproachQS : maxApproach,
+                           lambdaAcc,
+                           vn0,
+                           sideFlag,
+                           lambdaT,
+                           frictionDynamic,
+                           vt0,
+                           restitutionTangent,
+                           posImpulse};
+  for (int color = 0; color < numColors; ++color) {
+    Kokkos::parallel_for(
+        "peclet::dem::solve_velocity_pgs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+        KOKKOS_LAMBDA(int idx) {
+          if (mColor(idx) == color)
+            f.solveOne(idx);
         });
+  }
+  space.fence();
+}
+
+/// Bucket the active coloured manifolds by (support level, colour) for the level-ordered
+/// ("multilevel") stabilization sweeps. A manifold's level is the smaller of its bodies'
+/// height-from-floor BFS levels (wall/plane manifolds sit at their body's level, i.e. 0),
+/// clamped to 1023; ungrounded manifolds land in the last buckets. key = level*64 + colour;
+/// key-sorting a permutation groups each (level, colour) bucket contiguously, and the host
+/// bucket list (begin, end into the permutation) drives the ordered sweeps. Inactive and
+/// uncoloured manifolds (colour < 0: periodic dups, empty, mask-saturation leftovers -- the
+/// main loop's Jacobi fallback owns those) are keyed out entirely.
+inline void buildLevelColorBucketsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                         int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
+                                         Kokkos::View<const int*, CpMem> mColor,
+                                         Kokkos::View<const int*, CpMem> heights,
+                                         Kokkos::View<int*, CpMem> keys,
+                                         Kokkos::View<int*, CpMem> perm,
+                                         std::vector<std::pair<int, int>>& buckets) {
+  buckets.clear();
+  if (numManifolds <= 0)
+    return;
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::level_keys", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        perm(idx) = idx;
+        const int c = mColor(idx);
+        const ManifoldC m = manifolds(idx);
+        if (m.num_points <= 0 || c < 0) {
+          keys(idx) = INT_MAX;
+          return;
+        }
+        int h = heights(realIdx(m.bodyA));
+        if (m.bodyB >= 0) {
+          const int hB = heights(realIdx(m.bodyB));
+          if (hB < h)
+            h = hB;
+        }
+        if (h > 1023)
+          h = 1023;
+        keys(idx) = h * 64 + c;
+      });
+  const auto rng = Kokkos::pair<int, int>(0, numManifolds);
+  auto kd = Kokkos::subview(keys, rng);
+  auto pd = Kokkos::subview(perm, rng);
+  Kokkos::Experimental::sort_by_key(space, kd, pd);
+  auto hk = Kokkos::create_mirror_view(kd);
+  Kokkos::deep_copy(space, hk, kd);
+  space.fence();
+  for (int b = 0; b < numManifolds && hk(b) != INT_MAX;) {
+    int e = b + 1;
+    while (e < numManifolds && hk(e) == hk(b))
+      ++e;
+    buckets.emplace_back(b, e);
+    b = e;
+  }
+}
+
+/// Level-ordered symmetric sweep: launch one PGS kernel per (level, colour) bucket, ascending
+/// (bottom-up: a chain's load drains towards the floor in ~one pass) or descending (top-down:
+/// the return pass carries rebound waves back up). Same impulse math and lambda >= 0 projection
+/// as the colored sweep (shared PGSManifoldSweep) -- fully symmetric, exact momentum
+/// conservation; the ordering only accelerates transport. Launches are stream-ordered, so the
+/// Gauss-Seidel dependency between buckets needs no per-bucket fence.
+inline void solveVelocityPGSBucketsKokkos(const PGSManifoldSweep& f,
+                                          Kokkos::View<const int*, CpMem> perm,
+                                          const std::vector<std::pair<int, int>>& buckets,
+                                          bool topDown) {
+  CpExec space;
+  const int nb = static_cast<int>(buckets.size());
+  for (int i = 0; i < nb; ++i) {
+    const auto [b, e] = buckets[topDown ? nb - 1 - i : i];
+    Kokkos::parallel_for(
+        "peclet::dem::solve_velocity_pgs_lvl", Kokkos::RangePolicy<CpExec>(space, b, e),
+        KOKKOS_LAMBDA(int i2) { f.solveOne(perm(i2)); });
   }
   space.fence();
 }
@@ -855,24 +983,20 @@ inline void solveVelocityPGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
 /// applying each manifold's impulse directly to velPred/angVelPred (in place). Same per-manifold
 /// impulse math as solveVelocityKokkos (growth-velocity term, approach gate, resting-contact e=0
 /// threshold, and the R·(invI_local·(Rᵀ J))·… world-space angular update) — only the write-back
-/// differs (in-place RMW instead of atomic-accumulate + count-average). Race-free because a colour is
-/// an independent set of manifolds. One outer call = one full sweep over all colours; the caller
+/// differs (in-place RMW instead of atomic-accumulate + count-average). Race-free because a colour
+/// is an independent set of manifolds. One outer call = one full sweep over all colours; the caller
 /// loops it velocityIterations times.
-inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                         int numManifolds,
-                                         Kokkos::View<const int*, CpMem> mColor, int numColors,
-                                         Kokkos::View<const float*, CpMem> invMass,
-                                         Kokkos::View<const float* [3], CpMem> invInertia,
-                                         Kokkos::View<const float* [4], CpMem> quat,
-                                         Kokkos::View<float* [3], CpMem> velPred,
-                                         Kokkos::View<float* [3], CpMem> angVelPred,
-                                         Kokkos::View<const int*, CpMem> realIdx, float growthRate,
-                                         float restitutionNormal, float restVelThreshold,
-                                         Kokkos::View<float, CpMem> maxApproach,
-                                         Kokkos::View<const unsigned char*, CpMem> persistent = {},
-                                         Kokkos::View<const float* [3], CpMem> posPred = {},
-                                         F3 gHat = {},
-                                         Kokkos::View<const unsigned char*, CpMem> grounded = {}) {
+inline void solveVelocityColoredGSKokkos(
+    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+    Kokkos::View<const int*, CpMem> mColor, int numColors,
+    Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
+    Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<float* [3], CpMem> velPred,
+    Kokkos::View<float* [3], CpMem> angVelPred, Kokkos::View<const int*, CpMem> realIdx,
+    float growthRate, float restitutionNormal, float restVelThreshold,
+    Kokkos::View<float, CpMem> maxApproach,
+    Kokkos::View<const unsigned char*, CpMem> persistent = {},
+    Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {},
+    Kokkos::View<const unsigned char*, CpMem> grounded = {}) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -981,17 +1105,17 @@ inline void solveVelocityColoredGSKokkos(Kokkos::View<const ManifoldC*, CpMem> m
 
           // Linear + angular delta on A (dw_world = R (invI_local * (R^T Jang))), applied in place.
           if (applyA) {
-          velPred(realA, 0) += Jlin.x * invMassA;
-          velPred(realA, 1) += Jlin.y * invMassA;
-          velPred(realA, 2) += Jlin.z * invMassA;
-          {
-            const F3 Jl = invRotateVector(qA, JangA);
-            const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
-            const F3 dww = rotateVector(qA, dwl);
-            angVelPred(realA, 0) += dww.x;
-            angVelPred(realA, 1) += dww.y;
-            angVelPred(realA, 2) += dww.z;
-          }
+            velPred(realA, 0) += Jlin.x * invMassA;
+            velPred(realA, 1) += Jlin.y * invMassA;
+            velPred(realA, 2) += Jlin.z * invMassA;
+            {
+              const F3 Jl = invRotateVector(qA, JangA);
+              const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
+              const F3 dww = rotateVector(qA, dwl);
+              angVelPred(realA, 0) += dww.x;
+              angVelPred(realA, 1) += dww.y;
+              angVelPred(realA, 2) += dww.z;
+            }
           }
           if (idB >= 0 && applyB) {
             velPred(realB, 0) += -Jlin.x * invMassB;

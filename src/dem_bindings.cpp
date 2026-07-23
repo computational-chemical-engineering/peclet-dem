@@ -142,9 +142,15 @@ NB_MODULE(_dem, m) {
            "viscoelastic Hertz normal force + Mindlin shear-history spring, Coulomb-clamped; "
            "(e, mu) from the pair-material tables, stiffness from set_hertz_material.")
       .def("set_stabilization", &Simulation::setStabilization, nb::arg("enabled"),
-           "Enable/disable the one-sided grounded stabilization pass of the staged velocity "
-           "solve (default True). Off = pure momentum-conserving PGS everywhere: exact ballistic "
-           "response, but a deep static column mid-collapse cannot be arrested.")
+           "Enable/disable the stabilization pass of the staged velocity solve (default True). "
+           "Boolean form of set_stabilization_mode: True = 'onesided', False = 'off'.")
+      .def("set_stabilization_mode", &Simulation::setStabilizationMode, nb::arg("mode"),
+           "Select the stabilization pass of the staged velocity solve: 'off' (pure symmetric "
+           "PGS), 'onesided' (default: held-lower-side grounded impulses -- arrests any collapse "
+           "but is a momentum sink), 'multilevel' (GraphMG contact-graph aggregation: coarse "
+           "inelastic solves at super-body masses -- momentum-conserving transport "
+           "acceleration), 'escalate' (extra symmetric sweeps up to 256; diagnostic/fallback), "
+           "'ordered' (level-ordered symmetric sweeps; measurement mode).")
       .def("set_velocity_use_gs", &Simulation::setVelocityUseGS, nb::arg("use_gs"),
            "Select the single-GPU restitution solve: True (default) = colored Gauss–Seidel "
            "(correct multi-contact dissipation), False = count-averaged Jacobi (legacy).")

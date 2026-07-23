@@ -252,6 +252,58 @@ inline void updateGroundedLevelsKokkos(Kokkos::View<const ManifoldC*, CpMem> man
   space.fence();
 }
 
+/// Height-from-floor BFS levels for the level-ordered ("multilevel") stabilization pass: 0 at a
+/// wall/plane contact, else 1 + min over supporting contacts, kLevelInf with no contact path to
+/// the floor. Recomputed FRESH each time the pass triggers -- no warm start and no decay: a
+/// stale-low height would mis-order the sweeps, and the pass runs rarely enough that the exact
+/// BFS (early exit once a sweep changes nothing) is affordable. The support-orientation test
+/// (up vs 0.3|dx|) matches updateGroundedLevelsKokkos; ghost-slot positions keep the pair
+/// geometry periodic-aware.
+inline constexpr int kLevelInf = 1 << 28;
+inline void computeHeightLevelsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                      int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
+                                      Kokkos::View<const float* [3], CpMem> posPred, F3 gHat,
+                                      Kokkos::View<int*, CpMem> heights, int numReal) {
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::height_init", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
+      KOKKOS_LAMBDA(int i) { heights(i) = kLevelInf; });
+  const int maxSweeps = 1024;  // >= deepest supported column; early exit ends real runs sooner
+  for (int s = 0; s < maxSweeps; ++s) {
+    int changed = 0;
+    Kokkos::parallel_reduce(
+        "peclet::dem::height_sweep", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+        KOKKOS_LAMBDA(int idx, int& acc) {
+          const ManifoldC m = manifolds(idx);
+          if (m.num_points <= 0)
+            return;
+          const int realA = realIdx(m.bodyA);
+          if (m.bodyB < 0) {
+            if (Kokkos::atomic_fetch_min(&heights(realA), 0) > 0)
+              acc += 1;
+            return;
+          }
+          const int realB = realIdx(m.bodyB);
+          const F3 dx = sub3(ldF3(posPred, m.bodyA), ldF3(posPred, m.bodyB));
+          const float up = -(dx.x * gHat.x + dx.y * gHat.y + dx.z * gHat.z);  // >0: A above B
+          const float thr = 0.3f * Kokkos::sqrt(dot3(dx, dx));
+          if (up > thr) {  // B supports A
+            const int cand = heights(realB);
+            if (cand < kLevelInf && Kokkos::atomic_fetch_min(&heights(realA), cand + 1) > cand + 1)
+              acc += 1;
+          } else if (up < -thr) {  // A supports B
+            const int cand = heights(realA);
+            if (cand < kLevelInf && Kokkos::atomic_fetch_min(&heights(realB), cand + 1) > cand + 1)
+              acc += 1;
+          }
+        },
+        changed);
+    if (changed == 0)
+      break;
+  }
+  space.fence();
+}
+
 /// splitmix32 finalizer: a well-mixed pseudo-random priority per edge index. Random priorities make
 /// the Jones-Plassmann arbitration finish in O(log n) rounds w.h.p.; RAW indices are adversarial for
 /// lattice-ordered dense packs (monotone index chains -> one win per round -> O(chain) rounds).

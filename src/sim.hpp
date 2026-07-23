@@ -16,6 +16,8 @@
 #include <Kokkos_Core.hpp>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "broadphase_arborx.hpp"
@@ -30,6 +32,7 @@
 #include "shapes_portable.hpp"
 #include "solver_friction.hpp"
 #include "solver_hertz.hpp"
+#include "solver_multilevel.hpp"
 #include "solver_position.hpp"
 #include "solver_velocity.hpp"
 
@@ -275,25 +278,140 @@ inline void demStep(Particles& P) {
   // A/B toggle.)
   if (usePGS) {
     const float vRestS = 2.0f * P.dt * gMagP;
-    if (P.stabilization && readFloat(P.maxApproach) > vRestS) {
-      computeSideFlagsKokkos(P.manifolds, nm, P.realIndices,
-                             Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent),
-                             Kokkos::View<const unsigned char*, CpMem>(P.groundedLevel), P.posPred,
-                             P.velPred, gHat, 8.0f * P.dt * gMagP, P.sideFlags, P.vn0,
-                             8.0f * P.dt * gMagP);
-      // Arrest budget: 2x the main budget -- the pass must out-pace a violent collapse, and it
-      // only ever runs when the residual says one is happening (adaptive stop ends it early).
-      for (int it = 0; it < 2 * P.velocityIterations; ++it) {
-        Kokkos::deep_copy(P.maxApproach, 0.0f);
-        solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
-                               P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
-                               P.growthRate, P.restitutionNormal, vRestS, P.maxApproach,
-                               P.lambdaAcc, P.vn0,
-                               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
-                               P.frictionDynamic, P.vt0, P.restitutionTangent,
-                               Kokkos::View<const float*, CpMem>(P.posImpulse));
-        if (readFloat(P.maxApproach) <= vRestS)
-          break;
+    const int smode = P.stabilizationMode;
+    if (smode != 0 && readFloat(P.maxApproach) > vRestS) {
+      if (smode == 1) {  // ONE-SIDED grounded pass (default): held-lower-side impulses
+        computeSideFlagsKokkos(P.manifolds, nm, P.realIndices,
+                               Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent),
+                               Kokkos::View<const unsigned char*, CpMem>(P.groundedLevel),
+                               P.posPred, P.velPred, gHat, 8.0f * P.dt * gMagP, P.sideFlags,
+                               P.vn0, 8.0f * P.dt * gMagP);
+        // Arrest budget: 2x the main budget -- the pass must out-pace a violent collapse, and it
+        // only ever runs when the residual says one is happening (adaptive stop ends it early).
+        for (int it = 0; it < 2 * P.velocityIterations; ++it) {
+          Kokkos::deep_copy(P.maxApproach, 0.0f);
+          solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
+                                 P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
+                                 P.growthRate, P.restitutionNormal, vRestS, P.maxApproach,
+                                 P.lambdaAcc, P.vn0,
+                                 Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+                                 P.frictionDynamic, P.vt0, P.restitutionTangent,
+                                 Kokkos::View<const float*, CpMem>(P.posImpulse));
+          if (readFloat(P.maxApproach) <= vRestS)
+            break;
+        }
+      } else if (smode == 2) {
+        // MULTILEVEL (GraphMG) pass: never deletes momentum, only accelerates its transport.
+        // Greedy pairwise aggregation over the quasi-static contact graph builds super-bodies
+        // (summed mass, momentum-weighted velocity); the fine manifolds crossing aggregate
+        // boundaries are re-solved with the AGGREGATE masses -- the supported chain's genuinely
+        // huge inertia plays the role the held lower side faked, so a wall contact drains a
+        // whole column's momentum in one coarse impulse while every impulse stays symmetric.
+        // Ballistic pairs (|vn0| > qsThr) never aggregate: an impactor keeps its fine-level,
+        // momentum-conserving physics and its rebound. Coarse lambda shares the fine
+        // accumulator, so the force-network ledger stays consistent for next substep's warm
+        // start and the friction cone's Coulomb bound. See solver_multilevel.hpp.
+        const float qsThr = 8.0f * P.dt * gMagP;
+        // Eligibility gates (mldetail::kGate*): slip is the production default -- it keeps the
+        // pass off sustained shear (silo bulk) without starving a crushing bed's aggregation.
+        // PECLET_DEM_ML_GATES overrides the mask for A/B measurement.
+        static const int mlGates = [] {
+          const char* e = std::getenv("PECLET_DEM_ML_GATES");
+          return e ? std::atoi(e) : mldetail::kGateSlip;
+        }();
+        MlScratch S{P.mlColorPacked, P.mlParent, P.mlInvMassG, P.mlVelG,
+                    P.mlVelG0,       P.mlMassG,  P.mlGrp,      P.mlMate};
+        const ContactHierarchy H = buildContactHierarchyKokkos(
+            P.manifolds, nm, P.realIndices, Kokkos::View<const int*, CpMem>(P.manifoldColor),
+            Kokkos::View<const float*, CpMem>(P.vn0),
+            Kokkos::View<const float* [3], CpMem>(P.vt0),
+            Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent), P.posPred, gHat,
+            Kokkos::View<const float*, CpMem>(P.invMass), qsThr, mlGates, P.numReal, S,
+            P.bodyWinner, P.bodyColorMask);
+        // The loop's stop criterion is the QUASI-STATIC residual (fine corrections on contacts
+        // with |vn0| <= 4 vRest, plus every coarse correction): the fine sweep's full residual
+        // is dominated by ballistic contacts in flowing scenes (a discharging silo never gets
+        // below vRest there), and gating on it burns the full budget of extra fine sweeps every
+        // substep -- an over-convergence brake on discharge (the escalate effect, measured -7%).
+        // The pass exists to converge the quasi-static network; once that is done, it is done.
+        for (int it = 0; it < 2 * P.velocityIterations; ++it) {
+          Kokkos::deep_copy(P.maxApproachQS, 0.0f);
+          // fine smoothing sweep (full physics: friction cone, restitution gates)
+          solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
+                                 P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
+                                 P.growthRate, P.restitutionNormal, vRestS, P.maxApproach,
+                                 P.lambdaAcc, P.vn0,
+                                 Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+                                 P.frictionDynamic, P.vt0, P.restitutionTangent,
+                                 Kokkos::View<const float*, CpMem>(P.posImpulse),
+                                 P.maxApproachQS);
+          // coarse leg: fine -> coarse, translation-only inelastic PGS at aggregate masses
+          if (H.numLevels > 0)
+            multilevelCoarseCycleKokkos(P.manifolds, nm, P.realIndices,
+                                        Kokkos::View<const float*, CpMem>(P.invMass), P.velPred,
+                                        P.lambdaAcc, P.maxApproachQS, P.numReal, H, S,
+                                        /*coarseSweeps*/ 2);
+          if (readFloat(P.maxApproachQS) <= vRestS)
+            break;
+        }
+      } else if (smode == 4) {
+        // ORDERED (level-ordered symmetric sweeps; measurement mode): fresh height-from-floor
+        // BFS levels order the manifolds bottom-up + top-down. Fully symmetric, but a pairwise
+        // inelastic impulse only EQUALIZES velocities, so a deep column still cools one halving
+        // per cycle -- measured insufficient on the statics battery (kept for A/B comparison
+        // against the multilevel pass).
+        computeHeightLevelsKokkos(P.manifolds, nm, P.realIndices, P.posPred, gHat, P.heightLevel,
+                                  P.numReal);
+        std::vector<std::pair<int, int>> buckets;
+        buildLevelColorBucketsKokkos(P.manifolds, nm, P.realIndices,
+                                     Kokkos::View<const int*, CpMem>(P.manifoldColor),
+                                     Kokkos::View<const int*, CpMem>(P.heightLevel), P.levelKey,
+                                     P.levelPerm, buckets);
+        const PGSManifoldSweep sweep{P.manifolds,
+                                     P.invMass,
+                                     P.invInertia,
+                                     P.quat,
+                                     P.velPred,
+                                     P.angVelPred,
+                                     P.realIndices,
+                                     P.growthRate,
+                                     P.restitutionNormal,
+                                     vRestS,
+                                     P.maxApproach,
+                                     P.maxApproach,
+                                     P.lambdaAcc,
+                                     P.vn0,
+                                     Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
+                                     P.lambdaT,
+                                     P.frictionDynamic,
+                                     P.vt0,
+                                     P.restitutionTangent,
+                                     Kokkos::View<const float*, CpMem>(P.posImpulse)};
+        for (int it = 0; it < 2 * P.velocityIterations; ++it) {
+          Kokkos::deep_copy(P.maxApproach, 0.0f);
+          solveVelocityPGSBucketsKokkos(sweep, Kokkos::View<const int*, CpMem>(P.levelPerm),
+                                        buckets, /*topDown*/ false);
+          solveVelocityPGSBucketsKokkos(sweep, Kokkos::View<const int*, CpMem>(P.levelPerm),
+                                        buckets, /*topDown*/ true);
+          if (readFloat(P.maxApproach) <= vRestS)
+            break;
+        }
+      } else if (smode == 3) {
+        // ESCALATION (diagnostic/fallback): keep running plain symmetric colored sweeps until
+        // the residual drains or the 256-sweep cap -- provably correct physics, and the sweep
+        // count it needs bounds what the ordered pass must deliver.
+        for (int it = 0; it < 256; ++it) {
+          Kokkos::deep_copy(P.maxApproach, 0.0f);
+          solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
+                                 P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
+                                 P.growthRate, P.restitutionNormal, vRestS, P.maxApproach,
+                                 P.lambdaAcc, P.vn0,
+                                 Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+                                 P.frictionDynamic, P.vt0, P.restitutionTangent,
+                                 Kokkos::View<const float*, CpMem>(P.posImpulse));
+          if (readFloat(P.maxApproach) <= vRestS)
+            break;
+        }
       }
     }
   }
@@ -1003,10 +1121,33 @@ class Simulation {
   // Select the single-GPU collision solves: true (default) = colored Gauss–Seidel for both the
   // restitution and the overlap solve, false = count-averaged Jacobi (legacy). For A/B validation.
   void setVelocityUseGS(bool useGS) { P_.velocityUseGS = useGS; }
-  /// Enable/disable the one-sided grounded stabilization pass (default on). Off = pure
-  /// momentum-conserving PGS everywhere -- exact ballistic response, but deep static columns
-  /// mid-collapse cannot be arrested within the iteration budget.
-  void setStabilization(bool enabled) { P_.stabilization = enabled; }
+  /// Enable/disable the stabilization pass (default on). Off = pure momentum-conserving PGS
+  /// everywhere -- exact ballistic response, but deep static columns mid-collapse cannot be
+  /// arrested within the iteration budget. Backward-compatible boolean form of
+  /// setStabilizationMode: true selects "onesided", false selects "off".
+  void setStabilization(bool enabled) { P_.stabilizationMode = enabled ? 1 : 0; }
+  /// Select the stabilization pass of the staged velocity solve: "off" (pure symmetric PGS),
+  /// "onesided" (default: held-lower-side grounded impulses -- arrests any collapse but is a
+  /// momentum sink), "multilevel" (GraphMG contact-graph aggregation: coarse inelastic solves
+  /// at super-body masses -- momentum-conserving transport acceleration), "escalate" (extra
+  /// symmetric sweeps up to 256; diagnostic/fallback), "ordered" (level-ordered symmetric
+  /// sweeps; measurement mode, known insufficient for deep columns).
+  void setStabilizationMode(const std::string& mode) {
+    if (mode == "off")
+      P_.stabilizationMode = 0;
+    else if (mode == "onesided")
+      P_.stabilizationMode = 1;
+    else if (mode == "multilevel")
+      P_.stabilizationMode = 2;
+    else if (mode == "escalate")
+      P_.stabilizationMode = 3;
+    else if (mode == "ordered")
+      P_.stabilizationMode = 4;
+    else
+      throw std::invalid_argument(
+          "set_stabilization_mode: expected 'off', 'onesided', 'multilevel', 'escalate' or "
+          "'ordered'");
+  }
   /// Per-material Young's modulus + Poisson ratio for the Hertz-Mindlin engine (material ids as
   /// in setMaterialIds; without ids every particle is material 0).
   void setHertzMaterial(int mat, float youngs, float poisson) {
@@ -1505,6 +1646,9 @@ class Simulation {
       P_.prevLambda = Kokkos::View<float*, CpMem>("prevLambda", want);
       P_.vn0 = Kokkos::View<float*, CpMem>("vn0", want);
       P_.vt0 = Kokkos::View<float* [3], CpMem>("vt0", want);
+      P_.levelKey = Kokkos::View<int*, CpMem>("levelKey", want);
+      P_.levelPerm = Kokkos::View<int*, CpMem>("levelPerm", want);
+      P_.mlColorPacked = Kokkos::View<long long*, CpMem>("mlColorPacked", want);
       P_.prevPairCount = 0;  // the cleared prevPairKeys must not be gathered against
     }
   }

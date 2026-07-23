@@ -11,8 +11,8 @@ B. POUR-COLLAPSE: the same inventory poured violently (released from height,
    z95 ~ lattice-bed height (the old count-averaged solver jammed at ~55-65%
    of it with deep overlaps), max pair overlap -> ~0.
 
-Run with the default solver and with PECLET_DEM_SYMMETRIC_PGS=1 to compare the
-one-sided branch against pure symmetric warm-started PGS + cone friction.
+Run with PECLET_DEM_STAB_MODE=off|onesided|multilevel|escalate|ordered to compare
+the stabilization modes (default = the solver default, currently onesided).
 """
 import argparse
 import os
@@ -44,6 +44,9 @@ def make_sim(n, lz=140.0):
     s.set_material_params(0.5, 0.0, 0.3)
     s.set_thermostat(0, 0)
     s.set_solver_iterations(12, 8)
+    mode = os.environ.get("PECLET_DEM_STAB_MODE")
+    if mode:
+        s.set_stabilization_mode(mode)
     return s
 
 
@@ -101,7 +104,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["column", "pour", "both"], default="both")
     args = ap.parse_args()
-    tag = "SYM" if os.environ.get("PECLET_DEM_SYMMETRIC_PGS") else "DEFAULT"
+    tag = os.environ.get("PECLET_DEM_STAB_MODE", "DEFAULT")
     print(f"== statics battery ({tag}) ==")
     if args.mode in ("column", "both"):
         run("column")
