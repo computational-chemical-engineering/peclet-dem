@@ -151,6 +151,9 @@ NB_MODULE(_dem, m) {
            "inelastic solves at super-body masses -- momentum-conserving transport "
            "acceleration), 'escalate' (extra symmetric sweeps up to 256; diagnostic/fallback), "
            "'ordered' (level-ordered symmetric sweeps; measurement mode).")
+      .def("get_rest_orphan_stats", &Simulation::restOrphanStats,
+           "Poisson-restitution diagnostics: (sum, max, n_bodies>0) of the per-body orphaned "
+           "event budget (physical impulse units).")
       .def("get_rest_bank_stats", &Simulation::restBankStats,
            "Poisson-restitution diagnostics: (sum, max, n_pairs>0) of the per-pair owed "
            "separation impulse committed last substep (physical impulse units).")

@@ -1063,6 +1063,10 @@ class Simulation {
   std::tuple<double, float, int> restBankStats() {
     return restBankStatsKokkos(P_.prevRestBank, P_.prevPairCount);
   }
+  /// Orphan-account diagnostics: (sum, max, count>0) of the per-body orphaned budget.
+  std::tuple<double, float, int> restOrphanStats() {
+    return restBankStatsKokkos(P_.bodyOrphan, P_.numReal);
+  }
 
   // ParaView PolyData (points + Radius + Velocity), faithful to CUDA Simulation::write_vtp:
   // Radius = scale * globalScale * baseRadius.
@@ -1154,6 +1158,7 @@ class Simulation {
       P_.restRel = Kokkos::View<float*, CpMem>("restRel", want);
       P_.restVPeak = Kokkos::View<float*, CpMem>("restVPeak", want);
       P_.prevRestVPeak = Kokkos::View<float*, CpMem>("prevRestVPeak", want);
+      P_.prevMatched = Kokkos::View<unsigned char*, CpMem>("prevMatched", want);
       P_.sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", want);
       P_.prevLambdaT = Kokkos::View<float* [3], CpMem>("prevLambdaT", want);
       P_.contactSlot = Kokkos::View<int*, CpMem>("contactSlot", want);

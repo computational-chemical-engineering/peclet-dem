@@ -553,6 +553,103 @@ inline void updateRestitutionBankKokkos(
   space.fence();
 }
 
+/// Orphan-account aging, once per substep over the OWNED bodies: both the balance and the carried
+/// event peak decay 1/64 per substep (e-fold ~3 ms at dt = 5e-5 — long enough for the rebound
+/// payout, which completes within ~2 ms of turnaround, short enough that a BURIED impactor's
+/// slowly re-fed credit cannot keep fluidizing its crater: with the pair-state 1/256 decay the
+/// 100k Dosta plateau crept 0.007 deeper), and once the peak ages below the resting threshold
+/// the whole account evaporates — stranded credit on a settling body never pops the pile later.
+inline void decayBodyOrphanKokkos(Kokkos::View<float*, CpMem> orphan,
+                                  Kokkos::View<float*, CpMem> orphanVPeak, int numOwned,
+                                  float restVelThreshold) {
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::rest_orphan_decay", Kokkos::RangePolicy<CpExec>(space, 0, numOwned),
+      KOKKOS_LAMBDA(int i) {
+        const float decayed = orphanVPeak(i) * (1.0f - 1.0f / 64.0f);
+        if (decayed <= restVelThreshold || orphan(i) <= 0.0f) {
+          orphan(i) = 0.0f;
+          orphanVPeak(i) = 0.0f;
+        } else {
+          orphan(i) *= (1.0f - 1.0f / 64.0f);
+          orphanVPeak(i) = decayed;
+        }
+      });
+  space.fence();
+}
+
+/// Orphan transfer: previous-ledger entries NOT matched by any current manifold (their pair died
+/// this substep) credit their remaining owed budget to the endpoint BODIES, mass-weighted — the
+/// heavier endpoint keeps the larger share (energy of a later release scales J^2/2m, so the light
+/// grain is the dangerous store and the heavy impactor is both the safe one and the event's
+/// physical carrier); boundary pairs (wall endpoint) credit everything to the particle. The
+/// carried event peak joins by max. Key components are keyIdx identities: REAL slots on the
+/// single-GPU path (direct index); global ids under MPI — resolved through the sorted
+/// (gidSorted, slotSorted) map (an endpoint owned by another rank simply isn't found here; that
+/// rank's redundant ledger copy credits it).
+inline void scatterOrphanBanksKokkos(Kokkos::View<const unsigned long long*, CpMem> prevKeys,
+                                     Kokkos::View<const float*, CpMem> prevRestBank,
+                                     Kokkos::View<const float*, CpMem> prevRestVPeak,
+                                     Kokkos::View<const unsigned char*, CpMem> matched,
+                                     int prevCount, Kokkos::View<const float*, CpMem> invMass,
+                                     Kokkos::View<float*, CpMem> orphan,
+                                     Kokkos::View<float*, CpMem> orphanVPeak,
+                                     Kokkos::View<const int*, CpMem> gidSorted = {},
+                                     Kokkos::View<const int*, CpMem> slotSorted = {}) {
+  CpExec space;
+  const int nMap = static_cast<int>(gidSorted.extent(0));
+  const int nBody = static_cast<int>(orphan.extent(0));
+  Kokkos::parallel_for(
+      "peclet::dem::rest_orphan_scatter", Kokkos::RangePolicy<CpExec>(space, 0, prevCount),
+      KOKKOS_LAMBDA(int e) {
+        if (matched(e))
+          return;
+        const float owed = prevRestBank(e);
+        if (owed <= 0.0f)
+          return;
+        const unsigned long long k = prevKeys(e);
+        if (k == ~0ull)
+          return;
+        const unsigned hi = static_cast<unsigned>(k >> 32);
+        const unsigned lo = static_cast<unsigned>(k & 0xFFFFFFFFu);
+        auto resolve = [&](unsigned id) -> int {
+          if (nMap == 0)  // single-GPU: identities ARE real slots
+            return (static_cast<int>(id) < nBody) ? static_cast<int>(id) : -1;
+          int a = 0, b = nMap;  // MPI: binary-search the sorted gid -> slot map
+          while (a < b) {
+            const int m = (a + b) >> 1;
+            if (gidSorted(m) < static_cast<int>(id))
+              a = m + 1;
+            else
+              b = m;
+          }
+          return (a < nMap && gidSorted(a) == static_cast<int>(id)) ? slotSorted(a) : -1;
+        };
+        const int sA = resolve(hi);
+        const int sB = (lo != 0xFFFFFFFFu) ? resolve(lo) : -1;
+        const float vpk = prevRestVPeak(e);
+        float shareA = 1.0f;  // boundary (wall) pair: everything to the particle
+        if (lo != 0xFFFFFFFFu) {
+          if (sB >= 0 && sA >= 0) {
+            const float wA = invMass(sA), wB = invMass(sB);
+            if (wA + wB > 0.0f)
+              shareA = wB / (wA + wB);  // heavier endpoint (smaller invMass) keeps more
+          } else {
+            shareA = 0.5f;  // body-body with an unresolvable endpoint (MPI edge): conservative half
+          }
+        }
+        if (sA >= 0 && shareA > 0.0f) {
+          Kokkos::atomic_add(&orphan(sA), owed * shareA);
+          Kokkos::atomic_max(&orphanVPeak(sA), vpk);
+        }
+        if (sB >= 0 && shareA < 1.0f) {
+          Kokkos::atomic_add(&orphan(sB), owed * (1.0f - shareA));
+          Kokkos::atomic_max(&orphanVPeak(sB), vpk);
+        }
+      });
+  space.fence();
+}
+
 /// Poisson-restitution diagnostics: (sum, max, count>0) over the committed owed-impulse store
 /// (namespace scope: nvcc forbids KOKKOS_LAMBDA in member functions).
 inline std::tuple<double, float, int> restBankStatsKokkos(Kokkos::View<const float*, CpMem> bank,
@@ -774,8 +871,12 @@ struct PGSManifoldSweep {
   // the restNewtonOff A/B). Per-substep Newton restitution stays ALIVE by default alongside the
   // bank — its micro-reflections are genuine returned energy, and the accounting's pR term
   // deducts each one from the owed budget so the channels never double-count (measured: forcing
-  // e = 0 on persistent contacts cost more rebound than the bank recovered).
-  Kokkos::View<const float*, CpMem> restBank;
+  // e = 0 on persistent contacts cost more rebound than the bank recovered). restBank is
+  // writable: a releasing pair whose own budget rails can DRAW from its bodies' orphan accounts
+  // (transferred into restBank at the moment of need, so the post-solve accounting sees one
+  // consistent pair ledger). Same-body contacts never run concurrently (colouring), so the
+  // in-place body-account read-modify-write is race-free without atomics.
+  Kokkos::View<float*, CpMem> restBank;
   Kokkos::View<float*, CpMem> restRel;
   Kokkos::View<const unsigned char*, CpMem> restPersistent;
   // Event peak approach speed (physical): caps the release separation-velocity target at
@@ -793,6 +894,12 @@ struct PGSManifoldSweep {
   // A/B toggles (env-driven, see solve_driver.hpp): bank-owns-restitution / one-sided release.
   bool restNewtonOff = false;
   bool restOneSided = false;
+  // Orphan accounts (see Particles::bodyOrphan): balance + carried event peak speed per REAL
+  // body. The peak matters as much as the balance — a contact formed late under a decelerating
+  // impactor only saw the residual approach, so its own e*vPeak target would cap the rebound at
+  // e x the late-stage speed; the orphaned peak restores the full event's velocity scale.
+  Kokkos::View<float*, CpMem> restOrphan;
+  Kokkos::View<const float*, CpMem> restOrphanVPeak;
 
   KOKKOS_FUNCTION void solveOne(int idx) const {
     using detail::genInvMass;
@@ -931,9 +1038,22 @@ struct PGSManifoldSweep {
       // and would drain the bank as fast as it fills (measured: bank plateaued at ~1/6 of the
       // event flux with a v0til < 0 gate); the genuine rebound onset separates kinetically.
       if (restRel.extent(0) > 0 && sf == 0 && v0til < -restVelThreshold * lenN) {
-        const float owed = restBank(idx);
-        const float vPeak = restVPeak.extent(0) > 0 ? restVPeak(idx) : 0.0f;
-        if (owed > 0.0f && vPeak > 0.0f) {
+        float owed = restBank(idx);
+        float vPeak = restVPeak.extent(0) > 0 ? restVPeak(idx) : 0.0f;
+        // Orphan availability at the endpoints: makes budget-less fresh pairs under an event
+        // carrier eligible, and lifts the velocity target to the orphaned event peak.
+        float orphA = 0.0f, orphB = 0.0f;
+        if (restOrphan.extent(0) > 0) {
+          orphA = restOrphan(realA);
+          if (orphA > 0.0f)
+            vPeak = Kokkos::fmax(vPeak, restOrphanVPeak(realA));
+          if (idB >= 0) {
+            orphB = restOrphan(realB);
+            if (orphB > 0.0f)
+              vPeak = Kokkos::fmax(vPeak, restOrphanVPeak(realB));
+          }
+        }
+        if ((owed > 0.0f || orphA > 0.0f || orphB > 0.0f) && vPeak > 0.0f) {
           const F3 vA3 = ld3(velPred, realA), wA3 = ld3(angVelPred, realA);
           F3 vB3{0, 0, 0}, wB3{0, 0, 0};
           if (idB >= 0) {
@@ -971,11 +1091,35 @@ struct PGSManifoldSweep {
             const float vTphys = eMat * vPeak;
             const float targetR = -vTphys * lenN;
             const float dpR = (vtil3 - targetR) / wRel;
-            const float cap = owed / lenN;  // physical budget in lambda units
+            float cap = owed / lenN;  // physical budget in lambda units
             const float rOld = restRel(idx);
             float rNew = rOld + dpR;
             if (rNew < 0.0f)
               rNew = 0.0f;
+            // Own budget railed with orphan balance at the endpoints: draw the shortfall from the
+            // body accounts INTO the pair bank (heavier-first order is irrelevant; drained in
+            // sequence). The drawn amount is spent by this very increment, so the post-solve
+            // accounting's owed -= released cancels it exactly.
+            if (rNew > cap && (orphA > 0.0f || orphB > 0.0f)) {
+              float need = (rNew - cap) * lenN;
+              float draw = 0.0f;
+              if (orphA > 0.0f) {
+                const float d = Kokkos::fmin(need, orphA);
+                restOrphan(realA) = orphA - d;
+                need -= d;
+                draw += d;
+              }
+              if (need > 0.0f && orphB > 0.0f) {
+                const float d = Kokkos::fmin(need, orphB);
+                restOrphan(realB) = orphB - d;
+                draw += d;
+              }
+              if (draw > 0.0f) {
+                owed += draw;
+                restBank(idx) = owed;
+                cap = owed / lenN;
+              }
+            }
             if (rNew > cap)
               rNew = cap;
             const float dR = rNew - rOld;
@@ -1133,11 +1277,12 @@ inline void solveVelocityPGSKokkos(
     Kokkos::View<const float* [3], CpMem> vt0 = {}, float restitutionTangent = 0.0f,
     Kokkos::View<const float*, CpMem> posImpulse = {},
     Kokkos::View<float, CpMem> maxApproachQS = {},
-    Kokkos::View<const float*, CpMem> restBank = {}, Kokkos::View<float*, CpMem> restRel = {},
+    Kokkos::View<float*, CpMem> restBank = {}, Kokkos::View<float*, CpMem> restRel = {},
     Kokkos::View<const unsigned char*, CpMem> restPersistent = {},
     Kokkos::View<const float*, CpMem> restVPeak = {}, F3 restGHat = {},
     Kokkos::View<const unsigned char*, CpMem> restGrounded = {}, bool restNewtonOff = false,
-    bool restOneSided = false) {
+    bool restOneSided = false, Kokkos::View<float*, CpMem> restOrphan = {},
+    Kokkos::View<const float*, CpMem> restOrphanVPeak = {}) {
   CpExec space;
   const PGSManifoldSweep f{manifolds,
                            invMass,
@@ -1166,7 +1311,9 @@ inline void solveVelocityPGSKokkos(
                            restGHat,
                            restGrounded,
                            restNewtonOff,
-                           restOneSided};
+                           restOneSided,
+                           restOrphan,
+                           restOrphanVPeak};
   for (int color = 0; color < numColors; ++color) {
     Kokkos::parallel_for(
         "peclet::dem::solve_velocity_pgs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),

@@ -131,7 +131,8 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
                                    Kokkos::View<float* [3], CpMem> outWarmT,
                                    Kokkos::View<float*, CpMem> outPosImpulse,
                                    Kokkos::View<float*, CpMem> outRestBank,
-                                   Kokkos::View<float*, CpMem> outRestVPeak) {
+                                   Kokkos::View<float*, CpMem> outRestVPeak,
+                                   Kokkos::View<unsigned char*, CpMem> outMatched = {}) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::gather_warm", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -160,6 +161,8 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
             hi = mid;
         }
         const bool hit = (lo < prevCount && prevKeys(lo) == k);
+        if (hit && outMatched.extent(0) > 0)
+          outMatched(lo) = 1;  // prev entry survives; unmatched entries orphan their bank
         outWarm(idx) = hit ? prevLambda(lo) : 0.0f;
         outWarmT(idx, 0) = hit ? prevLambdaT(lo, 0) : 0.0f;
         outWarmT(idx, 1) = hit ? prevLambdaT(lo, 1) : 0.0f;

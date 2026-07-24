@@ -152,8 +152,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // budget-capped separation-velocity target during unloading (see updateRestitutionBankKokkos /
   // PGSManifoldSweep). Off (empty views) the sweeps run the per-substep Newton path verbatim.
   const bool poisson = usePGS && P.restitutionModel == 1;
-  const Kokkos::View<const float*, CpMem> bankC =
-      poisson ? Kokkos::View<const float*, CpMem>(P.restBank) : Kokkos::View<const float*, CpMem>();
+  const Kokkos::View<float*, CpMem> bankV = poisson ? P.restBank : Kokkos::View<float*, CpMem>();
   const Kokkos::View<float*, CpMem> relV = poisson ? P.restRel : Kokkos::View<float*, CpMem>();
   const Kokkos::View<const unsigned char*, CpMem> persC =
       poisson ? Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent)
@@ -163,6 +162,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   const Kokkos::View<const unsigned char*, CpMem> grdC =
       poisson ? Kokkos::View<const unsigned char*, CpMem>(P.groundedLevel)
               : Kokkos::View<const unsigned char*, CpMem>();
+  const Kokkos::View<float*, CpMem> orphV =
+      poisson ? P.bodyOrphan : Kokkos::View<float*, CpMem>();
+  const Kokkos::View<const float*, CpMem> orphPk =
+      poisson ? Kokkos::View<const float*, CpMem>(P.bodyOrphanVPeak)
+              : Kokkos::View<const float*, CpMem>();
   // A/B measurement toggles for the Poisson channel (default: Newton alive + symmetric release —
   // the measured-best config on the 25k Dosta impact).
   static const bool restNewtonOff = [] {
@@ -174,13 +178,54 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     return e2 && std::atoi(e2) != 0;
   }();
   if (usePGS) {
+    if (poisson && P.prevPairCount > 0) {  // reset the prev-ledger survival flags for the gather
+      auto mt = Kokkos::subview(P.prevMatched, Kokkos::pair<int, int>(0, P.prevPairCount));
+      Kokkos::deep_copy(mt, static_cast<unsigned char>(0));
+    }
     gatherWarmLambdaKokkos(P.manifolds, nm, P.realIndices, keyIdx, P.prevPairKeys, P.prevLambda,
                            P.prevLambdaT, P.prevPosImpulse, P.prevRestBank, P.prevRestVPeak,
                            P.prevPairCount, P.pairKeys, P.lambdaAcc, P.lambdaT, P.posImpulse,
-                           P.restBank, P.restVPeak);
-    if (poisson) {  // per-substep release accumulator starts from zero every substep
-      auto rr = Kokkos::subview(P.restRel, Kokkos::pair<int, int>(0, nm));
-      Kokkos::deep_copy(rr, 0.0f);
+                           P.restBank, P.restVPeak,
+                           poisson ? P.prevMatched : Kokkos::View<unsigned char*, CpMem>());
+    if (poisson) {
+      {  // per-substep release accumulator starts from zero every substep
+        auto rr = Kokkos::subview(P.restRel, Kokkos::pair<int, int>(0, nm));
+        Kokkos::deep_copy(rr, 0.0f);
+      }
+      // Orphan transfer: age the body accounts (owned range; MPI ghosts are mirrored), then
+      // settle dead pairs' remaining budgets onto their endpoint bodies. Under MPI the pair-key
+      // identities are gids, so the scatter resolves them through a sorted gid -> slot map built
+      // over owned + ghost slots (a ghost-side credit is overwritten by the next owner mirror —
+      // the owner's redundant ledger copy applies the same credit authoritatively).
+      decayBodyOrphanKokkos(P.bodyOrphan, P.bodyOrphanVPeak, P.numReal, 2.0f * P.dt * gMagP);
+      if (P.prevPairCount > 0) {
+        Kokkos::View<const int*, CpMem> gidSorted, slotSorted;
+        if constexpr (Hooks::distributed) {
+          Kokkos::View<int*, CpMem> gs(
+              Kokkos::view_alloc(space, "peclet::dem::orphan_gids", Kokkos::WithoutInitializing),
+              nBodies);
+          Kokkos::View<int*, CpMem> ss(
+              Kokkos::view_alloc(space, "peclet::dem::orphan_slots", Kokkos::WithoutInitializing),
+              nBodies);
+          auto gid = P.gid;
+          Kokkos::parallel_for(
+              "peclet::dem::orphan_gid_map", Kokkos::RangePolicy<CpExec>(space, 0, nBodies),
+              KOKKOS_LAMBDA(int i) {
+                gs(i) = gid(i);
+                ss(i) = i;
+              });
+          Kokkos::Experimental::sort_by_key(space, gs, ss);
+          gidSorted = gs;
+          slotSorted = ss;
+        }
+        scatterOrphanBanksKokkos(
+            Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
+            Kokkos::View<const float*, CpMem>(P.prevRestBank),
+            Kokkos::View<const float*, CpMem>(P.prevRestVPeak),
+            Kokkos::View<const unsigned char*, CpMem>(P.prevMatched), P.prevPairCount,
+            Kokkos::View<const float*, CpMem>(P.invMass), P.bodyOrphan, P.bodyOrphanVPeak,
+            gidSorted, slotSorted);
+      }
     }
     markPersistentManifoldsKokkos(P.manifolds, nm, P.realIndices, keyIdx, P.prevPairKeys,
                                   P.prevPairCount, P.pairKeys, P.manifoldPersistent);
@@ -221,8 +266,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
                                Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
                                P.lambdaT, P.frictionDynamic, P.vt0, P.restitutionTangent,
-                               Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankC, relV,
-                               persC, vpkC, gHat, grdC, restNewtonOff, restOneSided);
+                               Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV,
+                               persC, vpkC, gHat, grdC, restNewtonOff, restOneSided, orphV, orphPk);
       else
         solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
                                      P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
@@ -288,8 +333,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                  P.lambdaAcc, P.vn0,
                                  Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
                                  P.frictionDynamic, P.vt0, P.restitutionTangent,
-                                 Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankC,
-                                 relV, persC, vpkC, gHat, grdC, restNewtonOff, restOneSided);
+                                 Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV,
+                                 relV, persC, vpkC, gHat, grdC, restNewtonOff, restOneSided, orphV, orphPk);
           if (hooks.allMax(readFloat(P.maxApproach)) <= vRestS)
             break;
           if constexpr (Hooks::distributed) {
@@ -343,8 +388,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                  Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
                                  P.frictionDynamic, P.vt0, P.restitutionTangent,
                                  Kokkos::View<const float*, CpMem>(P.posImpulse),
-                                 P.maxApproachQS, bankC, relV, persC, vpkC, gHat, grdC,
-                                 restNewtonOff, restOneSided);
+                                 P.maxApproachQS, bankV, relV, persC, vpkC, gHat, grdC,
+                                 restNewtonOff, restOneSided, orphV, orphPk);
           // coarse leg: fine -> coarse, translation-only inelastic PGS at aggregate masses
           if (H.numLevels > 0)
             multilevelCoarseCycleKokkos(P.manifolds, nm, P.realIndices,
@@ -392,14 +437,16 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                      P.vt0,
                                      P.restitutionTangent,
                                      Kokkos::View<const float*, CpMem>(P.posImpulse),
-                                     bankC,
+                                     bankV,
                                      relV,
                                      persC,
                                      vpkC,
                                      gHat,
                                      grdC,
                                      restNewtonOff,
-                                     restOneSided};
+                                     restOneSided,
+                                     orphV,
+                                     orphPk};
         for (int it = 0; it < 2 * P.velocityIterations; ++it) {
           Kokkos::deep_copy(P.maxApproach, 0.0f);
           solveVelocityPGSBucketsKokkos(sweep, Kokkos::View<const int*, CpMem>(P.levelPerm),
@@ -425,8 +472,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                  P.lambdaAcc, P.vn0,
                                  Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
                                  P.frictionDynamic, P.vt0, P.restitutionTangent,
-                                 Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankC,
-                                 relV, persC, vpkC, gHat, grdC, restNewtonOff, restOneSided);
+                                 Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV,
+                                 relV, persC, vpkC, gHat, grdC, restNewtonOff, restOneSided, orphV, orphPk);
           if (hooks.allMax(readFloat(P.maxApproach)) <= vRestS)
             break;
           if constexpr (Hooks::distributed) {

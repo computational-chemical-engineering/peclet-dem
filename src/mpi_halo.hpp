@@ -58,6 +58,10 @@ struct MpiGatherPack {
   // support chain crossing a rank boundary stays grounded).
   int gid;
   unsigned char material, grounded;
+  // Poisson-restitution orphan account (owner-authoritative; the ghost copy's rank-local
+  // drawdowns are overwritten by the next mirror — the redundant ghost-pair solve computes
+  // the identical drawdown on the owner).
+  float orphan, orphanVPeak;
 };
 
 // One persistent-contact ledger entry carried through an ownership migration: the gid-based pair
@@ -97,6 +101,7 @@ struct MigratePack {
   float planeFric0, planeFric1;
   int gid;
   unsigned char materialId, groundedLevel, numWarm, numHertz;
+  float orphan, orphanVPeak;  // Poisson orphan account rides with its body across ownership
   WarmPairEntry warm[kWarmCarryMax];
   // Force-engine (Hertz–Mindlin) history: the particle's slice of the cached pair list's Mindlin
   // springs plus its per-(particle, wall) shear history + lagged wall patch stiffness.
@@ -147,8 +152,8 @@ inline void haloUnpackF4(V4 field, peclet::core::View<F4> ghost, int no, int ng)
 inline void haloPackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invInertia, V4 quat,
                            V4 quatPred, Vf scale, Vf invMass, Vi shapeId, Vi gid,
                            Kokkos::View<unsigned char*, CpMem> materialId,
-                           Kokkos::View<unsigned char*, CpMem> grounded,
-                           peclet::core::View<MpiGatherPack> owned, int n) {
+                           Kokkos::View<unsigned char*, CpMem> grounded, Vf orphan,
+                           Vf orphanVPeak, peclet::core::View<MpiGatherPack> owned, int n) {
   Kokkos::parallel_for(
       "peclet::dem::halo::packGather", Kokkos::RangePolicy<CpExec>(0, n), KOKKOS_LAMBDA(int i) {
         MpiGatherPack g;
@@ -165,6 +170,8 @@ inline void haloPackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invI
         g.gid = gid(i);
         g.material = materialId(i);
         g.grounded = grounded(i);
+        g.orphan = orphan(i);
+        g.orphanVPeak = orphanVPeak(i);
         owned(i) = g;
       });
 }
@@ -174,8 +181,9 @@ inline void haloPackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invI
 inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invInertia, V4 quat,
                              V4 quatPred, Vf scale, Vf invMass, Vi shapeId, Vi realIndices, Vi gid,
                              Kokkos::View<unsigned char*, CpMem> materialId,
-                             Kokkos::View<unsigned char*, CpMem> grounded,
-                             peclet::core::View<MpiGatherPack> ghost, int no, int ng) {
+                             Kokkos::View<unsigned char*, CpMem> grounded, Vf orphan,
+                             Vf orphanVPeak, peclet::core::View<MpiGatherPack> ghost, int no,
+                             int ng) {
   Kokkos::parallel_for(
       "peclet::dem::halo::unpackGather", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
         const MpiGatherPack p = ghost(g);
@@ -210,6 +218,8 @@ inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 in
         gid(s) = p.gid;
         materialId(s) = p.material;
         grounded(s) = p.grounded;
+        orphan(s) = p.orphan;
+        orphanVPeak(s) = p.orphanVPeak;
       });
 }
 
@@ -356,12 +366,12 @@ class ParticleHalo {
     // (3) all other state packed into one record -> single exchange -> ghost slots + self-mapped
     // idx.
     haloPackGather(P.vel, P.velPred, P.angVel, P.angVelPred, P.invInertia, P.quat, P.quatPred,
-                   P.scale, P.invMass, P.shapeId, P.gid, P.materialId, P.groundedLevel, ownedPack_,
-                   no);
+                   P.scale, P.invMass, P.shapeId, P.gid, P.materialId, P.groundedLevel,
+                   P.bodyOrphan, P.bodyOrphanVPeak, ownedPack_, no);
     dev_.forward(ownedPack_, ghostPack_);
     haloUnpackGather(P.vel, P.velPred, P.angVel, P.angVelPred, P.invInertia, P.quat, P.quatPred,
                      P.scale, P.invMass, P.shapeId, P.realIndices, P.gid, P.materialId,
-                     P.groundedLevel, ghostPack_, no, ng);
+                     P.groundedLevel, P.bodyOrphan, P.bodyOrphanVPeak, ghostPack_, no, ng);
     return no + ng;
   }
 
@@ -445,6 +455,10 @@ class ParticleHalo {
     Kokkos::deep_copy(h_gid, P.gid);
     Kokkos::deep_copy(h_mat, P.materialId);
     Kokkos::deep_copy(h_grd, P.groundedLevel);
+    auto h_orp = Kokkos::create_mirror_view(P.bodyOrphan);
+    auto h_ovp = Kokkos::create_mirror_view(P.bodyOrphanVPeak);
+    Kokkos::deep_copy(h_orp, P.bodyOrphan);
+    Kokkos::deep_copy(h_ovp, P.bodyOrphanVPeak);
     pos.assign((std::size_t)no, peclet::core::Vec<3>{});
     payload.assign((std::size_t)no * sizeof(MigratePack), 0);
     std::vector<MigratePack> packs((std::size_t)no);
@@ -466,6 +480,8 @@ class ParticleHalo {
       m.gid = h_gid(i);
       m.materialId = h_mat(i);
       m.groundedLevel = h_grd(i);
+      m.orphan = h_orp(i);
+      m.orphanVPeak = h_ovp(i);
       m.numWarm = 0;
       gidToLocal.emplace(static_cast<unsigned>(h_gid(i)), i);
     }
@@ -615,6 +631,10 @@ class ParticleHalo {
     auto h_gid = Kokkos::create_mirror_view(P.gid);
     auto h_mat = Kokkos::create_mirror_view(P.materialId);
     auto h_grd = Kokkos::create_mirror_view(P.groundedLevel);
+    auto h_orp = Kokkos::create_mirror_view(P.bodyOrphan);
+    auto h_ovp = Kokkos::create_mirror_view(P.bodyOrphanVPeak);
+    Kokkos::deep_copy(h_orp, P.bodyOrphan);  // slots past newN keep defined values
+    Kokkos::deep_copy(h_ovp, P.bodyOrphanVPeak);
     std::vector<WarmPairEntry> ledger;
     ledger.reserve(newN * 4);
     std::vector<HertzPairEntry> hertzLedger;
@@ -651,6 +671,8 @@ class ParticleHalo {
       h_gid((int)i) = m.gid;
       h_mat((int)i) = m.materialId;
       h_grd((int)i) = m.groundedLevel;
+      h_orp((int)i) = m.orphan;
+      h_ovp((int)i) = m.orphanVPeak;
       for (int s = 0; s < (int)m.numWarm && s < kWarmCarryMax; ++s)
         ledger.push_back(m.warm[s]);
       for (int s = 0; s < (int)m.numHertz && s < kWarmCarryMax; ++s)
@@ -676,6 +698,8 @@ class ParticleHalo {
     Kokkos::deep_copy(P.gid, h_gid);
     Kokkos::deep_copy(P.materialId, h_mat);
     Kokkos::deep_copy(P.groundedLevel, h_grd);
+    Kokkos::deep_copy(P.bodyOrphan, h_orp);
+    Kokkos::deep_copy(P.bodyOrphanVPeak, h_ovp);
 
     // Ledger rebuild: sort by key, dedupe (a pair arrives once per locally-received endpoint; the
     // duplicates carry identical values), clamp to the store capacity, upload sorted + aligned —

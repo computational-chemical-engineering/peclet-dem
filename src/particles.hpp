@@ -109,6 +109,15 @@ struct Particles {
   // separation velocity is capped at e x vPeak (sustained unloading push, never an impulsive dump).
   Kokkos::View<float*, CpMem> restVPeak;
   Kokkos::View<float*, CpMem> prevRestVPeak;  // sorted alongside prevPairKeys
+  // Orphan transfer (pair-churn fix): a pair that DIES with owed budget credits it to its
+  // endpoint bodies mass-weighted (per-body balance + the event peak speed it carried, both
+  // decayed 1/256 per substep so stranded credit evaporates). Live releasing pairs draw the
+  // balance back on demand inside the PGS sweep — a penetrating impactor's event budget then
+  // survives the ~20-substep turnover of its contact partners instead of dying with each pair.
+  // Indexed by REAL body slot (owned range authoritative; MPI ghosts mirrored owner->ghost).
+  Kokkos::View<float*, CpMem> bodyOrphan;
+  Kokkos::View<float*, CpMem> bodyOrphanVPeak;
+  Kokkos::View<unsigned char*, CpMem> prevMatched;  // scratch: prev-ledger entry seen this substep
   // Side flags for the STABILIZATION pass (0 = symmetric): zeroed for the main momentum-
   // conserving sweeps, filled from persistence+grounding only if statics fail to converge.
   Kokkos::View<unsigned char*, CpMem> sideFlags;
@@ -267,6 +276,9 @@ struct Particles {
     restRel = Kokkos::View<float*, CpMem>("restRel", maxContacts);
     restVPeak = Kokkos::View<float*, CpMem>("restVPeak", maxContacts);
     prevRestVPeak = Kokkos::View<float*, CpMem>("prevRestVPeak", maxContacts);
+    bodyOrphan = Kokkos::View<float*, CpMem>("bodyOrphan", cap);
+    bodyOrphanVPeak = Kokkos::View<float*, CpMem>("bodyOrphanVPeak", cap);
+    prevMatched = Kokkos::View<unsigned char*, CpMem>("prevMatched", maxContacts);
     sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", maxContacts);
     heightLevel = Kokkos::View<int*, CpMem>("heightLevel", cap);
     levelKey = Kokkos::View<int*, CpMem>("levelKey", maxContacts);
