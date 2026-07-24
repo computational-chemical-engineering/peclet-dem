@@ -23,11 +23,13 @@
 #ifndef DEM_SOLVE_DRIVER_HPP
 #define DEM_SOLVE_DRIVER_HPP
 
+#include <algorithm>
 #include <cstdlib>
 #include <Kokkos_Core.hpp>
 #include <utility>
 #include <vector>
 
+#include "broadphase_arborx.hpp"
 #include "contact_preprocessing.hpp"
 #include "particles.hpp"
 #include "solver_friction.hpp"
@@ -55,6 +57,46 @@ inline void fillGidBaseKokkos(Vi gid, int n, int base) {
       "peclet::dem::gid_base", Kokkos::RangePolicy<CpExec>(0, n),
       KOKKOS_LAMBDA(int i) { gid(i) = base + i; });
   Kokkos::fence();
+}
+
+/// Largest effective particle radius over the owned set (= max scale × globalScale, growth
+/// included). The ghost band + broadphase margin are sized off THIS, not globalScale directly, so
+/// they scale with the actual grain size — set particles in SI (`radius = 1e-3`, globalScale left
+/// at 1) and the halo layer follows automatically. For the usual convention (globalScale ≈ grain
+/// size, scale ≈ 1) it is numerically identical to the old `1.0*globalScale`.
+inline float maxOwnedRadius(const Particles& P) {
+  if (P.numReal <= 0)
+    return P.globalScale * P.baseRadius;
+  float mx = 0.0f;
+  auto sc = P.scale;
+  Kokkos::parallel_reduce(
+      "peclet::dem::max_scale", Kokkos::RangePolicy<CpExec>(0, P.numReal),
+      KOKKOS_LAMBDA(int i, float& m) { m = sc(i) > m ? sc(i) : m; }, Kokkos::Max<float>(mx));
+  return mx * P.globalScale * P.baseRadius;
+}
+
+/// Broad phase with an automatically-grown pair buffer.
+///
+/// `findCollisionsArborX` guards its pair WRITES at `maxPairs` but returns the RAW candidate count,
+/// which can exceed `P.pairs`' capacity once a bed compacts (more neighbour pairs than the buffer
+/// holds — e.g. a fluidized bed driven denser by the CFD-DEM drag). Feeding that raw count straight
+/// into `detectContactsKokkos` as its loop bound makes the narrowphase read `P.pairs` out of bounds
+/// → `cudaErrorIllegalAddress`. Here we detect the overflow, reallocate `P.pairs` (with headroom so
+/// an oscillating count doesn't realloc every step) and re-run once so no candidate pair is silently
+/// dropped, then clamp defensively so the returned count is ALWAYS ≤ the buffer extent — the
+/// narrowphase can never walk off the end regardless.
+inline int findCollisionsGrow(Particles& P, float margin) {
+  const float boxCap = std::max(std::max(P.domain.size.x, P.domain.size.y), P.domain.size.z);
+  int np = findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs,
+                                P.pairCount, boxCap);
+  if (np > static_cast<int>(P.pairs.extent(0))) {
+    const int grown = np + np / 2 + 64;  // 1.5× + slack
+    Kokkos::realloc(Kokkos::WithoutInitializing, P.pairs, grown);
+    P.maxPairs = grown;
+    np = findCollisionsArborX(P.posPred, P.crad(), P.numParticles, P.numReal, margin, P.pairs,
+                              P.pairCount, boxCap);
+  }
+  return std::min(np, static_cast<int>(P.pairs.extent(0)));
 }
 
 /// Single-GPU hooks: no ghost refresh, residuals are already global. Everything inlines away.
