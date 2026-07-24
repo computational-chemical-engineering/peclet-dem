@@ -301,6 +301,57 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
 
   P.numParticles = P.numReal;  // restore owned-only active count for getters
 }
+
+/// MPI hooks for the force-based driver (demStepForce): domain-decomposed explicit DEM in the
+/// classical MD mold. One halo gather (fresh topology, band = pair cutoff + skin) per Verlet
+/// pair-list rebuild; between rebuilds only the ghost STATE is forwarded owner->ghost each step.
+/// Forces on ghost slots are discarded (the neighbour rank computes the mirrored pair itself);
+/// the skin / rebuild / cache-validity decisions are Allreduced so the collective schedule is
+/// identical on all ranks.
+struct MpiForceHooks {
+  static constexpr bool distributed = true;
+  ParticleHalo& halo;
+  double band;
+  float allMax(float v) const {
+    float g = v;
+    MPI_Allreduce(&v, &g, 1, MPI_FLOAT, MPI_MAX, halo.comm());
+    return g;
+  }
+  float allMin(float v) const {
+    float g = v;
+    MPI_Allreduce(&v, &g, 1, MPI_FLOAT, MPI_MIN, halo.comm());
+    return g;
+  }
+  void gatherGhosts(Particles& P) const {
+    halo.invalidateTopology();  // fresh band + fresh positions at every pair rebuild
+    halo.gather(P, band);
+    fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
+  }
+  void refreshGhostState(Particles& P, bool needQuat) const {
+    halo.forwardPositions(P.pos);
+    halo.forward(P.vel);
+    halo.forward(P.angVel);
+    if (needQuat)
+      halo.forward4(P.quat);
+  }
+  void clearGhostScratch(Particles& P) const {
+    zeroForceScratchKokkos(P.deltaVel, P.deltaAngVel, P.numReal, P.numReal + halo.numGhost());
+  }
+};
+
+/// `nsteps` distributed force-based (Hertz–Mindlin) steps — the MPI instantiation of
+/// demStepForce. Per-pair Mindlin history is gid-keyed (stable across halo rebuilds/migration);
+/// non-periodic domains only (matching the single-GPU engine).
+inline void demStepHertzMpi(Particles& P, ParticleHalo& halo, float dt, int nsteps,
+                            float skinFrac) {
+  // Ghost band = worst-case pair cutoff (2 R_max,global) + skin. The driver's skin is
+  // skinFrac * R_min,global <= skinFrac * R_max,global, so this band bounds it.
+  float maxR = maxOwnedRadius(P), maxRg = maxR;
+  MPI_Allreduce(&maxR, &maxRg, 1, MPI_FLOAT, MPI_MAX, halo.comm());
+  const double band = (2.0 + skinFrac) * static_cast<double>(maxRg);
+  demStepForce(P, dt, nsteps, skinFrac, HertzMindlinLaw{}, MpiForceHooks{halo, band});
+  P.numParticles = P.numReal;  // restore owned-only active count for getters
+}
 #endif  // PECLET_DEM_MPI
 
 /// Host-facing facade with std::vector setters/getters (binding-agnostic).
@@ -925,25 +976,45 @@ class Simulation {
   int migrateToWeights(const std::vector<peclet::core::Real>& w) {
     return halo_->migrateToWeights(P_, w);
   }
+  // Globally-unique particle ids (persistent-pair and Mindlin-history keys are gid-based):
+  // re-base each rank's identity ids by an exclusive scan of the owned counts, once per particle
+  // set. Migration and rebalance carry gids, so the ids stay stable afterwards; set_positions
+  // resets the flag. Any pre-MPI ledger was keyed with the identity ids, which the re-base makes
+  // stale — cold-start both engines' histories (one soft restart, negligible).
+  void ensureGlobalGids() {
+    if (mpiGidsGlobal_)
+      return;
+    long base = 0, mine = P_.numReal;
+    MPI_Exscan(&mine, &base, 1, MPI_LONG, MPI_SUM, halo_->comm());
+    if (halo_->rank() == 0)
+      base = 0;  // MPI_Exscan leaves rank 0's recvbuf undefined
+    fillGidBaseKokkos(P_.gid, P_.numReal, static_cast<int>(base));
+    P_.prevPairCount = 0;
+    P_.hertzPrevCount = 0;
+    P_.hertzNumPairs = -1;
+    mpiGidsGlobal_ = true;
+  }
   void stepMpi(int nsteps) {
     const double rcut = (mpiRcut_ > 0.0) ? mpiRcut_ : maxOwnedRadius(P_);
-    // Globally-unique particle ids (persistent-pair keys are gid-based): re-base each rank's
-    // identity ids by an exclusive scan of the owned counts, once per particle set. Migration and
-    // rebalance carry gids, so the ids stay stable afterwards; set_positions resets the flag.
-    if (!mpiGidsGlobal_) {
-      long base = 0, mine = P_.numReal;
-      MPI_Exscan(&mine, &base, 1, MPI_LONG, MPI_SUM, halo_->comm());
-      if (halo_->rank() == 0)
-        base = 0;  // MPI_Exscan leaves rank 0's recvbuf undefined
-      fillGidBaseKokkos(P_.gid, P_.numReal, static_cast<int>(base));
-      mpiGidsGlobal_ = true;
-    }
+    ensureGlobalGids();
     for (int s = 0; s < nsteps; ++s) {
       if (mpiRebalanceEvery_ > 0 && mpiStepCount_ % mpiRebalanceEvery_ == 0)
         halo_->rebalance(P_);
       demStepMpi(P_, *halo_, rcut, mpiSyncEvery_, mpiForwardRotation_);
       ++mpiStepCount_;
     }
+  }
+  /// Advance `substeps` distributed explicit Hertz–Mindlin (force-based) steps of size dt — the
+  /// MPI counterpart of step_hertz, on the same halo/decomposition as step_mpi (init_mpi +
+  /// enable_mpi_step first). rebalance_every counts CALLS of this method (each call = one
+  /// Rayleigh-limited inner batch); the migration carries the Mindlin pair/wall history.
+  void stepHertzMpi(float dt, int substeps, float skin_frac) {
+    P_.dt = dt;
+    ensureGlobalGids();
+    if (mpiRebalanceEvery_ > 0 && mpiHertzCalls_ % mpiRebalanceEvery_ == 0)
+      halo_->rebalance(P_);
+    ++mpiHertzCalls_;
+    demStepHertzMpi(P_, *halo_, dt, substeps, skin_frac);
   }
   int rank() const { return halo_->rank(); }
   int numGhost() const { return halo_->numGhost(); }
@@ -1082,6 +1153,7 @@ class Simulation {
   bool mpiForwardRotation_ = true;
   int mpiRebalanceEvery_ = 0;
   long mpiStepCount_ = 0;
+  long mpiHertzCalls_ = 0;  // step_hertz_mpi call count (rebalance_every cadence for the force path)
   bool mpiGidsGlobal_ = false;  // gids re-based to a global Exscan offset (once per particle set)
 #endif
 };

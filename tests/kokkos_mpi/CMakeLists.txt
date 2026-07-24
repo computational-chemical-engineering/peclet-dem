@@ -53,7 +53,9 @@ foreach(np 1 2 4)
   # modern   : the full modern solver stack (gravity + per-pair materials + friction + warm-started
   #            PGS + statics) vs the REAL single-rank demStep, tolerance-based.
   # modern_rebal : modern + periodic ownership rebalancing mid-run (persistent-ledger carry).
-  foreach(mode jacobi_closed jacobi_periodic modern modern_rebal)
+  # hertz(_rebal): the FORCE-BASED engine (explicit Hertz-Mindlin through the demStepForce driver)
+  #            vs the real single-rank step_hertz; _rebal migrates the Mindlin history mid-run.
+  foreach(mode jacobi_closed jacobi_periodic modern modern_rebal hertz hertz_rebal)
     add_test(NAME demstep_${mode}_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} -np ${np} $<TARGET_FILE:test_demstep_mpi> ${mode})
   endforeach()

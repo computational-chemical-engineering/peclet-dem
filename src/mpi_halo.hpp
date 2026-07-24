@@ -73,6 +73,14 @@ struct WarmPairEntry {
 // dropped beyond it — a dropped entry only costs the receiving rank a cold warm-start there).
 inline constexpr int kWarmCarryMax = 14;
 
+// One force-engine (Hertz–Mindlin) per-pair history entry carried through an ownership migration:
+// the gid-based pair key + the Mindlin shear spring xi. The lagged patch stiffness (snPair) is NOT
+// carried — it resets at every pair-list rebuild anyway, and a migration forces one.
+struct HertzPairEntry {
+  unsigned long long key;
+  float xi[3];
+};
+
 // The committed per-particle state that defines a particle across steps — everything except its
 // position (which drives ownership and travels as the migrator's coordinate) and the predicted /
 // delta / ghost scratch the step rebuilds. This is the payload moved when a particle changes owner
@@ -86,8 +94,13 @@ struct MigratePack {
   int shapeId;
   float planeFric0, planeFric1;
   int gid;
-  unsigned char materialId, groundedLevel, numWarm;
+  unsigned char materialId, groundedLevel, numWarm, numHertz;
   WarmPairEntry warm[kWarmCarryMax];
+  // Force-engine (Hertz–Mindlin) history: the particle's slice of the cached pair list's Mindlin
+  // springs plus its per-(particle, wall) shear history + lagged wall patch stiffness.
+  HertzPairEntry hertz[kWarmCarryMax];
+  float hertzXiWall[Particles::kHertzMaxWalls][3];
+  float hertzSnWall[Particles::kHertzMaxWalls];
 };
 
 // --- free-function pack/unpack kernels (namespace scope: nvcc forbids KOKKOS_LAMBDA in member fns)
@@ -257,6 +270,10 @@ class ParticleHalo {
   /// + position D2Hs.
   void setVerletSkin(float skin) { verletSkin_ = skin < 0.0f ? 0.0f : skin; }
   float verletSkin() const { return verletSkin_; }
+  /// Drop the cached owner↔ghost topology so the NEXT gather() rebuilds it unconditionally — the
+  /// force-based step drives its own rebuild cadence (one gather per Verlet pair-list rebuild,
+  /// possibly with a different band than the last build), independent of the skin heuristic.
+  void invalidateTopology() { haveTopo_ = false; }
   /// Number of topology rebuilds vs total gather() calls since construction (for
   /// benchmarking/tests).
   long numRebuilds() const { return nRebuild_; }
@@ -508,6 +525,66 @@ class ParticleHalo {
             attach(it->second, we, w);
       }
     }
+    // Force-engine (Hertz–Mindlin) history. Pack the LIVE cached-pair springs (hertzKeys/hertzXi
+    // hold the current values; keys are gid-based) onto their locally-owned endpoints, and each
+    // particle's wall-history slots verbatim.
+    if (P.hertzNumPairs > 0) {
+      const int hn = P.hertzNumPairs;
+      auto h_hk = Kokkos::create_mirror_view(P.hertzKeys);
+      auto h_hx = Kokkos::create_mirror_view(P.hertzXi);
+      Kokkos::deep_copy(h_hk, P.hertzKeys);
+      Kokkos::deep_copy(h_hx, P.hertzXi);
+      auto attachHertz = [&](int i, const HertzPairEntry& e, float w) {
+        MigratePack& m = packs[(std::size_t)i];
+        if (m.numHertz < kWarmCarryMax) {
+          m.hertz[m.numHertz++] = e;
+          return;
+        }
+        int worst = 0;
+        float worstW = 1e30f;
+        for (int s = 0; s < kWarmCarryMax; ++s) {
+          const float ws = std::fabs(m.hertz[s].xi[0]) + std::fabs(m.hertz[s].xi[1]) +
+                           std::fabs(m.hertz[s].xi[2]);
+          if (ws < worstW) {
+            worstW = ws;
+            worst = s;
+          }
+        }
+        if (w > worstW)
+          m.hertz[worst] = e;
+      };
+      for (int e = 0; e < hn; ++e) {
+        HertzPairEntry he;
+        he.key = h_hk(e);
+        he.xi[0] = h_hx(e, 0);
+        he.xi[1] = h_hx(e, 1);
+        he.xi[2] = h_hx(e, 2);
+        if (he.xi[0] == 0.0f && he.xi[1] == 0.0f && he.xi[2] == 0.0f)
+          continue;  // open / historyless pair: nothing worth carrying
+        const float w = std::fabs(he.xi[0]) + std::fabs(he.xi[1]) + std::fabs(he.xi[2]);
+        const unsigned hi = static_cast<unsigned>(he.key >> 32);
+        const unsigned lo = static_cast<unsigned>(he.key & 0xFFFFFFFFu);
+        if (auto it = gidToLocal.find(hi); it != gidToLocal.end())
+          attachHertz(it->second, he, w);
+        if (auto it = gidToLocal.find(lo); it != gidToLocal.end())
+          attachHertz(it->second, he, w);
+      }
+    }
+    {
+      auto h_xw = Kokkos::create_mirror_view(P.hertzXiWall);
+      auto h_sw = Kokkos::create_mirror_view(P.hertzSnWall);
+      Kokkos::deep_copy(h_xw, P.hertzXiWall);
+      Kokkos::deep_copy(h_sw, P.hertzSnWall);
+      for (int i = 0; i < no; ++i)
+        for (int wi = 0; wi < Particles::kHertzMaxWalls; ++wi) {
+          const int slot = i * Particles::kHertzMaxWalls + wi;
+          MigratePack& m = packs[(std::size_t)i];
+          m.hertzXiWall[wi][0] = h_xw(slot, 0);
+          m.hertzXiWall[wi][1] = h_xw(slot, 1);
+          m.hertzXiWall[wi][2] = h_xw(slot, 2);
+          m.hertzSnWall[wi] = h_sw(slot);
+        }
+    }
     for (int i = 0; i < no; ++i)
       std::memcpy(&payload[(std::size_t)i * sizeof(MigratePack)], &packs[(std::size_t)i],
                   sizeof(MigratePack));
@@ -532,6 +609,12 @@ class ParticleHalo {
     auto h_grd = Kokkos::create_mirror_view(P.groundedLevel);
     std::vector<WarmPairEntry> ledger;
     ledger.reserve(newN * 4);
+    std::vector<HertzPairEntry> hertzLedger;
+    hertzLedger.reserve(newN * 4);
+    auto h_xw = Kokkos::create_mirror_view(P.hertzXiWall);
+    auto h_sw = Kokkos::create_mirror_view(P.hertzSnWall);
+    Kokkos::deep_copy(h_xw, P.hertzXiWall);  // slots past newN keep defined values on CUDA mirrors
+    Kokkos::deep_copy(h_sw, P.hertzSnWall);
     for (std::size_t i = 0; i < newN; ++i) {
       h_pos((int)i, 0) = pos[i][0];
       h_pos((int)i, 1) = pos[i][1];
@@ -562,6 +645,15 @@ class ParticleHalo {
       h_grd((int)i) = m.groundedLevel;
       for (int s = 0; s < (int)m.numWarm && s < kWarmCarryMax; ++s)
         ledger.push_back(m.warm[s]);
+      for (int s = 0; s < (int)m.numHertz && s < kWarmCarryMax; ++s)
+        hertzLedger.push_back(m.hertz[s]);
+      for (int wi = 0; wi < Particles::kHertzMaxWalls; ++wi) {
+        const int slot = (int)i * Particles::kHertzMaxWalls + wi;
+        h_xw(slot, 0) = m.hertzXiWall[wi][0];
+        h_xw(slot, 1) = m.hertzXiWall[wi][1];
+        h_xw(slot, 2) = m.hertzXiWall[wi][2];
+        h_sw(slot) = m.hertzSnWall[wi];
+      }
     }
     Kokkos::deep_copy(P.pos, h_pos);
     Kokkos::deep_copy(P.quat, h_quat);
@@ -611,6 +703,42 @@ class ParticleHalo {
       Kokkos::deep_copy(P.prevPosImpulse, hpi);
     }
     P.prevPairCount = nl;
+
+    // Force-engine history rebuild: wall slots verbatim per (new local index, wall); the pair
+    // ledger sorted + deduped into the hertzPrev store (the exact layout hertzRebuildPairs'
+    // key-carry binary search expects), and the cached pair LIST invalidated — local pair slots
+    // reference pre-migration indices, so the next force step must rebuild (and re-gathers the
+    // halo then). A fresh rank may never have allocated the prev store: size it here.
+    Kokkos::deep_copy(P.hertzXiWall, h_xw);
+    Kokkos::deep_copy(P.hertzSnWall, h_sw);
+    std::sort(hertzLedger.begin(), hertzLedger.end(),
+              [](const HertzPairEntry& a, const HertzPairEntry& b) { return a.key < b.key; });
+    hertzLedger.erase(std::unique(hertzLedger.begin(), hertzLedger.end(),
+                                  [](const HertzPairEntry& a, const HertzPairEntry& b) {
+                                    return a.key == b.key;
+                                  }),
+                      hertzLedger.end());
+    const int nh = (int)hertzLedger.size();
+    if ((int)P.hertzPrevKeys.extent(0) < nh) {
+      P.hertzPrevKeys = Kokkos::View<unsigned long long*, CpMem>("hertzPrevKeys", nh);
+      P.hertzPrevXi = Kokkos::View<float* [3], CpMem>("hertzPrevXi", nh);
+    }
+    if (nh > 0) {
+      auto hk = Kokkos::create_mirror_view(P.hertzPrevKeys);
+      auto hx = Kokkos::create_mirror_view(P.hertzPrevXi);
+      Kokkos::deep_copy(hk, P.hertzPrevKeys);
+      Kokkos::deep_copy(hx, P.hertzPrevXi);
+      for (int e = 0; e < nh; ++e) {
+        hk(e) = hertzLedger[(std::size_t)e].key;
+        hx(e, 0) = hertzLedger[(std::size_t)e].xi[0];
+        hx(e, 1) = hertzLedger[(std::size_t)e].xi[1];
+        hx(e, 2) = hertzLedger[(std::size_t)e].xi[2];
+      }
+      Kokkos::deep_copy(P.hertzPrevKeys, hk);
+      Kokkos::deep_copy(P.hertzPrevXi, hx);
+    }
+    P.hertzPrevCount = nh;
+    P.hertzNumPairs = -1;
 
     P.numReal = (int)newN;
     P.numParticles = (int)newN;

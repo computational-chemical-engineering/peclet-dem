@@ -102,7 +102,10 @@ inline void hertzRebuildPairs(Particles& P, float skin) {
 /// Save the current list (sorted by key) so the NEXT rebuild can carry the history.
 inline void hertzCommitHistory(Particles& P) {
   const int n = P.hertzNumPairs;
-  if (n <= 0) {
+  if (n < 0)
+    return;  // no valid LIVE list (fresh sim, or just after an ownership migration): the prev
+             // store may hold carried history for the coming rebuild — do not wipe it.
+  if (n == 0) {
     P.hertzPrevCount = 0;
     return;
   }
@@ -180,6 +183,34 @@ struct HertzMindlinLaw {
       throw std::runtime_error("step_hertz: too many SDF walls");
   }
 };
+
+/// Zero the force/torque accumulator rows [lo, hi) — under MPI the pair kernels atomically
+/// accumulate onto ghost slots too (Newton's third law), but only owned rows are consumed and
+/// cleared by the integrator; without this the ghost rows grow without bound.
+inline void zeroForceScratchKokkos(V3 dv, V3 dw, int lo, int hi) {
+  if (hi <= lo)
+    return;
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::force_zero_ghost", Kokkos::RangePolicy<CpExec>(space, lo, hi),
+      KOKKOS_LAMBDA(int i) {
+        for (int c = 0; c < 3; ++c) {
+          dv(i, c) = 0.0f;
+          dw(i, c) = 0.0f;
+        }
+      });
+  space.fence();
+}
+
+/// World radii rad(i) = scale(i) * globalScale * baseRadius over [0, n) (n = owned + ghosts after
+/// a halo gather; the driver's own preamble fills the owned span).
+inline void fillWorldRadiiKokkos(Vf scale, Vf rad, float gs, float bR, int n) {
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::force_rad", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int i) { rad(i) = scale(i) * gs * bR; });
+  space.fence();
+}
 
 /// Single-GPU hooks: no ghosts, reductions are already global. Everything inlines away.
 struct SoloForceHooks {

@@ -359,6 +359,149 @@ static int runModern(bool rebal, int rank, int size) {
   return fail;
 }
 
+// ============================ hertz (force-based engine, MPI) ================================
+static int runHertz(bool rebal, int rank, int size) {
+  // Explicit Hertz-Mindlin settle onto an SDF floor: closed box, two materials with distinct pair
+  // rows, soft E so dt = 1e-4 is Rayleigh-stable. Reference = the REAL single-rank step_hertz.
+  const double L = 12.0, H = 24.0;
+  const float dt = 1e-4f;
+  const int CALLS = 5, SUB = 100;
+  const int GXY = 6, GZL = 4;
+  const int n = GXY * GXY * GZL;
+
+  // Overlapping lattice (spacing 1.15 < diameter 1.2) with the bottom layer penetrating the SDF
+  // floor: pair AND wall contacts are live from step one (a spaced lattice would only validate
+  // free flight over this horizon), and the lateral overlaps put active pairs across every rank
+  // boundary.
+  std::vector<float> gpos;
+  std::vector<int> gmat;
+  for (int iz = 0; iz < GZL; ++iz)
+    for (int iy = 0; iy < GXY; ++iy)
+      for (int ix = 0; ix < GXY; ++ix) {
+        const int g = static_cast<int>(gpos.size() / 3);
+        gpos.push_back((float)(1.0 + ix * 1.15 + jitter(g, 0, 0.06)));
+        gpos.push_back((float)(1.0 + iy * 1.15 + jitter(g, 1, 0.06)));
+        gpos.push_back((float)(1.55 + iz * 1.15 + jitter(g, 2, 0.03)));
+        gmat.push_back(g % 2);
+      }
+
+  auto configure = [&](Simulation& sim) {
+    sim.setDomain(L, L, H, false, false, false);
+    sim.setGlobalScale(1.0f);
+    sim.setSphereShape(0.6f);
+    sim.setDt(dt);
+    sim.setGravity(0, 0, -10.0f);
+    sim.setMaterialParams(0.5f, 0.0f, 0.4f);
+    sim.setHertzMaterial(0, 1.0e5f, 0.25f);
+    sim.setHertzMaterial(1, 1.0e5f, 0.25f);
+    sim.setPairMaterial(0, 0, 0.50f, 0.40f);
+    sim.setPairMaterial(0, 1, 0.30f, 0.20f);
+    sim.setPairMaterial(1, 1, 0.60f, 0.50f);
+    // SDF floor: solid below z = 1 (negative inside), coarse trilinear grid over the box.
+    const int gn = 9;
+    std::vector<float> grid((std::size_t)gn * gn * gn);
+    for (int k = 0; k < gn; ++k)
+      for (int j = 0; j < gn; ++j)
+        for (int i = 0; i < gn; ++i) {
+          const float z = -1.0f + (float)k * (float)(L + 2.0) / (gn - 1);
+          grid[(std::size_t)i + (std::size_t)j * gn + (std::size_t)k * gn * gn] = z - 1.0f;
+        }
+    const float sp = (float)(L + 2.0) / (gn - 1);
+    sim.addSdfWall(grid, gn, gn, gn, peclet::dem::F3{-1.0f, -1.0f, -1.0f},
+                   peclet::dem::F3{sp, sp, sp}, 0.4f, 0.35f);
+  };
+
+  const std::tuple<double, double, double> origin{0, 0, 0}, dsize{L, L, H};
+  const std::tuple<long, long, long> gsize{GX, GX, GX};
+  const std::tuple<bool, bool, bool> per{false, false, false};
+  bool perArr[3] = {false, false, false};
+  const double boxArr[3] = {L, L, H};
+
+  std::vector<float> ownedPos;
+  std::vector<int> ownedGid;
+  ownedOf(gpos, n, boxArr, perArr, rank, size, ownedPos, ownedGid);
+  const int nOwned = static_cast<int>(ownedGid.size());
+  const int cap = 4 * n + 64;
+
+  Simulation dist(cap);
+  configure(dist);
+  dist.setPositions(ownedPos);
+  {
+    std::vector<int> mats(nOwned);
+    for (int i = 0; i < nOwned; ++i)
+      mats[i] = gmat[(std::size_t)ownedGid[i]];
+    dist.setMaterialIds(mats);
+  }
+  dist.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);
+  dist.enableMpiStep(/*rcut (unused by the force path)*/ 2.0, 1, true,
+                     /*rebalance_every=*/rebal ? 2 : 0);
+  for (int c = 0; c < CALLS; ++c)
+    dist.stepHertzMpi(dt, SUB, 0.3f);
+  const std::vector<float> distPos = dist.getPositions();
+  long lc = dist.numParticles(), gc = 0;
+  MPI_Allreduce(&lc, &gc, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
+  int totGhost = 0, myGhost = dist.numGhost();
+  MPI_Allreduce(&myGhost, &totGhost, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+
+  // Reference: the REAL single-GPU force engine over the global set (rank 0, broadcast).
+  std::vector<float> refPos(static_cast<std::size_t>(n) * 3, 0.0f);
+  if (rank == 0) {
+    Simulation ref(cap);
+    configure(ref);
+    ref.setPositions(gpos);
+    ref.setMaterialIds(gmat);
+    for (int c = 0; c < CALLS; ++c)
+      ref.stepHertz(dt, SUB, 0.3f);
+    refPos = ref.getPositions();
+  }
+  MPI_Bcast(refPos.data(), n * 3, MPI_FLOAT, 0, MPI_COMM_WORLD);
+
+  int fail = 0;
+  double posErr = 0.0;
+  if (!rebal) {  // ownership fixed => local order matches ownedGid
+    double localMax = 0.0;
+    for (int i = 0; i < nOwned; ++i)
+      for (int c = 0; c < 3; ++c)
+        localMax = std::max(localMax, std::fabs((double)distPos[3 * i + c] -
+                                                (double)refPos[3 * ownedGid[i] + c]));
+    MPI_Allreduce(&localMax, &posErr, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+  }
+  double lzsum = 0.0, lzmax = 0.0;
+  for (int i = 0; i < (int)(distPos.size() / 3); ++i) {
+    lzsum += distPos[3 * i + 2];
+    lzmax = std::max(lzmax, (double)distPos[3 * i + 2]);
+  }
+  double gzsum = 0.0, gzmax = 0.0;
+  MPI_Allreduce(&lzsum, &gzsum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(&lzmax, &gzmax, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+  double rzsum = 0.0, rzmax = 0.0;
+  for (int g = 0; g < n; ++g) {
+    rzsum += refPos[3 * g + 2];
+    rzmax = std::max(rzmax, (double)refPos[3 * g + 2]);
+  }
+  const double comErr = std::fabs(gzsum / n - rzsum / n);
+  const double topErr = std::fabs(gzmax - rzmax);
+
+  // Explicit force dynamics: rank-local atomic-order roundoff only, but a stiff contact ODE
+  // amplifies it — tolerance sized to a small fraction of the radius (0.5).
+  const double posTol = 0.05, comTol = 0.01, topTol = 0.1;
+  if (rank == 0)
+    std::printf(
+        "  [hertz%-6s] np=%d particles=%ld/%d ghosts=%d posErr=%.3e (tol %.2f) comErr=%.3e "
+        "topErr=%.3e\n",
+        rebal ? "_rebal" : "", size, gc, n, totGhost, posErr, posTol, comErr, topErr);
+  if (gc != n)
+    fail = 1;
+  if (!rebal && !(posErr < posTol))
+    fail = 1;
+  if (!(comErr < comTol) || !(topErr < topTol))
+    fail = 1;
+  for (float v : distPos)
+    if (!std::isfinite(v))
+      fail = 1;
+  return fail;
+}
+
 int main(int argc, char** argv) {
   MPI_Init(&argc, &argv);
   Kokkos::initialize(argc, argv);
@@ -375,6 +518,10 @@ int main(int argc, char** argv) {
       fail = runModern(false, rank, size);
     else if (mode == "modern_rebal")
       fail = runModern(true, rank, size);
+    else if (mode == "hertz")
+      fail = runHertz(false, rank, size);
+    else if (mode == "hertz_rebal")
+      fail = runHertz(true, rank, size);
     else {
       if (rank == 0)
         std::fprintf(stderr, "unknown mode %s\n", mode.c_str());

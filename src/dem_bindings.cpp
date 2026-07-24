@@ -414,6 +414,11 @@ NB_MODULE(_dem, m) {
            "skin).")
       .def("step_mpi", &Simulation::stepMpi, nb::arg("nsteps") = 1,
            "Advance the distributed (MPI) simulation by nsteps with halo exchange.")
+      .def("step_hertz_mpi", &Simulation::stepHertzMpi, nb::arg("dt"), nb::arg("substeps") = 1,
+           nb::arg("skin_frac") = 0.3f,
+           "Advance `substeps` distributed explicit Hertz-Mindlin (force-based) steps of size dt "
+           "— the MPI counterpart of step_hertz on the init_mpi/enable_mpi_step decomposition. "
+           "rebalance_every counts CALLS of this method; migration carries the Mindlin history.")
       .def("rebalance", &Simulation::rebalance,
            "Re-decompose by particle count and migrate ownership now; returns this rank's new "
            "owned count.")
