@@ -68,6 +68,8 @@ struct WarmPairEntry {
   float lambda;
   float lambdaT[3];
   float posImpulse;
+  float restBank;   // event-level (Poisson) restitution: remaining owed separation impulse
+  float restVPeak;  // ... and the event's peak approach speed (> 0 = event active)
 };
 // Per-particle cap on carried pairs (sphere kissing number 12 + wall; lowest-weight entries are
 // dropped beyond it — a dropped entry only costs the receiving rank a cold warm-start there).
@@ -479,10 +481,14 @@ class ParticleHalo {
       auto h_l = Kokkos::create_mirror_view(P.prevLambda);
       auto h_lt = Kokkos::create_mirror_view(P.prevLambdaT);
       auto h_pi = Kokkos::create_mirror_view(P.prevPosImpulse);
+      auto h_rb = Kokkos::create_mirror_view(P.prevRestBank);
+      auto h_rv = Kokkos::create_mirror_view(P.prevRestVPeak);
       Kokkos::deep_copy(h_k, P.prevPairKeys);
       Kokkos::deep_copy(h_l, P.prevLambda);
       Kokkos::deep_copy(h_lt, P.prevLambdaT);
       Kokkos::deep_copy(h_pi, P.prevPosImpulse);
+      Kokkos::deep_copy(h_rb, P.prevRestBank);
+      Kokkos::deep_copy(h_rv, P.prevRestVPeak);
       auto attach = [&](int i, const WarmPairEntry& e, float w) {
         MigratePack& m = packs[(std::size_t)i];
         if (m.numWarm < kWarmCarryMax) {
@@ -512,10 +518,12 @@ class ParticleHalo {
         we.lambdaT[1] = h_lt(e, 1);
         we.lambdaT[2] = h_lt(e, 2);
         we.posImpulse = h_pi(e);
+        we.restBank = h_rb(e);
+        we.restVPeak = h_rv(e);
         if (we.lambda == 0.0f && we.posImpulse == 0.0f && we.lambdaT[0] == 0.0f &&
-            we.lambdaT[1] == 0.0f && we.lambdaT[2] == 0.0f)
+            we.lambdaT[1] == 0.0f && we.lambdaT[2] == 0.0f && we.restBank == 0.0f)
           continue;  // dead entry: carrying it only evicts live ones
-        const float w = std::fabs(we.lambda) + std::fabs(we.posImpulse);
+        const float w = std::fabs(we.lambda) + std::fabs(we.posImpulse) + std::fabs(we.restBank);
         const unsigned hi = static_cast<unsigned>(k >> 32);
         const unsigned lo = static_cast<unsigned>(k & 0xFFFFFFFFu);
         if (auto it = gidToLocal.find(hi); it != gidToLocal.end())
@@ -685,10 +693,14 @@ class ParticleHalo {
       auto hl = Kokkos::create_mirror_view(P.prevLambda);
       auto hlt = Kokkos::create_mirror_view(P.prevLambdaT);
       auto hpi = Kokkos::create_mirror_view(P.prevPosImpulse);
+      auto hrb = Kokkos::create_mirror_view(P.prevRestBank);
+      auto hrv = Kokkos::create_mirror_view(P.prevRestVPeak);
       Kokkos::deep_copy(hk, P.prevPairKeys);  // preserve tail entries beyond nl
       Kokkos::deep_copy(hl, P.prevLambda);
       Kokkos::deep_copy(hlt, P.prevLambdaT);
       Kokkos::deep_copy(hpi, P.prevPosImpulse);
+      Kokkos::deep_copy(hrb, P.prevRestBank);
+      Kokkos::deep_copy(hrv, P.prevRestVPeak);
       for (int e = 0; e < nl; ++e) {
         hk(e) = ledger[(std::size_t)e].key;
         hl(e) = ledger[(std::size_t)e].lambda;
@@ -696,11 +708,15 @@ class ParticleHalo {
         hlt(e, 1) = ledger[(std::size_t)e].lambdaT[1];
         hlt(e, 2) = ledger[(std::size_t)e].lambdaT[2];
         hpi(e) = ledger[(std::size_t)e].posImpulse;
+        hrb(e) = ledger[(std::size_t)e].restBank;
+        hrv(e) = ledger[(std::size_t)e].restVPeak;
       }
       Kokkos::deep_copy(P.prevPairKeys, hk);
       Kokkos::deep_copy(P.prevLambda, hl);
       Kokkos::deep_copy(P.prevLambdaT, hlt);
       Kokkos::deep_copy(P.prevPosImpulse, hpi);
+      Kokkos::deep_copy(P.prevRestBank, hrb);
+      Kokkos::deep_copy(P.prevRestVPeak, hrv);
     }
     P.prevPairCount = nl;
 

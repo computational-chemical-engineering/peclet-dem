@@ -123,11 +123,15 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
                                    Kokkos::View<const unsigned long long*, CpMem> prevKeys,
                                    Kokkos::View<const float*, CpMem> prevLambda,
                                    Kokkos::View<const float* [3], CpMem> prevLambdaT,
-                                   Kokkos::View<const float*, CpMem> prevPosImpulse, int prevCount,
+                                   Kokkos::View<const float*, CpMem> prevPosImpulse,
+                                   Kokkos::View<const float*, CpMem> prevRestBank,
+                                   Kokkos::View<const float*, CpMem> prevRestVPeak, int prevCount,
                                    Kokkos::View<unsigned long long*, CpMem> outKeys,
                                    Kokkos::View<float*, CpMem> outWarm,
                                    Kokkos::View<float* [3], CpMem> outWarmT,
-                                   Kokkos::View<float*, CpMem> outPosImpulse) {
+                                   Kokkos::View<float*, CpMem> outPosImpulse,
+                                   Kokkos::View<float*, CpMem> outRestBank,
+                                   Kokkos::View<float*, CpMem> outRestVPeak) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::gather_warm", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -141,6 +145,8 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
           outWarm(idx) = 0.0f;
           outWarmT(idx, 0) = outWarmT(idx, 1) = outWarmT(idx, 2) = 0.0f;
           outPosImpulse(idx) = 0.0f;
+          outRestBank(idx) = 0.0f;
+          outRestVPeak(idx) = 0.0f;
           return;
         }
         const unsigned long long k = pairKeyOf(m, keyIdx);
@@ -159,6 +165,8 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
         outWarmT(idx, 1) = hit ? prevLambdaT(lo, 1) : 0.0f;
         outWarmT(idx, 2) = hit ? prevLambdaT(lo, 2) : 0.0f;
         outPosImpulse(idx) = hit ? prevPosImpulse(lo) : 0.0f;
+        outRestBank(idx) = hit ? prevRestBank(lo) : 0.0f;
+        outRestVPeak(idx) = hit ? prevRestVPeak(lo) : 0.0f;
       });
   space.fence();
 }
@@ -168,9 +176,13 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
 inline void commitPairKeysLambdaKokkos(Kokkos::View<const unsigned long long*, CpMem> keys,
                                        Kokkos::View<const float*, CpMem> lambda,
                                        Kokkos::View<const float* [3], CpMem> lambdaT,
+                                       Kokkos::View<const float*, CpMem> restBank,
+                                       Kokkos::View<const float*, CpMem> restVPeak,
                                        Kokkos::View<unsigned long long*, CpMem> prevKeys,
                                        Kokkos::View<float*, CpMem> prevLambda,
                                        Kokkos::View<float* [3], CpMem> prevLambdaT,
+                                       Kokkos::View<float*, CpMem> prevRestBank,
+                                       Kokkos::View<float*, CpMem> prevRestVPeak,
                                        int numManifolds) {
   if (numManifolds <= 0)
     return;
@@ -187,6 +199,8 @@ inline void commitPairKeysLambdaKokkos(Kokkos::View<const unsigned long long*, C
   Kokkos::Experimental::sort_by_key(space, kd, perm);
   Kokkos::View<float*, CpMem> pl = prevLambda;
   Kokkos::View<float* [3], CpMem> plt = prevLambdaT;
+  Kokkos::View<float*, CpMem> prb = prevRestBank;
+  Kokkos::View<float*, CpMem> prv = prevRestVPeak;
   Kokkos::parallel_for(
       "peclet::dem::commit_gather", Kokkos::RangePolicy<CpExec>(space, 0, n),
       KOKKOS_LAMBDA(int i) {
@@ -195,6 +209,8 @@ inline void commitPairKeysLambdaKokkos(Kokkos::View<const unsigned long long*, C
         plt(i, 0) = lambdaT(j, 0);
         plt(i, 1) = lambdaT(j, 1);
         plt(i, 2) = lambdaT(j, 2);
+        prb(i) = restBank(j);
+        prv(i) = restVPeak(j);
       });
   space.fence();
 }

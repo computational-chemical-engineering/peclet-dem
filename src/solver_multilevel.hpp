@@ -359,7 +359,8 @@ inline void multilevelCoarseCycleKokkos(Kokkos::View<const ManifoldC*, CpMem> ma
                                         Kokkos::View<float* [3], CpMem> velPred,
                                         Kokkos::View<float*, CpMem> lambdaAcc,
                                         Kokkos::View<float, CpMem> maxApproach, int numReal,
-                                        const ContactHierarchy& H, MlScratch& S, int coarseSweeps) {
+                                        const ContactHierarchy& H, MlScratch& S, int coarseSweeps,
+                                        Kokkos::View<const float*, CpMem> restRel = {}) {
   CpExec space;
   {  // reset the composed map to identity; each level applies its parent map on top
     auto grp = S.grp;
@@ -416,6 +417,11 @@ inline void multilevelCoarseCycleKokkos(Kokkos::View<const ManifoldC*, CpMem> ma
             "peclet::dem::ml_coarse_pgs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
             KOKKOS_LAMBDA(int idx) {
               if (static_cast<int>((cp(idx) >> slotShift) & 63) != color)
+                return;
+              // Poisson release in flight on this pair: the coarse e = 0 solve targets vtil = 0 on
+              // the SHARED accumulator and would retract the just-injected separation velocity —
+              // the releasing contact skips the coarse transport this substep.
+              if (restRel.extent(0) > 0 && restRel(idx) > 0.0f)
                 return;
               const ManifoldC m = manifolds(idx);
               const int gA = grp(realIdx(m.bodyA));

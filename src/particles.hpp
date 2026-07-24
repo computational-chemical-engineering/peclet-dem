@@ -93,6 +93,22 @@ struct Particles {
   Kokkos::View<float*, CpMem> posLambdaContact;
   Kokkos::View<float*, CpMem> posImpulse;      // gathered: LAST substep's position-channel load
   Kokkos::View<float*, CpMem> prevPosImpulse;  // sorted alongside prevPairKeys
+  // Event-level (Poisson) restitution (restitutionModel == 1): per-pair OWED separation impulse
+  // (physical units) — e x the event's banked kinetic-compression impulse, minus what has already
+  // been returned. Carried by pair key like lambdaT (gathered into restBank, committed to
+  // prevRestBank); restRel is the per-substep release accumulator (clamped 0..owed inside the PGS
+  // sweep — the friction-cone-shaped budget cap). See updateRestitutionBankKokkos.
+  Kokkos::View<float*, CpMem> restBank;
+  Kokkos::View<float*, CpMem> prevRestBank;  // sorted alongside prevPairKeys
+  Kokkos::View<float*, CpMem> restRel;       // this substep's released impulse (lambda units)
+  // Event state: peak physical approach speed of the pair's current impact event (> 0 = event
+  // active). Set/refreshed by kinetic approaches, decays 1/256 per substep, cleared once it ages
+  // below the resting threshold — so a buried/absorbed event's bank evaporates instead of popping.
+  // While active the contact banks its applied normal-impulse flux EVERY substep (the co-moving
+  // compression plateau has vn0 ~ 0, which a per-substep kinetic gate would miss), and the release
+  // separation velocity is capped at e x vPeak (sustained unloading push, never an impulsive dump).
+  Kokkos::View<float*, CpMem> restVPeak;
+  Kokkos::View<float*, CpMem> prevRestVPeak;  // sorted alongside prevPairKeys
   // Side flags for the STABILIZATION pass (0 = symmetric): zeroed for the main momentum-
   // conserving sweeps, filled from persistence+grounding only if statics fail to converge.
   Kokkos::View<unsigned char*, CpMem> sideFlags;
@@ -137,6 +153,11 @@ struct Particles {
   // symmetric sweeps -- momentum is transported, never deleted), 3 = escalate (extra symmetric
   // sweeps; diagnostic/fallback).
   int stabilizationMode = 1;
+  // Restitution model of the PGS velocity solve: 0 = newton (default; per-substep restitution on
+  // the pre-solve approach — unchanged behaviour), 1 = poisson (event-level: kinetic compression
+  // impulse banked per pair, released as a budget-capped separation-velocity target during
+  // unloading — restores the multi-substep-impact rebound per-substep Newton cannot return).
+  int restitutionModel = 0;
   // Per-particle material id + flat pair-material table [kMaxMaterials^2 * 2] of (restitution,
   // friction) rows; zero-length pairMaterials = feature off (global material everywhere).
   Kokkos::View<unsigned char*, CpMem> materialId;
@@ -241,6 +262,11 @@ struct Particles {
     posLambdaContact = Kokkos::View<float*, CpMem>("posLambdaContact", maxContacts);
     posImpulse = Kokkos::View<float*, CpMem>("posImpulse", maxContacts);
     prevPosImpulse = Kokkos::View<float*, CpMem>("prevPosImpulse", maxContacts);
+    restBank = Kokkos::View<float*, CpMem>("restBank", maxContacts);
+    prevRestBank = Kokkos::View<float*, CpMem>("prevRestBank", maxContacts);
+    restRel = Kokkos::View<float*, CpMem>("restRel", maxContacts);
+    restVPeak = Kokkos::View<float*, CpMem>("restVPeak", maxContacts);
+    prevRestVPeak = Kokkos::View<float*, CpMem>("prevRestVPeak", maxContacts);
     sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", maxContacts);
     heightLevel = Kokkos::View<int*, CpMem>("heightLevel", cap);
     levelKey = Kokkos::View<int*, CpMem>("levelKey", maxContacts);

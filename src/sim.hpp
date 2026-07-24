@@ -362,6 +362,10 @@ class Simulation {
     P_.allocate(capacity, capacity * 64, capacity * 16, /*shapes*/ 1, /*shell*/ 1, /*planes*/ 8);
     // default sphere shape (radius 1) + identity-ish defaults
     setSphereShape(1.0f);
+    // A/B hook for the validation battery (mirrors PECLET_DEM_STAB_MODE's role): switch the
+    // restitution model without touching driver scripts.
+    if (const char* e = std::getenv("PECLET_DEM_REST_MODEL"); e && *e)
+      setRestitutionModel(e);
   }
   ~Simulation() {
     auto& r = registry();
@@ -596,6 +600,19 @@ class Simulation {
       throw std::invalid_argument(
           "set_stabilization_mode: expected 'off', 'onesided', 'multilevel', 'escalate' or "
           "'ordered'");
+  }
+  /// Restitution model of the PGS velocity solve: "newton" (default; per-substep restitution on
+  /// the pre-solve approach — the pre-existing behaviour) or "poisson" (event-level: each pair
+  /// banks its kinetic compression impulse and releases e x the bank as a budget-capped
+  /// separation-velocity target during unloading — restores the multi-substep-impact rebound that
+  /// per-substep Newton structurally cannot return). PECLET_DEM_REST_MODEL overrides at startup.
+  void setRestitutionModel(const std::string& model) {
+    if (model == "newton")
+      P_.restitutionModel = 0;
+    else if (model == "poisson")
+      P_.restitutionModel = 1;
+    else
+      throw std::invalid_argument("set_restitution_model: expected 'newton' or 'poisson'");
   }
   /// Per-material Young's modulus + Poisson ratio for the Hertz-Mindlin engine (material ids as
   /// in setMaterialIds; without ids every particle is material 0).
@@ -1041,6 +1058,11 @@ class Simulation {
     Kokkos::deep_copy(h, P_.maxOverlap);
     return h;
   }
+  /// Poisson-restitution diagnostics: (sum, max, count>0) of the committed per-pair owed
+  /// separation impulse (prevRestBank[0:prevPairCount], physical units).
+  std::tuple<double, float, int> restBankStats() {
+    return restBankStatsKokkos(P_.prevRestBank, P_.prevPairCount);
+  }
 
   // ParaView PolyData (points + Radius + Velocity), faithful to CUDA Simulation::write_vtp:
   // Radius = scale * globalScale * baseRadius.
@@ -1127,6 +1149,11 @@ class Simulation {
       P_.posLambdaContact = Kokkos::View<float*, CpMem>("posLambdaContact", want);
       P_.posImpulse = Kokkos::View<float*, CpMem>("posImpulse", want);
       P_.prevPosImpulse = Kokkos::View<float*, CpMem>("prevPosImpulse", want);
+      P_.restBank = Kokkos::View<float*, CpMem>("restBank", want);
+      P_.prevRestBank = Kokkos::View<float*, CpMem>("prevRestBank", want);
+      P_.restRel = Kokkos::View<float*, CpMem>("restRel", want);
+      P_.restVPeak = Kokkos::View<float*, CpMem>("restVPeak", want);
+      P_.prevRestVPeak = Kokkos::View<float*, CpMem>("prevRestVPeak", want);
       P_.sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", want);
       P_.prevLambdaT = Kokkos::View<float* [3], CpMem>("prevLambdaT", want);
       P_.contactSlot = Kokkos::View<int*, CpMem>("contactSlot", want);

@@ -10,6 +10,7 @@
 #define DEM_SOLVER_VELOCITY_HPP
 
 #include <climits>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -446,6 +447,135 @@ inline void computeVn0Kokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, in
   space.fence();
 }
 
+/// Event-level (Poisson) restitution bookkeeping, once per substep AFTER all velocity phases
+/// (restitutionModel == 1 only). Per pair, two carried floats define the current impact EVENT:
+///  * restVPeak — the event's peak physical approach speed (> 0 = event active). Set/refreshed
+///    whenever the pre-solve approach is kinetic (v0til > vRest*lenN), decayed by 1/256 per
+///    substep, cleared once it ages below the resting threshold: a buried/absorbed event's bank
+///    EVAPORATES (energy went to heat) instead of popping the pile later. A resting pile never
+///    sets vPeak, so it never banks — the dense-pile energy-bomb guard.
+///  * restBank — the remaining OWED separation impulse: while the event is active the contact
+///    banks e x its applied normal-impulse FLUX every substep (pTot - pR, the momentum the chain
+///    actually transmitted; a per-substep kinetic gate would miss the co-moving compression
+///    plateau where vn0 ~ 0), minus the separation already delivered (pR — so a clean one-substep
+///    binary impact nets exactly 0), minus what the sweep's release channel injected (restRel).
+inline void updateRestitutionBankKokkos(
+    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+    Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
+    Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<const float* [3], CpMem> velPred,
+    Kokkos::View<const float* [3], CpMem> angVelPred, Kokkos::View<const int*, CpMem> realIdx,
+    float growthRate, float restitutionNormal, float restVelThreshold,
+    Kokkos::View<const float*, CpMem> vn0, Kokkos::View<const float*, CpMem> lambdaAcc,
+    Kokkos::View<const float*, CpMem> restRel, Kokkos::View<float*, CpMem> restBank,
+    Kokkos::View<float*, CpMem> restVPeak) {
+  using detail::genInvMass;
+  using detail::ld3;
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::rest_bank_update", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        const ManifoldC m = manifolds(idx);
+        if (m.num_points <= 0)
+          return;
+        const int idA = m.bodyA, idB = m.bodyB;
+        const int realA = realIdx(idA);
+        const int realB = (idB >= 0) ? realIdx(idB) : idB;
+        if (idB >= 0 && realA > realB)
+          return;  // periodic dedup: the canonical twin owns the bank
+        const float invN = 1.0f / static_cast<float>(m.num_points);
+        const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
+        const float lenN = Kokkos::sqrt(dot3(Nsum, Nsum));
+        if (lenN < 1e-9f)
+          return;
+        const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
+        const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
+        const F3 vA = ld3(velPred, realA), wA = ld3(angVelPred, realA);
+        F3 vB{0, 0, 0}, wB{0, 0, 0};
+        if (idB >= 0) {
+          vB = ld3(velPred, realB);
+          wB = ld3(angVelPred, realB);
+        } else {
+          vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+        }
+        const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
+        const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
+        const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
+        const F3 vGrowth = scale3(diffCenters, growthRate);
+        float vn = dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
+                   dot3(wB, TauB);
+        vn += dot3(vGrowth, Nsum);
+        const float alignment = dot3(Nsum, diffCenters);
+        const float sgn = (alignment > 0.0f) ? 1.0f : -1.0f;
+        // Symmetric effective inverse mass (the release/bank ledger is momentum bookkeeping at
+        // the pair's own masses, independent of any stabilization sidedness this substep).
+        const F3 invIA = ld3(invInertia, realA);
+        const F3 invIB = (idB >= 0) ? ld3(invInertia, realB) : F3{0, 0, 0};
+        const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
+        const F4 qB = (idB >= 0)
+                          ? F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)}
+                          : F4{0, 0, 0, 1};
+        const float Nsq = dot3(Nsum, Nsum);
+        const float wTotal = Nsq * invMass(realA) + genInvMass(TauA, invIA, qA) +
+                             Nsq * ((idB >= 0) ? invMass(realB) : 0.0f) +
+                             genInvMass(TauB, invIB, qB);
+        if (wTotal <= 0.0f)
+          return;
+        float e = restitutionNormal;
+        {
+          const float ra = m.restitution_sum * invN;
+          if (ra >= 0.0f)
+            e = ra;
+        }
+        const float v0til = sgn * vn0(idx);
+        const float vtilEnd = sgn * vn;
+        float owed = restBank(idx);
+        // Event state: refresh the peak on a kinetic approach, age it 1/256 per substep.
+        float vPeak = restVPeak(idx) * (1.0f - 1.0f / 256.0f);
+        if (v0til > restVelThreshold * lenN)
+          vPeak = Kokkos::fmax(vPeak, v0til / lenN);
+        if (vPeak > restVelThreshold) {
+          // Active event: bank e x this substep's compression FLUX (full applied normal impulse
+          // minus the reflection share — the momentum the chain actually transmitted; the
+          // m_eff-scale approach-destruction measure under-banks a chain-loaded impact by ~3000x),
+          // pay down the separation already delivered, and deduct the release channel's spend.
+          // A clean one-substep binary impact nets 0: pTot = (1+e) m_eff v0, pR = e m_eff v0.
+          const float pR = Kokkos::fmax(0.0f, -vtilEnd) / wTotal * lenN;
+          const float pTot = Kokkos::fmax(lambdaAcc(idx), 0.0f) * lenN;
+          const float pC = Kokkos::fmax(0.0f, pTot - pR);
+          owed += e * pC - pR - Kokkos::fmax(restRel(idx), 0.0f) * lenN;
+          restBank(idx) = Kokkos::fmax(owed, 0.0f);
+          restVPeak(idx) = vPeak;
+        } else {
+          restBank(idx) = 0.0f;  // event aged out (or none): the residual budget evaporates
+          restVPeak(idx) = 0.0f;
+        }
+      });
+  space.fence();
+}
+
+/// Poisson-restitution diagnostics: (sum, max, count>0) over the committed owed-impulse store
+/// (namespace scope: nvcc forbids KOKKOS_LAMBDA in member functions).
+inline std::tuple<double, float, int> restBankStatsKokkos(Kokkos::View<const float*, CpMem> bank,
+                                                          int n) {
+  double s = 0.0;
+  float mx = 0.0f;
+  int cnt = 0;
+  if (n > 0) {
+    Kokkos::parallel_reduce(
+        "peclet::dem::rest_bank_stats", Kokkos::RangePolicy<CpExec>(0, n),
+        KOKKOS_LAMBDA(int i, double& ls, float& lm, int& lc) {
+          const float v = bank(i);
+          ls += v;
+          if (v > lm)
+            lm = v;
+          if (v > 0.0f)
+            ++lc;
+        },
+        s, Kokkos::Max<float>(mx), Kokkos::Sum<int>(cnt));
+  }
+  return {s, mx, cnt};
+}
+
 /// Decide each persistent contact's treatment ONCE per substep (before any impulse is applied):
 /// 0 = symmetric momentum-conserving PGS, 1 = one-sided with B as the held ground side, 2 = A held.
 /// One-sided requires the ground side grounded (contact path to the floor) and not rising. Flagged
@@ -637,6 +767,32 @@ struct PGSManifoldSweep {
   Kokkos::View<const float* [3], CpMem> vt0;
   float restitutionTangent;
   Kokkos::View<const float*, CpMem> posImpulse;
+  // Event-level (Poisson) restitution release (restitutionModel == 1; all three views empty
+  // otherwise): restBank(idx) is the pair's remaining OWED separation impulse (physical units,
+  // warm-carried by pair key), restRel(idx) the per-substep release accumulator (lambda units,
+  // zeroed each substep), and restPersistent(idx) the existed-last-substep flag (used only by
+  // the restNewtonOff A/B). Per-substep Newton restitution stays ALIVE by default alongside the
+  // bank — its micro-reflections are genuine returned energy, and the accounting's pR term
+  // deducts each one from the owed budget so the channels never double-count (measured: forcing
+  // e = 0 on persistent contacts cost more rebound than the bank recovered).
+  Kokkos::View<const float*, CpMem> restBank;
+  Kokkos::View<float*, CpMem> restRel;
+  Kokkos::View<const unsigned char*, CpMem> restPersistent;
+  // Event peak approach speed (physical): caps the release separation-velocity target at
+  // e x vPeak — the event-level rebound speed — so a large flux-banked budget against a light
+  // partner becomes a SUSTAINED unloading push over many substeps (the Hertz-like collective
+  // rebound) instead of an impulsive dump (a 190 m/s kick to a 1e-5 kg grain, measured absurd).
+  Kokkos::View<const float*, CpMem> restVPeak;
+  // Optional release sidedness (restOneSided; the shock-propagation pass in reverse): hold a
+  // grounded LOWER side and push only the upper. Measured WORSE than symmetric release on the
+  // 25k Dosta impact (+0.60 vs +0.88 rebound) — the light partner's downward reaction is what
+  // re-compresses and re-releases the layers below, so symmetric stays the default; kept as an
+  // env-gated A/B (PECLET_DEM_REST_ONESIDED=1).
+  F3 restGHat{0, 0, 0};
+  Kokkos::View<const unsigned char*, CpMem> restGrounded;
+  // A/B toggles (env-driven, see solve_driver.hpp): bank-owns-restitution / one-sided release.
+  bool restNewtonOff = false;
+  bool restOneSided = false;
 
   KOKKOS_FUNCTION void solveOne(int idx) const {
     using detail::genInvMass;
@@ -668,6 +824,7 @@ struct PGSManifoldSweep {
         if (ra >= 0.0f)
           restitution = ra;
       }
+      const float eMat = restitution;  // raw material e (release cap), before the event gates
       const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
       const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
       const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
@@ -707,6 +864,14 @@ struct PGSManifoldSweep {
       // Restitution bias on the PRE-SOLVE approach (resting threshold as in the one-shot path).
       const float v0til = sgn * vn0(idx);
       if (Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN)
+        restitution = 0.0f;
+      // Poisson mode keeps per-substep Newton restitution ALIVE alongside the bank: the
+      // micro-reflections it produces are genuine returned energy (measured: forcing e = 0 on
+      // persistent contacts cost more rebound than the bank recovered), and the accounting's pR
+      // term deducts every reflection from the owed budget, so the two channels never
+      // double-count. (PECLET_DEM_REST_NEWTON_OFF=1 re-enables the bank-owns-everything A/B.)
+      if (restRel.extent(0) > 0 && restPersistent.extent(0) > 0 && restPersistent(idx) != 0 &&
+          restNewtonOff)
         restitution = 0.0f;
       const float target = (v0til > 0.0f) ? -restitution * v0til : 0.0f;
       const float vtil = sgn * vn;
@@ -750,6 +915,103 @@ struct PGSManifoldSweep {
           angVelPred(realB, 2) += dww.z;
         }
       }  // dApplied != 0
+
+      // ---- Event-level (Poisson) restitution release ----
+      // A pair with banked compression (restBank > 0) that is NOT in a kinetic approach pushes
+      // toward the event's separation-velocity target -owed*w — what releasing the full remaining
+      // budget delivers against the pair's effective mass, i.e. the event-level rebound speed.
+      // The push runs through its OWN accumulator clamped to [0, owed] (the friction-cone-shaped
+      // budget cap): a free pair leaves at the target speed, while a loaded chain re-absorbs the
+      // attempt through lambda >= 0 on its other contacts with the total injected impulse bounded
+      // by the budget — velocity-targeted, never impulsive, no unbounded force fight. One-sided
+      // (side-flagged) contacts are held externally and never release. Spent budget is deducted
+      // once per substep by updateRestitutionBankKokkos. Unloading detection: KINETICALLY
+      // separating pre-solve approach (beyond the resting threshold) — jitter separations during
+      // compression (position-solve pushback, chain oscillation) fire sub-threshold every substep
+      // and would drain the bank as fast as it fills (measured: bank plateaued at ~1/6 of the
+      // event flux with a v0til < 0 gate); the genuine rebound onset separates kinetically.
+      if (restRel.extent(0) > 0 && sf == 0 && v0til < -restVelThreshold * lenN) {
+        const float owed = restBank(idx);
+        const float vPeak = restVPeak.extent(0) > 0 ? restVPeak(idx) : 0.0f;
+        if (owed > 0.0f && vPeak > 0.0f) {
+          const F3 vA3 = ld3(velPred, realA), wA3 = ld3(angVelPred, realA);
+          F3 vB3{0, 0, 0}, wB3{0, 0, 0};
+          if (idB >= 0) {
+            vB3 = ld3(velPred, realB);
+            wB3 = ld3(angVelPred, realB);
+          } else {
+            vB3 = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+          }
+          float vn3 = dot3(vA3, Nsum) + dot3(wA3, TauA) +
+                      dot3(vB3, F3{-Nsum.x, -Nsum.y, -Nsum.z}) + dot3(wB3, TauB);
+          vn3 += dot3(vGrowth, Nsum);
+          const float vtil3 = sgn * vn3;
+          // One-sided release against a grounded support (see restGHat comment): hold the lower
+          // grounded side, push only the other. dx = posA - posB = rB - rA (contact identity).
+          bool relA = true, relB = (idB >= 0);
+          float wRel = wTotal;
+          if (restOneSided && idB >= 0 && restGrounded.extent(0) > 0) {
+            const F3 dx = sub3(rBavg, rAavg);
+            const float up = -(dx.x * restGHat.x + dx.y * restGHat.y + dx.z * restGHat.z);
+            const float thr3 = 0.3f * Kokkos::sqrt(dot3(dx, dx));
+            if (up > thr3 && restGrounded(realB) > 0) {  // A above grounded B: push A only
+              relB = false;
+              wRel = Nsq * invMassA + genInvMass(TauA, invIA, qA);
+            } else if (up < -thr3 && restGrounded(realA) > 0) {  // B above grounded A
+              relA = false;
+              wRel = Nsq * invMassB + genInvMass(TauB, invIB, qB);
+            }
+          }
+          if (wRel > 0.0f) {
+            // Separation-velocity target: the event-level rebound speed e x vPeak. The budget is
+            // enforced by the accumulator clamp alone — folding it into the velocity target
+            // (owed * wRel) prematurely stalls a one-sided release against a heavy impactor
+            // (owed/m_ball ~ cm/s) with most of the budget unspent. Physical velocity -> vtil
+            // units is x lenN.
+            const float vTphys = eMat * vPeak;
+            const float targetR = -vTphys * lenN;
+            const float dpR = (vtil3 - targetR) / wRel;
+            const float cap = owed / lenN;  // physical budget in lambda units
+            const float rOld = restRel(idx);
+            float rNew = rOld + dpR;
+            if (rNew < 0.0f)
+              rNew = 0.0f;
+            if (rNew > cap)
+              rNew = cap;
+            const float dR = rNew - rOld;
+            if (dR != 0.0f) {
+              restRel(idx) = rNew;
+              Kokkos::atomic_max(&maxApproach(), Kokkos::fabs(dR) * wRel / lenN);
+              if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
+                Kokkos::atomic_max(&maxApproachQS(), Kokkos::fabs(dR) * wRel / lenN);
+              const float lambdaR = -sgn * dR;
+              const F3 JlinR = scale3(Nsum, lambdaR);
+              if (relA) {
+                velPred(realA, 0) += JlinR.x * invMassA;
+                velPred(realA, 1) += JlinR.y * invMassA;
+                velPred(realA, 2) += JlinR.z * invMassA;
+                const F3 Jl = invRotateVector(qA, scale3(TauA, lambdaR));
+                const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
+                const F3 dww = rotateVector(qA, dwl);
+                angVelPred(realA, 0) += dww.x;
+                angVelPred(realA, 1) += dww.y;
+                angVelPred(realA, 2) += dww.z;
+              }
+              if (relB) {
+                velPred(realB, 0) += -JlinR.x * invMassB;
+                velPred(realB, 1) += -JlinR.y * invMassB;
+                velPred(realB, 2) += -JlinR.z * invMassB;
+                const F3 Jl = invRotateVector(qB, scale3(TauB, lambdaR));
+                const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
+                const F3 dww = rotateVector(qB, dwl);
+                angVelPred(realB, 0) += dww.x;
+                angVelPred(realB, 1) += dww.y;
+                angVelPred(realB, 2) += dww.z;
+              }
+            }
+          }
+        }
+      }
 
       // ---- Friction cone (sequential tangential impulse) ----
       // Accumulated world-frame tangential impulse lambdaT on body A, updated by the same
@@ -870,7 +1132,12 @@ inline void solveVelocityPGSKokkos(
     Kokkos::View<float* [3], CpMem> lambdaT, float frictionDynamic,
     Kokkos::View<const float* [3], CpMem> vt0 = {}, float restitutionTangent = 0.0f,
     Kokkos::View<const float*, CpMem> posImpulse = {},
-    Kokkos::View<float, CpMem> maxApproachQS = {}) {
+    Kokkos::View<float, CpMem> maxApproachQS = {},
+    Kokkos::View<const float*, CpMem> restBank = {}, Kokkos::View<float*, CpMem> restRel = {},
+    Kokkos::View<const unsigned char*, CpMem> restPersistent = {},
+    Kokkos::View<const float*, CpMem> restVPeak = {}, F3 restGHat = {},
+    Kokkos::View<const unsigned char*, CpMem> restGrounded = {}, bool restNewtonOff = false,
+    bool restOneSided = false) {
   CpExec space;
   const PGSManifoldSweep f{manifolds,
                            invMass,
@@ -891,7 +1158,15 @@ inline void solveVelocityPGSKokkos(
                            frictionDynamic,
                            vt0,
                            restitutionTangent,
-                           posImpulse};
+                           posImpulse,
+                           restBank,
+                           restRel,
+                           restPersistent,
+                           restVPeak,
+                           restGHat,
+                           restGrounded,
+                           restNewtonOff,
+                           restOneSided};
   for (int color = 0; color < numColors; ++color) {
     Kokkos::parallel_for(
         "peclet::dem::solve_velocity_pgs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),

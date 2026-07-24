@@ -151,6 +151,15 @@ NB_MODULE(_dem, m) {
            "inelastic solves at super-body masses -- momentum-conserving transport "
            "acceleration), 'escalate' (extra symmetric sweeps up to 256; diagnostic/fallback), "
            "'ordered' (level-ordered symmetric sweeps; measurement mode).")
+      .def("get_rest_bank_stats", &Simulation::restBankStats,
+           "Poisson-restitution diagnostics: (sum, max, n_pairs>0) of the per-pair owed "
+           "separation impulse committed last substep (physical impulse units).")
+      .def("set_restitution_model", &Simulation::setRestitutionModel, nb::arg("model"),
+           "Restitution model of the PGS velocity solve: 'newton' (default; per-substep "
+           "restitution on the pre-solve approach) or 'poisson' (event-level: each pair banks its "
+           "kinetic compression impulse and releases e x the bank as a budget-capped "
+           "separation-velocity target during unloading -- restores the multi-substep-impact "
+           "rebound per-substep Newton cannot return). PECLET_DEM_REST_MODEL overrides.")
       .def("set_velocity_use_gs", &Simulation::setVelocityUseGS, nb::arg("use_gs"),
            "Select the single-GPU restitution solve: True (default) = colored Gauss–Seidel "
            "(correct multi-contact dissipation), False = count-averaged Jacobi (legacy).")
