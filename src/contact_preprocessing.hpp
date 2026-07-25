@@ -109,8 +109,7 @@ inline void markPersistentManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> 
         }
         outFlags(idx) = (lo < prevCount && prevKeys(lo) == k) ? 1 : 0;
       });
-  space.fence();
-}
+  }
 
 /// Warm-start gather for the PGS velocity solve: per manifold, write its pair key and look up the
 /// previous substep's converged push impulse (0 for a new contact). Periodic-ghost duplicate
@@ -171,8 +170,7 @@ inline void gatherWarmLambdaKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
         outRestBank(idx) = hit ? prevRestBank(lo) : 0.0f;
         outRestVPeak(idx) = hit ? prevRestVPeak(lo) : 0.0f;
       });
-  space.fence();
-}
+  }
 
 /// Save this substep's keys + converged impulses (normal AND tangential) and key-sort them for
 /// next substep's gather. A permutation sort carries both value arrays through one key sort.
@@ -186,6 +184,7 @@ inline void commitPairKeysLambdaKokkos(Kokkos::View<const unsigned long long*, C
                                        Kokkos::View<float* [3], CpMem> prevLambdaT,
                                        Kokkos::View<float*, CpMem> prevRestBank,
                                        Kokkos::View<float*, CpMem> prevRestVPeak,
+                                       Kokkos::View<int*, CpMem> perm,  // pooled scratch, >= n
                                        int numManifolds) {
   if (numManifolds <= 0)
     return;
@@ -194,12 +193,13 @@ inline void commitPairKeysLambdaKokkos(Kokkos::View<const unsigned long long*, C
   const auto rng = Kokkos::pair<int, int>(0, n);
   auto kd = Kokkos::subview(prevKeys, rng);
   Kokkos::deep_copy(space, kd, Kokkos::subview(keys, rng));
-  Kokkos::View<int*, CpMem> perm(
-      Kokkos::view_alloc(space, "peclet::dem::commit_perm", Kokkos::WithoutInitializing), n);
   Kokkos::parallel_for(
       "peclet::dem::commit_iota", Kokkos::RangePolicy<CpExec>(space, 0, n),
       KOKKOS_LAMBDA(int i) { perm(i) = i; });
-  Kokkos::Experimental::sort_by_key(space, kd, perm);
+  {
+    auto pd = Kokkos::subview(perm, rng);
+    Kokkos::Experimental::sort_by_key(space, kd, pd);
+  }
   Kokkos::View<float*, CpMem> pl = prevLambda;
   Kokkos::View<float* [3], CpMem> plt = prevLambdaT;
   Kokkos::View<float*, CpMem> prb = prevRestBank;
@@ -276,8 +276,7 @@ inline void updateGroundedLevelsKokkos(Kokkos::View<const ManifoldC*, CpMem> man
           }
         });
   }
-  space.fence();
-}
+  }
 
 /// Height-from-floor BFS levels for the level-ordered ("multilevel") stabilization pass: 0 at a
 /// wall/plane contact, else 1 + min over supporting contacts, kLevelInf with no contact path to
@@ -329,6 +328,46 @@ inline void computeHeightLevelsKokkos(Kokkos::View<const ManifoldC*, CpMem> mani
       break;
   }
   space.fence();
+}
+
+/// Dense colour buckets (numColors <= 64): perm[offs[c] .. offs[c+1]) lists the item indices of
+/// colour c. Histogram + host prefix + scatter — two small kernels and one 64-int readback,
+/// amortized over every sweep that would otherwise scan ALL n items per colour per iteration
+/// (measured 25k multilevel: the per-colour full scans were 40% of GPU time and the step is
+/// host-submission-bound). Within a colour the scatter order is arbitrary — colour classes are
+/// body-disjoint, so the sweep result is bit-identical. Items with colour < 0 (inactive, dups,
+/// mask-saturation leftovers) are excluded, exactly like the scan-mode colour filter.
+inline void buildColorBucketsKokkos(Kokkos::View<const int*, CpMem> colorOf, int n, int numColors,
+                                    Kokkos::View<int*, CpMem> perm,
+                                    Kokkos::View<int*, CpMem> cursor,  // scratch, >= 64 ints
+                                    std::vector<int>& offs) {
+  offs.assign(static_cast<std::size_t>(numColors) + 1, 0);
+  if (n <= 0 || numColors <= 0)
+    return;
+  CpExec space;
+  auto cnt = Kokkos::subview(cursor, Kokkos::pair<int, int>(0, numColors));
+  Kokkos::deep_copy(space, cnt, 0);
+  Kokkos::parallel_for(
+      "peclet::dem::bucket_hist", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
+        const int c = colorOf(i);
+        if (c >= 0)
+          Kokkos::atomic_add(&cursor(c), 1);
+      });
+  auto hCnt = Kokkos::create_mirror_view(cnt);
+  Kokkos::deep_copy(space, hCnt, cnt);
+  space.fence();
+  for (int c = 0; c < numColors; ++c)
+    offs[static_cast<std::size_t>(c) + 1] = offs[static_cast<std::size_t>(c)] + hCnt(c);
+  for (int c = 0; c < numColors; ++c)
+    hCnt(c) = offs[static_cast<std::size_t>(c)];
+  Kokkos::deep_copy(space, cnt, hCnt);
+  Kokkos::parallel_for(
+      "peclet::dem::bucket_scatter", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int i) {
+        const int c = colorOf(i);
+        if (c >= 0)
+          perm(Kokkos::atomic_fetch_add(&cursor(c), 1)) = i;
+      });
 }
 
 /// splitmix32 finalizer: a well-mixed pseudo-random priority per edge index. Random priorities make

@@ -353,6 +353,39 @@ inline ContactHierarchy buildContactHierarchyKokkos(
 /// Eligibility is baked into the packed per-level colours (slot 63 = skip), and the composed
 /// body -> group map is rebuilt from identity each cycle (numReal-sized passes; cheap next to
 /// the sweeps).
+/// Dense per-(level, colour) buckets for the coarse cycle, built ONCE per hierarchy (the
+/// structure is static for the whole substep, so every sweep of every stabilization iteration
+/// reuses them instead of scanning ALL manifolds per colour — measured 40% of GPU time and the
+/// bulk of the launch-submission bound at 25k). perm segment for level l lives at
+/// [(l-1)*numManifolds, l*numManifolds). Colour slots >= numColors (kMlSlotSkip = uncoloured /
+/// non-crossing) are excluded — exactly the set the scan-mode colour filter never matched.
+inline void buildCoarseBucketsKokkos(const ContactHierarchy& H, MlScratch& S, int numManifolds,
+                                     Kokkos::View<int*, CpMem> colorScratch,
+                                     Kokkos::View<int*, CpMem> perm,
+                                     Kokkos::View<int*, CpMem> cursor,
+                                     std::vector<std::vector<int>>& offs) {
+  offs.assign(static_cast<std::size_t>(H.numLevels), {});
+  if (numManifolds <= 0)
+    return;
+  CpExec space;
+  for (int lvl = 1; lvl <= H.numLevels; ++lvl) {
+    const int slotShift = 6 * (lvl - 1);
+    const int nCol = H.numColors[static_cast<std::size_t>(lvl) - 1];
+    auto cp = S.colorPacked;
+    auto cs = colorScratch;
+    Kokkos::parallel_for(
+        "peclet::dem::ml_bucket_colors", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+        KOKKOS_LAMBDA(int idx) {
+          const int c = static_cast<int>((cp(idx) >> slotShift) & 63);
+          cs(idx) = (c < nCol) ? c : -1;
+        });
+    auto seg = Kokkos::subview(
+        perm, Kokkos::pair<int, int>((lvl - 1) * numManifolds, lvl * numManifolds));
+    buildColorBucketsKokkos(Kokkos::View<const int*, CpMem>(colorScratch), numManifolds, nCol, seg,
+                            cursor, offs[static_cast<std::size_t>(lvl) - 1]);
+  }
+}
+
 inline void multilevelCoarseCycleKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                         int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
                                         Kokkos::View<const float*, CpMem> invMass,
@@ -360,7 +393,9 @@ inline void multilevelCoarseCycleKokkos(Kokkos::View<const ManifoldC*, CpMem> ma
                                         Kokkos::View<float*, CpMem> lambdaAcc,
                                         Kokkos::View<float, CpMem> maxApproach, int numReal,
                                         const ContactHierarchy& H, MlScratch& S, int coarseSweeps,
-                                        Kokkos::View<const float*, CpMem> restRel = {}) {
+                                        Kokkos::View<const float*, CpMem> restRel = {},
+                                        const std::vector<std::vector<int>>* bkOffs = nullptr,
+                                        Kokkos::View<const int*, CpMem> bkPerm = {}) {
   CpExec space;
   {  // reset the composed map to identity; each level applies its parent map on top
     auto grp = S.grp;
@@ -413,10 +448,20 @@ inline void multilevelCoarseCycleKokkos(Kokkos::View<const ManifoldC*, CpMem> ma
         auto cp = S.colorPacked;
         auto velG = S.velG;
         auto invMassG = S.invMassG;
+        const bool dense = bkOffs != nullptr;
+        int rb = 0, re = numManifolds;
+        if (dense) {
+          const auto& lo = (*bkOffs)[static_cast<std::size_t>(lvl) - 1];
+          rb = (lvl - 1) * numManifolds + lo[static_cast<std::size_t>(color)];
+          re = (lvl - 1) * numManifolds + lo[static_cast<std::size_t>(color) + 1];
+          if (rb == re)
+            continue;
+        }
         Kokkos::parallel_for(
-            "peclet::dem::ml_coarse_pgs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-            KOKKOS_LAMBDA(int idx) {
-              if (static_cast<int>((cp(idx) >> slotShift) & 63) != color)
+            "peclet::dem::ml_coarse_pgs", Kokkos::RangePolicy<CpExec>(space, rb, re),
+            KOKKOS_LAMBDA(int i2) {
+              const int idx = dense ? bkPerm(i2) : i2;
+              if (!dense && static_cast<int>((cp(idx) >> slotShift) & 63) != color)
                 return;
               // Poisson release in flight on this pair: the coarse e = 0 solve targets vtil = 0 on
               // the SHARED accumulator and would retract the just-injected separation velocity —
@@ -485,7 +530,6 @@ inline void multilevelCoarseCycleKokkos(Kokkos::View<const ManifoldC*, CpMem> ma
           });
     }
   }
-  space.fence();
 }
 
 }  // namespace peclet::dem

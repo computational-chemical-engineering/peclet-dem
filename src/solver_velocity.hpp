@@ -444,7 +444,6 @@ inline void computeVn0Kokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, in
           vt0(idx, 2) = vt.z;
         }
       });
-  space.fence();
 }
 
 /// Event-level (Poisson) restitution bookkeeping, once per substep AFTER all velocity phases
@@ -550,8 +549,7 @@ inline void updateRestitutionBankKokkos(
           restVPeak(idx) = 0.0f;
         }
       });
-  space.fence();
-}
+  }
 
 /// Orphan-account aging, once per substep over the OWNED bodies: both the balance and the carried
 /// event peak decay 1/64 per substep (e-fold ~3 ms at dt = 5e-5 — long enough for the rebound
@@ -575,8 +573,7 @@ inline void decayBodyOrphanKokkos(Kokkos::View<float*, CpMem> orphan,
           orphanVPeak(i) = decayed;
         }
       });
-  space.fence();
-}
+  }
 
 /// Orphan transfer: previous-ledger entries NOT matched by any current manifold (their pair died
 /// this substep) credit their remaining owed budget to the endpoint BODIES, mass-weighted — the
@@ -647,8 +644,7 @@ inline void scatterOrphanBanksKokkos(Kokkos::View<const unsigned long long*, CpM
           Kokkos::atomic_max(&orphanVPeak(sB), vpk);
         }
       });
-  space.fence();
-}
+  }
 
 /// Poisson-restitution diagnostics: (sum, max, count>0) over the committed owed-impulse store
 /// (namespace scope: nvcc forbids KOKKOS_LAMBDA in member functions).
@@ -718,8 +714,7 @@ inline void computeSideFlagsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
           sideFlag(idx) = 2;
         }
       });
-  space.fence();
-}
+  }
 
 /// Apply the warm-start impulses up front (order-independent: fixed impulses, atomic adds).
 inline void warmStartApplyKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
@@ -828,8 +823,7 @@ inline void warmStartApplyKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds
           }
         }
       });
-  space.fence();
-}
+  }
 
 /// One full colored PGS sweep. Per manifold: current approach vtil = s*vn, restitution target
 /// -e*max(vtil0,0) (e via the resting threshold on vn0), incremental impulse dp = (vtil-target)/w,
@@ -1282,7 +1276,8 @@ inline void solveVelocityPGSKokkos(
     Kokkos::View<const float*, CpMem> restVPeak = {}, F3 restGHat = {},
     Kokkos::View<const unsigned char*, CpMem> restGrounded = {}, bool restNewtonOff = false,
     bool restOneSided = false, Kokkos::View<float*, CpMem> restOrphan = {},
-    Kokkos::View<const float*, CpMem> restOrphanVPeak = {}) {
+    Kokkos::View<const float*, CpMem> restOrphanVPeak = {},
+    Kokkos::View<const int*, CpMem> colorPerm = {}, const std::vector<int>* colorOffs = nullptr) {
   CpExec space;
   const PGSManifoldSweep f{manifolds,
                            invMass,
@@ -1314,15 +1309,27 @@ inline void solveVelocityPGSKokkos(
                            restOneSided,
                            restOrphan,
                            restOrphanVPeak};
+  // Dense-bucket mode (colorOffs from buildColorBucketsKokkos): each colour launch covers only
+  // its own manifolds instead of scanning all of them — bit-identical (colour classes are
+  // body-disjoint). No fence: the caller's residual readback synchronizes, and an explicit fence
+  // here would serialize host submission with GPU execution (the step is submission-bound).
   for (int color = 0; color < numColors; ++color) {
-    Kokkos::parallel_for(
-        "peclet::dem::solve_velocity_pgs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-        KOKKOS_LAMBDA(int idx) {
-          if (mColor(idx) == color)
-            f.solveOne(idx);
-        });
+    if (colorOffs) {
+      const int b = (*colorOffs)[color], e = (*colorOffs)[color + 1];
+      if (b == e)
+        continue;
+      Kokkos::parallel_for(
+          "peclet::dem::solve_velocity_pgs", Kokkos::RangePolicy<CpExec>(space, b, e),
+          KOKKOS_LAMBDA(int i2) { f.solveOne(colorPerm(i2)); });
+    } else {
+      Kokkos::parallel_for(
+          "peclet::dem::solve_velocity_pgs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+          KOKKOS_LAMBDA(int idx) {
+            if (mColor(idx) == color)
+              f.solveOne(idx);
+          });
+    }
   }
-  space.fence();
 }
 
 /// Bucket the active coloured manifolds by (support level, colour) for the level-ordered
@@ -1370,8 +1377,7 @@ inline void buildLevelColorBucketsKokkos(Kokkos::View<const ManifoldC*, CpMem> m
   Kokkos::Experimental::sort_by_key(space, kd, pd);
   auto hk = Kokkos::create_mirror_view(kd);
   Kokkos::deep_copy(space, hk, kd);
-  space.fence();
-  for (int b = 0; b < numManifolds && hk(b) != INT_MAX;) {
+    for (int b = 0; b < numManifolds && hk(b) != INT_MAX;) {
     int e = b + 1;
     while (e < numManifolds && hk(e) == hk(b))
       ++e;

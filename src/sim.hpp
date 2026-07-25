@@ -1159,6 +1159,8 @@ class Simulation {
       P_.restVPeak = Kokkos::View<float*, CpMem>("restVPeak", want);
       P_.prevRestVPeak = Kokkos::View<float*, CpMem>("prevRestVPeak", want);
       P_.prevMatched = Kokkos::View<unsigned char*, CpMem>("prevMatched", want);
+      P_.velPerm = Kokkos::View<int*, CpMem>("velPerm", want);
+      P_.commitPerm = Kokkos::View<int*, CpMem>("commitPerm", want);
       P_.sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", want);
       P_.prevLambdaT = Kokkos::View<float* [3], CpMem>("prevLambdaT", want);
       P_.contactSlot = Kokkos::View<int*, CpMem>("contactSlot", want);

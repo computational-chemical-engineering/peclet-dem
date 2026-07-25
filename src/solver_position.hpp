@@ -325,9 +325,9 @@ inline void solvePositionColoredGSKokkos(Kokkos::View<const ContactC*, CpMem> co
           Kokkos::atomic_max(&maxOverlap(), -C);
         });
     // Stream-ordered on the device, so colour c+1 already sees colour c's moves — no host fence per
-    // colour (that would only stall the host). One fence after the full sweep.
+    // colour (that would only stall the host). No trailing fence either: the caller's residual
+    // readback synchronizes, and a fence here would break CUDA-graph capture of the sweep.
   }
-  space.fence();
 }
 
 }  // namespace peclet::dem

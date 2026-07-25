@@ -177,6 +177,17 @@ struct Particles {
   // high word (splitmix32 of the edge index), the unique edge index in the low word. Random
   // priorities give O(log n) arbitration rounds w.h.p.; RAW indices are adversarial for poured
   // lattice beds (monotone index chains -> O(chain) rounds -> minutes per step at 1M grains).
+  // Dense colour-bucket scratch (buildColorBucketsKokkos): per-manifold permutation for the PGS
+  // velocity sweeps, the pooled commit permutation, a 64-int cursor, and the lazily-grown
+  // per-level coarse-cycle permutation (numLevels x numManifolds segments).
+  Kokkos::View<int*, CpMem> velPerm;
+  Kokkos::View<int*, CpMem> commitPerm;
+  Kokkos::View<int*, CpMem> bucketCursor;
+  Kokkos::View<int*, CpMem> mlBucketPerm;
+  // Cross-step CUDA-graph executable cache (opaque cudaGraphExec_t per iteration loop:
+  // velocity / onesided / multilevel / position). Owned here; leaked at teardown by design
+  // (freeing needs the CUDA context, which Kokkos may already have torn down).
+  void* graphCache[4] = {nullptr, nullptr, nullptr, nullptr};
   Kokkos::View<long long*, CpMem> bodyWinner;
   Kokkos::View<std::uint64_t*, CpMem> bodyColorMask;  // per-body committed-colour bitmask
 
@@ -262,6 +273,10 @@ struct Particles {
     manifoldPersistent = Kokkos::View<unsigned char*, CpMem>("manifoldPersistent", maxContacts);
     prevPairCount = 0;
     contactColor = Kokkos::View<int*, CpMem>("contactColor", maxContacts);
+    velPerm = Kokkos::View<int*, CpMem>("velPerm", maxContacts);
+    commitPerm = Kokkos::View<int*, CpMem>("commitPerm", maxContacts);
+    bucketCursor = Kokkos::View<int*, CpMem>("bucketCursor", 64);
+    mlBucketPerm = Kokkos::View<int*, CpMem>("mlBucketPerm", 0);
     bodyWinner = Kokkos::View<long long*, CpMem>("bodyWinner", cap);
     bodyColorMask = Kokkos::View<std::uint64_t*, CpMem>("bodyColorMask", cap);
     groundedLevel = Kokkos::View<unsigned char*, CpMem>("groundedLevel", cap);
