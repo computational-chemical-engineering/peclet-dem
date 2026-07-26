@@ -18,6 +18,7 @@
 
 #include "contact_preprocessing.hpp"  // ManifoldC, CpExec/CpMem
 #include "dem_portable.hpp"
+#include "solver_fused.hpp"
 
 namespace peclet::dem {
 
@@ -1258,7 +1259,60 @@ struct PGSManifoldSweep {
   }
 };
 
-inline void solveVelocityPGSKokkos(
+/// Build the shared per-manifold sweep functor (the colored launch loop, the fused kernels and
+/// the fused multilevel iteration loop all run this one body). maxApproachQS empty => aliased
+/// to maxApproach (the duplicate atomic_max is idempotent).
+inline PGSManifoldSweep makePGSManifoldSweep(
+    Kokkos::View<const ManifoldC*, CpMem> manifolds, Kokkos::View<const float*, CpMem> invMass,
+    Kokkos::View<const float* [3], CpMem> invInertia, Kokkos::View<const float* [4], CpMem> quat,
+    Kokkos::View<float* [3], CpMem> velPred, Kokkos::View<float* [3], CpMem> angVelPred,
+    Kokkos::View<const int*, CpMem> realIdx, float growthRate, float restitutionNormal,
+    float restVelThreshold, Kokkos::View<float, CpMem> maxApproach,
+    Kokkos::View<float, CpMem> maxApproachQS, Kokkos::View<float*, CpMem> lambdaAcc,
+    Kokkos::View<const float*, CpMem> vn0, Kokkos::View<const unsigned char*, CpMem> sideFlag,
+    Kokkos::View<float* [3], CpMem> lambdaT, float frictionDynamic,
+    Kokkos::View<const float* [3], CpMem> vt0, float restitutionTangent,
+    Kokkos::View<const float*, CpMem> posImpulse, Kokkos::View<float*, CpMem> restBank,
+    Kokkos::View<float*, CpMem> restRel, Kokkos::View<const unsigned char*, CpMem> restPersistent,
+    Kokkos::View<const float*, CpMem> restVPeak, F3 restGHat,
+    Kokkos::View<const unsigned char*, CpMem> restGrounded, bool restNewtonOff, bool restOneSided,
+    Kokkos::View<float*, CpMem> restOrphan, Kokkos::View<const float*, CpMem> restOrphanVPeak) {
+  return PGSManifoldSweep{manifolds,
+                          invMass,
+                          invInertia,
+                          quat,
+                          velPred,
+                          angVelPred,
+                          realIdx,
+                          growthRate,
+                          restitutionNormal,
+                          restVelThreshold,
+                          maxApproach,
+                          maxApproachQS.data() ? maxApproachQS : maxApproach,
+                          lambdaAcc,
+                          vn0,
+                          sideFlag,
+                          lambdaT,
+                          frictionDynamic,
+                          vt0,
+                          restitutionTangent,
+                          posImpulse,
+                          restBank,
+                          restRel,
+                          restPersistent,
+                          restVPeak,
+                          restGHat,
+                          restGrounded,
+                          restNewtonOff,
+                          restOneSided,
+                          restOrphan,
+                          restOrphanVPeak};
+}
+
+/// Returns true when the sweep (or, with `loop`, the whole iteration loop) was submitted;
+/// false ONLY in loop mode when the fused path is unavailable — the caller then runs its own
+/// host-side iteration loop (which calls back in per-iteration mode).
+inline bool solveVelocityPGSKokkos(
     Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
     Kokkos::View<const int*, CpMem> mColor, int numColors,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
@@ -1277,38 +1331,34 @@ inline void solveVelocityPGSKokkos(
     Kokkos::View<const unsigned char*, CpMem> restGrounded = {}, bool restNewtonOff = false,
     bool restOneSided = false, Kokkos::View<float*, CpMem> restOrphan = {},
     Kokkos::View<const float*, CpMem> restOrphanVPeak = {},
-    Kokkos::View<const int*, CpMem> colorPerm = {}, const std::vector<int>* colorOffs = nullptr) {
+    Kokkos::View<const int*, CpMem> colorPerm = {}, const std::vector<int>* colorOffs = nullptr,
+    const FusedSweepCtx* fused = nullptr, const FusedLoopSpec* loop = nullptr) {
   CpExec space;
-  const PGSManifoldSweep f{manifolds,
-                           invMass,
-                           invInertia,
-                           quat,
-                           velPred,
-                           angVelPred,
-                           realIdx,
-                           growthRate,
-                           restitutionNormal,
-                           restVelThreshold,
-                           maxApproach,
-                           maxApproachQS.data() ? maxApproachQS : maxApproach,
-                           lambdaAcc,
-                           vn0,
-                           sideFlag,
-                           lambdaT,
-                           frictionDynamic,
-                           vt0,
-                           restitutionTangent,
-                           posImpulse,
-                           restBank,
-                           restRel,
-                           restPersistent,
-                           restVPeak,
-                           restGHat,
-                           restGrounded,
-                           restNewtonOff,
-                           restOneSided,
-                           restOrphan,
-                           restOrphanVPeak};
+  const PGSManifoldSweep f = makePGSManifoldSweep(
+      manifolds, invMass, invInertia, quat, velPred, angVelPred, realIdx, growthRate,
+      restitutionNormal, restVelThreshold, maxApproach, maxApproachQS, lambdaAcc, vn0, sideFlag,
+      lambdaT, frictionDynamic, vt0, restitutionTangent, posImpulse, restBank, restRel,
+      restPersistent, restVPeak, restGHat, restGrounded, restNewtonOff, restOneSided, restOrphan,
+      restOrphanVPeak);
+  // Fused mode (CUDA): one persistent kernel iterates the colours device-side with a grid
+  // barrier between them — same per-manifold math, same colour ordering, bit-identical to the
+  // launch loop below (see solver_fused.hpp). Loop mode additionally iterates the whole
+  // adaptive loop on-device against the residual the caller's stop would have read.
+#ifdef KOKKOS_ENABLE_CUDA
+  if (loop) {
+    if (fused && fused->maxBucket > 0 && colorOffs)
+      return demLaunchFusedSweepLoop(space, f, colorPerm, *fused, numColors, *loop,
+                                     (maxApproachQS.data() ? maxApproachQS : maxApproach).data());
+    return false;
+  }
+  if (fused && fused->maxBucket > 0 && colorOffs &&
+      demLaunchFusedColorSweep(space, f, colorPerm, *fused, numColors))
+    return true;
+#else
+  (void)fused;
+  if (loop)
+    return false;
+#endif
   // Dense-bucket mode (colorOffs from buildColorBucketsKokkos): each colour launch covers only
   // its own manifolds instead of scanning all of them — bit-identical (colour classes are
   // body-disjoint). No fence: the caller's residual readback synchronizes, and an explicit fence
@@ -1330,6 +1380,7 @@ inline void solveVelocityPGSKokkos(
           });
     }
   }
+  return true;
 }
 
 /// Bucket the active coloured manifolds by (support level, colour) for the level-ordered

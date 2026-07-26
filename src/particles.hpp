@@ -184,6 +184,15 @@ struct Particles {
   Kokkos::View<int*, CpMem> commitPerm;
   Kokkos::View<int*, CpMem> bucketCursor;
   Kokkos::View<int*, CpMem> mlBucketPerm;
+  // Fused colour sweeps (solver_fused.hpp): position-colour bucket permutation, pooled device
+  // copies of the host colour offsets (velocity / position / flat multilevel), and the software
+  // grid-barrier arrival counter (memset per fused launch, shared by all fused kernels — they
+  // are stream-ordered).
+  Kokkos::View<int*, CpMem> posPerm;
+  Kokkos::View<int*, CpMem> velOffsDev;
+  Kokkos::View<int*, CpMem> posOffsDev;
+  Kokkos::View<int*, CpMem> mlOffsDev;
+  Kokkos::View<unsigned*, CpMem> fusedBar;
   // Cross-step CUDA-graph executable cache (opaque cudaGraphExec_t per iteration loop:
   // velocity / onesided / multilevel / position). Owned here; leaked at teardown by design
   // (freeing needs the CUDA context, which Kokkos may already have torn down).
@@ -277,6 +286,11 @@ struct Particles {
     commitPerm = Kokkos::View<int*, CpMem>("commitPerm", maxContacts);
     bucketCursor = Kokkos::View<int*, CpMem>("bucketCursor", 64);
     mlBucketPerm = Kokkos::View<int*, CpMem>("mlBucketPerm", 0);
+    posPerm = Kokkos::View<int*, CpMem>("posPerm", maxContacts);
+    velOffsDev = Kokkos::View<int*, CpMem>("velOffsDev", 65);
+    posOffsDev = Kokkos::View<int*, CpMem>("posOffsDev", 65);
+    mlOffsDev = Kokkos::View<int*, CpMem>("mlOffsDev", 65 * 10);  // 10 = kMlMaxLevels
+    fusedBar = Kokkos::View<unsigned*, CpMem>("fusedBar", 32769);  // 4096 blocks x 8 + 1
     bodyWinner = Kokkos::View<long long*, CpMem>("bodyWinner", cap);
     bodyColorMask = Kokkos::View<std::uint64_t*, CpMem>("bodyColorMask", cap);
     groundedLevel = Kokkos::View<unsigned char*, CpMem>("groundedLevel", cap);

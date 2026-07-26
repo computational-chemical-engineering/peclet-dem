@@ -10,10 +10,13 @@
 #ifndef DEM_SOLVER_POSITION_HPP
 #define DEM_SOLVER_POSITION_HPP
 
+#include <vector>
+
 #include <Kokkos_Core.hpp>
 
 #include "contact_preprocessing.hpp"  // ContactC, CpExec/CpMem
 #include "dem_portable.hpp"
+#include "solver_fused.hpp"
 
 namespace peclet::dem {
 
@@ -240,12 +243,93 @@ inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, in
   return maxc + 1;
 }
 
+/// The per-contact overlap-projection body lives in PositionContactSweep so the colored launch
+/// loop and the fused colour sweep (solver_fused.hpp) share it verbatim: solveOne(idx) must only
+/// run concurrently on contacts that are body-disjoint within one launch (a colour class).
+struct PositionContactSweep {
+  Kokkos::View<const ContactC*, CpMem> contacts;
+  Kokkos::View<const float*, CpMem> invMass;
+  Kokkos::View<float* [3], CpMem> posPred;
+  Kokkos::View<const float* [4], CpMem> quatPred;
+  Kokkos::View<const float* [4], CpMem> quatStatic;
+  Kokkos::View<const float* [3], CpMem> invInertia;
+  Kokkos::View<float, CpMem> maxOverlap;
+  Kokkos::View<float*, CpMem> posLambdaAcc;
+
+  KOKKOS_FUNCTION void solveOne(int idx) const {
+    using detail::computeW;
+    const ContactC c = contacts(idx);
+    const int idA = c.bodyA, idB = c.bodyB;
+    const float invMassA = invMass(idA);
+    const float invMassB = (idB >= 0) ? invMass(idB) : 0.0f;
+
+    const F3 pA = ldF3(posPred, idA);
+    const F4 qA = ldF4(quatPred, idA);
+    F3 pB{0, 0, 0};
+    F4 qB{0, 0, 0, 1};
+    if (idB >= 0) {
+      pB = ldF3(posPred, idB);
+      qB = ldF4(quatPred, idB);
+    }
+
+    const F4 qAdelta = quatMult(qA, quatInverse(ldF4(quatStatic, idA)));
+    F3 rA = rotateVector(qAdelta, F3{c.rA.x, c.rA.y, c.rA.z});
+    F3 rB{c.rB.x, c.rB.y, c.rB.z};
+    F3 n{c.normal.x, c.normal.y, c.normal.z};
+    if (idB >= 0) {
+      const F4 qBdelta = quatMult(qB, quatInverse(ldF4(quatStatic, idB)));
+      rB = rotateVector(qBdelta, rB);
+      n = rotateVector(qBdelta, n);
+    }
+
+    float C;
+    if (idB < 0) {
+      n = F3{c.normal.x, c.normal.y, c.normal.z};
+      const F3 pAsurf = add3(pA, rA);
+      C = dot3(sub3(pAsurf, F3{c.rB.x, c.rB.y, c.rB.z}), n);
+    } else {
+      const F3 pAc = add3(pA, rA);
+      const F3 pBc = add3(pB, rB);
+      C = dot3(sub3(pAc, pBc), n);
+    }
+    if (C >= 0.0f)
+      return;
+
+    const F3 invIA = ldF3(invInertia, idA);
+    const F3 invIB = (idB >= 0) ? ldF3(invInertia, idB) : F3{0, 0, 0};
+    const float wTotal = computeW(rA, n, invMassA, invIA) + computeW(rB, n, invMassB, invIB);
+    if (wTotal < 1e-6f)
+      return;
+    const float dLambda = -C / wTotal;
+    // Position-channel normal load bookkeeping: the friction cone must see the TOTAL normal
+    // force; whatever de-penetration flows through this projection (instead of the velocity
+    // impulses) is accumulated here, converted to impulse units by the caller, and carried
+    // into the next substep's Coulomb bound (else a jostled bed's bound under-counts and
+    // stick leaks -- measured as 99% sliding wall contacts in the benchmark drum).
+    if (posLambdaAcc.extent(0) > 0)
+      Kokkos::atomic_add(&posLambdaAcc(idx), dLambda);
+
+    // Translation-only correction, in place (rotation discarded to match applyUpdatesKokkos).
+    posPred(idA, 0) += n.x * dLambda * invMassA;
+    posPred(idA, 1) += n.y * dLambda * invMassA;
+    posPred(idA, 2) += n.z * dLambda * invMassA;
+    if (idB >= 0) {
+      posPred(idB, 0) += -n.x * dLambda * invMassB;
+      posPred(idB, 1) += -n.y * dLambda * invMassB;
+      posPred(idB, 2) += -n.z * dLambda * invMassB;
+    }
+    Kokkos::atomic_max(&maxOverlap(), -C);
+  }
+};
+
 /// Colored Gauss–Seidel XPBD overlap solve: sweep the `numColors` colour classes in order, applying
 /// each contact's non-penetration correction directly to posPred (in place, translation only). Same
 /// per-contact math as solvePositionKokkos — only the write-back differs (in-place RMW instead of
 /// atomic-accumulate + count-average). Race-free because a colour is an independent set of contacts.
 /// One outer call = one full sweep over all colours; the caller loops it positionIterations times.
-inline void solvePositionColoredGSKokkos(Kokkos::View<const ContactC*, CpMem> contacts,
+/// Dense-bucket mode (colorPerm/colorOffs from buildColorBucketsKokkos) covers only each colour's
+/// own contacts; the fused mode collapses the whole sweep into one kernel — both bit-identical.
+inline bool solvePositionColoredGSKokkos(Kokkos::View<const ContactC*, CpMem> contacts,
                                          int numContacts, Kokkos::View<const int*, CpMem> cColor,
                                          int numColors, Kokkos::View<const float*, CpMem> invMass,
                                          Kokkos::View<float* [3], CpMem> posPred,
@@ -253,81 +337,50 @@ inline void solvePositionColoredGSKokkos(Kokkos::View<const ContactC*, CpMem> co
                                          Kokkos::View<const float* [4], CpMem> quatStatic,
                                          Kokkos::View<const float* [3], CpMem> invInertia,
                                          Kokkos::View<float, CpMem> maxOverlap,
-                                         Kokkos::View<float*, CpMem> posLambdaAcc = {}) {
-  using detail::computeW;
+                                         Kokkos::View<float*, CpMem> posLambdaAcc = {},
+                                         Kokkos::View<const int*, CpMem> colorPerm = {},
+                                         const std::vector<int>* colorOffs = nullptr,
+                                         const FusedSweepCtx* fused = nullptr,
+                                         const FusedLoopSpec* loop = nullptr) {
   CpExec space;
+  const PositionContactSweep f{contacts, invMass,    posPred,    quatPred,
+                               quatStatic, invInertia, maxOverlap, posLambdaAcc};
+#ifdef KOKKOS_ENABLE_CUDA
+  if (loop) {
+    if (fused && fused->maxBucket > 0 && colorOffs)
+      return demLaunchFusedSweepLoop(space, f, colorPerm, *fused, numColors, *loop,
+                                     maxOverlap.data());
+    return false;
+  }
+  if (fused && fused->maxBucket > 0 && colorOffs &&
+      demLaunchFusedColorSweep(space, f, colorPerm, *fused, numColors))
+    return true;
+#else
+  (void)fused;
+  if (loop)
+    return false;
+#endif
   for (int color = 0; color < numColors; ++color) {
-    Kokkos::parallel_for(
-        "peclet::dem::solve_position_gs", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-        KOKKOS_LAMBDA(int idx) {
-          if (cColor(idx) != color)
-            return;
-          const ContactC c = contacts(idx);
-          const int idA = c.bodyA, idB = c.bodyB;
-          const float invMassA = invMass(idA);
-          const float invMassB = (idB >= 0) ? invMass(idB) : 0.0f;
-
-          const F3 pA = ldF3(posPred, idA);
-          const F4 qA = ldF4(quatPred, idA);
-          F3 pB{0, 0, 0};
-          F4 qB{0, 0, 0, 1};
-          if (idB >= 0) {
-            pB = ldF3(posPred, idB);
-            qB = ldF4(quatPred, idB);
-          }
-
-          const F4 qAdelta = quatMult(qA, quatInverse(ldF4(quatStatic, idA)));
-          F3 rA = rotateVector(qAdelta, F3{c.rA.x, c.rA.y, c.rA.z});
-          F3 rB{c.rB.x, c.rB.y, c.rB.z};
-          F3 n{c.normal.x, c.normal.y, c.normal.z};
-          if (idB >= 0) {
-            const F4 qBdelta = quatMult(qB, quatInverse(ldF4(quatStatic, idB)));
-            rB = rotateVector(qBdelta, rB);
-            n = rotateVector(qBdelta, n);
-          }
-
-          float C;
-          if (idB < 0) {
-            n = F3{c.normal.x, c.normal.y, c.normal.z};
-            const F3 pAsurf = add3(pA, rA);
-            C = dot3(sub3(pAsurf, F3{c.rB.x, c.rB.y, c.rB.z}), n);
-          } else {
-            const F3 pAc = add3(pA, rA);
-            const F3 pBc = add3(pB, rB);
-            C = dot3(sub3(pAc, pBc), n);
-          }
-          if (C >= 0.0f)
-            return;
-
-          const F3 invIA = ldF3(invInertia, idA);
-          const F3 invIB = (idB >= 0) ? ldF3(invInertia, idB) : F3{0, 0, 0};
-          const float wTotal = computeW(rA, n, invMassA, invIA) + computeW(rB, n, invMassB, invIB);
-          if (wTotal < 1e-6f)
-            return;
-          const float dLambda = -C / wTotal;
-          // Position-channel normal load bookkeeping: the friction cone must see the TOTAL normal
-          // force; whatever de-penetration flows through this projection (instead of the velocity
-          // impulses) is accumulated here, converted to impulse units by the caller, and carried
-          // into the next substep's Coulomb bound (else a jostled bed's bound under-counts and
-          // stick leaks -- measured as 99% sliding wall contacts in the benchmark drum).
-          if (posLambdaAcc.extent(0) > 0)
-            Kokkos::atomic_add(&posLambdaAcc(idx), dLambda);
-
-          // Translation-only correction, in place (rotation discarded to match applyUpdatesKokkos).
-          posPred(idA, 0) += n.x * dLambda * invMassA;
-          posPred(idA, 1) += n.y * dLambda * invMassA;
-          posPred(idA, 2) += n.z * dLambda * invMassA;
-          if (idB >= 0) {
-            posPred(idB, 0) += -n.x * dLambda * invMassB;
-            posPred(idB, 1) += -n.y * dLambda * invMassB;
-            posPred(idB, 2) += -n.z * dLambda * invMassB;
-          }
-          Kokkos::atomic_max(&maxOverlap(), -C);
-        });
+    if (colorOffs) {
+      const int b = (*colorOffs)[color], e = (*colorOffs)[color + 1];
+      if (b == e)
+        continue;
+      Kokkos::parallel_for(
+          "peclet::dem::solve_position_gs", Kokkos::RangePolicy<CpExec>(space, b, e),
+          KOKKOS_LAMBDA(int i2) { f.solveOne(colorPerm(i2)); });
+    } else {
+      Kokkos::parallel_for(
+          "peclet::dem::solve_position_gs", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
+          KOKKOS_LAMBDA(int idx) {
+            if (cColor(idx) == color)
+              f.solveOne(idx);
+          });
+    }
     // Stream-ordered on the device, so colour c+1 already sees colour c's moves — no host fence per
     // colour (that would only stall the host). No trailing fence either: the caller's residual
     // readback synchronizes, and a fence here would break CUDA-graph capture of the sweep.
   }
+  return true;
 }
 
 }  // namespace peclet::dem
