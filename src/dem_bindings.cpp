@@ -10,6 +10,7 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/optional.h>
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
@@ -132,8 +133,8 @@ NB_MODULE(_dem, m) {
            "Enable a Berendsen-style velocity thermostat (target temperature, coupling time tau).")
       .def("set_solver_iterations", &Simulation::setSolverIterations, nb::arg("pos"),
            nb::arg("vel"), "Set the XPBD position- and velocity-solve iteration counts.")
-      .def("set_hertz_material", &Simulation::setHertzMaterial, nb::arg("mat"),
-           nb::arg("youngs"), nb::arg("poisson"),
+      .def("set_hertz_material", &Simulation::setHertzMaterial, nb::arg("mat"), nb::arg("youngs"),
+           nb::arg("poisson"),
            "Per-material Young's modulus and Poisson ratio for the soft-sphere Hertz-Mindlin "
            "engine (material ids as in set_material_ids).")
       .def("step_hertz", &Simulation::stepHertz, nb::arg("dt"), nb::arg("substeps") = 1,
@@ -194,10 +195,10 @@ NB_MODULE(_dem, m) {
           "Add a boundary wall plane from a point and a normal (3-sequences).")
       // Static world-space SDF wall/container (drum barrel, hopper, vibrating tray). grid: flat
       // [nx*ny*nz] signed distance, x-fastest (idx = x + y*nx + z*nx*ny), at world nodes
-      // origin+(x,y,z)*spacing — POSITIVE in the void where grains live, NEGATIVE in the solid wall.
-      // restitution/friction are the binary particle–wall material. Returns the wall index (for
-      // set_wall_velocity). See peclet.dem.build_wall_sdf for the SDF -> (grid, origin, spacing)
-      // helper.
+      // origin+(x,y,z)*spacing — POSITIVE in the void where grains live, NEGATIVE in the solid
+      // wall. restitution/friction are the binary particle–wall material. Returns the wall index
+      // (for set_wall_velocity). See peclet.dem.build_wall_sdf for the SDF -> (grid, origin,
+      // spacing) helper.
       .def(
           "add_sdf_wall",
           [](Simulation& s, nb::ndarray<float, nb::c_contig> grid, int nx, int ny, int nz,
@@ -211,25 +212,28 @@ NB_MODULE(_dem, m) {
           },
           nb::arg("grid"), nb::arg("nx"), nb::arg("ny"), nb::arg("nz"), nb::arg("origin"),
           nb::arg("spacing"), nb::arg("restitution") = 0.0f, nb::arg("friction") = 0.0f,
-          "Add a static world-space SDF wall/container: flat grid SDF (nx*ny*nz, x-fastest, positive "
-          "in the void), world origin/spacing, and the binary particle–wall restitution & friction. "
+          "Add a static world-space SDF wall/container: flat grid SDF (nx*ny*nz, x-fastest, "
+          "positive "
+          "in the void), world origin/spacing, and the binary particle–wall restitution & "
+          "friction. "
           "Returns the wall index.")
-      // Rigid-body surface-velocity field of a wall: v(x) = linVel + angVel × (x − center). Rotating
-      // drum: set angVel about the axis point `center`. Vibrating wall: drive linVel each step.
+      // Rigid-body surface-velocity field of a wall: v(x) = linVel + angVel × (x − center).
+      // Rotating drum: set angVel about the axis point `center`. Vibrating wall: drive linVel each
+      // step.
       .def(
           "set_wall_velocity",
           [](Simulation& s, int wall_index, std::tuple<float, float, float> lin,
              std::tuple<float, float, float> ang, std::tuple<float, float, float> center) {
             s.setWallVelocity(
-                wall_index,
-                peclet::dem::F3{std::get<0>(lin), std::get<1>(lin), std::get<2>(lin)},
+                wall_index, peclet::dem::F3{std::get<0>(lin), std::get<1>(lin), std::get<2>(lin)},
                 peclet::dem::F3{std::get<0>(ang), std::get<1>(ang), std::get<2>(ang)},
                 peclet::dem::F3{std::get<0>(center), std::get<1>(center), std::get<2>(center)});
           },
           nb::arg("wall_index"), nb::arg("lin_vel") = std::make_tuple(0.0f, 0.0f, 0.0f),
           nb::arg("ang_vel") = std::make_tuple(0.0f, 0.0f, 0.0f),
           nb::arg("center") = std::make_tuple(0.0f, 0.0f, 0.0f),
-          "Set a wall's rigid-body surface velocity v(x) = lin_vel + ang_vel × (x − center) (felt by "
+          "Set a wall's rigid-body surface velocity v(x) = lin_vel + ang_vel × (x − center) (felt "
+          "by "
           "grains in contact even though the geometry is static). Cheap; call every step for a "
           "vibrating wall.")
       // Accepts (N,3) or (N,4) like CUDA set_positions; column 3 (if present) is inv_mass (w==0
@@ -370,6 +374,9 @@ NB_MODULE(_dem, m) {
       .def("num_particles", &Simulation::numParticles, "Return the number of particles.")
       .def("num_contacts", &Simulation::numContacts, "Return the number of broad-phase contacts.")
       .def("num_manifolds", &Simulation::numManifolds, "Return the number of contact manifolds.")
+      .def("debug_coloring_conflicts", &Simulation::debugColoringConflicts,
+           "TEST-ONLY: (velocity, position) colouring-invariant violations in the last substep; "
+           "a valid colouring returns (0, 0).")
       .def("max_overlap", &Simulation::maxOverlap, "Return the maximum particle-particle overlap.")
       // CUDA-API parity: overlap measurement + LAMMPS/SDF export + profiling.
       .def("get_num_contacts", &Simulation::numContacts)    // CUDA-API alias

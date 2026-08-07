@@ -59,7 +59,8 @@ inline void demStep(Particles& P) {
     updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
 
   // ghost band + broadphase margin sized off the ACTUAL max grain radius (post-growth), so SI-unit
-  // particles just work; identical to the old 0.1/1.0*globalScale when globalScale ~ the grain size.
+  // particles just work; identical to the old 0.1/1.0*globalScale when globalScale ~ the grain
+  // size.
   const float maxRad = maxOwnedRadius(P);
   const float margin = 0.1f * maxRad;
 
@@ -74,8 +75,9 @@ inline void demStep(Particles& P) {
         KOKKOS_LAMBDA(int i) { ri(i) = i; });
   }
   Kokkos::deep_copy(space, P.topGhost, P.numReal);
-  // periodic ghost band = max grain radius: the CLOSER particle of any cross-boundary contacting pair
-  // is within one radius of the face, so a band of maxRad ghosts it (sufficient for sphere-sphere).
+  // periodic ghost band = max grain radius: the CLOSER particle of any cross-boundary contacting
+  // pair is within one radius of the face, so a band of maxRad ghosts it (sufficient for
+  // sphere-sphere).
   const float ghostBand = maxRad;
   // Size the SoA for the ghost boundary layer BEFORE emitting (CUDA did this in initialize() via
   // calculate_capacity). Without it a Simulation(numReal) leaves capacity==numReal, so every ghost
@@ -96,8 +98,8 @@ inline void demStep(Particles& P) {
   }
   // Collision detection runs on the PREDICTED state (speculative positions/orientations), matching
   // the CUDA solver — the position solve then corrects posPred against these contacts.
-  // findCollisionsGrow fences + reads the pair count back to host and guarantees np ≤ P.pairs extent
-  // (growing the buffer on overflow) so the narrowphase never reads P.pairs out of bounds.
+  // findCollisionsGrow fences + reads the pair count back to host and guarantees np ≤ P.pairs
+  // extent (growing the buffer on overflow) so the narrowphase never reads P.pairs out of bounds.
   const int np = findCollisionsGrow(P, margin);
 
   Kokkos::deep_copy(space, P.contactCount, 0);
@@ -379,9 +381,9 @@ class Simulation {
   void releaseViews() {
     P_ = Particles{};
 #ifdef PECLET_DEM_MPI
-    halo_.reset();  // the halo also owns Kokkos Views (gather/forward buffers + its core sub-objects')
-                    // that must be freed before Kokkos::finalize, else "deallocated after finalize"
-                    // aborts. Destroying it via the unique_ptr frees them all.
+    halo_.reset();  // the halo also owns Kokkos Views (gather/forward buffers + its core
+                    // sub-objects') that must be freed before Kokkos::finalize, else "deallocated
+                    // after finalize" aborts. Destroying it via the unique_ptr frees them all.
 #endif
   }
   static void releaseAll() {
@@ -401,7 +403,8 @@ class Simulation {
   // peclet::dem::ShapeKind values (SPHERE=1, HOLLOW_CYLINDER=2, BOX=3).
   void initializeShape(int shape_type, float radius, float height, float thickness) {
     baseRadius_ = radius;
-    P_.baseRadius = radius;  // effective radius = scale*globalScale*baseRadius (broadphase + ghost band)
+    P_.baseRadius =
+        radius;  // effective radius = scale*globalScale*baseRadius (broadphase + ghost band)
     F4 params{radius, 0, 0, 0};
     std::vector<F3> shell;
 
@@ -481,8 +484,8 @@ class Simulation {
   // set the collision probes body A against. boundingRadius is the canonical radius enclosing the
   // surface (broad-phase + VTI splat bound). invInertia is the per-unit-mass diagonal inverse
   // inertia in the body (principal) frame; like the analytic shapes it becomes the default applied
-  // to every particle by setPositions (override afterwards with set_inv_inertia / set_inv_mass for a
-  // real density). See peclet.dem.particle_builder for the Python side that produces these arrays
+  // to every particle by setPositions (override afterwards with set_inv_inertia / set_inv_mass for
+  // a real density). See peclet.dem.particle_builder for the Python side that produces these arrays
   // from an implicit-solid SDF (marching-cubes shell + voxel-integrated mass properties).
   void setSdfShape(const std::vector<float>& grid, int nx, int ny, int nz, F3 origin, F3 spacing,
                    const std::vector<float>& shellFlat, F3 invInertia, float boundingRadius) {
@@ -522,9 +525,9 @@ class Simulation {
     sd.ny = ny;
     sd.nz = nz;
     sd.gridOrigin = origin;
-    sd.gridInvSpacing = F3{spacing.x > 0 ? 1.0f / spacing.x : 0.0f,
-                           spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
-                           spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    sd.gridInvSpacing =
+        F3{spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
+           spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
     auto h = Kokkos::create_mirror_view(P_.shapes);
     h(0) = sd;
     Kokkos::deep_copy(P_.shapes, h);
@@ -699,12 +702,13 @@ class Simulation {
 
   // Add a static, world-space SDF wall/container the grains collide against (a drum barrel, hopper,
   // vibrating tray). `grid` is a flat [nx*ny*nz] signed-distance field, x-fastest (idx = x + y*nx +
-  // z*nx*ny), sampled at world nodes origin + (x,y,z)*spacing — POSITIVE in the void where the grains
-  // live, NEGATIVE inside the solid wall (so a grain surface point reads the penetration depth and
-  // the outward gradient is the push-out normal). restitution/friction are the binary particle–wall
-  // material (independent of the body-body material). The wall is motionless but carries a rigid-body
-  // surface-velocity field (set via setWallVelocity) so a grain touching it feels the wall's motion.
-  // Returns the wall's index (for setWallVelocity). Add walls before stepping.
+  // z*nx*ny), sampled at world nodes origin + (x,y,z)*spacing — POSITIVE in the void where the
+  // grains live, NEGATIVE inside the solid wall (so a grain surface point reads the penetration
+  // depth and the outward gradient is the push-out normal). restitution/friction are the binary
+  // particle–wall material (independent of the body-body material). The wall is motionless but
+  // carries a rigid-body surface-velocity field (set via setWallVelocity) so a grain touching it
+  // feels the wall's motion. Returns the wall's index (for setWallVelocity). Add walls before
+  // stepping.
   int addSdfWall(const std::vector<float>& grid, int nx, int ny, int nz, F3 origin, F3 spacing,
                  float restitution, float friction) {
     if (nx < 2 || ny < 2 || nz < 2)
@@ -718,8 +722,9 @@ class Simulation {
     w.nz = nz;
     w.gridOffset = static_cast<int>(wallGridHost_.size());
     w.origin = origin;
-    w.invSpacing = F3{spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
-                      spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    w.invSpacing =
+        F3{spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
+           spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
     w.restitution = restitution;
     w.friction = friction;
     const int idx = static_cast<int>(wallsHost_.size());
@@ -739,10 +744,10 @@ class Simulation {
     return idx;
   }
 
-  // Set a wall's rigid-body surface-velocity field v(x) = linVel + angVel × (x − center). A grain in
-  // contact feels this velocity even though the geometry never moves: set angVel for a rotating drum
-  // (about `center` on the axis), or drive linVel sinusoidally each step for a vibrating wall. Cheap
-  // (a few host scalars); safe to call every step.
+  // Set a wall's rigid-body surface-velocity field v(x) = linVel + angVel × (x − center). A grain
+  // in contact feels this velocity even though the geometry never moves: set angVel for a rotating
+  // drum (about `center` on the axis), or drive linVel sinusoidally each step for a vibrating wall.
+  // Cheap (a few host scalars); safe to call every step.
   void setWallVelocity(int wallIndex, F3 linVel, F3 angVel, F3 center) {
     if (wallIndex < 0 || wallIndex >= static_cast<int>(wallsHost_.size()))
       throw std::runtime_error("setWallVelocity: wall index out of range");
@@ -826,8 +831,8 @@ class Simulation {
     }
     Kokkos::deep_copy(P_.vel, vel);
   }
-  // Per-particle external FORCE (fluid drag etc.), an (N,3) flat array. Applied in the next step()'s
-  // velocity predict as dv = F*invMass*dt. Persists across steps until re-set or cleared.
+  // Per-particle external FORCE (fluid drag etc.), an (N,3) flat array. Applied in the next
+  // step()'s velocity predict as dv = F*invMass*dt. Persists across steps until re-set or cleared.
   void setExternalForces(const std::vector<float>& f) {
     auto ef = Kokkos::create_mirror_view(P_.extForce);
     for (int i = 0; i < P_.numReal && 3 * i + 2 < (int)f.size(); ++i) {
@@ -962,9 +967,9 @@ class Simulation {
                std::tuple<long, long, long> gsize, std::tuple<bool, bool, bool> periodic,
                MPI_Comm comm) {
     halo_->initMpi({std::get<0>(origin), std::get<1>(origin), std::get<2>(origin)},
-                  {std::get<0>(size), std::get<1>(size), std::get<2>(size)},
-                  {std::get<0>(gsize), std::get<1>(gsize), std::get<2>(gsize)},
-                  {std::get<0>(periodic), std::get<1>(periodic), std::get<2>(periodic)}, comm);
+                   {std::get<0>(size), std::get<1>(size), std::get<2>(size)},
+                   {std::get<0>(gsize), std::get<1>(gsize), std::get<2>(gsize)},
+                   {std::get<0>(periodic), std::get<1>(periodic), std::get<2>(periodic)}, comm);
   }
   // Enable the distributed step. rcut is the ghost-band width (default = 1.0*globalScale, the
   // periodic skin used by the single-GPU path); sync_every is the owner->ghost refresh interval (1
@@ -988,8 +993,9 @@ class Simulation {
   // Migrate ownership now so each rank holds a near-equal particle count. Safe to call at a step
   // boundary; returns this rank's new owned count. Exposed for manual / adaptive balancing.
   int rebalance() { return halo_->rebalance(P_); }
-  // Co-rebalance: migrate ownership onto the weighted ORB of per-cell weights `w` (the SAME partition
-  // the coupled flow solver redistributes onto from the same weight field). Returns new owned count.
+  // Co-rebalance: migrate ownership onto the weighted ORB of per-cell weights `w` (the SAME
+  // partition the coupled flow solver redistributes onto from the same weight field). Returns new
+  // owned count.
   int migrateToWeights(const std::vector<peclet::core::Real>& w) {
     return halo_->migrateToWeights(P_, w);
   }
@@ -1053,6 +1059,61 @@ class Simulation {
   const V3& velocitiesView() const { return P_.vel; }
   int numContacts() { return readInt(P_.contactCount); }
   int numManifolds() { return readInt(P_.manifoldCount); }
+  // TEST-ONLY colouring self-check: over the LAST solved substep's colourings, count how many
+  // (manifold, contact) pairs violate the graph-colouring invariant "no two same-colour items share
+  // a body" — must be exactly (0, 0) for a valid colouring (the incremental warm-start path must
+  // never import a conflict). Returns {velocity-colour conflicts, position-colour conflicts}.
+  std::pair<int, int> debugColoringConflicts() {
+    using peclet::dem::CpExec;
+    using peclet::dem::CpMem;
+    CpExec space;
+    const int nm = readInt(P_.manifoldCount);
+    const int nc = readInt(P_.contactCount);
+    const int nb = std::max(P_.numParticles, P_.numReal) + 1;
+    Kokkos::View<std::uint64_t*, CpMem> seen("dbg_color_seen", nb);
+    int velConf = 0, posConf = 0;
+    if (nm > 0) {
+      Kokkos::deep_copy(space, seen, std::uint64_t(0));
+      auto manifolds = P_.manifolds;
+      auto realIdx = P_.realIndices;
+      auto mColor = P_.manifoldColor;
+      Kokkos::parallel_reduce(
+          "peclet::dem::dbg_vel_color", Kokkos::RangePolicy<CpExec>(space, 0, nm),
+          KOKKOS_LAMBDA(int idx, int& acc) {
+            const int c = mColor(idx);
+            if (c < 0)
+              return;
+            const auto m = manifolds(idx);
+            const std::uint64_t bit = std::uint64_t(1) << c;
+            if ((Kokkos::atomic_fetch_or(&seen(realIdx(m.bodyA)), bit) >> c) & 1)
+              acc += 1;
+            if (m.bodyB >= 0 && ((Kokkos::atomic_fetch_or(&seen(realIdx(m.bodyB)), bit) >> c) & 1))
+              acc += 1;
+          },
+          velConf);
+    }
+    if (nc > 0) {
+      Kokkos::deep_copy(space, seen, std::uint64_t(0));
+      auto contacts = P_.contacts;
+      auto cColor = P_.contactColor;
+      Kokkos::parallel_reduce(
+          "peclet::dem::dbg_pos_color", Kokkos::RangePolicy<CpExec>(space, 0, nc),
+          KOKKOS_LAMBDA(int idx, int& acc) {
+            const int c = cColor(idx);
+            if (c < 0)
+              return;
+            const auto ct = contacts(idx);
+            const std::uint64_t bit = std::uint64_t(1) << c;
+            if ((Kokkos::atomic_fetch_or(&seen(ct.bodyA), bit) >> c) & 1)
+              acc += 1;
+            if (ct.bodyB >= 0 && ((Kokkos::atomic_fetch_or(&seen(ct.bodyB), bit) >> c) & 1))
+              acc += 1;
+          },
+          posConf);
+    }
+    space.fence();
+    return {velConf, posConf};
+  }
   float maxOverlap() {
     float h;
     Kokkos::deep_copy(h, P_.maxOverlap);
@@ -1114,8 +1175,8 @@ class Simulation {
   }
 
  private:
-  // (Re)upload just the small WallSdf array (velocity fields change every step for a vibrating wall;
-  // the grid samples are uploaded once in addSdfWall).
+  // (Re)upload just the small WallSdf array (velocity fields change every step for a vibrating
+  // wall; the grid samples are uploaded once in addSdfWall).
   void uploadWalls() {
     const int n = std::max<int>(1, static_cast<int>(wallsHost_.size()));
     if (static_cast<int>(P_.walls.extent(0)) < n)
@@ -1126,10 +1187,11 @@ class Simulation {
     Kokkos::deep_copy(P_.walls, h);
   }
 
-  // Size the contact/manifold buffers so no contact is dropped: a shell point sits inside at most one
-  // neighbour (body-body ~ capacity*shellPoints) plus one per wall it touches (capacity*shellPoints
-  // per wall). Boundary/wall contacts are appended AFTER body-body ones, so an undersized buffer
-  // silently drops them and grains tunnel through walls. Floored at the analytic default; grows only.
+  // Size the contact/manifold buffers so no contact is dropped: a shell point sits inside at most
+  // one neighbour (body-body ~ capacity*shellPoints) plus one per wall it touches
+  // (capacity*shellPoints per wall). Boundary/wall contacts are appended AFTER body-body ones, so
+  // an undersized buffer silently drops them and grains tunnel through walls. Floored at the
+  // analytic default; grows only.
   void ensureContactCapacity() {
     const int perParticle = std::max(16, shellPoints_);
     const long want = static_cast<long>(P_.capacity) * perParticle +
@@ -1187,7 +1249,8 @@ class Simulation {
   bool mpiForwardRotation_ = true;
   int mpiRebalanceEvery_ = 0;
   long mpiStepCount_ = 0;
-  long mpiHertzCalls_ = 0;  // step_hertz_mpi call count (rebalance_every cadence for the force path)
+  long mpiHertzCalls_ =
+      0;  // step_hertz_mpi call count (rebalance_every cadence for the force path)
   bool mpiGidsGlobal_ = false;  // gids re-based to a global Exscan offset (once per particle set)
 #endif
 };

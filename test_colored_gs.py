@@ -135,6 +135,35 @@ def test_cooling(use_gs=True):
     meas = 2.0 * np.polyfit(ts[w], y[w], 1)[0]
     return meas / enskog, phi, N
 
+# ---------------------------------------------------------- D. incremental-colouring invariant
+def test_coloring_valid():
+    """The single-GPU incremental (warm-started) colouring must NEVER import a conflict: over a
+    settling gravity pile (which exercises the persistent-contact PGS path where the incremental
+    colouring is active, including creep-recompaction and per-substep carries), the colouring
+    invariant "no two same-colour manifolds/contacts share a body" must hold every step. Returns
+    the worst (velocity, position) conflict counts seen over the run — must be (0, 0)."""
+    if not hasattr(dem.Simulation, "debug_coloring_conflicts"):
+        return None
+    rng = np.random.default_rng(7)
+    L = 12.0; rp = 0.5; N = 900
+    # a loose cloud that settles into a dense multi-contact pile under gravity
+    Pp = np.c_[rng.uniform(1, L - 1, (N, 2)), rng.uniform(1, L - 1, N)].astype(np.float32)
+    s = dem.Simulation(N + 64); s.initialize(shape_type=1, radius=rp); s.set_sphere_shape(rp)
+    s.set_domain((0, 0, 0), (L, L, L)); s.enable_periodicity(False, False, False)
+    s.add_plane((0, 0, 0), (0, 0, 1))
+    s.set_gravity(0, 0, -9.81); s.set_material_params(0.4, 0.3, 0.3)
+    s.set_solver_iterations(12, 8); s.set_dt(2e-3); s.set_velocity_use_gs(True)
+    s.set_stabilization_mode("multilevel")
+    s.set_positions(np.c_[Pp, np.ones(N, np.float32)])
+    s.set_velocities(np.zeros((N, 3), np.float32))
+    worst = (0, 0)
+    for i in range(500):
+        s.step(2e-3)
+        if i % 3 == 0:  # sample the invariant across churn + settled regimes
+            vc, pc = s.debug_coloring_conflicts()
+            worst = (max(worst[0], vc), max(worst[1], pc))
+    return worst
+
 # ---------------------------------------------------------------------------------------- run all
 if __name__ == "__main__":
     t0 = time.time()
@@ -157,6 +186,16 @@ if __name__ == "__main__":
     for lbl, gs in [("colored GS ", True), ("Jacobi(avg)", False)]:
         ratio, phi, N = test_cooling(use_gs=gs)
         print(f"   {lbl}:  measured/Enskog = {ratio:.3f}    (φ={phi:.2f}, N={N})")
+
+    print("\nD. INCREMENTAL-COLOURING INVARIANT (no two same-colour items share a body)")
+    worst = test_coloring_valid()
+    if worst is None:
+        print("   (debug_coloring_conflicts unavailable — skipped)")
+    else:
+        cok = worst == (0, 0)
+        ok &= cok
+        print(f"   worst conflicts over run: velocity={worst[0]}  position={worst[1]}   "
+              f"{'OK' if cok else 'FAIL'}")
 
     print("=" * 78)
     print(f"binary-exactness {'PASS' if ok else 'FAIL'}   ({time.time()-t0:.0f}s)")

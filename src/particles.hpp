@@ -11,7 +11,6 @@
 #define DEM_PARTICLES_HPP
 
 #include <cstdint>
-
 #include <Kokkos_Core.hpp>
 
 #include "contact_preprocessing.hpp"  // ContactC, ManifoldC
@@ -46,7 +45,7 @@ struct Particles {
   // from it — local slots are not stable identities there. Ghost slots carry the owner's gid.
   Vi gid;
   Kokkos::View<float* [2], CpMem> planeFriction;
-  Vf rad;      // effective broadphase radius scratch (scale * globalScale)
+  Vf rad;       // effective broadphase radius scratch (scale * globalScale)
   V3 extForce;  // per-particle external FORCE (e.g. fluid drag); F=ma => dv = extForce*invMass*dt
 
   // --- collision/contact/manifold buffers ---
@@ -56,7 +55,14 @@ struct Particles {
   // Graph-colouring scratch for the single-GPU colored Gauss–Seidel velocity solve: per-manifold
   // colour (maxContacts; -2 inactive, -1 uncoloured, >=0 colour), plus per-body arbitration winner
   // and committed-colour bitmask (both indexed by REAL body index, sized capacity).
-  Kokkos::View<int*, CpMem> manifoldColor;      // per-manifold colour (velocity solve)
+  Kokkos::View<int*, CpMem> manifoldColor;  // per-manifold colour (velocity solve)
+  // Incremental (warm-started) colouring (single-GPU PGS path): the previous substep's per-manifold
+  // colour, sorted alongside prevPairKeys (committed by pair key exactly like prevLambda). A
+  // surviving pair keeps its colour so the Jones-Plassmann arbitration only re-runs over the NEW
+  // manifolds; velLastFullColors is the colour count at the last FULL recolour (creep-recompaction
+  // reference). See colorManifoldsIncrementalKokkos.
+  Kokkos::View<int*, CpMem> prevManifoldColor;
+  int velLastFullColors = 0;
   // Persistent-contact restitution (gravity-gated): pair keys of this/last substep's manifolds +
   // the per-manifold "existed last substep" flag. A persistent contact is LOADED, not a fresh
   // impact — it gets e = 0 (the impulse still cancels the approach: pure inelastic support), which
@@ -88,8 +94,8 @@ struct Particles {
   // Position-channel normal load (see solvePositionColoredGSKokkos): per-contact positional
   // lambda this substep, its per-manifold impulse-equivalent, the previous substep's value
   // (warm-gathered) that tops up the friction cone's Coulomb bound, and the sorted store.
-  Kokkos::View<float*, CpMem> hertzSnPair;   // per cached pair: last step's patch stiffness sum
-  Kokkos::View<float*, CpMem> hertzSnWall;   // per (particle, wall): same, for wall patches
+  Kokkos::View<float*, CpMem> hertzSnPair;  // per cached pair: last step's patch stiffness sum
+  Kokkos::View<float*, CpMem> hertzSnWall;  // per (particle, wall): same, for wall patches
   Kokkos::View<float*, CpMem> posLambdaContact;
   Kokkos::View<float*, CpMem> posImpulse;      // gathered: LAST substep's position-channel load
   Kokkos::View<float*, CpMem> prevPosImpulse;  // sorted alongside prevPairKeys
@@ -140,21 +146,21 @@ struct Particles {
   Kokkos::View<int*, CpMem> mlGrp;
   Kokkos::View<int*, CpMem> mlMate;
   // --- Hertz-Mindlin soft-sphere engine (solver_hertz.hpp): cached Verlet pair list state ---
-  Kokkos::View<float* [3], CpMem> hertzXi;        // per cached pair: Mindlin shear history
+  Kokkos::View<float* [3], CpMem> hertzXi;                 // per cached pair: Mindlin shear history
   Kokkos::View<unsigned long long*, CpMem> hertzKeys;      // keys of the cached pairs
   Kokkos::View<unsigned long long*, CpMem> hertzPrevKeys;  // sorted keys of the PREVIOUS list
   Kokkos::View<float* [3], CpMem> hertzPrevXi;             // xi aligned with hertzPrevKeys
-  Kokkos::View<float* [3], CpMem> hertzXiWall;    // per (particle, wall) shear history
-  Kokkos::View<int*, CpMem> hertzWallCand;   // near-wall candidate slots (i * 8 + wallIdx)
+  Kokkos::View<float* [3], CpMem> hertzXiWall;             // per (particle, wall) shear history
+  Kokkos::View<int*, CpMem> hertzWallCand;  // near-wall candidate slots (i * 8 + wallIdx)
   Kokkos::View<int, CpMem> hertzWallCandCount;
   int hertzNumWallCand = 0;
   // Effective Hertz contact-curvature radius for non-spherical shapes, as a fraction of the
   // bounding radius (true curvature is undefined at faces/edges; spheres use their real radius).
   float hertzContactRadiusFrac = 0.5f;
-  Kokkos::View<float* [3], CpMem> hertzRefPos;    // positions at the last pair build
-  Kokkos::View<float, CpMem> hertzDispMax;        // max |pos-ref|^2 since the build
-  Kokkos::View<float*, CpMem> hertzE, hertzNu;    // per-material Young / Poisson
-  int hertzNumPairs = -1;                          // -1: no valid cached list
+  Kokkos::View<float* [3], CpMem> hertzRefPos;  // positions at the last pair build
+  Kokkos::View<float, CpMem> hertzDispMax;      // max |pos-ref|^2 since the build
+  Kokkos::View<float*, CpMem> hertzE, hertzNu;  // per-material Young / Poisson
+  int hertzNumPairs = -1;                       // -1: no valid cached list
   int hertzPrevCount = 0;
   static constexpr int kHertzMaxWalls = 4;
   // Stabilization mode of the staged velocity solve (Phase B; see sim.hpp): 0 = off (pure
@@ -171,8 +177,20 @@ struct Particles {
   // friction) rows; zero-length pairMaterials = feature off (global material everywhere).
   Kokkos::View<unsigned char*, CpMem> materialId;
   Kokkos::View<float*, CpMem> pairMaterials;
-  Kokkos::View<int*, CpMem> contactSlot;  // contact -> manifold slot (PGS friction bound)
-  Kokkos::View<int*, CpMem> contactColor;       // per-contact colour (position solve)
+  Kokkos::View<int*, CpMem> contactSlot;   // contact -> manifold slot (PGS friction bound)
+  Kokkos::View<int*, CpMem> contactColor;  // per-contact colour (position solve)
+  // Incremental (warm-started) position colouring (single-GPU PGS path): this substep's per-contact
+  // pair keys + the previous substep's (sorted keys, colour) ledger, so a surviving contact keeps
+  // its colour and only NEW contacts re-arbitrate. Unlike the manifold graph a pair CAN own several
+  // contacts (non-spherical multi-point patches), so carried colours are conflict-CHECKED (a shared
+  // colour on a shared body -> full recolour that substep). posLastFullColors = colours at the last
+  // full recolour (creep-recompaction reference). See colorContactsIncrementalKokkos.
+  Kokkos::View<unsigned long long*, CpMem> contactKeys;
+  Kokkos::View<unsigned long long*, CpMem> prevContactKeys;
+  Kokkos::View<int*, CpMem> prevContactColor;
+  Kokkos::View<int*, CpMem> posCommitPerm;
+  int posPrevContactCount = 0;
+  int posLastFullColors = 0;
   // Per-body round-winner key for the colouring arbitration. 64-bit: hashed-random priority in the
   // high word (splitmix32 of the edge index), the unique edge index in the low word. Random
   // priorities give O(log n) arbitration rounds w.h.p.; RAW indices are adversarial for poured
@@ -218,7 +236,8 @@ struct Particles {
   Kokkos::View<float* [3], CpMem> shell;
   Kokkos::View<PlaneP*, CpMem> planes;
   Kokkos::View<float*, CpMem> sdfGrid;  // concatenated grid-SDF samples (imported shapes)
-  // static world-space SDF walls (drum barrel, hopper, vibrating tray) + their concatenated samples.
+  // static world-space SDF walls (drum barrel, hopper, vibrating tray) + their concatenated
+  // samples.
   Kokkos::View<WallSdf*, CpMem> walls;
   Kokkos::View<float*, CpMem> wallGrid;
 
@@ -231,7 +250,8 @@ struct Particles {
   Domain domain{};
   F3 gravity{0, 0, 0};
   float dt = 1e-3f, globalScale = 1.0f, growthRate = 0.0f, growthFactor = -1.0f;
-  float baseRadius = 1.0f;  // shape canonical radius; effective radius = scale * globalScale * baseRadius
+  float baseRadius =
+      1.0f;  // shape canonical radius; effective radius = scale * globalScale * baseRadius
   float thermostatTau = 0.0f, thermostatTemp = 0.0f,
         thermostatKB = 1.0f;  // Berendsen (tau>0 enables)
   float frictionDynamic = 0.0f, restitutionNormal = 0.0f, skin = 0.1f;
@@ -239,9 +259,9 @@ struct Particles {
   // > 0 reverses the pre-collision tangential surface velocity of COLLIDING contacts).
   float restitutionTangent = 0.0f;
   int positionIterations = 10, velocityIterations = 0;
-  // Single-GPU collision solves: true = colored Gauss–Seidel for BOTH the restitution (velocity) and
-  // the overlap (position) solve — correct coupled multi-contact impulses + non-penetration, default;
-  // false = count-averaged Jacobi (the legacy robust path, still used by step_mpi).
+  // Single-GPU collision solves: true = colored Gauss–Seidel for BOTH the restitution (velocity)
+  // and the overlap (position) solve — correct coupled multi-contact impulses + non-penetration,
+  // default; false = count-averaged Jacobi (the legacy robust path, still used by step_mpi).
   bool velocityUseGS = true;
 
   // nPlanes is the plane-array CAPACITY; numPlanes (the live count) stays 0 until planes are added.
@@ -277,11 +297,16 @@ struct Particles {
     contacts = Kokkos::View<ContactC*, CpMem>("contacts", maxContacts);
     manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", maxContacts);
     manifoldColor = Kokkos::View<int*, CpMem>("manifoldColor", maxContacts);
+    prevManifoldColor = Kokkos::View<int*, CpMem>("prevManifoldColor", maxContacts);
     pairKeys = Kokkos::View<unsigned long long*, CpMem>("pairKeys", maxContacts);
     prevPairKeys = Kokkos::View<unsigned long long*, CpMem>("prevPairKeys", maxContacts);
     manifoldPersistent = Kokkos::View<unsigned char*, CpMem>("manifoldPersistent", maxContacts);
     prevPairCount = 0;
     contactColor = Kokkos::View<int*, CpMem>("contactColor", maxContacts);
+    contactKeys = Kokkos::View<unsigned long long*, CpMem>("contactKeys", maxContacts);
+    prevContactKeys = Kokkos::View<unsigned long long*, CpMem>("prevContactKeys", maxContacts);
+    prevContactColor = Kokkos::View<int*, CpMem>("prevContactColor", maxContacts);
+    posCommitPerm = Kokkos::View<int*, CpMem>("posCommitPerm", maxContacts);
     velPerm = Kokkos::View<int*, CpMem>("velPerm", maxContacts);
     commitPerm = Kokkos::View<int*, CpMem>("commitPerm", maxContacts);
     bucketCursor = Kokkos::View<int*, CpMem>("bucketCursor", 64);
@@ -289,7 +314,7 @@ struct Particles {
     posPerm = Kokkos::View<int*, CpMem>("posPerm", maxContacts);
     velOffsDev = Kokkos::View<int*, CpMem>("velOffsDev", 65);
     posOffsDev = Kokkos::View<int*, CpMem>("posOffsDev", 65);
-    mlOffsDev = Kokkos::View<int*, CpMem>("mlOffsDev", 65 * 10);  // 10 = kMlMaxLevels
+    mlOffsDev = Kokkos::View<int*, CpMem>("mlOffsDev", 65 * 10);   // 10 = kMlMaxLevels
     fusedBar = Kokkos::View<unsigned*, CpMem>("fusedBar", 32769);  // 4096 blocks x 8 + 1
     bodyWinner = Kokkos::View<long long*, CpMem>("bodyWinner", cap);
     bodyColorMask = Kokkos::View<std::uint64_t*, CpMem>("bodyColorMask", cap);
@@ -360,10 +385,10 @@ struct Particles {
   }
 
   // Grow the per-particle SoA to hold at least `newCap` particles (real + periodic-ghost headroom),
-  // preserving the existing [0,numReal) state (Kokkos::resize copies the overlapping subextent). The
-  // single-GPU step sizes this from the domain before generating ghosts; without the headroom every
-  // ghost slot overflows `capacity` and cross-boundary contacts silently vanish. A no-op when the
-  // SoA is already large enough (e.g. the MPI path, whose caller pre-sizes capacity for the
+  // preserving the existing [0,numReal) state (Kokkos::resize copies the overlapping subextent).
+  // The single-GPU step sizes this from the domain before generating ghosts; without the headroom
+  // every ghost slot overflows `capacity` and cross-boundary contacts silently vanish. A no-op when
+  // the SoA is already large enough (e.g. the MPI path, whose caller pre-sizes capacity for the
   // worst-case ghost band). The collision buffers (pairs/contacts/manifolds) keep their
   // construction-time sizing — each real particle still issues one broad-phase query.
   void ensureCapacity(int newCap) {
