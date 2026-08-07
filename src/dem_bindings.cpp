@@ -374,6 +374,14 @@ NB_MODULE(_dem, m) {
       .def("num_particles", &Simulation::numParticles, "Return the number of particles.")
       .def("num_contacts", &Simulation::numContacts, "Return the number of broad-phase contacts.")
       .def("num_manifolds", &Simulation::numManifolds, "Return the number of contact manifolds.")
+      .def(
+          "set_sleeping", &Simulation::setSleeping, nb::arg("enabled"),
+          nb::arg("threshold_scale") = 2.0f, nb::arg("consecutive") = 64,
+          nb::arg("wake_scale") = 40.0f,
+          "Enable island sleeping (single-GPU statics, default OFF): freeze grounded bodies whose "
+          "motion stays below threshold_scale x the resting floor for `consecutive` substeps; wake "
+          "only above wake_scale x that floor (hysteresis vs residual jitter).")
+      .def("num_asleep", &Simulation::numAsleep, "Number of currently-sleeping real bodies.")
       .def("debug_coloring_conflicts", &Simulation::debugColoringConflicts,
            "TEST-ONLY: (velocity, position) colouring-invariant violations in the last substep; "
            "a valid colouring returns (0, 0).")

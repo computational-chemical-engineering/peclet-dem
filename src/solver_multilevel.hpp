@@ -132,7 +132,8 @@ inline ContactHierarchy buildContactHierarchyKokkos(
     Kokkos::View<const unsigned char*, CpMem> persistent,
     Kokkos::View<const float* [3], CpMem> posPred, F3 gHat,
     Kokkos::View<const float*, CpMem> invMass, float qsThr, int gateMask, int numReal, MlScratch& S,
-    Kokkos::View<long long*, CpMem> winner, Kokkos::View<std::uint64_t*, CpMem> colorMask) {
+    Kokkos::View<long long*, CpMem> winner, Kokkos::View<std::uint64_t*, CpMem> colorMask,
+    bool excludeImmovable = false) {
   ContactHierarchy H;
   CpExec space;
   if (numManifolds <= 0 || numReal <= 0)
@@ -169,6 +170,12 @@ inline ContactHierarchy buildContactHierarchyKokkos(
             if (m.bodyB < 0 || !mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred,
                                                    gHat, qsThr, gateMask))
               return;
+            // Never aggregate an immovable (sleeping / pinned) body: a group carrying its huge
+            // effMass wrecks the coarse-solve conditioning and pins the awake partner. (Gated so
+            // the sleeping-off path is bit-identical.)
+            if (excludeImmovable &&
+                (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f))
+              return;
             const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
             if (gA == gB)
               return;
@@ -186,6 +193,9 @@ inline ContactHierarchy buildContactHierarchyKokkos(
             const ManifoldC m = manifolds(idx);
             if (m.bodyB < 0 || !mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred,
                                                    gHat, qsThr, gateMask))
+              return;
+            if (excludeImmovable &&
+                (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f))
               return;
             const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
             if (gA == gB)
@@ -380,8 +390,8 @@ inline void buildCoarseBucketsKokkos(const ContactHierarchy& H, MlScratch& S, in
           const int c = static_cast<int>((cp(idx) >> slotShift) & 63);
           cs(idx) = (c < nCol) ? c : -1;
         });
-    auto seg = Kokkos::subview(
-        perm, Kokkos::pair<int, int>((lvl - 1) * numManifolds, lvl * numManifolds));
+    auto seg =
+        Kokkos::subview(perm, Kokkos::pair<int, int>((lvl - 1) * numManifolds, lvl * numManifolds));
     buildColorBucketsKokkos(Kokkos::View<const int*, CpMem>(colorScratch), numManifolds, nCol, seg,
                             cursor, offs[static_cast<std::size_t>(lvl) - 1]);
   }
@@ -539,15 +549,12 @@ __device__ inline void demMlCoarseCycleDevice(
   }
 }
 
-__global__ void demFusedCoarseCycleK(MlCoarseSweep f, Kokkos::View<const int*, CpMem> parent,
-                                     Kokkos::View<const float*, CpMem> invMass,
-                                     Kokkos::View<float* [3], CpMem> velPred,
-                                     Kokkos::View<float* [3], CpMem> velG0,
-                                     Kokkos::View<const float*, CpMem> massG,
-                                     Kokkos::View<int*, CpMem> grpW,
-                                     Kokkos::View<const int*, CpMem> bkPerm,
-                                     Kokkos::View<const int*, CpMem> offsDev, MlFusedMeta meta,
-                                     unsigned* bar) {
+__global__ void demFusedCoarseCycleK(
+    MlCoarseSweep f, Kokkos::View<const int*, CpMem> parent,
+    Kokkos::View<const float*, CpMem> invMass, Kokkos::View<float* [3], CpMem> velPred,
+    Kokkos::View<float* [3], CpMem> velG0, Kokkos::View<const float*, CpMem> massG,
+    Kokkos::View<int*, CpMem> grpW, Kokkos::View<const int*, CpMem> bkPerm,
+    Kokkos::View<const int*, CpMem> offsDev, MlFusedMeta meta, unsigned* bar) {
   const int stride = gridDim.x * blockDim.x;
   const int tid = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned k = 0;
@@ -560,17 +567,14 @@ __global__ void demFusedCoarseCycleK(MlCoarseSweep f, Kokkos::View<const int*, C
 /// adaptive stop on-device (same residual, same tolerance — the per-iteration readback and the
 /// graph capture disappear). meta.coarseSweeps, the colour orderings and every per-item body
 /// are the launch path's, verbatim.
-__global__ void demFusedMlLoopK(PGSManifoldSweep fine, Kokkos::View<const int*, CpMem> vPerm,
-                                Kokkos::View<const int*, CpMem> vOffs, int vCols,
-                                MlCoarseSweep f, Kokkos::View<const int*, CpMem> parent,
-                                Kokkos::View<const float*, CpMem> invMass,
-                                Kokkos::View<float* [3], CpMem> velPred,
-                                Kokkos::View<float* [3], CpMem> velG0,
-                                Kokkos::View<const float*, CpMem> massG,
-                                Kokkos::View<int*, CpMem> grpW,
-                                Kokkos::View<const int*, CpMem> bkPerm,
-                                Kokkos::View<const int*, CpMem> offsDev, MlFusedMeta meta,
-                                int maxIters, float tol, float* resQS, unsigned* bar) {
+__global__ void demFusedMlLoopK(
+    PGSManifoldSweep fine, Kokkos::View<const int*, CpMem> vPerm,
+    Kokkos::View<const int*, CpMem> vOffs, int vCols, MlCoarseSweep f,
+    Kokkos::View<const int*, CpMem> parent, Kokkos::View<const float*, CpMem> invMass,
+    Kokkos::View<float* [3], CpMem> velPred, Kokkos::View<float* [3], CpMem> velG0,
+    Kokkos::View<const float*, CpMem> massG, Kokkos::View<int*, CpMem> grpW,
+    Kokkos::View<const int*, CpMem> bkPerm, Kokkos::View<const int*, CpMem> offsDev,
+    MlFusedMeta meta, int maxIters, float tol, float* resQS, unsigned* bar) {
   const int stride = gridDim.x * blockDim.x;
   const int tid = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned k = 0;
@@ -608,8 +612,8 @@ inline bool demLaunchFusedMlLoop(
     Kokkos::View<float, CpMem> maxApproachQS, Kokkos::View<const float*, CpMem> restRel,
     MlScratch& S, Kokkos::View<const int*, CpMem> bkPerm, const MlFusedCtx& ml, int maxIters,
     float tol) {
-  const int maxGrid = std::min(demFusedMaxGrid(demFusedMlLoopK),
-                               (static_cast<int>(ml.bar.extent(0)) - 1) / 8);
+  const int maxGrid =
+      std::min(demFusedMaxGrid(demFusedMlLoopK), (static_cast<int>(ml.bar.extent(0)) - 1) / 8);
   if (maxGrid <= 0 || vCols <= 0 || velCtx.maxBucket <= 0 || ml.maxWork <= 0)
     return false;
   const MlCoarseSweep f{manifolds,
@@ -621,8 +625,7 @@ inline bool demLaunchFusedMlLoop(
                         maxApproachQS,
                         restRel};
   const int work = std::max(velCtx.maxBucket, ml.maxWork);
-  const int want = std::min((work + kFusedBlock - 1) / kFusedBlock,
-                            std::max(1, demFusedGridCap()));
+  const int want = std::min((work + kFusedBlock - 1) / kFusedBlock, std::max(1, demFusedGridCap()));
   const int grid = want < maxGrid ? want : maxGrid;
   cudaStream_t str = space.cuda_stream();
   cudaMemsetAsync(ml.bar.data(), 0, (static_cast<std::size_t>(grid) * 8 + 1) * sizeof(unsigned),
@@ -689,17 +692,14 @@ inline MlFusedCtx demMakeMlFusedCtx(CpExec& space, const ContactHierarchy& H,
   return ctx;
 }
 
-inline void multilevelCoarseCycleKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                        int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
-                                        Kokkos::View<const float*, CpMem> invMass,
-                                        Kokkos::View<float* [3], CpMem> velPred,
-                                        Kokkos::View<float*, CpMem> lambdaAcc,
-                                        Kokkos::View<float, CpMem> maxApproach, int numReal,
-                                        const ContactHierarchy& H, MlScratch& S, int coarseSweeps,
-                                        Kokkos::View<const float*, CpMem> restRel = {},
-                                        const std::vector<std::vector<int>>* bkOffs = nullptr,
-                                        Kokkos::View<const int*, CpMem> bkPerm = {},
-                                        const MlFusedCtx* fused = nullptr) {
+inline void multilevelCoarseCycleKokkos(
+    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+    Kokkos::View<const int*, CpMem> realIdx, Kokkos::View<const float*, CpMem> invMass,
+    Kokkos::View<float* [3], CpMem> velPred, Kokkos::View<float*, CpMem> lambdaAcc,
+    Kokkos::View<float, CpMem> maxApproach, int numReal, const ContactHierarchy& H, MlScratch& S,
+    int coarseSweeps, Kokkos::View<const float*, CpMem> restRel = {},
+    const std::vector<std::vector<int>>* bkOffs = nullptr,
+    Kokkos::View<const int*, CpMem> bkPerm = {}, const MlFusedCtx* fused = nullptr) {
   CpExec space;
 #ifdef KOKKOS_ENABLE_CUDA
   if (fused && fused->maxWork > 0) {

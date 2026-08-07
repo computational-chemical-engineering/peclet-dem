@@ -278,11 +278,13 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                 Kokkos::View<const int*, CpMem> realIdx, int numReal,
                                 Kokkos::View<int*, CpMem> mColor,
                                 Kokkos::View<long long*, CpMem> bodyWinner,
-                                Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover) {
+                                Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover,
+                                Kokkos::View<const unsigned char*, CpMem> sleepMask = {}) {
   leftover = 0;
   CpExec space;
   if (numManifolds <= 0 || numReal <= 0)
     return 0;
+  const bool sleepOn = sleepMask.extent(0) > 0;
   Kokkos::parallel_for(
       "peclet::dem::color_init_bodies", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
       KOKKOS_LAMBDA(int i) { bodyMask(i) = 0; });
@@ -291,8 +293,8 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
       "peclet::dem::color_init_manifolds", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
       KOKKOS_LAMBDA(int idx) {
         const ManifoldC m = manifolds(idx);
-        if (m.num_points <= 0) {
-          mColor(idx) = -2;
+        if (m.num_points <= 0 || (sleepOn && sleepMask(idx))) {
+          mColor(idx) = -2;  // inactive or a frozen (both-asleep) island manifold
           return;
         }
         if (m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB)) {
@@ -390,15 +392,13 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
 /// bypasses the carry entirely (fresh substep / colour-count-creep recompaction) — identical output
 /// to colorManifoldsKokkos. Single-GPU only: under MPI migration a carried colour can cross into a
 /// neighbourhood it never arbitrated against, so the distributed path keeps the full recolour.
-inline int colorManifoldsIncrementalKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                           int numManifolds,
-                                           Kokkos::View<const int*, CpMem> realIdx, int numReal,
-                                           Kokkos::View<const unsigned long long*, CpMem> prevKeys,
-                                           Kokkos::View<const int*, CpMem> prevColor, int prevCount,
-                                           Kokkos::View<int*, CpMem> mColor,
-                                           Kokkos::View<long long*, CpMem> bodyWinner,
-                                           Kokkos::View<std::uint64_t*, CpMem> bodyMask,
-                                           int& leftover, bool forceFull) {
+inline int colorManifoldsIncrementalKokkos(
+    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+    Kokkos::View<const int*, CpMem> realIdx, int numReal,
+    Kokkos::View<const unsigned long long*, CpMem> prevKeys,
+    Kokkos::View<const int*, CpMem> prevColor, int prevCount, Kokkos::View<int*, CpMem> mColor,
+    Kokkos::View<long long*, CpMem> bodyWinner, Kokkos::View<std::uint64_t*, CpMem> bodyMask,
+    int& leftover, bool forceFull, Kokkos::View<const unsigned char*, CpMem> sleepMask = {}) {
   leftover = 0;
   CpExec space;
   if (numManifolds <= 0 || numReal <= 0)
@@ -407,14 +407,15 @@ inline int colorManifoldsIncrementalKokkos(Kokkos::View<const ManifoldC*, CpMem>
       "peclet::dem::icolor_init_bodies", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
       KOKKOS_LAMBDA(int i) { bodyMask(i) = 0; });
   const bool full = forceFull || prevCount <= 0;
-  // Seed each manifold's colour: -2 inactive/dedup, else the carried colour (matched by pair key)
-  // or -1 (new / full recolour).
+  const bool sleepOn = sleepMask.extent(0) > 0;
+  // Seed each manifold's colour: -2 inactive/dedup/both-asleep, else the carried colour (matched by
+  // pair key) or -1 (new / full recolour).
   Kokkos::parallel_for(
       "peclet::dem::icolor_seed", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
       KOKKOS_LAMBDA(int idx) {
         const ManifoldC m = manifolds(idx);
-        if (m.num_points <= 0) {
-          mColor(idx) = -2;
+        if (m.num_points <= 0 || (sleepOn && sleepMask(idx))) {
+          mColor(idx) = -2;  // inactive or a frozen (both-asleep) island manifold
           return;
         }
         if (m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB)) {

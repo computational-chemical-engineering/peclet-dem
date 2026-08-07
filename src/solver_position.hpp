@@ -154,17 +154,19 @@ inline void solvePositionKokkos(
 inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
                                int numBodies, Kokkos::View<int*, CpMem> cColor,
                                Kokkos::View<long long*, CpMem> bodyWinner,
-                               Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover) {
+                               Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover,
+                               Kokkos::View<const unsigned char*, CpMem> sleepMask = {}) {
   leftover = 0;
   CpExec space;
   if (numContacts <= 0 || numBodies <= 0)
     return 0;
+  const bool sleepOn = sleepMask.extent(0) > 0;
   Kokkos::parallel_for(
       "peclet::dem::pcolor_init_bodies", Kokkos::RangePolicy<CpExec>(space, 0, numBodies),
       KOKKOS_LAMBDA(int i) { bodyMask(i) = 0; });
   Kokkos::parallel_for(
       "peclet::dem::pcolor_init_contacts", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-      KOKKOS_LAMBDA(int idx) { cColor(idx) = -1; });
+      KOKKOS_LAMBDA(int idx) { cColor(idx) = (sleepOn && sleepMask(idx)) ? -2 : -1; });
 
   int remaining = 1, prevRemaining = -1;
   const int maxRounds = numBodies + 2;
@@ -253,19 +255,26 @@ inline int colorContactsIncrementalKokkos(
     Kokkos::View<const unsigned long long*, CpMem> prevKeys,
     Kokkos::View<const int*, CpMem> prevColor, int prevCount, Kokkos::View<int*, CpMem> cColor,
     Kokkos::View<unsigned long long*, CpMem> keysOut, Kokkos::View<long long*, CpMem> bodyWinner,
-    Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover, bool forceFull) {
+    Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover, bool forceFull,
+    Kokkos::View<const unsigned char*, CpMem> sleepMask = {}) {
   leftover = 0;
   CpExec space;
   if (numContacts <= 0 || numBodies <= 0)
     return 0;
   const bool full0 = forceFull || prevCount <= 0;
-  // Key every contact and seed its colour from the carried ledger (or -1 on a full recolour).
+  const bool sleepOn = sleepMask.extent(0) > 0;
+  // Key every contact and seed its colour from the carried ledger (or -1 on a full recolour, or
+  // -2 for a frozen both-asleep contact — excluded from the sweeps like an inactive one).
   Kokkos::parallel_for(
       "peclet::dem::pcolor_i_seed", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
       KOKKOS_LAMBDA(int idx) {
         const ContactC c = contacts(idx);
         const unsigned long long k = pairKey(c);
         keysOut(idx) = k;
+        if (sleepOn && sleepMask(idx)) {
+          cColor(idx) = -2;
+          return;
+        }
         int col = -1;
         if (!full0) {
           int lo = 0, hi = prevCount;

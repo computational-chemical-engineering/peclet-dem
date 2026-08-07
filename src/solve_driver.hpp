@@ -192,6 +192,18 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     const char* e = std::getenv("PECLET_DEM_NO_INCR_COLOR");
     return e && std::atoi(e) != 0;
   }();
+  // Island sleeping (single-GPU statics, gravity on, no external drag): both-asleep manifolds /
+  // contacts are excluded from the colouring / sweeps / multilevel hierarchy (their masks were
+  // filled by the caller). Empty views leave every colouring bit-identical to the sleeping-off
+  // path. The caller has already swapped P.invMass to the effective (sleeper -> 0) inverse mass.
+  const bool sleepOn =
+      P.sleepingEnabled && !Hooks::distributed && usePersistPre && !P.extForceActive;
+  const Kokkos::View<const unsigned char*, CpMem> mSleep =
+      sleepOn ? Kokkos::View<const unsigned char*, CpMem>(P.manifoldSleep)
+              : Kokkos::View<const unsigned char*, CpMem>();
+  const Kokkos::View<const unsigned char*, CpMem> cSleep =
+      sleepOn ? Kokkos::View<const unsigned char*, CpMem>(P.contactSleep)
+              : Kokkos::View<const unsigned char*, CpMem>();
   const bool legacyFriction = friction && !(usePersistPre && P.velocityUseGS);
   if (legacyFriction)
     computePlaneLoadKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
@@ -215,20 +227,20 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           P.manifolds, nm, P.realIndices, nBodies,
           Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
           Kokkos::View<const int*, CpMem>(P.prevManifoldColor), P.prevPairCount, P.manifoldColor,
-          P.bodyWinner, P.bodyColorMask, velLeftover, /*forceFull*/ didFull);
+          P.bodyWinner, P.bodyColorMask, velLeftover, /*forceFull*/ didFull, mSleep);
       if (!didFull && P.velLastFullColors > 0 && numColors > (P.velLastFullColors * 13) / 10) {
         numColors = colorManifoldsIncrementalKokkos(
             P.manifolds, nm, P.realIndices, nBodies,
             Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
             Kokkos::View<const int*, CpMem>(P.prevManifoldColor), P.prevPairCount, P.manifoldColor,
-            P.bodyWinner, P.bodyColorMask, velLeftover, /*forceFull*/ true);
+            P.bodyWinner, P.bodyColorMask, velLeftover, /*forceFull*/ true, mSleep);
         didFull = true;
       }
       if (didFull)
         P.velLastFullColors = numColors;
     } else {
       numColors = colorManifoldsKokkos(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
-                                       P.bodyWinner, P.bodyColorMask, velLeftover);
+                                       P.bodyWinner, P.bodyColorMask, velLeftover, mSleep);
     }
   }
   // Dense colour buckets for the PGS sweeps (bit-identical: colour classes are body-disjoint).
@@ -543,7 +555,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
             Kokkos::View<const float*, CpMem>(P.vn0), Kokkos::View<const float* [3], CpMem>(P.vt0),
             Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent), P.posPred, gHat,
             Kokkos::View<const float*, CpMem>(P.invMass), qsThr, mlGates, nBodies, S, P.bodyWinner,
-            P.bodyColorMask);
+            P.bodyColorMask, /*excludeImmovable*/ sleepOn);
         // Dense per-(level, colour) buckets, built once per hierarchy (see solver_multilevel.hpp).
         std::vector<std::vector<int>> mlOffs;
         if (H.numLevels > 0) {
@@ -769,7 +781,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
           Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount,
           P.contactColor, P.contactKeys, P.bodyWinner, P.bodyColorMask, posLeftover,
-          /*forceFull*/ posDidFull);
+          /*forceFull*/ posDidFull, cSleep);
       if (!posDidFull && P.posLastFullColors > 0 &&
           numPosColors > (P.posLastFullColors * 13) / 10) {
         numPosColors = colorContactsIncrementalKokkos(
@@ -777,7 +789,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
             Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
             Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount,
             P.contactColor, P.contactKeys, P.bodyWinner, P.bodyColorMask, posLeftover,
-            /*forceFull*/ true);
+            /*forceFull*/ true, cSleep);
         posDidFull = true;
       }
       if (posDidFull)
@@ -789,7 +801,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       P.posPrevContactCount = nc;
     } else {
       numPosColors = colorContactsKokkos(P.contacts, nc, P.numParticles, P.contactColor,
-                                         P.bodyWinner, P.bodyColorMask, posLeftover);
+                                         P.bodyWinner, P.bodyColorMask, posLeftover, cSleep);
     }
   }
   // Overlap resolved once the deepest penetration falls below ~0.01% of a particle radius.

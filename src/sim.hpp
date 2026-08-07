@@ -30,6 +30,7 @@
 #include "peclet/core/common/view.hpp"  // peclet::core::toVector — single-copy device View -> host std::vector (S2a)
 #include "periodicity.hpp"
 #include "shapes_portable.hpp"
+#include "sleeping.hpp"            // island sleeping / freezing (single-GPU statics)
 #include "solve_driver.hpp"        // demSolveContacts + SoloSolveHooks + readInt/readFloat
 #include "solve_driver_force.hpp"  // demStepForce + HertzMindlinLaw + demStepHertz
 #include "solver_friction.hpp"
@@ -67,6 +68,18 @@ inline void demStep(Particles& P) {
   predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
                         P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
                         P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce);
+
+  // Island sleeping (single-GPU statics, opt-in, gravity on, no external drag): freeze the
+  // currently-asleep bodies so gravity/prediction do not move them; the wake pass + both-asleep
+  // exclusion + effective-inverse-mass swap happen after the narrow phase (below). See
+  // sleeping.hpp.
+  const float gMag =
+      std::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y + P.gravity.z * P.gravity.z);
+  const bool sleepStep = P.sleepingEnabled && gMag > 0.0f && !P.extForceActive;
+  const float sleepVRest = 2.0f * P.dt * gMag;
+  if (sleepStep)
+    freezeAsleepKokkos(P.numReal, P.asleep, P.pos, P.quat, P.posPred, P.quatPred, P.velPred,
+                       P.angVelPred);
 
   {
     auto ri = P.realIndices;
@@ -119,11 +132,39 @@ inline void demStep(Particles& P) {
   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot);
   const int nm = readInt(P.manifoldCount);
 
+  // Island sleeping: wake any sleeper actually disturbed (fast approaching neighbour, moving wall,
+  // or a change in its contact set), then flag the frozen (both-asleep) manifolds/contacts and give
+  // every sleeper effective inverse mass 0 for the solve. Swapping P.invMass -> P.invMassEff makes
+  // a sleeper immovable everywhere in the driver (both-asleep constraints become no-ops; the
+  // exclusion just skips their now-wasted colouring/sweeps/hierarchy work), so the solve is
+  // unchanged for awake bodies and the ledger still carries the frozen force network.
+  Vf savedInvMass = P.invMass;
+  if (sleepStep) {
+    wakeDisturbedKokkos(P.manifolds, nm, P.realIndices, P.velPred, P.wakeScale * sleepVRest,
+                        P.asleep, P.sleepCounter, P.sleepMovingWall, P.sleepCurCount, P.numReal);
+    wakeContactChangeKokkos(P.numReal, P.sleepCurCount, P.sleepPrevCount, P.sleepMovingWall,
+                            P.asleep, P.sleepCounter, P.sleepWakeLostContact);
+    computeManifoldSleepKokkos(P.manifolds, nm, P.realIndices, P.asleep, P.manifoldSleep);
+    computeContactSleepKokkos(P.contacts, nc, P.realIndices, P.asleep, P.contactSleep);
+    buildInvMassEffKokkos(P.numParticles, P.asleep, P.realIndices, P.invMass, P.invMassEff);
+    P.invMass = P.invMassEff;
+  }
+
   // Full modern velocity + position solve (warm-started colored PGS, gravity statics /
   // stabilization, friction, colored-GS overlap projection) — shared with the distributed step.
   demSolveContacts(P, nc, nm, P.numReal, P.realIndices, SoloSolveHooks{});
 
+  if (sleepStep)
+    P.invMass = savedInvMass;  // restore the real inverse mass for the commit / next step
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
+
+  // Sleep detection: a grounded body whose motion stayed below the resting floor for K substeps
+  // goes to sleep (velocity zeroed). Runs on the committed velocities + the solve's grounded
+  // levels.
+  if (sleepStep)
+    updateSleepKokkos(P.numReal, P.vel, P.angVel, P.rad, P.groundedLevel, P.sleepMovingWall,
+                      P.asleep, P.sleepCounter, P.sleepScale * sleepVRest, P.sleepK, P.vel,
+                      P.angVel);
 
   // Berendsen thermostat at the end of the step (CUDA Simulation::step), tau>0 enables.
   if (P.thermostatTau > 0.0f && P.dt > 0.0f)
@@ -368,6 +409,18 @@ class Simulation {
     // restitution model without touching driver scripts.
     if (const char* e = std::getenv("PECLET_DEM_REST_MODEL"); e && *e)
       setRestitutionModel(e);
+    // Island sleeping A/B env (default OFF): PECLET_DEM_SLEEP=1 enables, =0 disables; the scales /
+    // K / wake threshold have their own overrides for the tuning battery.
+    if (const char* e = std::getenv("PECLET_DEM_SLEEP"); e && *e)
+      P_.sleepingEnabled = std::atoi(e) != 0;
+    if (const char* e = std::getenv("PECLET_DEM_SLEEP_SCALE"); e && *e)
+      P_.sleepScale = std::atof(e);
+    if (const char* e = std::getenv("PECLET_DEM_SLEEP_K"); e && *e)
+      P_.sleepK = std::atoi(e);
+    if (const char* e = std::getenv("PECLET_DEM_WAKE_SCALE"); e && *e)
+      P_.wakeScale = std::atof(e);
+    if (const char* e = std::getenv("PECLET_DEM_SLEEP_WAKELOST"); e && *e)
+      P_.sleepWakeLostContact = std::atoi(e) != 0;
   }
   ~Simulation() {
     auto& r = registry();
@@ -616,6 +669,34 @@ class Simulation {
       P_.restitutionModel = 1;
     else
       throw std::invalid_argument("set_restitution_model: expected 'newton' or 'poisson'");
+  }
+  /// Island sleeping / freezing (single-GPU statics, default OFF). A REAL body whose linear AND
+  /// angular motion stays below `scale` x the resting floor (2 dt |g|) for K substeps while
+  /// grounded is put to sleep: velocity zeroed, integration skipped, and a manifold whose BOTH
+  /// endpoints are asleep (a static wall counts) is excluded from the colouring / sweeps /
+  /// multilevel hierarchy — so a settled bed collapses to the broad/narrow-phase floor. A sleeper
+  /// is immovable in the solve (effective inverse mass 0), so awake–asleep contacts stay correct;
+  /// it wakes only when disturbed (fast approaching neighbour, contact-set change, moving wall).
+  /// Requires gravity on and no external (CFD-DEM drag) force; inert under MPI. PECLET_DEM_SLEEP
+  /// overrides at startup.
+  void setSleeping(bool enabled, float threshold_scale = 2.0f, int consecutive = 64,
+                   float wake_scale = 40.0f) {
+    P_.sleepingEnabled = enabled;
+    if (threshold_scale > 0.0f)
+      P_.sleepScale = threshold_scale;
+    if (consecutive > 0)
+      P_.sleepK = consecutive;
+    if (wake_scale > 0.0f)
+      P_.wakeScale = wake_scale;  // hysteresis: wake only well above the residual settling jitter
+  }
+  /// Number of currently-sleeping real bodies (diagnostics / tests).
+  int numAsleep() {
+    int n = 0;
+    auto a = P_.asleep;
+    Kokkos::parallel_reduce(
+        "peclet::dem::count_asleep", Kokkos::RangePolicy<CpExec>(0, P_.numReal),
+        KOKKOS_LAMBDA(int i, int& acc) { acc += a(i) ? 1 : 0; }, n);
+    return n;
   }
   /// Per-material Young's modulus + Poisson ratio for the Hertz-Mindlin engine (material ids as
   /// in setMaterialIds; without ids every particle is material 0).
@@ -1232,7 +1313,20 @@ class Simulation {
       P_.levelKey = Kokkos::View<int*, CpMem>("levelKey", want);
       P_.levelPerm = Kokkos::View<int*, CpMem>("levelPerm", want);
       P_.mlColorPacked = Kokkos::View<long long*, CpMem>("mlColorPacked", want);
-      P_.prevPairCount = 0;  // the cleared prevPairKeys must not be gathered against
+      // Incremental-colouring ledgers + fused position permutation + sleeping masks are all
+      // maxContacts-sized and the solve indexes them up to the live contact/manifold count too —
+      // they MUST grow with the buffer or nc > extent is an out-of-bounds write (NaN / heap
+      // corruption in dense multi-contact scenes such as the statics column/pour).
+      P_.prevManifoldColor = Kokkos::View<int*, CpMem>("prevManifoldColor", want);
+      P_.contactKeys = Kokkos::View<unsigned long long*, CpMem>("contactKeys", want);
+      P_.prevContactKeys = Kokkos::View<unsigned long long*, CpMem>("prevContactKeys", want);
+      P_.prevContactColor = Kokkos::View<int*, CpMem>("prevContactColor", want);
+      P_.posCommitPerm = Kokkos::View<int*, CpMem>("posCommitPerm", want);
+      P_.posPerm = Kokkos::View<int*, CpMem>("posPerm", want);
+      P_.manifoldSleep = Kokkos::View<unsigned char*, CpMem>("manifoldSleep", want);
+      P_.contactSleep = Kokkos::View<unsigned char*, CpMem>("contactSleep", want);
+      P_.posPrevContactCount = 0;  // the cleared position ledger must not be gathered against
+      P_.prevPairCount = 0;        // the cleared prevPairKeys must not be gathered against
     }
   }
 

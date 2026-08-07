@@ -217,6 +217,30 @@ struct Particles {
   void* graphCache[4] = {nullptr, nullptr, nullptr, nullptr};
   Kokkos::View<long long*, CpMem> bodyWinner;
   Kokkos::View<std::uint64_t*, CpMem> bodyColorMask;  // per-body committed-colour bitmask
+  // --- island sleeping / freezing (single-GPU statics path; see sleeping.hpp) ---
+  // Per-REAL-body asleep flag + low-motion counter; effective inverse mass for the solve (asleep
+  // bodies + their ghosts -> 0, swapped in for the solve so a sleeper is immovable); the
+  // moving-wall "never sleep" flag + this-substep live contact count (contact-set-change wake); the
+  // stored count. Per-manifold / per-contact "both endpoints asleep" masks exclude a frozen island
+  // from the colouring / sweeps / multilevel hierarchy (the ledger still carries their force
+  // network).
+  Kokkos::View<unsigned char*, CpMem> asleep;
+  Kokkos::View<unsigned char*, CpMem> sleepCounter;
+  Kokkos::View<unsigned char*, CpMem> sleepMovingWall;
+  Kokkos::View<int*, CpMem> sleepCurCount;
+  Kokkos::View<int*, CpMem> sleepPrevCount;
+  Kokkos::View<float*, CpMem> invMassEff;
+  Kokkos::View<unsigned char*, CpMem> manifoldSleep;
+  Kokkos::View<unsigned char*, CpMem> contactSleep;
+  bool sleepingEnabled = false;  // set_sleeping / PECLET_DEM_SLEEP; default OFF
+  float sleepScale = 2.0f;       // cSleep: sleep threshold = sleepScale * vRest
+  float wakeScale = 40.0f;       // cWake: wake if an awake neighbour exceeds wakeScale * vRest
+                                 // (hysteresis: >> the residual settling jitter so a frozen bed
+                                 // stays frozen; only a genuine impact/disturbance wakes it)
+  int sleepK = 64;               // substeps below threshold before sleeping (high enough that an
+                    // impact's unloading/rebound completes before the network re-sleeps)
+  bool sleepWakeLostContact = false;  // rule (b): wake on a LOST contact (support removed)
+  bool extForceActive = false;        // CFD-DEM drag present -> sleeping disabled this step
 
   // --- atomic counters / scalars (rank-0 Views) ---
   Kokkos::View<int, CpMem> pairCount, contactCount, manifoldCount, topGhost;
@@ -318,6 +342,14 @@ struct Particles {
     fusedBar = Kokkos::View<unsigned*, CpMem>("fusedBar", 32769);  // 4096 blocks x 8 + 1
     bodyWinner = Kokkos::View<long long*, CpMem>("bodyWinner", cap);
     bodyColorMask = Kokkos::View<std::uint64_t*, CpMem>("bodyColorMask", cap);
+    asleep = Kokkos::View<unsigned char*, CpMem>("asleep", cap);
+    sleepCounter = Kokkos::View<unsigned char*, CpMem>("sleepCounter", cap);
+    sleepMovingWall = Kokkos::View<unsigned char*, CpMem>("sleepMovingWall", cap);
+    sleepCurCount = Kokkos::View<int*, CpMem>("sleepCurCount", cap);
+    sleepPrevCount = Kokkos::View<int*, CpMem>("sleepPrevCount", cap);
+    invMassEff = Kokkos::View<float*, CpMem>("invMassEff", cap);
+    manifoldSleep = Kokkos::View<unsigned char*, CpMem>("manifoldSleep", maxContacts);
+    contactSleep = Kokkos::View<unsigned char*, CpMem>("contactSleep", maxContacts);
     groundedLevel = Kokkos::View<unsigned char*, CpMem>("groundedLevel", cap);
     materialId = Kokkos::View<unsigned char*, CpMem>("materialId", cap);
     lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", maxContacts);
