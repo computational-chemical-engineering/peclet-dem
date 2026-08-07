@@ -241,6 +241,17 @@ struct Particles {
                     // impact's unloading/rebound completes before the network re-sleeps)
   bool sleepWakeLostContact = false;  // rule (b): wake on a LOST contact (support removed)
   bool extForceActive = false;        // CFD-DEM drag present -> sleeping disabled this step
+  // --- Verlet-cached broadphase for the impulse step (single-GPU, non-periodic; see demStep) ---
+  // The impulse broadphase rebuilds the ArborX pair list every step; between rebuilds no new pair
+  // can appear if no particle has moved more than skin/2 (with the list built at margin + skin).
+  // impRefPos = posPred at the last build; impNumPairs = the cached candidate count (-1 = invalid,
+  // forces a build). Periodic ghosts are regenerated per step (unstable slot ids), so this is used
+  // only when the domain is non-periodic. Off by default (rebuild every step).
+  Kokkos::View<float* [3], CpMem> impRefPos;
+  Kokkos::View<float, CpMem> impDispMax;
+  int impNumPairs = -1;
+  float impRefMaxRad = 0.0f;    // max effective radius at the last build (growth bound)
+  float verletSkinFrac = 0.0f;  // PECLET_DEM_VERLET_SKIN; 0 = off
 
   // --- atomic counters / scalars (rank-0 Views) ---
   Kokkos::View<int, CpMem> pairCount, contactCount, manifoldCount, topGhost;
@@ -350,6 +361,8 @@ struct Particles {
     invMassEff = Kokkos::View<float*, CpMem>("invMassEff", cap);
     manifoldSleep = Kokkos::View<unsigned char*, CpMem>("manifoldSleep", maxContacts);
     contactSleep = Kokkos::View<unsigned char*, CpMem>("contactSleep", maxContacts);
+    impRefPos = Kokkos::View<float* [3], CpMem>("impRefPos", cap);
+    impDispMax = Kokkos::View<float, CpMem>("impDispMax");
     groundedLevel = Kokkos::View<unsigned char*, CpMem>("groundedLevel", cap);
     materialId = Kokkos::View<unsigned char*, CpMem>("materialId", cap);
     lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", maxContacts);

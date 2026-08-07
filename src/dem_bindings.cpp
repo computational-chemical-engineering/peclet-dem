@@ -382,6 +382,10 @@ NB_MODULE(_dem, m) {
           "motion stays below threshold_scale x the resting floor for `consecutive` substeps; wake "
           "only above wake_scale x that floor (hysteresis vs residual jitter).")
       .def("num_asleep", &Simulation::numAsleep, "Number of currently-sleeping real bodies.")
+      .def("set_verlet_skin", &Simulation::setVerletSkin, nb::arg("skin_frac"),
+           "Enable the Verlet-cached impulse broadphase (single-GPU, non-periodic, default OFF): "
+           "skip the ArborX rebuild while nothing moved more than skin/2 (skin = skin_frac x max "
+           "grain radius).")
       .def("debug_coloring_conflicts", &Simulation::debugColoringConflicts,
            "TEST-ONLY: (velocity, position) colouring-invariant violations in the last substep; "
            "a valid colouring returns (0, 0).")

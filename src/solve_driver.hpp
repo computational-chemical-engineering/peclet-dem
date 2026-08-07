@@ -99,6 +99,49 @@ inline int findCollisionsGrow(Particles& P, float margin) {
   return std::min(np, static_cast<int>(P.pairs.extent(0)));
 }
 
+/// Verlet-cached impulse broadphase (single-GPU, non-periodic). Reuse the last ArborX candidate
+/// list while no particle's predicted position has moved more than skin/2 since the build; the list
+/// is built at `margin + skin`, so every within-`margin` pair is still present between rebuilds — a
+/// SUPERSET, so the narrowphase yields identical contacts (order differs -> run-scatter, like the
+/// colouring/fused paths). Rebuilds on an invalid cache, growth beyond the skin, or the
+/// displacement bound. Composes with sleeping: a frozen bed has zero displacement, so it never
+/// rebuilds. The caller guarantees non-periodic (no per-step ghost-slot churn) and verletSkinFrac >
+/// 0.
+inline int findCollisionsVerlet(Particles& P, float margin, float maxRad) {
+  const float skin = P.verletSkinFrac * maxRad;
+  bool rebuild = (P.impNumPairs < 0);
+  if (!rebuild) {
+    float md2 = 0.0f;
+    auto pp = P.posPred;
+    auto rp = P.impRefPos;
+    Kokkos::parallel_reduce(
+        "peclet::dem::verlet_disp", Kokkos::RangePolicy<CpExec>(0, P.numReal),
+        KOKKOS_LAMBDA(int i, float& acc) {
+          const float dx = pp(i, 0) - rp(i, 0), dy = pp(i, 1) - rp(i, 1), dz = pp(i, 2) - rp(i, 2);
+          const float d = dx * dx + dy * dy + dz * dz;
+          if (d > acc)
+            acc = d;
+        },
+        Kokkos::Max<float>(md2));
+    Kokkos::fence();
+    // Growth grows radii between rebuilds; a pair can close by ~2x the radius growth with no CoM
+    // motion, so fold it into the displacement budget.
+    const float grow = std::max(0.0f, maxRad - P.impRefMaxRad);
+    if (std::sqrt(md2) + 2.0f * grow > 0.5f * skin)
+      rebuild = true;
+  }
+  if (rebuild) {
+    const int np = findCollisionsGrow(P, margin + skin);  // candidate list at margin + skin
+    const auto rng = Kokkos::pair<int, int>(0, P.numReal);
+    Kokkos::deep_copy(Kokkos::subview(P.impRefPos, rng, Kokkos::ALL),
+                      Kokkos::subview(P.posPred, rng, Kokkos::ALL));
+    P.impNumPairs = np;
+    P.impRefMaxRad = maxRad;
+    return np;
+  }
+  return P.impNumPairs;  // reuse the cached candidate list (P.pairs is unchanged)
+}
+
 #ifdef KOKKOS_ENABLE_CUDA
 /// Capture-once / replay-N for the iteration loops. Each velocity / stabilization / position
 /// iteration re-submits an IDENTICAL sequence of tiny kernels (colour sweeps, coarse cycles) —

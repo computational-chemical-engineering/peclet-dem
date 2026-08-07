@@ -113,7 +113,12 @@ inline void demStep(Particles& P) {
   // the CUDA solver — the position solve then corrects posPred against these contacts.
   // findCollisionsGrow fences + reads the pair count back to host and guarantees np ≤ P.pairs
   // extent (growing the buffer on overflow) so the narrowphase never reads P.pairs out of bounds.
-  const int np = findCollisionsGrow(P, margin);
+  // Verlet-cached broadphase (opt-in, non-periodic only: periodic ghosts are regenerated per step
+  // with unstable slot ids, which cached pairs would reference). Skips the ArborX rebuild while
+  // nothing moved more than skin/2 — composes with sleeping (a frozen bed never rebuilds).
+  const bool verletOK = P.verletSkinFrac > 0.0f && !P.domain.periodic_x && !P.domain.periodic_y &&
+                        !P.domain.periodic_z && P.numParticles == P.numReal;
+  const int np = verletOK ? findCollisionsVerlet(P, margin, maxRad) : findCollisionsGrow(P, margin);
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
@@ -421,6 +426,10 @@ class Simulation {
       P_.wakeScale = std::atof(e);
     if (const char* e = std::getenv("PECLET_DEM_SLEEP_WAKELOST"); e && *e)
       P_.sleepWakeLostContact = std::atoi(e) != 0;
+    // Verlet-cached impulse broadphase (default OFF): PECLET_DEM_VERLET_SKIN = skin fraction of the
+    // max grain radius (e.g. 0.3). 0 = rebuild every step.
+    if (const char* e = std::getenv("PECLET_DEM_VERLET_SKIN"); e && *e)
+      P_.verletSkinFrac = std::atof(e);
   }
   ~Simulation() {
     auto& r = registry();
@@ -688,6 +697,15 @@ class Simulation {
       P_.sleepK = consecutive;
     if (wake_scale > 0.0f)
       P_.wakeScale = wake_scale;  // hysteresis: wake only well above the residual settling jitter
+  }
+  /// Verlet-cached impulse broadphase (single-GPU, non-periodic; default OFF). skin_frac is the
+  /// broadphase-skin fraction of the max grain radius: the ArborX rebuild is skipped while no
+  /// particle has moved more than skin/2, so between rebuilds the candidate list is a superset and
+  /// the narrowphase yields identical contacts. Composes with sleeping (a frozen bed never
+  /// rebuilds).
+  void setVerletSkin(float skin_frac) {
+    P_.verletSkinFrac = skin_frac;
+    P_.impNumPairs = -1;  // invalidate the cache
   }
   /// Number of currently-sleeping real bodies (diagnostics / tests).
   int numAsleep() {
