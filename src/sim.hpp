@@ -415,7 +415,7 @@ class Simulation {
     // restitution model without touching driver scripts.
     if (const char* e = std::getenv("PECLET_DEM_REST_MODEL"); e && *e)
       setRestitutionModel(e);
-    // Island sleeping A/B env (default OFF): PECLET_DEM_SLEEP=1 enables, =0 disables; the scales /
+    // Island sleeping A/B env (default ON): PECLET_DEM_SLEEP=1 enables, =0 disables; the scales /
     // K / wake threshold have their own overrides for the tuning battery.
     if (const char* e = std::getenv("PECLET_DEM_SLEEP"); e && *e)
       P_.sleepingEnabled = std::atoi(e) != 0;
@@ -682,7 +682,8 @@ class Simulation {
     else
       throw std::invalid_argument("set_restitution_model: expected 'newton' or 'poisson'");
   }
-  /// Island sleeping / freezing (single-GPU statics, default OFF). A REAL body whose linear AND
+  /// Island sleeping / freezing (single-GPU statics, default ON; PECLET_DEM_SLEEP=0 disables). A
+  /// REAL body whose linear AND
   /// angular motion stays below `scale` x the resting floor (2 dt |g|) for K substeps while
   /// grounded is put to sleep: velocity zeroed, integration skipped, and a manifold whose BOTH
   /// endpoints are asleep (a static wall counts) is excluded from the colouring / sweeps /

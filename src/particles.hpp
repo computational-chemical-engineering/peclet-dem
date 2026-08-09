@@ -232,7 +232,7 @@ struct Particles {
   Kokkos::View<float*, CpMem> invMassEff;
   Kokkos::View<unsigned char*, CpMem> manifoldSleep;
   Kokkos::View<unsigned char*, CpMem> contactSleep;
-  bool sleepingEnabled = false;  // set_sleeping / PECLET_DEM_SLEEP; default OFF
+  bool sleepingEnabled = true;  // set_sleeping / PECLET_DEM_SLEEP=0 disables; default ON
   float sleepScale = 2.0f;       // cSleep: sleep threshold = sleepScale * vRest
   float wakeScale = 40.0f;       // cWake: wake if an awake neighbour exceeds wakeScale * vRest
                                  // (hysteresis: >> the residual settling jitter so a frozen bed
