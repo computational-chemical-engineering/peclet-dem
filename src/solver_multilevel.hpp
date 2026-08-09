@@ -133,11 +133,15 @@ inline ContactHierarchy buildContactHierarchyKokkos(
     Kokkos::View<const float* [3], CpMem> posPred, F3 gHat,
     Kokkos::View<const float*, CpMem> invMass, float qsThr, int gateMask, int numReal, MlScratch& S,
     Kokkos::View<long long*, CpMem> winner, Kokkos::View<std::uint64_t*, CpMem> colorMask,
-    bool excludeImmovable = false) {
+    bool excludeImmovable = false, Kokkos::View<const unsigned char*, CpMem> asleep = {}) {
   ContactHierarchy H;
   CpExec space;
   if (numManifolds <= 0 || numReal <= 0)
     return H;
+  // A sleeper carries a small POSITIVE effective inverse mass (heavy but not rigid, so the fine PGS
+  // does not diverge against it), so the invMass==0 test alone no longer identifies it — exclude by
+  // the asleep flag too. Genuinely-pinned bodies (real invMass 0) stay caught by the ==0 branch.
+  const bool haveAsleep = asleep.extent(0) > 0;
   {  // level-0 composed map = identity; packed colours all "skip"
     auto grp = S.grp;
     Kokkos::parallel_for(
@@ -174,7 +178,8 @@ inline ContactHierarchy buildContactHierarchyKokkos(
             // effMass wrecks the coarse-solve conditioning and pins the awake partner. (Gated so
             // the sleeping-off path is bit-identical.)
             if (excludeImmovable &&
-                (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f))
+                (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
+                 (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
               return;
             const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
             if (gA == gB)
@@ -195,7 +200,8 @@ inline ContactHierarchy buildContactHierarchyKokkos(
                                                    gHat, qsThr, gateMask))
               return;
             if (excludeImmovable &&
-                (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f))
+                (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
+                 (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
               return;
             const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
             if (gA == gB)

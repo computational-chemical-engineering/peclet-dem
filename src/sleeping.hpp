@@ -58,11 +58,13 @@ inline void freezeAsleepKokkos(int numReal, Kokkos::View<const unsigned char*, C
 inline void buildInvMassEffKokkos(int numBodies, Kokkos::View<const unsigned char*, CpMem> asleep,
                                   Kokkos::View<const int*, CpMem> realIdx,
                                   Kokkos::View<const float*, CpMem> invMass,
-                                  Kokkos::View<float*, CpMem> invMassEff) {
+                                  Kokkos::View<float*, CpMem> invMassEff, float sleeperFrac) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::inv_mass_eff", Kokkos::RangePolicy<CpExec>(space, 0, numBodies),
-      KOKKOS_LAMBDA(int i) { invMassEff(i) = asleep(realIdx(i)) ? 0.0f : invMass(i); });
+      KOKKOS_LAMBDA(int i) {
+        invMassEff(i) = asleep(realIdx(i)) ? sleeperFrac * invMass(i) : invMass(i);
+      });
   space.fence();
 }
 

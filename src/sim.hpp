@@ -151,7 +151,8 @@ inline void demStep(Particles& P) {
                             P.asleep, P.sleepCounter, P.sleepWakeLostContact);
     computeManifoldSleepKokkos(P.manifolds, nm, P.realIndices, P.asleep, P.manifoldSleep);
     computeContactSleepKokkos(P.contacts, nc, P.realIndices, P.asleep, P.contactSleep);
-    buildInvMassEffKokkos(P.numParticles, P.asleep, P.realIndices, P.invMass, P.invMassEff);
+    buildInvMassEffKokkos(P.numParticles, P.asleep, P.realIndices, P.invMass, P.invMassEff,
+                          P.sleepImmovableFrac);
     P.invMass = P.invMassEff;
   }
 
@@ -426,6 +427,8 @@ class Simulation {
       P_.wakeScale = std::atof(e);
     if (const char* e = std::getenv("PECLET_DEM_SLEEP_WAKELOST"); e && *e)
       P_.sleepWakeLostContact = std::atoi(e) != 0;
+    if (const char* e = std::getenv("PECLET_DEM_SLEEP_INVMASS_FRAC"); e && *e)
+      P_.sleepImmovableFrac = std::atof(e);
     // Verlet-cached impulse broadphase (default OFF): PECLET_DEM_VERLET_SKIN = skin fraction of the
     // max grain radius (e.g. 0.3). 0 = rebuild every step.
     if (const char* e = std::getenv("PECLET_DEM_VERLET_SKIN"); e && *e)
@@ -684,8 +687,11 @@ class Simulation {
   /// grounded is put to sleep: velocity zeroed, integration skipped, and a manifold whose BOTH
   /// endpoints are asleep (a static wall counts) is excluded from the colouring / sweeps /
   /// multilevel hierarchy — so a settled bed collapses to the broad/narrow-phase floor. A sleeper
-  /// is immovable in the solve (effective inverse mass 0), so awake–asleep contacts stay correct;
-  /// it wakes only when disturbed (fast approaching neighbour, contact-set change, moving wall).
+  /// keeps a small POSITIVE effective inverse mass in the solve (sleepImmovableFrac x its own; heavy
+  /// but not perfectly rigid), so an awake body wedged between sleepers relieves against them
+  /// instead of the PGS normal impulse diverging; its velocity is re-zeroed each substep so no
+  /// momentum accumulates. It wakes only when disturbed (fast approaching neighbour, contact-set
+  /// change, moving wall).
   /// Requires gravity on and no external (CFD-DEM drag) force; inert under MPI. PECLET_DEM_SLEEP
   /// overrides at startup.
   void setSleeping(bool enabled, float threshold_scale = 2.0f, int consecutive = 64,

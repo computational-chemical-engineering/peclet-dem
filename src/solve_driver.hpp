@@ -598,7 +598,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
             Kokkos::View<const float*, CpMem>(P.vn0), Kokkos::View<const float* [3], CpMem>(P.vt0),
             Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent), P.posPred, gHat,
             Kokkos::View<const float*, CpMem>(P.invMass), qsThr, mlGates, nBodies, S, P.bodyWinner,
-            P.bodyColorMask, /*excludeImmovable*/ sleepOn);
+            P.bodyColorMask, /*excludeImmovable*/ sleepOn,
+            sleepOn ? Kokkos::View<const unsigned char*, CpMem>(P.asleep)
+                    : Kokkos::View<const unsigned char*, CpMem>());
         // Dense per-(level, colour) buckets, built once per hierarchy (see solver_multilevel.hpp).
         std::vector<std::vector<int>> mlOffs;
         if (H.numLevels > 0) {

@@ -240,6 +240,15 @@ struct Particles {
   int sleepK = 64;               // substeps below threshold before sleeping (high enough that an
                     // impact's unloading/rebound completes before the network re-sleeps)
   bool sleepWakeLostContact = false;  // rule (b): wake on a LOST contact (support removed)
+  // Effective inverse-mass fraction of a sleeper for the solve (0 = exactly immovable). A small
+  // POSITIVE value keeps the sleeper very heavy but not infinitely rigid, so an awake body wedged at
+  // a frozen-pocket boundary can relieve against it instead of the PGS normal impulse diverging
+  // (trapped-between-two-rigid-constraints blow-up that a settling column reliably hit, ejected via
+  // the friction cone to NaN); the sleeper's velocity is re-zeroed each substep so no momentum
+  // accumulates and both-asleep interior manifolds are still fully excluded (the speed win). 0.01 =
+  // sleeper 100x a grain's mass: stable through the 96k column + violent pour, case3 penetration
+  // and the settled-bed freeze both preserved. PECLET_DEM_SLEEP_INVMASS_FRAC overrides.
+  float sleepImmovableFrac = 0.01f;
   bool extForceActive = false;        // CFD-DEM drag present -> sleeping disabled this step
   // --- Verlet-cached broadphase for the impulse step (single-GPU, non-periodic; see demStep) ---
   // The impulse broadphase rebuilds the ArborX pair list every step; between rebuilds no new pair
