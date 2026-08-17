@@ -475,6 +475,17 @@ struct Particles {
     Kokkos::resize(planeFriction, newCap);
     Kokkos::resize(rad, newCap);
     Kokkos::resize(extForce, newCap);
+    // materialId is written per GHOST slot by generateGhostsKokkos (guarded by `capacity`),
+    // so it MUST track the padded capacity like every other per-slot array. Its absence here
+    // was a silent out-of-bounds write into the neighbouring allocation — harmless or
+    // catastrophic depending on the device allocator's layout (the 2026-08 H100 packing
+    // corruption: contacts silently unresolved, phi_voxel 0.40 instead of 0.50).
+    Kokkos::resize(materialId, newCap);
+    // Not ghost-indexed today, but per-particle and cap-sized at construction — keep them in
+    // lockstep so a future ghost-slot consumer cannot reintroduce the same class of bug.
+    Kokkos::resize(asleep, newCap);
+    Kokkos::resize(sleepCounter, newCap);
+    Kokkos::resize(sleepMovingWall, newCap);
     capacity = newCap;
   }
 
