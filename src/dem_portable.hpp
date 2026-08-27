@@ -11,6 +11,10 @@
 #include <Kokkos_Core.hpp>
 #include <Kokkos_MathematicalFunctions.hpp>
 
+// Kokkos_Core.hpp above defines KOKKOS_VERSION, so core's PECLET_HD resolves to
+// KOKKOS_INLINE_FUNCTION and the leaf formulas are device-callable on every backend.
+#include "peclet/core/geom/primitives.hpp"
+
 namespace peclet::dem {
 
 // Portable mirrors of CUDA float3/float4 (POD, trivially copyable).
@@ -73,33 +77,37 @@ KOKKOS_INLINE_FUNCTION F4 quatMult(F4 a, F4 b) {
       a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
 }
 
-// --- analytic SDFs (canonical/unit space) — copy of shapes/sdf_analytic.cuh ---
+// --- analytic SDFs (canonical/unit space) ---
+//
+// RELOCATED (suite/docs/ANALYTIC_SDF_GEOMETRY.md, Layer 0 rung 3): the formula bodies now live in
+// peclet::core::geom::prim (core/include/peclet/core/geom/primitives.hpp), which transcribed them
+// from THIS file operation-for-operation. The wrappers below keep dem's exact signatures and
+// parameter packing, so every call site is untouched and the results are bit-identical -- verified
+// by a raw-bit capture over 76000 evaluations on host-openmp and CUDA, before vs after.
+//
+// The enum values are also core's ShapeKind values (core's kGrid/kSphere/kHollowCylinder/kBox
+// = 0/1/2/3 were chosen to match), so a shape id means the same thing on both sides.
 enum ShapeKind { SHAPE_GRID_SDF = 0, SPHERE = 1, HOLLOW_CYLINDER = 2, BOX = 3 };
 
-KOKKOS_INLINE_FUNCTION float sdfSphere(F3 p, F4 params) {
-  return len3(p) - params.x;
+/// F3 -> core's Real-templated point type. Layout-identical; this is a type change, not a copy.
+KOKKOS_INLINE_FUNCTION peclet::core::Vec3<float> toCoreVec(F3 p) {
+  return peclet::core::Vec3<float>{p.x, p.y, p.z};
 }
 
+KOKKOS_INLINE_FUNCTION float sdfSphere(F3 p, F4 params) {
+  return peclet::core::geom::prim::Sphere<float>{params.x}.eval(toCoreVec(p));
+}
+
+// params = (rOuter, height, thickness); tube about the y axis. core's HollowCylinder is the
+// distance-exact form -- NOT core's HollowCylinderShell, which is the max-of-halfspaces variant
+// that core/voro use and which is a different function (see the design note's TRAP section).
 KOKKOS_INLINE_FUNCTION float sdfHollowCylinder(F3 p, F4 params) {
-  const float r_outer = params.x, h = params.y, thick = params.z;
-  const float r = Kokkos::sqrt(p.x * p.x + p.z * p.z);
-  const float r_mid = r_outer - thick * 0.5f;
-  const float dx = Kokkos::fabs(r - r_mid) - thick * 0.5f;
-  const float dy = Kokkos::fabs(p.y) - h * 0.5f;
-  const float ox = Kokkos::fmax(dx, 0.0f), oy = Kokkos::fmax(dy, 0.0f);
-  const float outside = Kokkos::sqrt(ox * ox + oy * oy);
-  const float inside = Kokkos::fmin(Kokkos::fmax(dx, dy), 0.0f);
-  return outside + inside;
+  return peclet::core::geom::prim::HollowCylinder<float>{params.x, params.y, params.z}.eval(
+      toCoreVec(p));
 }
 
 KOKKOS_INLINE_FUNCTION float sdfBox(F3 p, F4 params) {
-  const float dx = Kokkos::fabs(p.x) - params.x;
-  const float dy = Kokkos::fabs(p.y) - params.y;
-  const float dz = Kokkos::fabs(p.z) - params.z;
-  const float ox = Kokkos::fmax(dx, 0.0f), oy = Kokkos::fmax(dy, 0.0f), oz = Kokkos::fmax(dz, 0.0f);
-  const float outside = Kokkos::sqrt(ox * ox + oy * oy + oz * oz);
-  const float inside = Kokkos::fmin(Kokkos::fmax(dx, Kokkos::fmax(dy, dz)), 0.0f);
-  return outside + inside;
+  return peclet::core::geom::prim::Box<float>{params.x, params.y, params.z}.eval(toCoreVec(p));
 }
 
 KOKKOS_INLINE_FUNCTION float sdfEval(F3 p, int type, F4 params) {

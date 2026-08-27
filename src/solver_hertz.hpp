@@ -214,7 +214,7 @@ inline void hertzWallForcesKokkos(Kokkos::View<const int*, CpMem> candSlots, int
             if (sd >= 0.0f)
               continue;
             const float delta = -sd;
-            const float hx = 0.5f / w.invSpacing.x;
+            const float hx = 0.5f / w.grid.invSpacing.x;
             F3 g{(sampleWallSdf(F3{pW.x + hx, pW.y, pW.z}, w, wallGrid) -
                   sampleWallSdf(F3{pW.x - hx, pW.y, pW.z}, w, wallGrid)),
                  (sampleWallSdf(F3{pW.x, pW.y + hx, pW.z}, w, wallGrid) -
@@ -293,7 +293,7 @@ inline void hertzWallForcesKokkos(Kokkos::View<const int*, CpMem> candSlots, int
             xiWall(slot, 0) = xiWall(slot, 1) = xiWall(slot, 2) = 0.0f;
             return;
           }
-          const float hx = 0.5f / w.invSpacing.x;
+          const float hx = 0.5f / w.grid.invSpacing.x;
           F3 g{(sampleWallSdf(F3{p.x + hx, p.y, p.z}, w, wallGrid) -
                 sampleWallSdf(F3{p.x - hx, p.y, p.z}, w, wallGrid)),
                (sampleWallSdf(F3{p.x, p.y + hx, p.z}, w, wallGrid) -

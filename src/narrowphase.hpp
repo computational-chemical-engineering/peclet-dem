@@ -15,6 +15,7 @@
 
 #include "contact_preprocessing.hpp"  // ContactC, CpExec/CpMem
 #include "dem_portable.hpp"
+#include "peclet/core/geom/scene.hpp"
 
 namespace peclet::dem {
 
@@ -31,11 +32,12 @@ struct ShapeDesc {
   F4 params;        // analytic parameters (see sdf_analytic); grid: params.x = bounding radius
   int shellOffset;  // start index into the flat shell-points View
   int numPoints;    // shell size; 0 => analytic single-probe (sphere center)
-  // --- grid-SDF fields (type == SHAPE_GRID_SDF); zero for analytic shapes ---
-  int gridOffset = 0;               // start index into the shared sdfGrid View
-  int nx = 0, ny = 0, nz = 0;       // lattice dimensions
-  F3 gridOrigin{0, 0, 0};           // canonical coord of node (0,0,0)
-  F3 gridInvSpacing{0, 0, 0};       // 1 / node spacing, per axis
+  // --- grid-SDF descriptor (type == SHAPE_GRID_SDF); default/zero for analytic shapes ---
+  // Carries core's descriptor DIRECTLY rather than loose fields the sampler marshals per call.
+  // That is not cosmetic: building a GridDesc inside the sampler shifted nvcc's FMA contraction in
+  // the trilinear chain and moved 185/4000 CUDA results by ~1 ULP (Layer 0 rung 3). Passing a
+  // prebuilt descriptor through is bit-identical to the pre-port code on every backend.
+  peclet::core::geom::GridDesc<float> grid;  // extension = kObject (a body)
 };
 
 struct PlaneP {
@@ -57,12 +59,10 @@ struct PlaneP {
 /// drum drags grains up its rising side; a translating `linVel` set sinusoidally each step is a
 /// vibrating wall) even though the field itself is static. Plus a binary (particle–wall) material.
 struct WallSdf {
-  // world-space grid SDF samples live in Particles::wallGrid at [gridOffset, gridOffset+nx*ny*nz),
+  // world-space grid SDF samples live in Particles::wallGrid at [offset, offset + nx*ny*nz),
   // x-fastest (idx = x + y*nx + z*nx*ny), at nodes q = origin + (x,y,z)/invSpacing.
-  int nx = 0, ny = 0, nz = 0;
-  int gridOffset = 0;
-  F3 origin{0, 0, 0};
-  F3 invSpacing{0, 0, 0};
+  // extension = kContainer -- see the sign discussion on sampleWallSdf below.
+  peclet::core::geom::GridDesc<float> grid;
   // rigid-body surface velocity field v(x) = linVel + angVel × (x − center) (set from the host).
   F3 linVel{0, 0, 0};
   F3 angVel{0, 0, 0};
@@ -96,74 +96,32 @@ KOKKOS_INLINE_FUNCTION F4 loadF4(QuatView v, int i) {
 }
 
 /// Trilinearly sample an imported grid SDF at canonical point `p`. The query is clamped into the
-/// sample lattice and the Euclidean distance from `p` to that clamped point is added back, so a
-/// probe outside the stored box gets a monotonically growing (positive) distance instead of a flat
-/// clamped value — the standard "clamp + residual" extension that keeps the far field well-signed
-/// and the central-difference normal sane near the grid boundary. Interior samples are exact
-/// trilinear. Requires nx,ny,nz >= 2 (the shape builder guarantees this).
+/// sample lattice and the Euclidean distance from `p` to that clamped point is ADDED back (the
+/// kObject policy), so a probe outside the stored box gets a monotonically growing (positive)
+/// distance instead of a flat clamped value — the standard "clamp + residual" extension that keeps
+/// the far field well-signed and the central-difference normal sane near the grid boundary.
+/// Interior samples are exact trilinear. Requires nx,ny,nz >= 2 (the shape builder guarantees it).
+///
+/// RELOCATED (Layer 0 rung 3): the body is now peclet::core::geom::sampleGrid, which carries this
+/// and the wall variant below as ONE routine parameterised by GridExtension — the two used to be
+/// near-duplicate functions differing only in the residual's sign, which is exactly the kind of
+/// silent divergence that cost 71k grains once (see sampleWallSdf).
 KOKKOS_INLINE_FUNCTION float sampleGridSdf(F3 p, const ShapeDesc& d, GridView grid) {
-  const float fx = (p.x - d.gridOrigin.x) * d.gridInvSpacing.x;
-  const float fy = (p.y - d.gridOrigin.y) * d.gridInvSpacing.y;
-  const float fz = (p.z - d.gridOrigin.z) * d.gridInvSpacing.z;
-  const float cx = Kokkos::fmin(Kokkos::fmax(fx, 0.0f), (float)(d.nx - 1));
-  const float cy = Kokkos::fmin(Kokkos::fmax(fy, 0.0f), (float)(d.ny - 1));
-  const float cz = Kokkos::fmin(Kokkos::fmax(fz, 0.0f), (float)(d.nz - 1));
-  const int ix = (int)cx, iy = (int)cy, iz = (int)cz;
-  const int ix1 = ix < d.nx - 1 ? ix + 1 : ix;
-  const int iy1 = iy < d.ny - 1 ? iy + 1 : iy;
-  const int iz1 = iz < d.nz - 1 ? iz + 1 : iz;
-  const float tx = cx - ix, ty = cy - iy, tz = cz - iz;
-  const long nxny = (long)d.nx * d.ny;
-  const int off = d.gridOffset;
-  auto at = [&](int x, int y, int z) { return grid(off + (long)z * nxny + (long)y * d.nx + x); };
-  const float c00 = at(ix, iy, iz) * (1 - tx) + at(ix1, iy, iz) * tx;
-  const float c10 = at(ix, iy1, iz) * (1 - tx) + at(ix1, iy1, iz) * tx;
-  const float c01 = at(ix, iy, iz1) * (1 - tx) + at(ix1, iy, iz1) * tx;
-  const float c11 = at(ix, iy1, iz1) * (1 - tx) + at(ix1, iy1, iz1) * tx;
-  const float c0 = c00 * (1 - ty) + c10 * ty;
-  const float c1 = c01 * (1 - ty) + c11 * ty;
-  const float val = c0 * (1 - tz) + c1 * tz;
-  // residual distance from p to the clamped lattice point (voxel units -> canonical units).
-  const float rx = (d.gridInvSpacing.x > 0.0f) ? (fx - cx) / d.gridInvSpacing.x : 0.0f;
-  const float ry = (d.gridInvSpacing.y > 0.0f) ? (fy - cy) / d.gridInvSpacing.y : 0.0f;
-  const float rz = (d.gridInvSpacing.z > 0.0f) ? (fz - cz) / d.gridInvSpacing.z : 0.0f;
-  return val + Kokkos::sqrt(rx * rx + ry * ry + rz * rz);
+  return peclet::core::geom::sampleGrid(toCoreVec(p), d.grid, grid);
 }
 
 /// Trilinearly sample a static world-space wall SDF at world point `p`. Positive in the void,
-/// negative in the wall. The off-grid extension SUBTRACTS the clamp residual — the OPPOSITE of
-/// sampleGridSdf's object convention — because a wall SDF is a CONTAINER: the void is bounded and
-/// everything beyond the stored box is wall-side, so a probe outside the box must read an ever more
-/// negative (deeper-in-the-wall) distance. Adding the residual here (the old behaviour) made a
-/// grain pushed past the box boundary — e.g. squeezed through the floor plane, whose zero level
-/// sits exactly on the grid's lower face — read "clear" and free-fall out of the simulation
-/// forever: a 180k glass-bead pile lost 71k grains through the distributor during settling.
+/// negative in the wall. The off-grid extension SUBTRACTS the clamp residual (the kContainer
+/// policy) — the OPPOSITE of sampleGridSdf's object convention — because a wall SDF is a
+/// CONTAINER: the void is bounded and everything beyond the stored box is wall-side, so a probe
+/// outside the box must read an ever more negative (deeper-in-the-wall) distance. Adding the
+/// residual here (the old behaviour) made a grain pushed past the box boundary — e.g. squeezed
+/// through the floor plane, whose zero level sits exactly on the grid's lower face — read "clear"
+/// and free-fall out of the simulation forever: a 180k glass-bead pile lost 71k grains through the
+/// distributor during settling. That is why the sign is now a NAMED POLICY on one shared routine
+/// (Layer 0 rung 3) instead of a one-character difference between two copied functions.
 KOKKOS_INLINE_FUNCTION float sampleWallSdf(F3 p, const WallSdf& w, GridView grid) {
-  const float fx = (p.x - w.origin.x) * w.invSpacing.x;
-  const float fy = (p.y - w.origin.y) * w.invSpacing.y;
-  const float fz = (p.z - w.origin.z) * w.invSpacing.z;
-  const float cx = Kokkos::fmin(Kokkos::fmax(fx, 0.0f), (float)(w.nx - 1));
-  const float cy = Kokkos::fmin(Kokkos::fmax(fy, 0.0f), (float)(w.ny - 1));
-  const float cz = Kokkos::fmin(Kokkos::fmax(fz, 0.0f), (float)(w.nz - 1));
-  const int ix = (int)cx, iy = (int)cy, iz = (int)cz;
-  const int ix1 = ix < w.nx - 1 ? ix + 1 : ix;
-  const int iy1 = iy < w.ny - 1 ? iy + 1 : iy;
-  const int iz1 = iz < w.nz - 1 ? iz + 1 : iz;
-  const float tx = cx - ix, ty = cy - iy, tz = cz - iz;
-  const long nxny = (long)w.nx * w.ny;
-  const int off = w.gridOffset;
-  auto at = [&](int x, int y, int z) { return grid(off + (long)z * nxny + (long)y * w.nx + x); };
-  const float c00 = at(ix, iy, iz) * (1 - tx) + at(ix1, iy, iz) * tx;
-  const float c10 = at(ix, iy1, iz) * (1 - tx) + at(ix1, iy1, iz) * tx;
-  const float c01 = at(ix, iy, iz1) * (1 - tx) + at(ix1, iy, iz1) * tx;
-  const float c11 = at(ix, iy1, iz1) * (1 - tx) + at(ix1, iy1, iz1) * tx;
-  const float c0 = c00 * (1 - ty) + c10 * ty;
-  const float c1 = c01 * (1 - ty) + c11 * ty;
-  const float val = c0 * (1 - tz) + c1 * tz;
-  const float rx = (w.invSpacing.x > 0.0f) ? (fx - cx) / w.invSpacing.x : 0.0f;
-  const float ry = (w.invSpacing.y > 0.0f) ? (fy - cy) / w.invSpacing.y : 0.0f;
-  const float rz = (w.invSpacing.z > 0.0f) ? (fz - cz) / w.invSpacing.z : 0.0f;
-  return val - Kokkos::sqrt(rx * rx + ry * ry + rz * rz);
+  return peclet::core::geom::sampleGrid(toCoreVec(p), w.grid, grid);
 }
 
 /// Canonical-space SDF of a shape: analytic dispatch, or a trilinear grid sample for an imported

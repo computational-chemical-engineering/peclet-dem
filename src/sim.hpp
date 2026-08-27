@@ -585,14 +585,15 @@ class Simulation {
     sd.params = F4{boundingRadius, 0, 0, 0};
     sd.shellOffset = 0;
     sd.numPoints = nPts;
-    sd.gridOffset = 0;
-    sd.nx = nx;
-    sd.ny = ny;
-    sd.nz = nz;
-    sd.gridOrigin = origin;
-    sd.gridInvSpacing =
-        F3{spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
-           spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    sd.grid.offset = 0;
+    sd.grid.nx = nx;
+    sd.grid.ny = ny;
+    sd.grid.nz = nz;
+    sd.grid.origin = toCoreVec(origin);
+    sd.grid.invSpacing = peclet::core::Vec3<float>{
+        spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
+        spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    sd.grid.extension = peclet::core::geom::GridExtension::kObject;  // a body
     auto h = Kokkos::create_mirror_view(P_.shapes);
     h(0) = sd;
     Kokkos::deep_copy(P_.shapes, h);
@@ -823,14 +824,16 @@ class Simulation {
       throw std::runtime_error("addSdfWall: grid.size() must equal nx*ny*nz");
 
     WallSdf w{};
-    w.nx = nx;
-    w.ny = ny;
-    w.nz = nz;
-    w.gridOffset = static_cast<int>(wallGridHost_.size());
-    w.origin = origin;
-    w.invSpacing =
-        F3{spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
-           spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    w.grid.nx = nx;
+    w.grid.ny = ny;
+    w.grid.nz = nz;
+    w.grid.offset = static_cast<int>(wallGridHost_.size());
+    w.grid.origin = toCoreVec(origin);
+    w.grid.invSpacing = peclet::core::Vec3<float>{
+        spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
+        spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    // A CONTAINER: beyond the stored box is wall-side, so the off-grid residual is SUBTRACTED.
+    w.grid.extension = peclet::core::geom::GridExtension::kContainer;
     w.restitution = restitution;
     w.friction = friction;
     const int idx = static_cast<int>(wallsHost_.size());
