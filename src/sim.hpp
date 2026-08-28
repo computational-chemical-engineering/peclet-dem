@@ -1157,7 +1157,8 @@ class Simulation {
   std::vector<float> getSdfGrid(int rx, int ry, int rz) {
     return peclet::dem::generateSdfKokkos(
         rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal, P_.pos, P_.quat, P_.scale, P_.shapeId,
-        P_.shapes, P_.domain.periodic_x, P_.domain.periodic_y, P_.domain.periodic_z, P_.sdfGrid);
+        P_.shapes, P_.domain.periodic_x, P_.domain.periodic_y, P_.domain.periodic_z, P_.sdfGrid,
+        P_.globalScale);
   }
 
   int numParticles() const { return P_.numReal; }

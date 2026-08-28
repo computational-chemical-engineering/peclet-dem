@@ -22,11 +22,16 @@ namespace peclet::dem {
 
 // Generate the SDF grid (flat, x-fastest: i = x + y*rx + z*rx*ry; negative inside solid) over
 // [min,max].
+/// `globalScale` multiplies every per-particle `scale`, exactly as the narrow-phase does
+/// (narrowphase.hpp: `effScale = scale(i) * globalScale`). It defaults to 1 so existing callers are
+/// unchanged; passing the simulation's real value is what makes the exported field agree with the
+/// simulated geometry.
 inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 dmax, int numReal,
                                             PosView pos, QuatView quat, ScalarF scale,
                                             ScalarI shapeId,
                                             Kokkos::View<const ShapeDesc*, CpMem> shapes, bool px,
-                                            bool py, bool pz, GridView sdfGrid = GridView{}) {
+                                            bool py, bool pz, GridView sdfGrid = GridView{},
+                                            float globalScale = 1.0f) {
   CpExec space;
   const long total = (long)rx * ry * rz;
   const F3 origin = dmin;
@@ -43,7 +48,11 @@ inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 
       KOKKOS_LAMBDA(int i) {
         const F3 pw = loadF3(pos, i);
         const F4 q = loadF4(quat, i);
-        const float sc = scale(i);
+        // scale * globalScale -- the SAME effective scale the narrow-phase applies. Using the
+        // bare per-particle scale here (the old behaviour) made the exported SDF disagree with the
+        // simulated geometry whenever global_scale != 1: the splat drew bodies at the wrong size
+        // and the AABB band was sized for that wrong size too.
+        const float sc = scale(i) * globalScale;
         const ShapeDesc shp = shapes(shapeId(i));
         float rbound = 1.0f;
         if (shp.type == HOLLOW_CYLINDER) {
