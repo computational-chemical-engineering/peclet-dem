@@ -597,7 +597,8 @@ class Simulation {
     if (static_cast<long>(nx) * ny * nz != static_cast<long>(grid.size()))
       throw std::runtime_error("add_sdf_shape: grid.size() must equal nx*ny*nz");
     const std::vector<float> shellUse =
-        shellFlat.empty() ? autoShell(grid, nx, ny, nz, origin, spacing, boundingRadius) : shellFlat;
+        shellFlat.empty() ? autoShell(grid, nx, ny, nz, origin, spacing, boundingRadius)
+                          : shellFlat;
     const int nPts = static_cast<int>(shellUse.size() / 3);
     if (nPts <= 0)
       throw std::runtime_error("add_sdf_shape: surface point shell is empty and could not be "
@@ -645,7 +646,8 @@ class Simulation {
       throw std::runtime_error("setSdfShape: grid.size() must equal nx*ny*nz");
     // An EMPTY shell means "generate one from the field itself" (Layer 1).
     const std::vector<float> shellUse =
-        shellFlat.empty() ? autoShell(grid, nx, ny, nz, origin, spacing, boundingRadius) : shellFlat;
+        shellFlat.empty() ? autoShell(grid, nx, ny, nz, origin, spacing, boundingRadius)
+                          : shellFlat;
     const int nPts = static_cast<int>(shellUse.size() / 3);
     if (nPts <= 0)
       throw std::runtime_error("setSdfShape: surface point shell is empty and could not be "
