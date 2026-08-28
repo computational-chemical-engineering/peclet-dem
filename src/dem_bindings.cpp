@@ -219,6 +219,22 @@ NB_MODULE(_dem, m) {
       .def("set_wall_material_id", &Simulation::setWallMaterialId, nb::arg("wid"), nb::arg("mat"),
            "Give an SDF wall a material id so particle-wall (e, mu) resolves via the pair table "
            "instead of the wall's binary material.")
+      .def(
+          "add_analytic_wall",
+          [](Simulation& s, nb::ndarray<int, nb::c_contig> node_ints,
+             nb::ndarray<float, nb::c_contig> node_reals, int root, bool invert, float restitution,
+             float friction) {
+            return s.addAnalyticWall(
+                std::vector<int>(node_ints.data(), node_ints.data() + node_ints.size()),
+                to_vec(node_reals), root, invert, restitution, friction);
+          },
+          nb::arg("node_ints"), nb::arg("node_reals"), nb::arg("root"), nb::arg("invert"),
+          nb::arg("restitution") = 0.0f, nb::arg("friction") = 0.0f,
+          "Add an ANALYTIC wall from a core shape tree in the flat node encoding (3 ints + 16 "
+          "reals per node). Exact at every scale, with no voxel grid to replicate per rank. "
+          "invert=False for a stirrer/obstacle (grains outside the solid); invert=True for a "
+          "container, built from a SOLID body (a solid cylinder for a drum). The wall is "
+          "positioned by the node TRANSFORM -- an identity transform sits at the origin.")
       .def("add_plane", &Simulation::addPlane, "Add a boundary wall plane (px,py,pz, nx,ny,nz).")
       // CUDA-API overload: add_plane(point, normal) as 3-sequences.
       .def(

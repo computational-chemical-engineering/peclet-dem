@@ -284,6 +284,8 @@ struct Particles {
   // samples.
   Kokkos::View<WallSdf*, CpMem> walls;
   Kokkos::View<float*, CpMem> wallGrid;
+  // shape nodes backing ANALYTIC walls (Layer 1); WallSdf::nodes points into this
+  Kokkos::View<peclet::core::geom::ShapeNode<float>*, CpMem> wallNodes;
 
   // --- sizes & params (host) ---
   int capacity = 0, numReal = 0, numParticles = 0;
@@ -435,6 +437,7 @@ struct Particles {
     sdfGrid = Kokkos::View<float*, CpMem>("sdfGrid", 1);    // resized by setSdfShape
     walls = Kokkos::View<WallSdf*, CpMem>("walls", 1);      // resized by addSdfWall
     wallGrid = Kokkos::View<float*, CpMem>("wallGrid", 1);  // concatenated wall samples
+    wallNodes = Kokkos::View<peclet::core::geom::ShapeNode<float>*, CpMem>("wallNodes", 1);
     numWalls = 0;
   }
 

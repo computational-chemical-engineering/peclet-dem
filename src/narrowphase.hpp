@@ -63,6 +63,17 @@ struct WallSdf {
   // x-fastest (idx = x + y*nx + z*nx*ny), at nodes q = origin + (x,y,z)/invSpacing.
   // extension = kContainer -- see the sign discussion on sampleWallSdf below.
   peclet::core::geom::GridDesc<float> grid;
+  // ANALYTIC alternative (Layer 1): when shapeRoot >= 0 the wall is a core shape tree evaluated
+  // exactly, not a sampled field -- a stirrer becomes a CSG expression instead of a voxel grid,
+  // with no resolution limit and no per-rank replicated sample pool. Raw pointer (like
+  // core::geom::SceneView) so WallSdf stays POD and device-copyable with no signature churn at the
+  // call sites. `sign` is -1 for the usual case of a CONTAINER built from an object tree: core's
+  // leaves are negative-inside-solid, while a wall must read positive in the void where the grains
+  // live.
+  const peclet::core::geom::ShapeNode<float>* nodes = nullptr;
+  int nodeCount = 0;
+  int shapeRoot = -1;
+  float sign = 1.0f;
   // rigid-body surface velocity field v(x) = linVel + angVel × (x − center) (set from the host).
   F3 linVel{0, 0, 0};
   F3 angVel{0, 0, 0};
@@ -121,6 +132,12 @@ KOKKOS_INLINE_FUNCTION float sampleGridSdf(F3 p, const ShapeDesc& d, GridView gr
 /// distributor during settling. That is why the sign is now a NAMED POLICY on one shared routine
 /// (Layer 0 rung 3) instead of a one-character difference between two copied functions.
 KOKKOS_INLINE_FUNCTION float sampleWallSdf(F3 p, const WallSdf& w, GridView grid) {
+  if (w.shapeRoot >= 0)  // analytic wall: exact, no lattice
+    return w.sign * peclet::core::geom::evalTree<float>(
+                        peclet::core::geom::TablePtr<peclet::core::geom::ShapeNode<float>>{w.nodes},
+                        w.nodeCount, w.shapeRoot, toCoreVec(p),
+                        peclet::core::geom::TablePtr<peclet::core::geom::GridDesc<float>>{nullptr},
+                        peclet::core::geom::PoolPtr<float>{nullptr});
   return peclet::core::geom::sampleGrid(toCoreVec(p), w.grid, grid);
 }
 

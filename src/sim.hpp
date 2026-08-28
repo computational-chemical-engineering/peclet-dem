@@ -695,6 +695,77 @@ class Simulation {
     ensureContactCapacity();
   }
 
+  /// Add an ANALYTIC wall from a core shape tree in the flat encoding (Layer 1). Replaces the
+  /// voxelised container/stirrer: exact at every scale, and no per-rank replicated sample pool.
+  ///
+  /// `nodeInts` / `nodeReals` are core's flat node encoding (geom/scene_builder.hpp: 3 ints and 16
+  /// reals per node, kind/aux/params/transform).
+  ///
+  /// SIGN. A wall must read POSITIVE in the void where the grains live and NEGATIVE in wall
+  /// material; core's leaves are negative-inside-solid. So:
+  ///   * a STIRRER, a paddle, an obstacle -- grains are OUTSIDE the tree's solid: invert = FALSE.
+  ///   * a CONTAINER -- grains are INSIDE: describe the container as a SOLID body (a solid
+  ///     cylinder for a drum: kHollowCylinder with thickness = 2*rOuter) and pass invert = TRUE.
+  ///     Inverting a solid is what makes everything beyond the barrel read as wall, so a grain
+  ///     that escapes is pushed back.
+  ///
+  /// Do NOT build a container from a thin TUBE and invert it: a tube's bore is already void, so
+  /// inverting makes the bore read as solid and the solver pushes every grain out through it.
+  ///
+  /// POSITION. An analytic wall is placed by its node TRANSFORM. Unlike add_sdf_wall, where the
+  /// grid origin positions the field implicitly, a leaf with an identity transform sits at the
+  /// ORIGIN -- which is a domain corner in the usual [0,L]^3 setup, not the centre. Getting this
+  /// wrong looks exactly like a sign error: grains start outside the body, read "solid", and are
+  /// driven out of the domain.
+  ///
+  /// Grid leaves are not supported inside an analytic wall tree -- use add_sdf_wall for a sampled
+  /// container.
+  int addAnalyticWall(const std::vector<int>& nodeInts, const std::vector<float>& nodeReals,
+                      int root, bool invert, float restitution, float friction) {
+    namespace g = peclet::core::geom;
+    if (nodeInts.size() % g::kNodeIntStride || nodeReals.size() % g::kNodeRealStride)
+      throw std::runtime_error("add_analytic_wall: node arrays are not a whole number of records");
+    const int n = static_cast<int>(nodeInts.size() / g::kNodeIntStride);
+    if (n == 0 || static_cast<int>(nodeReals.size() / g::kNodeRealStride) != n)
+      throw std::runtime_error("add_analytic_wall: node int/real counts disagree");
+    if (root < 0 || root >= n)
+      throw std::runtime_error("add_analytic_wall: root out of range");
+    const int base = static_cast<int>(wallNodesHost_.size());
+    for (int i = 0; i < n; ++i) {
+      g::ShapeNode<float> nd = g::decodeNode<float>(&nodeInts[i * g::kNodeIntStride],
+                                                    &nodeReals[i * g::kNodeRealStride]);
+      if (nd.kind == g::kGrid)
+        throw std::runtime_error("add_analytic_wall: grid leaves are not supported here");
+      if (nd.kind >= g::kCsgBase) {  // rebase child indices into the shared pool
+        nd.aux0 += base;
+        nd.aux1 += base;
+      }
+      wallNodesHost_.push_back(nd);
+    }
+    P_.wallNodes = Kokkos::View<g::ShapeNode<float>*, CpMem>("wallNodes", wallNodesHost_.size());
+    auto hn = Kokkos::create_mirror_view(P_.wallNodes);
+    for (std::size_t i = 0; i < wallNodesHost_.size(); ++i)
+      hn(i) = wallNodesHost_[i];
+    Kokkos::deep_copy(P_.wallNodes, hn);
+
+    WallSdf w{};
+    w.shapeRoot = base + root;
+    w.nodeCount = static_cast<int>(wallNodesHost_.size());
+    w.sign = invert ? -1.0f : 1.0f;
+    w.restitution = restitution;
+    w.friction = friction;
+    const int idx = static_cast<int>(wallsHost_.size());
+    wallsHost_.push_back(w);
+    // Every wall's node pointer must be refreshed: the pool View was just reallocated.
+    for (auto& wh : wallsHost_)
+      if (wh.shapeRoot >= 0)
+        wh.nodes = P_.wallNodes.data();
+    P_.numWalls = static_cast<int>(wallsHost_.size());
+    uploadWalls();
+    ensureContactCapacity();
+    return idx;
+  }
+
   /// Generate a collision shell for a grid SDF by sampling its own zero level set, so a caller
   /// does not have to supply one. Layer 1: previously every shape needed a hand-written generator
   /// (there were only two, for the cylinder and the box) or a marching-cubes shell computed in
@@ -1560,6 +1631,7 @@ class Simulation {
   int shellPoints_ = 0;  // LARGEST surface-shell size across shapes (contact-buffer sizing)
   std::vector<WallSdf> wallsHost_;
   std::vector<float> wallGridHost_;
+  std::vector<peclet::core::geom::ShapeNode<float>> wallNodesHost_;
   F3 defaultInvI_{2.5f, 2.5f, 2.5f};
 #ifdef PECLET_DEM_MPI
   std::unique_ptr<ParticleHalo> halo_ = std::make_unique<ParticleHalo>();
