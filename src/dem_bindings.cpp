@@ -104,7 +104,8 @@ NB_MODULE(_dem, m) {
           nb::arg("grid"), nb::arg("nx"), nb::arg("ny"), nb::arg("nz"), nb::arg("origin"),
           nb::arg("spacing"), nb::arg("shell"), nb::arg("inv_inertia"), nb::arg("bounding_radius"),
           "Import a general particle: grid SDF (flat nx*ny*nz, x-fastest), surface point shell "
-          "(M,3), unit-mass principal diagonal inverse inertia, and canonical bounding radius.")
+          "(M,3), unit-mass principal diagonal inverse inertia, and canonical bounding radius. "
+          "An EMPTY shell means: generate one by sampling the field's own zero level set.")
       .def("add_shape", &Simulation::addShape, nb::arg("shape_type"), nb::arg("radius"),
            nb::arg("height") = 0.0f, nb::arg("thickness") = 0.0f,
            "Append an analytic shape to the registry and return its index, for a simulation with a "
@@ -128,7 +129,8 @@ NB_MODULE(_dem, m) {
           nb::arg("grid"), nb::arg("nx"), nb::arg("ny"), nb::arg("nz"), nb::arg("origin"),
           nb::arg("spacing"), nb::arg("shell"), nb::arg("inv_inertia"), nb::arg("bounding_radius"),
           "Append a grid-SDF shape (the general non-spherical particle) and return its index. "
-          "set_sdf_shape stays the single-shape entry point (it RESETS the registry).")
+          "set_sdf_shape stays the single-shape entry point (it RESETS the registry). Pass an "
+          "EMPTY shell to have one generated from the field itself (core surfacePoints).")
       .def(
           "set_shape_ids",
           [](Simulation& s, nb::ndarray<int, nb::c_contig> ids) {

@@ -30,6 +30,7 @@
 #include "peclet/core/common/view.hpp"  // peclet::core::toVector — single-copy device View -> host std::vector (S2a)
 #include "periodicity.hpp"
 #include "shapes_portable.hpp"
+#include "peclet/core/geom/scene_builder.hpp"
 #include "sleeping.hpp"            // island sleeping / freezing (single-GPU statics)
 #include "solve_driver.hpp"        // demSolveContacts + SoloSolveHooks + readInt/readFloat
 #include "solve_driver_force.hpp"  // demStepForce + HertzMindlinLaw + demStepHertz
@@ -595,9 +596,12 @@ class Simulation {
       throw std::runtime_error("add_sdf_shape: grid dims must be >= 2 on each axis");
     if (static_cast<long>(nx) * ny * nz != static_cast<long>(grid.size()))
       throw std::runtime_error("add_sdf_shape: grid.size() must equal nx*ny*nz");
-    const int nPts = static_cast<int>(shellFlat.size() / 3);
+    const std::vector<float> shellUse =
+        shellFlat.empty() ? autoShell(grid, nx, ny, nz, origin, spacing, boundingRadius) : shellFlat;
+    const int nPts = static_cast<int>(shellUse.size() / 3);
     if (nPts <= 0)
-      throw std::runtime_error("add_sdf_shape: empty surface point shell");
+      throw std::runtime_error("add_sdf_shape: surface point shell is empty and could not be "
+                               "generated from the field");
     ShapeDesc sd{};
     sd.type = SHAPE_GRID_SDF;
     sd.params = F4{boundingRadius, 0, 0, 0};
@@ -613,7 +617,7 @@ class Simulation {
     sdfSamplesHost_.insert(sdfSamplesHost_.end(), grid.begin(), grid.end());
     std::vector<F3> shellPts(nPts);
     for (int i = 0; i < nPts; ++i)
-      shellPts[i] = F3{shellFlat[3 * i], shellFlat[3 * i + 1], shellFlat[3 * i + 2]};
+      shellPts[i] = F3{shellUse[3 * i], shellUse[3 * i + 1], shellUse[3 * i + 2]};
     appendShape(sd, shellPts, invInertia, boundingRadius);
     uploadShapes();
     ensureContactCapacity();
@@ -639,9 +643,13 @@ class Simulation {
       throw std::runtime_error("setSdfShape: grid dims must be >= 2 on each axis");
     if (static_cast<long>(nx) * ny * nz != static_cast<long>(grid.size()))
       throw std::runtime_error("setSdfShape: grid.size() must equal nx*ny*nz");
-    const int nPts = static_cast<int>(shellFlat.size() / 3);
+    // An EMPTY shell means "generate one from the field itself" (Layer 1).
+    const std::vector<float> shellUse =
+        shellFlat.empty() ? autoShell(grid, nx, ny, nz, origin, spacing, boundingRadius) : shellFlat;
+    const int nPts = static_cast<int>(shellUse.size() / 3);
     if (nPts <= 0)
-      throw std::runtime_error("setSdfShape: empty surface point shell");
+      throw std::runtime_error("setSdfShape: surface point shell is empty and could not be "
+                               "generated from the field");
 
     // Upload the signed-distance samples.
     P_.sdfGrid = Kokkos::View<float*, CpMem>("sdfGrid", grid.size());
@@ -678,13 +686,43 @@ class Simulation {
 
     std::vector<F3> shellPts(nPts);
     for (int i = 0; i < nPts; ++i)
-      shellPts[i] = F3{shellFlat[3 * i], shellFlat[3 * i + 1], shellFlat[3 * i + 2]};
+      shellPts[i] = F3{shellUse[3 * i], shellUse[3 * i + 1], shellUse[3 * i + 2]};
     clearShapes();
     sdfSamplesHost_ = grid;   // this shape owns the whole pool when it is the only shape
     sd.grid.offset = 0;
     appendShape(sd, shellPts, invInertia, boundingRadius);
     uploadShapes();
     ensureContactCapacity();
+  }
+
+  /// Generate a collision shell for a grid SDF by sampling its own zero level set, so a caller
+  /// does not have to supply one. Layer 1: previously every shape needed a hand-written generator
+  /// (there were only two, for the cylinder and the box) or a marching-cubes shell computed in
+  /// Python; core's surfacePoints() is driven by the SDF itself and works for any geometry.
+  std::vector<float> autoShell(const std::vector<float>& grid, int nx, int ny, int nz, F3 origin,
+                               F3 spacing, float boundingRadius) const {
+    namespace g = peclet::core::geom;
+    g::SceneBuilder<float> b;
+    const int node = b.addGrid(grid, nx, ny, nz,
+                               peclet::core::Vec3<float>{origin.x, origin.y, origin.z},
+                               peclet::core::Vec3<float>{spacing.x, spacing.y, spacing.z},
+                               g::GridExtension::kObject);
+    // Pitch: fine enough that the shell resolves the body, coarse enough not to explode the
+    // contact buffers -- ~1/12 of the bounding radius matches the density of the hand-written
+    // cylinder/box shells.
+    const float pitch = std::max(boundingRadius / 12.0f, 1e-4f);
+    const float r = boundingRadius * 1.05f;
+    const std::vector<peclet::core::Vec3<float>> pts = g::surfacePoints<float>(
+        b.view(), node, pitch, peclet::core::Vec3<float>{-r, -r, -r},
+        peclet::core::Vec3<float>{r, r, r});
+    std::vector<float> flat;
+    flat.reserve(pts.size() * 3);
+    for (const auto& q : pts) {
+      flat.push_back(q.x);
+      flat.push_back(q.y);
+      flat.push_back(q.z);
+    }
+    return flat;
   }
 
   void setDomain(float lx, float ly, float lz, bool px, bool py, bool pz) {
