@@ -132,6 +132,41 @@ KOKKOS_INLINE_FUNCTION float sdfEvalShape(F3 p, const ShapeDesc& d, GridView gri
   return sdfEval(p, d.type, d.params);
 }
 
+/// Outward gradient of a shape's SDF at canonical point `p`, NOT normalised (callers normalise,
+/// matching the previous finite-difference code).
+///
+/// EXACT closed form for the analytic kinds (Layer 1). The old path spent SIX extra sdfEvalShape
+/// calls per shell point on a central difference with a fixed eps = 1e-4 in canonical units, which
+/// is both slower and less accurate: 1e-4 is a real length in canonical space, so a shape feature
+/// or a per-particle scale far from 1 degrades the normal. A grid SDF has no closed form and keeps
+/// the central difference.
+KOKKOS_INLINE_FUNCTION F3 sdfGradShape(F3 p, const ShapeDesc& d, GridView grid) {
+  namespace prim = peclet::core::geom::prim;
+  const peclet::core::Vec3<float> q = toCoreVec(p);
+  peclet::core::Vec3<float> g;
+  switch (d.type) {
+    case SPHERE:
+      g = prim::Sphere<float>{d.params.x}.grad(q);
+      break;
+    case BOX:
+      g = prim::Box<float>{d.params.x, d.params.y, d.params.z}.grad(q);
+      break;
+    case HOLLOW_CYLINDER:
+      g = prim::HollowCylinder<float>{d.params.x, d.params.y, d.params.z}.grad(q);
+      break;
+    default: {  // SHAPE_GRID_SDF: sampled field, no closed form -- central difference as before
+      const float eps = 1e-4f;
+      return F3{sdfEvalShape(F3{p.x + eps, p.y, p.z}, d, grid) -
+                    sdfEvalShape(F3{p.x - eps, p.y, p.z}, d, grid),
+                sdfEvalShape(F3{p.x, p.y + eps, p.z}, d, grid) -
+                    sdfEvalShape(F3{p.x, p.y - eps, p.z}, d, grid),
+                sdfEvalShape(F3{p.x, p.y, p.z + eps}, d, grid) -
+                    sdfEvalShape(F3{p.x, p.y, p.z - eps}, d, grid)};
+    }
+  }
+  return F3{g.x, g.y, g.z};
+}
+
 /// Pair point-shell vs SDF contacts. pairs[numPairs][2] are (idA,idB) from the broad-phase; emits
 /// ContactC into outContacts guarded by atomic outCount (clamped to outContacts.extent(0)).
 inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int numPairs,
@@ -190,13 +225,7 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
             continue;
           }
 
-          const float eps = 1e-4f;
-          F3 nLoc{sdfEvalShape(F3{pCanB.x + eps, pCanB.y, pCanB.z}, dB, sdfGrid) -
-                      sdfEvalShape(F3{pCanB.x - eps, pCanB.y, pCanB.z}, dB, sdfGrid),
-                  sdfEvalShape(F3{pCanB.x, pCanB.y + eps, pCanB.z}, dB, sdfGrid) -
-                      sdfEvalShape(F3{pCanB.x, pCanB.y - eps, pCanB.z}, dB, sdfGrid),
-                  sdfEvalShape(F3{pCanB.x, pCanB.y, pCanB.z + eps}, dB, sdfGrid) -
-                      sdfEvalShape(F3{pCanB.x, pCanB.y, pCanB.z - eps}, dB, sdfGrid)};
+          F3 nLoc = sdfGradShape(pCanB, dB, sdfGrid);
           const float len = len3(nLoc);
           nLoc = (len > 1e-9f) ? scale3(nLoc, 1.0f / len) : F3{0, 1, 0};
 

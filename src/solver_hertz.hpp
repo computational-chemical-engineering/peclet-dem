@@ -525,13 +525,7 @@ inline void hertzShapePairForcesKokkos(
           if (effDist >= 0.0f)
             continue;
           const float delta = -effDist;
-          const float eps = 1e-4f;
-          F3 nLoc{sdfEvalShape(F3{pCanB.x + eps, pCanB.y, pCanB.z}, dB, sdfGrid) -
-                      sdfEvalShape(F3{pCanB.x - eps, pCanB.y, pCanB.z}, dB, sdfGrid),
-                  sdfEvalShape(F3{pCanB.x, pCanB.y + eps, pCanB.z}, dB, sdfGrid) -
-                      sdfEvalShape(F3{pCanB.x, pCanB.y - eps, pCanB.z}, dB, sdfGrid),
-                  sdfEvalShape(F3{pCanB.x, pCanB.y, pCanB.z + eps}, dB, sdfGrid) -
-                      sdfEvalShape(F3{pCanB.x, pCanB.y, pCanB.z - eps}, dB, sdfGrid)};
+          F3 nLoc = sdfGradShape(pCanB, dB, sdfGrid);
           const float len = len3(nLoc);
           nLoc = (len > 1e-9f) ? scale3(nLoc, 1.0f / len) : F3{0, 1, 0};
           const F3 nW = rotateVector(qB, nLoc);  // out of B = push direction on A
