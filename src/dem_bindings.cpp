@@ -105,6 +105,40 @@ NB_MODULE(_dem, m) {
           nb::arg("spacing"), nb::arg("shell"), nb::arg("inv_inertia"), nb::arg("bounding_radius"),
           "Import a general particle: grid SDF (flat nx*ny*nz, x-fastest), surface point shell "
           "(M,3), unit-mass principal diagonal inverse inertia, and canonical bounding radius.")
+      .def("add_shape", &Simulation::addShape, nb::arg("shape_type"), nb::arg("radius"),
+           nb::arg("height") = 0.0f, nb::arg("thickness") = 0.0f,
+           "Append an analytic shape to the registry and return its index, for a simulation with a "
+           "MIXTURE of shapes. initialize_shape stays the single-shape entry point (it RESETS the "
+           "registry to one shape). Assign the returned index with set_shape_ids.")
+      .def(
+          "add_sdf_shape",
+          [](Simulation& s, nb::ndarray<float, nb::c_contig> grid, int nx, int ny, int nz,
+             std::tuple<float, float, float> origin, std::tuple<float, float, float> spacing,
+             nb::ndarray<float, nb::c_contig> shell, std::tuple<float, float, float> inv_inertia,
+             float bounding_radius) {
+            return s.addSdfShape(
+                to_vec(grid), nx, ny, nz,
+                peclet::dem::F3{std::get<0>(origin), std::get<1>(origin), std::get<2>(origin)},
+                peclet::dem::F3{std::get<0>(spacing), std::get<1>(spacing), std::get<2>(spacing)},
+                to_vec(shell),
+                peclet::dem::F3{std::get<0>(inv_inertia), std::get<1>(inv_inertia),
+                                std::get<2>(inv_inertia)},
+                bounding_radius);
+          },
+          nb::arg("grid"), nb::arg("nx"), nb::arg("ny"), nb::arg("nz"), nb::arg("origin"),
+          nb::arg("spacing"), nb::arg("shell"), nb::arg("inv_inertia"), nb::arg("bounding_radius"),
+          "Append a grid-SDF shape (the general non-spherical particle) and return its index. "
+          "set_sdf_shape stays the single-shape entry point (it RESETS the registry).")
+      .def(
+          "set_shape_ids",
+          [](Simulation& s, nb::ndarray<int, nb::c_contig> ids) {
+            s.setShapeIds(std::vector<int>(ids.data(), ids.data() + ids.size()));
+          },
+          nb::arg("ids"),
+          "Per-particle shape index (one int per particle). Also refreshes each particle's "
+          "inverse inertia from its new shape, so the order of set_positions/set_shape_ids does "
+          "not matter.")
+      .def("num_shapes", &Simulation::numShapes, "Number of registered shapes.")
       .def("set_domain", &Simulation::setDomain, nb::arg("lx"), nb::arg("ly"), nb::arg("lz"),
            nb::arg("px") = true, nb::arg("py") = true, nb::arg("pz") = false,
            "Set the box size (lx,ly,lz) and per-axis periodicity.")

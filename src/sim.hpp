@@ -493,23 +493,7 @@ class Simulation {
       params = F4{radius, 0, 0, 0};  // sphere: analytic single-probe, no shell
     }
 
-    // Upload the shell (resize the View; numPoints==0 => analytic single-probe like the sphere).
     const int nPts = static_cast<int>(shell.size());
-    shellPoints_ = nPts;
-    if (nPts > 0) {
-      P_.shell = Kokkos::View<float* [3], CpMem>("shell", nPts);
-      auto hs = Kokkos::create_mirror_view(P_.shell);
-      for (int i = 0; i < nPts; ++i) {
-        hs(i, 0) = shell[i].x;
-        hs(i, 1) = shell[i].y;
-        hs(i, 2) = shell[i].z;
-      }
-      Kokkos::deep_copy(P_.shell, hs);
-    }
-
-    auto h = Kokkos::create_mirror_view(P_.shapes);
-    h(0) = ShapeDesc{shape_type, params, 0, nPts};
-    Kokkos::deep_copy(P_.shapes, h);
 
     // Per-shape inverse inertia (mass=1), faithful to CUDA Simulation::initialize.
     float ix = 1.0f, iy = 1.0f, iz = 1.0f;
@@ -538,8 +522,105 @@ class Simulation {
         ix = iy = iz = 1.0f / I;
       }
     }
-    defaultInvI_ = F3{ix, iy, iz};
+    // RESET the registry to this one shape -- initializeShape's documented behaviour is "shape 0
+    // becomes this". Use addShape() to build a mixture instead.
+    clearShapes();
+    ShapeDesc sd{shape_type, params, 0, nPts};
+    appendShape(sd, shell, F3{ix, iy, iz}, radius);
+    uploadShapes();
+    ensureContactCapacity();
   }
+
+  /// Append an analytic shape and return its index, for simulations with a MIXTURE of shapes.
+  /// Same arguments as initializeShape, which stays the "single shape" entry point (it resets the
+  /// registry). Assign the returned index to particles with setShapeIds().
+  int addShape(int shape_type, float radius, float height, float thickness) {
+    const std::size_t before = shapesHost_.size();
+    if (before == 0)
+      throw std::runtime_error("addShape: call initialize_shape/set_sphere_shape first");
+    // Reuse initializeShape's descriptor + shell construction by running it into a scratch
+    // registry, then splice the result back on top of the existing shapes.
+    std::vector<ShapeDesc> keepS = shapesHost_;
+    std::vector<F3> keepShell = shellHost_;
+    std::vector<F3> keepInvI = invIHost_;
+    std::vector<float> keepBase = baseRadiusHost_;
+    std::vector<float> keepSamples = sdfSamplesHost_;  // initializeShape clears these too
+    initializeShape(shape_type, radius, height, thickness);  // leaves exactly one shape
+    ShapeDesc added = shapesHost_[0];
+    const std::vector<F3> addedShell = shellHost_;
+    const F3 addedInvI = invIHost_[0];
+    const float addedBase = baseRadiusHost_[0];
+    shapesHost_ = keepS;
+    shellHost_ = keepShell;
+    invIHost_ = keepInvI;
+    baseRadiusHost_ = keepBase;
+    sdfSamplesHost_ = keepSamples;
+    appendShape(added, addedShell, addedInvI, addedBase);
+    uploadShapes();
+    ensureContactCapacity();
+    return static_cast<int>(shapesHost_.size()) - 1;
+  }
+
+  /// Per-particle shape assignment. Also refreshes each particle's inverse inertia from its new
+  /// shape, so the order of setPositions/setShapeIds does not matter.
+  void setShapeIds(const std::vector<int>& ids) {
+    if (static_cast<int>(ids.size()) != P_.numReal)
+      throw std::runtime_error("set_shape_ids: expected one id per particle");
+    const int nShapes = static_cast<int>(shapesHost_.size());
+    for (int v : ids)
+      if (v < 0 || v >= nShapes)
+        throw std::runtime_error("set_shape_ids: shape id out of range");
+    auto sid = Kokkos::create_mirror_view(P_.shapeId);
+    auto ii = Kokkos::create_mirror_view(P_.invInertia);
+    Kokkos::deep_copy(sid, P_.shapeId);
+    Kokkos::deep_copy(ii, P_.invInertia);
+    for (int i = 0; i < P_.numReal; ++i) {
+      sid(i) = ids[i];
+      ii(i, 0) = invIHost_[ids[i]].x;
+      ii(i, 1) = invIHost_[ids[i]].y;
+      ii(i, 2) = invIHost_[ids[i]].z;
+    }
+    Kokkos::deep_copy(P_.shapeId, sid);
+    Kokkos::deep_copy(P_.invInertia, ii);
+  }
+
+  /// Append a grid-SDF shape (the general non-spherical particle) to the mixture and return its
+  /// index. Same arguments as set_sdf_shape, which stays the single-shape entry point. The samples
+  /// are appended to the shared pool and the descriptor's offset set accordingly.
+  int addSdfShape(const std::vector<float>& grid, int nx, int ny, int nz, F3 origin, F3 spacing,
+                  const std::vector<float>& shellFlat, F3 invInertia, float boundingRadius) {
+    if (shapesHost_.empty())
+      throw std::runtime_error("add_sdf_shape: call initialize_shape/set_sdf_shape first");
+    if (nx < 2 || ny < 2 || nz < 2)
+      throw std::runtime_error("add_sdf_shape: grid dims must be >= 2 on each axis");
+    if (static_cast<long>(nx) * ny * nz != static_cast<long>(grid.size()))
+      throw std::runtime_error("add_sdf_shape: grid.size() must equal nx*ny*nz");
+    const int nPts = static_cast<int>(shellFlat.size() / 3);
+    if (nPts <= 0)
+      throw std::runtime_error("add_sdf_shape: empty surface point shell");
+    ShapeDesc sd{};
+    sd.type = SHAPE_GRID_SDF;
+    sd.params = F4{boundingRadius, 0, 0, 0};
+    sd.grid.nx = nx;
+    sd.grid.ny = ny;
+    sd.grid.nz = nz;
+    sd.grid.offset = static_cast<int>(sdfSamplesHost_.size());  // append to the shared pool
+    sd.grid.origin = toCoreVec(origin);
+    sd.grid.invSpacing = peclet::core::Vec3<float>{
+        spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
+        spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    sd.grid.extension = peclet::core::geom::GridExtension::kObject;
+    sdfSamplesHost_.insert(sdfSamplesHost_.end(), grid.begin(), grid.end());
+    std::vector<F3> shellPts(nPts);
+    for (int i = 0; i < nPts; ++i)
+      shellPts[i] = F3{shellFlat[3 * i], shellFlat[3 * i + 1], shellFlat[3 * i + 2]};
+    appendShape(sd, shellPts, invInertia, boundingRadius);
+    uploadShapes();
+    ensureContactCapacity();
+    return static_cast<int>(shapesHost_.size()) - 1;
+  }
+
+  int numShapes() const { return static_cast<int>(shapesHost_.size()); }
 
   // Import a general particle as a grid SDF (canonical, unit-scale space) + a surface point shell +
   // its unit-mass principal-frame diagonal inverse inertia. Replaces shape 0, so every particle
@@ -594,14 +675,15 @@ class Simulation {
         spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
         spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
     sd.grid.extension = peclet::core::geom::GridExtension::kObject;  // a body
-    auto h = Kokkos::create_mirror_view(P_.shapes);
-    h(0) = sd;
-    Kokkos::deep_copy(P_.shapes, h);
 
-    baseRadius_ = boundingRadius;
-    P_.baseRadius = boundingRadius;
-    defaultInvI_ = invInertia;
-    shellPoints_ = nPts;
+    std::vector<F3> shellPts(nPts);
+    for (int i = 0; i < nPts; ++i)
+      shellPts[i] = F3{shellFlat[3 * i], shellFlat[3 * i + 1], shellFlat[3 * i + 2]};
+    clearShapes();
+    sdfSamplesHost_ = grid;   // this shape owns the whole pool when it is the only shape
+    sd.grid.offset = 0;
+    appendShape(sd, shellPts, invInertia, boundingRadius);
+    uploadShapes();
     ensureContactCapacity();
   }
 
@@ -1361,7 +1443,83 @@ class Simulation {
 
   Particles P_;
   float baseRadius_ = 1.0f;
-  int shellPoints_ = 0;  // surface-shell size of the active shape (contact-buffer sizing)
+  // --- host-side shape registry (Layer 1) -------------------------------------------------
+  // The device Views (P_.shapes / P_.shell / P_.sdfGrid) are rebuilt from these by uploadShapes(),
+  // which is what assigns each shape its shellOffset and grid offset into the shared pools. Keeping
+  // the authoritative copy on the host is what makes a MIXTURE of shapes possible at all: the old
+  // code wrote descriptor slot 0 directly and had nowhere to put a second shell.
+  std::vector<ShapeDesc> shapesHost_;
+  std::vector<F3> shellHost_;         // concatenated shells; ShapeDesc::shellOffset indexes it
+  std::vector<F3> invIHost_;          // per-shape unit-mass inverse inertia
+  std::vector<float> baseRadiusHost_;  // per-shape canonical bounding radius
+  std::vector<float> sdfSamplesHost_;  // concatenated grid-SDF samples
+
+  void clearShapes() {
+    shapesHost_.clear();
+    shellHost_.clear();
+    invIHost_.clear();
+    baseRadiusHost_.clear();
+    sdfSamplesHost_.clear();
+  }
+
+  /// Append one shape, taking ownership of its shell. Fills in shellOffset from the running
+  /// concatenation; the caller has already set the grid fields (if any).
+  void appendShape(ShapeDesc sd, const std::vector<F3>& shell, F3 invI, float baseRadius) {
+    sd.shellOffset = static_cast<int>(shellHost_.size());
+    sd.numPoints = static_cast<int>(shell.size());
+    shellHost_.insert(shellHost_.end(), shell.begin(), shell.end());
+    shapesHost_.push_back(sd);
+    invIHost_.push_back(invI);
+    baseRadiusHost_.push_back(baseRadius);
+  }
+
+  /// Rebuild the device Views from the host registry.
+  void uploadShapes() {
+    const int nShapes = static_cast<int>(shapesHost_.size());
+    if (nShapes == 0)
+      return;
+    if (static_cast<int>(P_.shapes.extent(0)) < nShapes)
+      P_.shapes = Kokkos::View<ShapeDesc*, CpMem>("shapes", nShapes);
+    auto hs = Kokkos::create_mirror_view(P_.shapes);
+    for (int i = 0; i < nShapes; ++i)
+      hs(i) = shapesHost_[i];
+    Kokkos::deep_copy(P_.shapes, hs);
+
+    const int nPts = static_cast<int>(shellHost_.size());
+    if (nPts > 0) {
+      P_.shell = Kokkos::View<float* [3], CpMem>("shell", nPts);
+      auto hsh = Kokkos::create_mirror_view(P_.shell);
+      for (int i = 0; i < nPts; ++i) {
+        hsh(i, 0) = shellHost_[i].x;
+        hsh(i, 1) = shellHost_[i].y;
+        hsh(i, 2) = shellHost_[i].z;
+      }
+      Kokkos::deep_copy(P_.shell, hsh);
+    }
+
+    if (!sdfSamplesHost_.empty()) {
+      P_.sdfGrid = Kokkos::View<float*, CpMem>("sdfGrid", sdfSamplesHost_.size());
+      auto hg = Kokkos::create_mirror_view(P_.sdfGrid);
+      for (std::size_t i = 0; i < sdfSamplesHost_.size(); ++i)
+        hg(i) = sdfSamplesHost_[i];
+      Kokkos::deep_copy(P_.sdfGrid, hg);
+    }
+
+    // Broad-phase band and contact-buffer sizing must cover the LARGEST shape present, not the
+    // most recently added one.
+    float rmax = 0.0f;
+    int shellMax = 0;
+    for (int i = 0; i < nShapes; ++i) {
+      rmax = std::max(rmax, baseRadiusHost_[i]);
+      shellMax = std::max(shellMax, shapesHost_[i].numPoints);
+    }
+    baseRadius_ = rmax;
+    P_.baseRadius = rmax;
+    defaultInvI_ = invIHost_[0];
+    shellPoints_ = shellMax;
+  }
+
+  int shellPoints_ = 0;  // LARGEST surface-shell size across shapes (contact-buffer sizing)
   std::vector<WallSdf> wallsHost_;
   std::vector<float> wallGridHost_;
   F3 defaultInvI_{2.5f, 2.5f, 2.5f};
