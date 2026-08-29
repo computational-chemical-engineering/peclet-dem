@@ -140,6 +140,30 @@ NB_MODULE(_dem, m) {
           "Per-particle shape index (one int per particle). Also refreshes each particle's "
           "inverse inertia from its new shape, so the order of set_positions/set_shape_ids does "
           "not matter.")
+      .def(
+          "add_scene_shape",
+          [](Simulation& s, nb::ndarray<int, nb::c_contig> ni, nb::ndarray<float, nb::c_contig> nr,
+             int root, nb::ndarray<float, nb::c_contig> shell,
+             std::tuple<float, float, float> inv_inertia, float bounding_radius) {
+            return s.addSceneShape(
+                std::vector<int>(ni.data(), ni.data() + ni.size()),
+                std::vector<float>(nr.data(), nr.data() + nr.size()), root,
+                std::vector<float>(shell.data(), shell.data() + shell.size()),
+                peclet::dem::F3{std::get<0>(inv_inertia), std::get<1>(inv_inertia),
+                                std::get<2>(inv_inertia)},
+                bounding_radius);
+          },
+          nb::arg("node_ints"), nb::arg("node_reals"), nb::arg("root"), nb::arg("shell"),
+          nb::arg("inv_inertia"), nb::arg("bounding_radius"),
+          "Register a COMPOSED analytic particle shape from core's flat node encoding (the arrays "
+          "peclet.core.geom.SceneBuilder.encode() returns; CSG of the full leaf vocabulary): the "
+          "collision field is the exact tree, evaluated in canonical body space. shell: (M,3) "
+          "surface probe points (bake the tree and run the shell path -- the point-shell model "
+          "still needs probes). inv_inertia: unit-mass principal diagonal inverse inertia; "
+          "bounding_radius: canonical enclosing radius. THE CANONICAL FRAME MUST BE THE PRINCIPAL "
+          "INERTIA FRAME (SceneBuilder.principal_frame emits exactly that); a non-principal tree "
+          "runs the diagonal-inertia rotational update on the wrong frame, silently. Returns the "
+          "shape id for set_shape_ids.")
       .def("num_shapes", &Simulation::numShapes, "Number of registered shapes.")
       .def("set_domain", &Simulation::setDomain, nb::arg("lx"), nb::arg("ly"), nb::arg("lz"),
            nb::arg("px") = true, nb::arg("py") = true, nb::arg("pz") = false,

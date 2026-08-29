@@ -722,6 +722,58 @@ class Simulation {
   ///
   /// Grid leaves are not supported inside an analytic wall tree -- use add_sdf_wall for a sampled
   /// container.
+  // Composed-analytic particle shape (SHAPE_SCENE): decode core's flat node encoding into the
+  // shared per-Simulation pool (child indices rebased to ABSOLUTE pool indices, exactly like
+  // addAnalyticWall), register a ShapeDesc whose tree pointer is patched at uploadShapes. The
+  // canonical frame is trusted to be the PRINCIPAL frame -- SceneBuilder.principal_frame emits
+  // that; passing a non-principal tree runs the diagonal-inertia rotational update on the wrong
+  // frame, silently, which is why the docstring shouts about it.
+  int addSceneShape(const std::vector<int>& nodeInts, const std::vector<float>& nodeReals,
+                    int root, const std::vector<float>& shellFlat, F3 invInertia,
+                    float boundingRadius) {
+    namespace g = peclet::core::geom;
+    if (nodeInts.size() % g::kNodeIntStride || nodeReals.size() % g::kNodeRealStride)
+      throw std::runtime_error("add_scene_shape: node arrays are not a whole number of records");
+    const int n = static_cast<int>(nodeInts.size() / g::kNodeIntStride);
+    if (n == 0 || static_cast<int>(nodeReals.size() / g::kNodeRealStride) != n)
+      throw std::runtime_error("add_scene_shape: node int/real counts disagree");
+    if (root < 0 || root >= n)
+      throw std::runtime_error("add_scene_shape: root out of range");
+    const int base = static_cast<int>(shapeNodesHost_.size());
+    for (int i = 0; i < n; ++i) {
+      g::ShapeNode<float> nd = g::decodeNode<float>(&nodeInts[i * g::kNodeIntStride],
+                                                    &nodeReals[i * g::kNodeRealStride]);
+      if (nd.kind == g::kGrid)
+        throw std::runtime_error(
+            "add_scene_shape: grid leaves are not supported in particle trees (use set_sdf_shape "
+            "for sampled shapes)");
+      if (nd.kind >= g::kCsgBase) {
+        nd.aux0 += base;
+        nd.aux1 += base;
+      }
+      shapeNodesHost_.push_back(nd);
+    }
+    std::vector<F3> shellPts;
+    if (shellFlat.size() % 3)
+      throw std::runtime_error("add_scene_shape: shell must be (M,3)");
+    shellPts.reserve(shellFlat.size() / 3);
+    for (std::size_t i = 0; i + 2 < shellFlat.size(); i += 3)
+      shellPts.push_back(F3{shellFlat[i], shellFlat[i + 1], shellFlat[i + 2]});
+    if (shellPts.empty())
+      throw std::runtime_error(
+          "add_scene_shape: an empty shell would make the body invisible to contacts -- bake the "
+          "tree and generate one (SceneBuilder.bake + the marching-cubes shell path)");
+    ShapeDesc sd{};
+    sd.type = SHAPE_SCENE;
+    sd.params = F4{boundingRadius, 0, 0, 0};
+    sd.nodeCount = 0;   // patched at uploadShapes (whole-pool count; root is absolute)
+    sd.shapeRoot = base + root;
+    appendShape(sd, shellPts, invInertia, boundingRadius);
+    uploadShapes();
+    return static_cast<int>(shapesHost_.size()) - 1;
+  }
+
+
   int addAnalyticWall(const std::vector<int>& nodeInts, const std::vector<float>& nodeReals,
                       int root, bool invert, float restitution, float friction) {
     namespace g = peclet::core::geom;
@@ -1589,11 +1641,27 @@ class Simulation {
     const int nShapes = static_cast<int>(shapesHost_.size());
     if (nShapes == 0)
       return;
+    // Composed-analytic node pool first, so the ShapeDesc pointers below can refer to it. Rebuilt
+    // whole (KBs); every SHAPE_SCENE descriptor points at the pool BASE with an absolute root, so
+    // one View serves every tree (the wallNodes pattern).
+    if (!shapeNodesHost_.empty()) {
+      P_.shapeNodes = Kokkos::View<peclet::core::geom::ShapeNode<float>*, CpMem>(
+          "shapeNodes", shapeNodesHost_.size());
+      auto hn = Kokkos::create_mirror_view(P_.shapeNodes);
+      for (std::size_t i = 0; i < shapeNodesHost_.size(); ++i)
+        hn(i) = shapeNodesHost_[i];
+      Kokkos::deep_copy(P_.shapeNodes, hn);
+    }
     if (static_cast<int>(P_.shapes.extent(0)) < nShapes)
       P_.shapes = Kokkos::View<ShapeDesc*, CpMem>("shapes", nShapes);
     auto hs = Kokkos::create_mirror_view(P_.shapes);
-    for (int i = 0; i < nShapes; ++i)
+    for (int i = 0; i < nShapes; ++i) {
       hs(i) = shapesHost_[i];
+      if (hs(i).type == SHAPE_SCENE) {
+        hs(i).nodes = P_.shapeNodes.data();
+        hs(i).nodeCount = static_cast<int>(P_.shapeNodes.extent(0));
+      }
+    }
     Kokkos::deep_copy(P_.shapes, hs);
 
     const int nPts = static_cast<int>(shellHost_.size());
@@ -1634,6 +1702,7 @@ class Simulation {
   std::vector<WallSdf> wallsHost_;
   std::vector<float> wallGridHost_;
   std::vector<peclet::core::geom::ShapeNode<float>> wallNodesHost_;
+  std::vector<peclet::core::geom::ShapeNode<float>> shapeNodesHost_;  // SHAPE_SCENE pool
   F3 defaultInvI_{2.5f, 2.5f, 2.5f};
 #ifdef PECLET_DEM_MPI
   std::unique_ptr<ParticleHalo> halo_ = std::make_unique<ParticleHalo>();

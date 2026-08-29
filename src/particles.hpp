@@ -286,6 +286,8 @@ struct Particles {
   Kokkos::View<float*, CpMem> wallGrid;
   // shape nodes backing ANALYTIC walls (Layer 1); WallSdf::nodes points into this
   Kokkos::View<peclet::core::geom::ShapeNode<float>*, CpMem> wallNodes;
+  // SHAPE_SCENE particle trees: the pooled node table (base pointer + absolute indices)
+  Kokkos::View<peclet::core::geom::ShapeNode<float>*, CpMem> shapeNodes;
 
   // --- sizes & params (host) ---
   int capacity = 0, numReal = 0, numParticles = 0;
@@ -438,6 +440,7 @@ struct Particles {
     walls = Kokkos::View<WallSdf*, CpMem>("walls", 1);      // resized by addSdfWall
     wallGrid = Kokkos::View<float*, CpMem>("wallGrid", 1);  // concatenated wall samples
     wallNodes = Kokkos::View<peclet::core::geom::ShapeNode<float>*, CpMem>("wallNodes", 1);
+    shapeNodes = Kokkos::View<peclet::core::geom::ShapeNode<float>*, CpMem>("shapeNodes", 1);
     numWalls = 0;
   }
 

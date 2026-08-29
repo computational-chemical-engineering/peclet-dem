@@ -38,6 +38,13 @@ struct ShapeDesc {
   // the trilinear chain and moved 185/4000 CUDA results by ~1 ULP (Layer 0 rung 3). Passing a
   // prebuilt descriptor through is bit-identical to the pre-port code on every backend.
   peclet::core::geom::GridDesc<float> grid;  // extension = kObject (a body)
+  // --- composed-analytic descriptor (type == SHAPE_SCENE); null/-1 for everything else ---
+  // A raw pointer into the Simulation's pooled device node View (same pattern as WallSdf.nodes:
+  // the owning View lives on the Simulation so ShapeDesc stays POD and device-copyable). Child
+  // indices are ABSOLUTE into the pool (rebased at add_scene_shape, like addAnalyticWall).
+  const peclet::core::geom::ShapeNode<float>* nodes = nullptr;
+  int nodeCount = 0;
+  int shapeRoot = -1;
 };
 
 struct PlaneP {
@@ -146,6 +153,11 @@ KOKKOS_INLINE_FUNCTION float sampleWallSdf(F3 p, const WallSdf& w, GridView grid
 KOKKOS_INLINE_FUNCTION float sdfEvalShape(F3 p, const ShapeDesc& d, GridView grid) {
   if (d.type == SHAPE_GRID_SDF)
     return sampleGridSdf(p, d, grid);
+  if (d.type == SHAPE_SCENE)  // composed analytic tree, exact in canonical body space
+    return peclet::core::geom::evalTree<float>(
+        peclet::core::geom::TablePtr<peclet::core::geom::ShapeNode<float>>{d.nodes}, d.nodeCount,
+        d.shapeRoot, toCoreVec(p), peclet::core::geom::TablePtr<peclet::core::geom::GridDesc<float>>{nullptr},
+        peclet::core::geom::PoolPtr<float>{nullptr});
   return sdfEval(p, d.type, d.params);
 }
 
@@ -171,7 +183,8 @@ KOKKOS_INLINE_FUNCTION F3 sdfGradShape(F3 p, const ShapeDesc& d, GridView grid) 
     case HOLLOW_CYLINDER:
       g = prim::HollowCylinder<float>{d.params.x, d.params.y, d.params.z}.grad(q);
       break;
-    default: {  // SHAPE_GRID_SDF: sampled field, no closed form -- central difference as before
+    default: {  // SHAPE_GRID_SDF / SHAPE_SCENE: central difference (a tree has no closed-form
+                // gradient at the runtime level yet; the fixed eps caveat from Layer 1 applies)
       const float eps = 1e-4f;
       return F3{sdfEvalShape(F3{p.x + eps, p.y, p.z}, d, grid) -
                     sdfEvalShape(F3{p.x - eps, p.y, p.z}, d, grid),

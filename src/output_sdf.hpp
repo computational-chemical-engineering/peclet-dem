@@ -60,7 +60,7 @@ inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 
           rbound = Kokkos::sqrt(r * r + (h * 0.5f) * (h * 0.5f));
         } else if (shp.type == SPHERE)
           rbound = shp.params.x;
-        else if (shp.type == SHAPE_GRID_SDF)
+        else if (shp.type == SHAPE_GRID_SDF || shp.type == SHAPE_SCENE)
           rbound = shp.params.x;  // canonical bounding radius stored in params.x
         rbound *= sc;
         rbound *= 1.2f;
@@ -98,6 +98,8 @@ inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 
                 distc = sdfSphere(plocal, shp.params);
               else if (shp.type == SHAPE_GRID_SDF)
                 distc = sampleGridSdf(plocal, shp, sdfGrid);
+              else if (shp.type == SHAPE_SCENE)
+                distc = sdfEvalShape(plocal, shp, sdfGrid);  // composed tree, exact
               const float dist = distc * sc;
               const int wx = (x % rx + rx) % rx, wy = (y % ry + ry) % ry, wz = (z % rz + rz) % rz;
               if (!px && (x < 0 || x >= rx))

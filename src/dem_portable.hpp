@@ -87,7 +87,17 @@ KOKKOS_INLINE_FUNCTION F4 quatMult(F4 a, F4 b) {
 //
 // The enum values are also core's ShapeKind values (core's kGrid/kSphere/kHollowCylinder/kBox
 // = 0/1/2/3 were chosen to match), so a shape id means the same thing on both sides.
-enum ShapeKind { SHAPE_GRID_SDF = 0, SPHERE = 1, HOLLOW_CYLINDER = 2, BOX = 3 };
+enum ShapeKind {
+  SHAPE_GRID_SDF = 0,
+  SPHERE = 1,
+  HOLLOW_CYLINDER = 2,
+  BOX = 3,
+  // A COMPOSED analytic shape: a core geom node tree (CSG of the full leaf vocabulary), evaluated
+  // exactly in canonical body space -- the particle sibling of the Layer-1 analytic walls. The
+  // canonical frame MUST be the principal inertia frame (the solver's diagonal-inertia model);
+  // SceneBuilder::principal_frame / addReframed produces exactly that, no resampling.
+  SHAPE_SCENE = 4,
+};
 
 /// F3 -> core's Real-templated point type. Layout-identical; this is a type change, not a copy.
 KOKKOS_INLINE_FUNCTION peclet::core::Vec3<float> toCoreVec(F3 p) {
