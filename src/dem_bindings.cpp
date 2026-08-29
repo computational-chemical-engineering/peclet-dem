@@ -312,6 +312,34 @@ NB_MODULE(_dem, m) {
           "by "
           "grains in contact even though the geometry is static). Cheap; call every step for a "
           "vibrating wall.")
+      .def(
+          "set_wall_transform",
+          [](Simulation& s, int wall_index, std::tuple<float, float, float> translation,
+             std::tuple<float, float, float, float> quat) {
+            s.setWallTransform(wall_index,
+                               peclet::dem::F3{std::get<0>(translation), std::get<1>(translation),
+                                               std::get<2>(translation)},
+                               std::get<0>(quat), std::get<1>(quat), std::get<2>(quat),
+                               std::get<3>(quat));
+          },
+          nb::arg("wall_index"), nb::arg("translation") = std::make_tuple(0.0f, 0.0f, 0.0f),
+          nb::arg("quat") = std::make_tuple(0.0f, 0.0f, 0.0f, 1.0f),
+          "Place an ANALYTIC wall (add_analytic_wall) rigidly in the world: quat (x,y,z,w) then "
+          "translation, composed onto the AUTHORED root transform, so calls are absolute and never "
+          "compound. This moves the GEOMETRY -- a stirrer blade sweeps -- where set_wall_velocity "
+          "only gives the static surface a velocity field (enough for an axisymmetric drum). Drive "
+          "both together each step: integrate ang_vel into the quaternion here and pass the same "
+          "ang_vel to set_wall_velocity. Grid-SDF walls have no tree and are refused.")
+      .def(
+          "wall_sdf_at",
+          [](Simulation& s, int wall_index, nb::ndarray<float, nb::c_contig> pts) {
+            return s.wallSdfAt(wall_index, to_vec(pts));
+          },
+          nb::arg("wall_index"), nb::arg("points"),
+          "Diagnostic: the wall's signed distance at world points, an (M,3) array in -> length-M "
+          "list out. POSITIVE in the void where the grains live -- exactly what the narrow phase "
+          "reads, so it is the honest check of a set_wall_transform placement and the way to draw "
+          "a stirrer.")
       // Accepts (N,3) or (N,4) like CUDA set_positions; column 3 (if present) is inv_mass (w==0
       // -> 1.0).
       .def(
@@ -352,6 +380,18 @@ NB_MODULE(_dem, m) {
           "step as dv = F*invMass*dt; persists until re-set or cleared.")
       .def("clear_external_forces", &Simulation::clearExternalForces,
            "Zero all per-particle external forces.")
+      .def(
+          "set_external_torques",
+          [](Simulation& s, nb::ndarray<float, nb::c_contig> a) { s.setExternalTorques(to_vec(a)); },
+          "Set the per-particle external TORQUE in the WORLD frame from an (N,3) array (the "
+          "resolved-CFD-DEM hydrodynamic torque, a magnetic couple, ...). Applied each step in the "
+          "angular predictor as Euler's equation in the body frame, dw = invI*(tau_body - w x I "
+          "w)*dt, alongside the gyroscopic term that is already there; persists until re-set or "
+          "cleared. Only bodies with a finite inertia respond -- a torque on a body whose "
+          "invInertia is zero is inert, exactly as the gyroscopic term is. Sleeping is disabled "
+          "while a torque is set, as it is for external forces.")
+      .def("clear_external_torques", &Simulation::clearExternalTorques,
+           "Zero all per-particle external torques (and re-enable island sleeping).")
       .def(
           "set_quaternions",
           [](Simulation& s, nb::ndarray<float, nb::c_contig> a) { s.setQuaternions(to_vec(a)); },

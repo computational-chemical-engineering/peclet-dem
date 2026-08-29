@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <Kokkos_Core.hpp>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -68,7 +69,8 @@ inline void demStep(Particles& P) {
 
   predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
                         P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
-                        P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce);
+                        P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce,
+                        P.extTorque);
 
   // Island sleeping (single-GPU statics, opt-in, gravity on, no external drag): freeze the
   // currently-asleep bodies so gravity/prediction do not move them; the wake pass + both-asleep
@@ -76,7 +78,8 @@ inline void demStep(Particles& P) {
   // sleeping.hpp.
   const float gMag =
       std::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y + P.gravity.z * P.gravity.z);
-  const bool sleepStep = P.sleepingEnabled && gMag > 0.0f && !P.extForceActive;
+  const bool sleepStep =
+      P.sleepingEnabled && gMag > 0.0f && !P.extForceActive && !P.extTorqueActive;
   const float sleepVRest = 2.0f * P.dt * gMag;
   if (sleepStep)
     freezeAsleepKokkos(P.numReal, P.asleep, P.pos, P.quat, P.posPred, P.quatPred, P.velPred,
@@ -297,7 +300,8 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   P.numParticles = P.numReal;
   predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
                         P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
-                        P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce);
+                        P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce,
+                        P.extTorque);
 
   // 2. Gather ghosts (real mass) from owners over the halo: full state -- including gid,
   //    materialId and the warm grounded level -- into the ghost slots; sets
@@ -805,6 +809,9 @@ class Simulation {
     WallSdf w{};
     w.shapeRoot = base + root;
     w.nodeCount = static_cast<int>(wallNodesHost_.size());
+    // R1: the AUTHORED root transform, kept so setWallTransform composes onto it instead of onto
+    // the previous frame's result (which would compound and drift).
+    wallRootTf_[base + root] = wallNodesHost_[(std::size_t)(base + root)].transform;
     w.sign = invert ? -1.0f : 1.0f;
     w.restitution = restitution;
     w.friction = friction;
@@ -1111,6 +1118,69 @@ class Simulation {
     uploadWalls();
   }
 
+  // R1: RIGID-BODY PLACEMENT of an analytic wall -- rotate/translate the GEOMETRY, not just its
+  // surface-velocity field. setWallVelocity alone is enough for an axisymmetric wall (a drum
+  // barrel looks the same at every angle), but a stirrer blade has to actually move. The world
+  // transform W is composed ONTO THE AUTHORED root transform (kept from add_analytic_wall), so
+  // repeated calls place the wall absolutely and never compound; the KB-sized node pool is
+  // re-uploaded, which is the whole cost.
+  //
+  // W is the placement of the authored frame in the world: a probe point p is evaluated as
+  // eval_authored(toCanonical(W, p)). Drive it together with setWallVelocity (v = linVel +
+  // angVel x (p - center)) so the surface velocity a grain feels matches the geometry it touches;
+  // nothing here infers one from the other.
+  void setWallTransform(int wallIndex, F3 translation, float qx, float qy, float qz, float qw) {
+    namespace g = peclet::core::geom;
+    if (wallIndex < 0 || wallIndex >= static_cast<int>(wallsHost_.size()))
+      throw std::runtime_error("setWallTransform: wall index out of range");
+    const int root = wallsHost_[(std::size_t)wallIndex].shapeRoot;
+    if (root < 0)
+      throw std::runtime_error(
+          "setWallTransform: this wall is a sampled GRID SDF, which has no shape tree to place -- "
+          "only analytic walls (add_analytic_wall) can be moved");
+    const auto it = wallRootTf_.find(root);
+    if (it == wallRootTf_.end())
+      throw std::runtime_error("setWallTransform: authored root transform missing (internal)");
+    g::Transform<float> W;
+    W.translation = peclet::core::Vec3<float>{translation.x, translation.y, translation.z};
+    W.rotation = peclet::core::Quat<float>{qx, qy, qz, qw};
+    W.scale = 1.0f;
+    wallNodesHost_[(std::size_t)root].transform =
+        g::SceneBuilder<float>::composeTransform(W, it->second);
+    auto hn = Kokkos::create_mirror_view(P_.wallNodes);
+    for (std::size_t i = 0; i < wallNodesHost_.size(); ++i)
+      hn(i) = wallNodesHost_[i];
+    Kokkos::deep_copy(P_.wallNodes, hn);
+  }
+
+  // Diagnostic/authoring probe: the wall's own SDF at world points (flat [m*3]), sign included --
+  // POSITIVE in the void where the grains live. This is exactly what the narrow phase reads
+  // (sampleWallSdf), so it is the honest way to check a placement or draw a stirrer.
+  std::vector<float> wallSdfAt(int wallIndex, const std::vector<float>& pts) const {
+    if (wallIndex < 0 || wallIndex >= static_cast<int>(wallsHost_.size()))
+      throw std::runtime_error("wall_sdf_at: wall index out of range");
+    const int m = static_cast<int>(pts.size() / 3);
+    std::vector<float> out((std::size_t)m, 0.0f);
+    const WallSdf w = wallsHost_[(std::size_t)wallIndex];
+    Kokkos::View<float*, CpMem> d("wallProbe", std::max(1, m));
+    Kokkos::View<float*, CpMem> q("wallProbePts", std::max(1, 3 * m));
+    auto hq = Kokkos::create_mirror_view(q);
+    for (int i = 0; i < 3 * m; ++i)
+      hq(i) = pts[(std::size_t)i];
+    Kokkos::deep_copy(q, hq);
+    auto grid = P_.wallGrid;
+    Kokkos::parallel_for(
+        "peclet::dem::wall_sdf_probe", Kokkos::RangePolicy<CpExec>(0, m), KOKKOS_LAMBDA(int i) {
+          d(i) = sampleWallSdf(F3{q(3 * i), q(3 * i + 1), q(3 * i + 2)}, w, grid);
+        });
+    Kokkos::fence();
+    auto hd = Kokkos::create_mirror_view(d);
+    Kokkos::deep_copy(hd, d);
+    for (int i = 0; i < m; ++i)
+      out[(std::size_t)i] = hd(i);
+    return out;
+  }
+
   // positions: flat [n*3]; (re)sets the real-particle count and default state.
   void setPositions(const std::vector<float>& xyz) {
     const int n = static_cast<int>(xyz.size() / 3);
@@ -1197,6 +1267,26 @@ class Simulation {
     Kokkos::deep_copy(P_.extForce, ef);
   }
   void clearExternalForces() { Kokkos::deep_copy(P_.extForce, 0.0f); }
+  // Per-particle external TORQUE in the WORLD frame, an (N,3) flat array. Applied in the next
+  // step()'s angular predict as the body-frame Euler update dw = invI*(tau_body - w x I w)*dt.
+  // Persists across steps until re-set or cleared. Only bodies with a finite inertia (invInertia
+  // > 0, i.e. a registered non-degenerate shape) respond -- a torque on a point mass is silently
+  // inert, exactly as the gyroscopic term is.
+  void setExternalTorques(const std::vector<float>& t) {
+    auto et = Kokkos::create_mirror_view(P_.extTorque);
+    for (int i = 0; i < P_.numReal && 3 * i + 2 < (int)t.size(); ++i) {
+      et(i, 0) = t[3 * i];
+      et(i, 1) = t[3 * i + 1];
+      et(i, 2) = t[3 * i + 2];
+    }
+    Kokkos::deep_copy(P_.extTorque, et);
+    P_.extTorqueActive = true;
+  }
+  void clearExternalTorques() {
+    Kokkos::deep_copy(P_.extTorque, 0.0f);
+    P_.extTorqueActive = false;
+  }
+  const V3& externalTorquesView() const { return P_.extTorque; }
   const V3& externalForcesView() const { return P_.extForce; }
   const Vf& invMassView() const { return P_.invMass; }
   // rigid-body rotation state (the pipeline integrates the gyroscopic Euler term + quaternion
@@ -1702,6 +1792,8 @@ class Simulation {
   std::vector<WallSdf> wallsHost_;
   std::vector<float> wallGridHost_;
   std::vector<peclet::core::geom::ShapeNode<float>> wallNodesHost_;
+  // R1: authored root transform per analytic-wall root node (see setWallTransform).
+  std::map<int, peclet::core::geom::Transform<float>> wallRootTf_;
   std::vector<peclet::core::geom::ShapeNode<float>> shapeNodesHost_;  // SHAPE_SCENE pool
   F3 defaultInvI_{2.5f, 2.5f, 2.5f};
 #ifdef PECLET_DEM_MPI

@@ -1,5 +1,6 @@
 // Correctness of the Kokkos time-integration kernels (integration.cu port) against a host
-// replication. Runs the per-step sequence: predict velocity (gravity + gyroscopic) -> inject delta
+// replication. Runs the per-step sequence: predict velocity (gravity + external force + gyroscopic
+// + external torque) -> inject delta
 // velocities -> apply velocity deltas -> re-integrate (persist v, trapezoidal x, quat integrate) ->
 // inject delta positions + contact counts -> Jacobi count-averaged apply -> final commit (periodic
 // wrap). Element-wise kernels are deterministic, so device must match host within float tol;
@@ -31,6 +32,9 @@ int main(int argc, char** argv) {
     std::vector<float> px(N), py(N), pz(N), im(N), qx(N), qy(N), qz(N), qw(N);
     std::vector<float> vx(N), vy(N), vz(N), ax(N), ay(N), az(N), iix(N), iiy(N), iiz(N);
     std::vector<float> dvx(N), dvy(N), dvz(N), dax(N), day(N), daz(N), dpx(N), dpy(N), dpz(N);
+    // Non-zero external force AND torque (the CFD-DEM coupling buffers): both enter the predictor,
+    // the torque through Euler's equation in the body frame beside the gyroscopic term.
+    std::vector<float> efx(N), efy(N), efz(N), etx(N), ety(N), etz(N);
     std::vector<int> cnt(N);
     for (int i = 0; i < N; ++i) {
       px[i] = uf(rng) * 5;
@@ -61,6 +65,12 @@ int main(int argc, char** argv) {
       dpx[i] = uf(rng) * 0.1f;
       dpy[i] = uf(rng) * 0.1f;
       dpz[i] = uf(rng) * 0.1f;
+      efx[i] = uf(rng) * 0.5f;
+      efy[i] = uf(rng) * 0.5f;
+      efz[i] = uf(rng) * 0.5f;
+      etx[i] = uf(rng) * 0.3f;
+      ety[i] = uf(rng) * 0.3f;
+      etz[i] = uf(rng) * 0.3f;
       cnt[i] = 0;
     }
 
@@ -106,10 +116,11 @@ int main(int argc, char** argv) {
     Vi cc("cc", N);
 
     // --- device sequence ---
-    V3 extF("extF", N);  // zero external force (the CFD-DEM drag buffer; default no-op)
+    V3 extF = mk3("extF", efx, efy, efz);  // CFD-DEM drag buffer
+    V3 extT = mk3("extT", etx, ety, etz);  // resolved-CFD-DEM couple (world frame)
     predictVelocityKokkos(N, pos, invMass, vel, quat, angVel, invI, posPred, quatPred, velPred,
                           angVelPred, deltaPos, deltaQuat, deltaVel, deltaAngVel, cc, gravity, dt,
-                          extF);
+                          extF, extT);
     // inject delta velocities
     {
       auto h = Kokkos::create_mirror_view(deltaVel);
@@ -183,8 +194,10 @@ int main(int argc, char** argv) {
       float invM = im[i];
       // predict velocity
       F3 v{vx[i], vy[i], vz[i]};
-      if (invM > 0)
+      if (invM > 0) {
         v = add3(v, scale3(gravity, dt));
+        v = add3(v, scale3(F3{efx[i], efy[i], efz[i]}, invM * dt));
+      }
       F3 wpred{ax[i], ay[i], az[i]};
       F3 invI3{iix[i], iiy[i], iiz[i]};
       F4 q{qx[i], qy[i], qz[i], qw[i]};
@@ -194,7 +207,8 @@ int main(int argc, char** argv) {
               invI3.z > 1e-9f ? 1.f / invI3.z : 0.f};
         F3 Lb{Ib.x * wb.x, Ib.y * wb.y, Ib.z * wb.z};
         F3 wxL = cross3v(wb, Lb);
-        F3 al{-invI3.x * wxL.x, -invI3.y * wxL.y, -invI3.z * wxL.z};
+        F3 tb = invRotateVector(q, F3{etx[i], ety[i], etz[i]});
+        F3 al{invI3.x * (tb.x - wxL.x), invI3.y * (tb.y - wxL.y), invI3.z * (tb.z - wxL.z)};
         wb = add3(wb, scale3(al, dt));
         wpred = rotateVector(q, wb);
       }

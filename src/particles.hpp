@@ -47,6 +47,12 @@ struct Particles {
   Kokkos::View<float* [2], CpMem> planeFriction;
   Vf rad;       // effective broadphase radius scratch (scale * globalScale)
   V3 extForce;  // per-particle external FORCE (e.g. fluid drag); F=ma => dv = extForce*invMass*dt
+  // Per-particle external TORQUE in the WORLD frame (resolved CFD-DEM hydrodynamic torque, a
+  // magnetic couple, ...). Rotated into the body frame in the predictor, where the gyroscopic
+  // Euler term already lives:  dw_body = invI * (tau_body - w x I w) * dt.  World frame is the
+  // caller-facing convention because that is what every force/torque source produces; the body
+  // frame is an internal detail of the principal-axis inertia representation.
+  V3 extTorque;
 
   // --- collision/contact/manifold buffers ---
   Kokkos::View<int* [2], CpMem> pairs;        // broadphase candidates (maxPairs)
@@ -250,6 +256,7 @@ struct Particles {
   // and the settled-bed freeze both preserved. PECLET_DEM_SLEEP_INVMASS_FRAC overrides.
   float sleepImmovableFrac = 0.01f;
   bool extForceActive = false;        // CFD-DEM drag present -> sleeping disabled this step
+  bool extTorqueActive = false;       // external couple present -> sleeping disabled this step
   // --- Verlet-cached broadphase for the impulse step (single-GPU, non-periodic; see demStep) ---
   // The impulse broadphase rebuilds the ArborX pair list every step; between rebuilds no new pair
   // can appear if no particle has moved more than skin/2 (with the list built at margin + skin).
@@ -341,6 +348,7 @@ struct Particles {
     planeFriction = Kokkos::View<float* [2], CpMem>("planeFriction", cap);
     rad = Vf("rad", cap);
     extForce = V3("extForce", cap);  // zero-initialised => no external force by default
+    extTorque = V3("extTorque", cap);
     pairs = Kokkos::View<int* [2], CpMem>("pairs", maxPairs);
     contacts = Kokkos::View<ContactC*, CpMem>("contacts", maxContacts);
     manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", maxContacts);
@@ -481,6 +489,7 @@ struct Particles {
     Kokkos::resize(planeFriction, newCap);
     Kokkos::resize(rad, newCap);
     Kokkos::resize(extForce, newCap);
+    Kokkos::resize(extTorque, newCap);
     // materialId is written per GHOST slot by generateGhostsKokkos (guarded by `capacity`),
     // so it MUST track the padded capacity like every other per-slot array. Its absence here
     // was a silent out-of-bounds write into the neighbouring allocation — harmless or

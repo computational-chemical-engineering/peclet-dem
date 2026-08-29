@@ -44,7 +44,8 @@ KOKKOS_INLINE_FUNCTION void st4(const V4& v, int i, F4 a) {
 inline void predictVelocityKokkos(int n, V3 pos, Vf invMass, V3 vel, V4 quat, V3 angVel,
                                   V3 invInertia, V3 posPred, V4 quatPred, V3 velPred, V3 angVelPred,
                                   V3 deltaPos, V4 deltaQuat, V3 deltaVel, V3 deltaAngVel,
-                                  Vi constraintCounts, F3 gravity, float dt, V3 extForce) {
+                                  Vi constraintCounts, F3 gravity, float dt, V3 extForce,
+                                  V3 extTorque) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::predict_velocity", Kokkos::RangePolicy<CpExec>(space, 0, n),
@@ -70,7 +71,13 @@ inline void predictVelocityKokkos(int n, V3 pos, Vf invMass, V3 vel, V4 quat, V3
                         (invI.z > 1e-9f) ? 1.0f / invI.z : 0.0f};
             const F3 Lb{Ib.x * wb.x, Ib.y * wb.y, Ib.z * wb.z};
             const F3 wxL = cross3v(wb, Lb);
-            const F3 alpha{-invI.x * wxL.x, -invI.y * wxL.y, -invI.z * wxL.z};
+            // Euler's equations in the body (principal) frame:
+            //   I dw/dt = tau_body - w x (I w)   =>   dw = invI (tau_body - w x I w) dt.
+            // The external torque arrives in the WORLD frame and is rotated in here, the same
+            // way the angular velocity above is.
+            const F3 tb = invRotateVector(q, ldF3(extTorque, i));
+            const F3 alpha{invI.x * (tb.x - wxL.x), invI.y * (tb.y - wxL.y),
+                           invI.z * (tb.z - wxL.z)};
             wb = add3(wb, scale3(alpha, dt));
             wpred = rotateVector(q, wb);
           }
