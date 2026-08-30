@@ -232,7 +232,13 @@ NB_MODULE(_dem, m) {
       .def("set_dt", &Simulation::setDt, "Set the time step dt.")
       .def("set_material_params", &Simulation::setMaterialParams, nb::arg("restitution_normal"),
            nb::arg("restitution_tangent") = 0.0f, nb::arg("friction") = 0.0f,
-           "Set normal/tangential restitution and the Coulomb friction coefficient.")
+           "Set the BODY-BODY normal/tangential restitution and Coulomb friction coefficient. The "
+           "default friction is ZERO, and add_analytic_wall / add_sdf_wall set the particle-WALL "
+           "material only -- so a bed more than a few layers deep run with the defaults behaves "
+           "like a liquid: it transmits full hydrostatic pressure to the container and the "
+           "position solve squeezes grains through the boundary. That failure is silent and looks "
+           "like a solver-convergence bug (raising the position iterations and halving dt do not "
+           "move it). Set a non-zero friction for any deep bed.")
       .def("set_material_ids", &Simulation::setMaterialIds, nb::arg("ids"),
            "Per-particle material ids (0..7). Pair (e, mu) values come from set_pair_material; "
            "without any set_pair_material call the global material applies everywhere.")
@@ -472,7 +478,10 @@ NB_MODULE(_dem, m) {
           "get_scales", [](const Simulation& s) { return flat(s.getScales()); },
           "Return per-particle scales as a numpy array.")
       .def("step", &Simulation::step, nb::arg("dt") = 0.0f,
-           "Advance the simulation one step (dt=0 uses the configured time step).")
+           "Advance the simulation one step of length dt. dt is used AS GIVEN -- the default 0.0 "
+           "does NOT fall back to the time step set by set_dt; it runs a dynamics-free RELAXATION "
+           "step (overlap removal only), so step() with no argument advances nothing and a driver "
+           "calling it runs happily with frozen particles. Always pass dt explicitly.")
       .def(
           "get_sdf_grid",
           [](Simulation& s, std::tuple<int, int, int> res) {

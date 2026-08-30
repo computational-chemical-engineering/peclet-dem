@@ -1004,6 +1004,13 @@ class Simulation {
   // (restitution_normal, restitution_tangent, friction) to match CUDA set_material_params; the
   // Kokkos pipeline currently carries normal restitution + dynamic friction (tangential restitution
   // unused).
+  // NOTE (found via peclet-examples/stirred-column, 2026-08-30): the DEFAULT body-body material is
+  // frictionless. add_analytic_wall / add_sdf_wall set the particle-WALL material only, so a bed
+  // more than a few layers deep with the default body-body friction behaves like a liquid -- it
+  // transmits full hydrostatic pressure to the container and the position solve squeezes grains
+  // through the boundary. The failure is silent and looks exactly like a solver-convergence bug
+  // (raising the position iterations 4,4 -> 24,12 and halving dt changed the measured leakage not
+  // at all). Set a non-zero friction here for any deep bed.
   void setMaterialParams(float restitution_normal, float restitution_tangent, float friction) {
     P_.restitutionNormal = restitution_normal;
     P_.frictionDynamic = friction;
