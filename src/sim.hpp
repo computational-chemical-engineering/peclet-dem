@@ -47,6 +47,73 @@
 
 namespace peclet::dem {
 
+/// Grow every maxContacts-sized collision buffer to match the CURRENT particle capacity.
+///
+/// Sized from `capacity`, not `numReal`: periodic ghost slots take part in the narrow phase, so a
+/// buffer sized when capacity was smaller is an out-of-bounds write the moment the ghost band
+/// grows it. That is exactly what happened -- `demStep` calls `ensureCapacity` every step (the
+/// ghost headroom is `numReal + estGhosts + 4096`), so a Simulation constructed with a small
+/// capacity had its contact buffers frozen at the construction size while the particle SoA grew
+/// by an order of magnitude around them. Found via peclet-examples/pall-ring-packing, where it
+/// showed up twice: boundary contacts silently dropped (scene-shape grains falling through an
+/// add_plane floor) and heap corruption inside step() at ~2000 steps.
+inline void growContactBuffers(Particles& P) {
+  const int perParticle = std::max(16, P.shellPoints);
+    const long want = static_cast<long>(P.capacity) * perParticle +
+                      static_cast<long>(P.capacity) * std::max(1, P.shellPoints) * P.numWalls;
+    if (want > P.maxContacts) {
+      P.maxContacts = static_cast<int>(want);
+      // Reallocate EVERY maxContacts-sized view, not just contacts/manifolds: the solve writes all
+      // of them up to the live contact/manifold count, so any view left at the old size is an
+      // out-of-bounds write once the count grows past it (silent device corruption on GPU, heap
+      // corruption on host backends). Warm-start history is cleared by the fresh zeroed views —
+      // growth happens at setup (shape/wall registration), so nothing warm is lost mid-run.
+      P.contacts = Kokkos::View<ContactC*, CpMem>("contacts", want);
+      P.manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", want);
+      P.manifoldColor = Kokkos::View<int*, CpMem>("manifoldColor", want);
+      P.pairKeys = Kokkos::View<unsigned long long*, CpMem>("pairKeys", want);
+      P.prevPairKeys = Kokkos::View<unsigned long long*, CpMem>("prevPairKeys", want);
+      P.manifoldPersistent = Kokkos::View<unsigned char*, CpMem>("manifoldPersistent", want);
+      P.contactColor = Kokkos::View<int*, CpMem>("contactColor", want);
+      P.lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", want);
+      P.lambdaT = Kokkos::View<float* [3], CpMem>("lambdaT", want);
+      P.posLambdaContact = Kokkos::View<float*, CpMem>("posLambdaContact", want);
+      P.posImpulse = Kokkos::View<float*, CpMem>("posImpulse", want);
+      P.prevPosImpulse = Kokkos::View<float*, CpMem>("prevPosImpulse", want);
+      P.restBank = Kokkos::View<float*, CpMem>("restBank", want);
+      P.prevRestBank = Kokkos::View<float*, CpMem>("prevRestBank", want);
+      P.restRel = Kokkos::View<float*, CpMem>("restRel", want);
+      P.restVPeak = Kokkos::View<float*, CpMem>("restVPeak", want);
+      P.prevRestVPeak = Kokkos::View<float*, CpMem>("prevRestVPeak", want);
+      P.prevMatched = Kokkos::View<unsigned char*, CpMem>("prevMatched", want);
+      P.velPerm = Kokkos::View<int*, CpMem>("velPerm", want);
+      P.commitPerm = Kokkos::View<int*, CpMem>("commitPerm", want);
+      P.sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", want);
+      P.prevLambdaT = Kokkos::View<float* [3], CpMem>("prevLambdaT", want);
+      P.contactSlot = Kokkos::View<int*, CpMem>("contactSlot", want);
+      P.prevLambda = Kokkos::View<float*, CpMem>("prevLambda", want);
+      P.vn0 = Kokkos::View<float*, CpMem>("vn0", want);
+      P.vt0 = Kokkos::View<float* [3], CpMem>("vt0", want);
+      P.levelKey = Kokkos::View<int*, CpMem>("levelKey", want);
+      P.levelPerm = Kokkos::View<int*, CpMem>("levelPerm", want);
+      P.mlColorPacked = Kokkos::View<long long*, CpMem>("mlColorPacked", want);
+      // Incremental-colouring ledgers + fused position permutation + sleeping masks are all
+      // maxContacts-sized and the solve indexes them up to the live contact/manifold count too —
+      // they MUST grow with the buffer or nc > extent is an out-of-bounds write (NaN / heap
+      // corruption in dense multi-contact scenes such as the statics column/pour).
+      P.prevManifoldColor = Kokkos::View<int*, CpMem>("prevManifoldColor", want);
+      P.contactKeys = Kokkos::View<unsigned long long*, CpMem>("contactKeys", want);
+      P.prevContactKeys = Kokkos::View<unsigned long long*, CpMem>("prevContactKeys", want);
+      P.prevContactColor = Kokkos::View<int*, CpMem>("prevContactColor", want);
+      P.posCommitPerm = Kokkos::View<int*, CpMem>("posCommitPerm", want);
+      P.posPerm = Kokkos::View<int*, CpMem>("posPerm", want);
+      P.manifoldSleep = Kokkos::View<unsigned char*, CpMem>("manifoldSleep", want);
+      P.contactSleep = Kokkos::View<unsigned char*, CpMem>("contactSleep", want);
+      P.posPrevContactCount = 0;  // the cleared position ledger must not be gathered against
+      P.prevPairCount = 0;        // the cleared prevPairKeys must not be gathered against
+    }
+}
+
 /// One full XPBD DEM substep over the particle SoA (mirrors simulation.cpp Simulation::step()).
 inline void demStep(Particles& P) {
   CpExec space;
@@ -100,6 +167,7 @@ inline void demStep(Particles& P) {
   // calculate_capacity). Without it a Simulation(numReal) leaves capacity==numReal, so every ghost
   // overflows P.capacity in generateGhostsKokkos and cross-boundary contacts are never detected.
   P.ensureCapacity(calculateGhostCapacity(P.numReal, P.domain, ghostBand));
+  growContactBuffers(P);  // capacity just grew -> the contact buffers must follow
   generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred,
                        P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
                        P.shapeId, P.realIndices, P.topGhost, P.gid, P.materialId);
@@ -204,6 +272,7 @@ inline float computeOverlapsKokkos(Particles& P) {
   // Match demStep: ensure ghost-boundary-layer headroom so cross-boundary overlaps are counted (a
   // Simulation(numReal) otherwise has capacity==numReal and every ghost overflows). See demStep.
   P.ensureCapacity(calculateGhostCapacity(P.numReal, P.domain, ghostBand));
+  growContactBuffers(P);  // capacity just grew -> the contact buffers must follow
   generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred,
                        P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
                        P.shapeId, P.realIndices, P.topGhost, P.gid, P.materialId);
@@ -774,6 +843,7 @@ class Simulation {
     sd.shapeRoot = base + root;
     appendShape(sd, shellPts, invInertia, boundingRadius);
     uploadShapes();
+    ensureContactCapacity();  // every other shape adder does this; its absence dropped contacts
     return static_cast<int>(shapesHost_.size()) - 1;
   }
 
@@ -1645,60 +1715,8 @@ class Simulation {
   // an undersized buffer silently drops them and grains tunnel through walls. Floored at the
   // analytic default; grows only.
   void ensureContactCapacity() {
-    const int perParticle = std::max(16, shellPoints_);
-    const long want = static_cast<long>(P_.capacity) * perParticle +
-                      static_cast<long>(P_.capacity) * std::max(1, shellPoints_) * P_.numWalls;
-    if (want > P_.maxContacts) {
-      P_.maxContacts = static_cast<int>(want);
-      // Reallocate EVERY maxContacts-sized view, not just contacts/manifolds: the solve writes all
-      // of them up to the live contact/manifold count, so any view left at the old size is an
-      // out-of-bounds write once the count grows past it (silent device corruption on GPU, heap
-      // corruption on host backends). Warm-start history is cleared by the fresh zeroed views —
-      // growth happens at setup (shape/wall registration), so nothing warm is lost mid-run.
-      P_.contacts = Kokkos::View<ContactC*, CpMem>("contacts", want);
-      P_.manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", want);
-      P_.manifoldColor = Kokkos::View<int*, CpMem>("manifoldColor", want);
-      P_.pairKeys = Kokkos::View<unsigned long long*, CpMem>("pairKeys", want);
-      P_.prevPairKeys = Kokkos::View<unsigned long long*, CpMem>("prevPairKeys", want);
-      P_.manifoldPersistent = Kokkos::View<unsigned char*, CpMem>("manifoldPersistent", want);
-      P_.contactColor = Kokkos::View<int*, CpMem>("contactColor", want);
-      P_.lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", want);
-      P_.lambdaT = Kokkos::View<float* [3], CpMem>("lambdaT", want);
-      P_.posLambdaContact = Kokkos::View<float*, CpMem>("posLambdaContact", want);
-      P_.posImpulse = Kokkos::View<float*, CpMem>("posImpulse", want);
-      P_.prevPosImpulse = Kokkos::View<float*, CpMem>("prevPosImpulse", want);
-      P_.restBank = Kokkos::View<float*, CpMem>("restBank", want);
-      P_.prevRestBank = Kokkos::View<float*, CpMem>("prevRestBank", want);
-      P_.restRel = Kokkos::View<float*, CpMem>("restRel", want);
-      P_.restVPeak = Kokkos::View<float*, CpMem>("restVPeak", want);
-      P_.prevRestVPeak = Kokkos::View<float*, CpMem>("prevRestVPeak", want);
-      P_.prevMatched = Kokkos::View<unsigned char*, CpMem>("prevMatched", want);
-      P_.velPerm = Kokkos::View<int*, CpMem>("velPerm", want);
-      P_.commitPerm = Kokkos::View<int*, CpMem>("commitPerm", want);
-      P_.sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", want);
-      P_.prevLambdaT = Kokkos::View<float* [3], CpMem>("prevLambdaT", want);
-      P_.contactSlot = Kokkos::View<int*, CpMem>("contactSlot", want);
-      P_.prevLambda = Kokkos::View<float*, CpMem>("prevLambda", want);
-      P_.vn0 = Kokkos::View<float*, CpMem>("vn0", want);
-      P_.vt0 = Kokkos::View<float* [3], CpMem>("vt0", want);
-      P_.levelKey = Kokkos::View<int*, CpMem>("levelKey", want);
-      P_.levelPerm = Kokkos::View<int*, CpMem>("levelPerm", want);
-      P_.mlColorPacked = Kokkos::View<long long*, CpMem>("mlColorPacked", want);
-      // Incremental-colouring ledgers + fused position permutation + sleeping masks are all
-      // maxContacts-sized and the solve indexes them up to the live contact/manifold count too —
-      // they MUST grow with the buffer or nc > extent is an out-of-bounds write (NaN / heap
-      // corruption in dense multi-contact scenes such as the statics column/pour).
-      P_.prevManifoldColor = Kokkos::View<int*, CpMem>("prevManifoldColor", want);
-      P_.contactKeys = Kokkos::View<unsigned long long*, CpMem>("contactKeys", want);
-      P_.prevContactKeys = Kokkos::View<unsigned long long*, CpMem>("prevContactKeys", want);
-      P_.prevContactColor = Kokkos::View<int*, CpMem>("prevContactColor", want);
-      P_.posCommitPerm = Kokkos::View<int*, CpMem>("posCommitPerm", want);
-      P_.posPerm = Kokkos::View<int*, CpMem>("posPerm", want);
-      P_.manifoldSleep = Kokkos::View<unsigned char*, CpMem>("manifoldSleep", want);
-      P_.contactSleep = Kokkos::View<unsigned char*, CpMem>("contactSleep", want);
-      P_.posPrevContactCount = 0;  // the cleared position ledger must not be gathered against
-      P_.prevPairCount = 0;        // the cleared prevPairKeys must not be gathered against
-    }
+    P_.shellPoints = shellPoints_;
+    growContactBuffers(P_);
   }
 
   Particles P_;

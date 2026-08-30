@@ -299,6 +299,10 @@ struct Particles {
   // --- sizes & params (host) ---
   int capacity = 0, numReal = 0, numParticles = 0;
   int maxPairs = 0, maxContacts = 0, numPlanes = 0, numWalls = 0;
+  // LARGEST surface-shell size across the registered shapes, mirrored from Simulation so the
+  // free-function contact-buffer growth (growContactBuffers) can size itself without reading the
+  // device shape descriptors back to the host every step.
+  int shellPoints = 0;
   // max wall friction (host) — gates the friction path so a frictional wall works even with a
   // frictionless body-body material (global frictionDynamic == 0).
   float wallFrictionMax = 0.0f;
