@@ -57,10 +57,17 @@ namespace peclet::dem {
 /// by an order of magnitude around them. Found via peclet-examples/pall-ring-packing, where it
 /// showed up twice: boundary contacts silently dropped (scene-shape grains falling through an
 /// add_plane floor) and heap corruption inside step() at ~2000 steps.
-inline void growContactBuffers(Particles& P) {
+///
+/// `nBodies` is the count the bound is taken over. Setup passes `capacity`, which is what the
+/// original sizing used and is what keeps every existing run byte-identical. The per-step calls
+/// pass `numParticles` -- the LIVE real+ghost count, after the ghosts are emitted -- and NOT
+/// `capacity`: `calculateGhostCapacity` adds 4096 slots of slack that no body ever occupies, and
+/// with a 1625-probe composed particle that slack alone asks for 13 million contacts (several GB
+/// across the ~40 buffers). numParticles is the true bound on what the narrow phase can write.
+inline void growContactBuffers(Particles& P, long nBodies) {
   const int perParticle = std::max(16, P.shellPoints);
-    const long want = static_cast<long>(P.capacity) * perParticle +
-                      static_cast<long>(P.capacity) * std::max(1, P.shellPoints) * P.numWalls;
+    const long want =
+        nBodies * perParticle + nBodies * std::max(1, P.shellPoints) * P.numWalls;
     if (want > P.maxContacts) {
       P.maxContacts = static_cast<int>(want);
       // Reallocate EVERY maxContacts-sized view, not just contacts/manifolds: the solve writes all
@@ -167,11 +174,13 @@ inline void demStep(Particles& P) {
   // calculate_capacity). Without it a Simulation(numReal) leaves capacity==numReal, so every ghost
   // overflows P.capacity in generateGhostsKokkos and cross-boundary contacts are never detected.
   P.ensureCapacity(calculateGhostCapacity(P.numReal, P.domain, ghostBand));
-  growContactBuffers(P);  // capacity just grew -> the contact buffers must follow
   generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred,
                        P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
                        P.shapeId, P.realIndices, P.topGhost, P.gid, P.materialId);
   P.numParticles = readInt(P.topGhost);
+  // The live body count is now known: grow the contact buffers if the ghost layer has taken the
+  // narrow phase past what the setup-time sizing covered.
+  growContactBuffers(P, P.numParticles);
 
   {
     auto sc = P.scale;
@@ -272,11 +281,13 @@ inline float computeOverlapsKokkos(Particles& P) {
   // Match demStep: ensure ghost-boundary-layer headroom so cross-boundary overlaps are counted (a
   // Simulation(numReal) otherwise has capacity==numReal and every ghost overflows). See demStep.
   P.ensureCapacity(calculateGhostCapacity(P.numReal, P.domain, ghostBand));
-  growContactBuffers(P);  // capacity just grew -> the contact buffers must follow
   generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred,
                        P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
                        P.shapeId, P.realIndices, P.topGhost, P.gid, P.materialId);
   P.numParticles = readInt(P.topGhost);
+  // The live body count is now known: grow the contact buffers if the ghost layer has taken the
+  // narrow phase past what the setup-time sizing covered.
+  growContactBuffers(P, P.numParticles);
   {
     auto sc = P.scale;
     auto rad = P.rad;
@@ -1716,7 +1727,7 @@ class Simulation {
   // analytic default; grows only.
   void ensureContactCapacity() {
     P_.shellPoints = shellPoints_;
-    growContactBuffers(P_);
+    growContactBuffers(P_, P_.capacity);
   }
 
   Particles P_;
