@@ -58,16 +58,17 @@ namespace peclet::dem {
 /// showed up twice: boundary contacts silently dropped (scene-shape grains falling through an
 /// add_plane floor) and heap corruption inside step() at ~2000 steps.
 ///
-/// `nBodies` is the count the bound is taken over. Setup passes `capacity`, which is what the
-/// original sizing used and is what keeps every existing run byte-identical. The per-step calls
-/// pass `numParticles` -- the LIVE real+ghost count, after the ghosts are emitted -- and NOT
-/// `capacity`: `calculateGhostCapacity` adds 4096 slots of slack that no body ever occupies, and
-/// with a 1625-probe composed particle that slack alone asks for 13 million contacts (several GB
-/// across the ~40 buffers). numParticles is the true bound on what the narrow phase can write.
-inline void growContactBuffers(Particles& P, long nBodies) {
+/// `nBodies` is the count the setup-time bound is taken over (`capacity`, exactly as the original
+/// sizing did, so every existing run is byte-identical). `floorWant` is the per-step path: the
+/// narrow phase knows the contact count it actually needs and asks for it directly. A
+/// per-PARTICLE bound is not safe for a many-probe composed shape -- a pair can contribute up to
+/// shellPoints contacts and a grain has several neighbours -- and sizing from the ghost capacity
+/// is worse still, since calculateGhostCapacity's +4096 slots of slack alone ask for 13 million
+/// contacts (several GB across the ~40 buffers) with a 1625-probe particle. See narrowPhaseGrow.
+inline void growContactBuffers(Particles& P, long nBodies, long floorWant = 0) {
   const int perParticle = std::max(16, P.shellPoints);
-    const long want =
-        nBodies * perParticle + nBodies * std::max(1, P.shellPoints) * P.numWalls;
+    const long want = std::max(
+        floorWant, nBodies * perParticle + nBodies * std::max(1, P.shellPoints) * P.numWalls);
     if (want > P.maxContacts) {
       P.maxContacts = static_cast<int>(want);
       // Reallocate EVERY maxContacts-sized view, not just contacts/manifolds: the solve writes all
@@ -119,6 +120,45 @@ inline void growContactBuffers(Particles& P, long nBodies) {
       P.posPrevContactCount = 0;  // the cleared position ledger must not be gathered against
       P.prevPairCount = 0;        // the cleared prevPairKeys must not be gathered against
     }
+}
+
+/// Narrow phase with an automatically-grown contact buffer.
+///
+/// The three detect kernels guard their contact WRITES at the buffer extent, but `P.contactCount`
+/// is the RAW number of contacts found -- and every consumer downstream (manifold reduction, the
+/// sleeping masks, the whole solve) uses that count as a loop bound over maxContacts-sized views.
+/// When the raw count exceeds the buffer, those loops walk off the end: "corrupted double-linked
+/// list" on a host backend, cudaErrorIllegalAddress on a device one. Exactly the failure mode
+/// findCollisionsGrow already handles for the broad-phase pair buffer, and handled the same way --
+/// detect the overflow, grow with headroom, re-run once so no contact is silently dropped, then
+/// clamp defensively so the returned count is ALWAYS <= the extent.
+///
+/// This is what actually bounds the contact buffer. Sizing it from the particle count (capacity or
+/// numParticles) was only ever a proxy: a pair can contribute up to shellPoints contacts and a
+/// grain has several neighbours, so no per-particle bound is safe for a many-probe composed shape.
+/// Found via peclet-examples/pall-ring-packing (48 rings x 1625 probes).
+inline int narrowPhaseGrow(Particles& P, int np, float margin) {
+  CpExec space;
+  auto detect = [&]() {
+    Kokkos::deep_copy(space, P.contactCount, 0);
+    detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
+                         P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap,
+                         P.sdfGrid, P.materialId, P.pairMaterials);
+    detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId,
+                         P.shapes, P.shell, P.planes, P.globalScale, margin, P.contacts,
+                         P.contactCount, P.maxOverlap);
+    if (P.numWalls > 0)
+      detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId,
+                          P.shapes, P.shell, P.walls, P.wallGrid, P.globalScale, margin,
+                          P.contacts, P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials);
+    return readInt(P.contactCount);
+  };
+  int nc = detect();
+  if (nc > P.maxContacts) {
+    growContactBuffers(P, 0, static_cast<long>(nc) + nc / 2 + 64);  // 1.5x + slack
+    nc = detect();
+  }
+  return std::min(nc, P.maxContacts);
 }
 
 /// One full XPBD DEM substep over the particle SoA (mirrors simulation.cpp Simulation::step()).
@@ -178,9 +218,6 @@ inline void demStep(Particles& P) {
                        P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
                        P.shapeId, P.realIndices, P.topGhost, P.gid, P.materialId);
   P.numParticles = readInt(P.topGhost);
-  // The live body count is now known: grow the contact buffers if the ghost layer has taken the
-  // narrow phase past what the setup-time sizing covered.
-  growContactBuffers(P, P.numParticles);
 
   {
     auto sc = P.scale;
@@ -203,17 +240,7 @@ inline void demStep(Particles& P) {
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
-  detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
-                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid,
-                       P.materialId, P.pairMaterials);
-  detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
-                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
-                       P.maxOverlap);
-  if (P.numWalls > 0)
-    detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
-                        P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
-                        P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials);
-  const int nc = readInt(P.contactCount);
+  const int nc = narrowPhaseGrow(P, np, margin);
 
   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot);
   const int nm = readInt(P.manifoldCount);
@@ -285,9 +312,6 @@ inline float computeOverlapsKokkos(Particles& P) {
                        P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
                        P.shapeId, P.realIndices, P.topGhost, P.gid, P.materialId);
   P.numParticles = readInt(P.topGhost);
-  // The live body count is now known: grow the contact buffers if the ghost layer has taken the
-  // narrow phase past what the setup-time sizing covered.
-  growContactBuffers(P, P.numParticles);
   {
     auto sc = P.scale;
     auto rad = P.rad;
@@ -299,16 +323,7 @@ inline float computeOverlapsKokkos(Particles& P) {
   const int np = findCollisionsGrow(P, margin);
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
-  detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
-                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid,
-                       P.materialId, P.pairMaterials);
-  detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
-                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
-                       P.maxOverlap);
-  if (P.numWalls > 0)
-    detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
-                        P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
-                        P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials);
+  (void)narrowPhaseGrow(P, np, margin);
   P.numParticles = P.numReal;
   float h;
   Kokkos::deep_copy(h, P.maxOverlap);
@@ -405,17 +420,7 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
-  detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
-                       P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid,
-                       P.materialId, P.pairMaterials);
-  detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
-                       P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
-                       P.maxOverlap);
-  if (P.numWalls > 0)
-    detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
-                        P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
-                        P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials);
-  const int nc = readInt(P.contactCount);
+  const int nc = narrowPhaseGrow(P, np, margin);
 
   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot);
   const int nm = readInt(P.manifoldCount);

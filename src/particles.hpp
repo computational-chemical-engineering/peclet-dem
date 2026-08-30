@@ -505,6 +505,26 @@ struct Particles {
     Kokkos::resize(asleep, newCap);
     Kokkos::resize(sleepCounter, newCap);
     Kokkos::resize(sleepMovingWall, newCap);
+    // The rest of the capacity-sized per-body arrays. These were the LAST twelve left behind, and
+    // the same class of bug as materialId above: every one of them is written up to numParticles
+    // (or numReal) by some kernel, so any that keeps the pre-growth extent is an out-of-bounds
+    // write. Found via peclet-examples/pall-ring-packing, where a 48-ring pour reported
+    // "corrupted double-linked list" from inside step() -- mlGrp/mlMate (the multilevel
+    // stabiliser's per-body group and mate arrays) and invMassEff (written for numParticles by
+    // buildInvMassEffKokkos) are the ones that bit. A cap-sized array that ensureCapacity does not
+    // resize is a latent heap corruption, full stop; there is no reason to keep any of them out.
+    Kokkos::resize(invMassEff, newCap);
+    Kokkos::resize(sleepCurCount, newCap);
+    Kokkos::resize(sleepPrevCount, newCap);
+    Kokkos::resize(bodyOrphan, newCap);
+    Kokkos::resize(bodyOrphanVPeak, newCap);
+    Kokkos::resize(mlGrp, newCap);
+    Kokkos::resize(mlMate, newCap);
+    Kokkos::resize(impRefPos, newCap);
+    Kokkos::resize(hertzRefPos, newCap);
+    Kokkos::resize(hertzWallCand, newCap);
+    Kokkos::resize(hertzSnWall, newCap);
+    Kokkos::resize(hertzXiWall, newCap);
     capacity = newCap;
   }
 
