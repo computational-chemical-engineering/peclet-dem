@@ -10,7 +10,7 @@ project(dem LANGUAGES CXX)
 #   cmake -S . -B build -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda"
 #   cmake --build build -j        ->  build/dem.*.so
 #
-# Multi-rank: -DDEM_MPI=ON links MPI + exposes init_mpi/enable_mpi_step/step_mpi in the module; the
+# Multi-rank: -DPECLET_DEM_MPI=ON links MPI + exposes init_mpi/enable_mpi_step/step_mpi in the module; the
 # distributed step is also covered by the tests/kokkos_mpi ctests (run under mpirun).
 
 set(CMAKE_CXX_STANDARD 20)
