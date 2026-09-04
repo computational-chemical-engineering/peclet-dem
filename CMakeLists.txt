@@ -21,6 +21,13 @@ endif()
 
 option(PECLET_DEM_MPI "Build the dem module with the distributed (MPI) step exposed" OFF)
 
+# Redistributable single-GPU CUDA wheel: libcudart is provided by the `nvidia-cuda-runtime` PyPI
+# dependency (installed to site-packages/nvidia/cu13/lib), not the system. ON sets the module's RPATH
+# to reach that wheel from its install location so `import peclet.dem` works with no system CUDA. Used
+# by the peclet-dem-cu13 packaging (packaging/pyproject-cuda.toml + the release workflow's cuda job).
+# Mirrors peclet-flow.
+option(PECLET_CUDA_RUNTIME_WHEEL "RPATH the module to the nvidia-cuda-runtime wheel's libcudart" OFF)
+
 # Dependencies via the vendored PecletDeps helper: installed Kokkos+ArborX prefix + sibling checkout for
 # the dev/suite build, or FetchContent-built Kokkos+ArborX + fetched core headers for a
 # self-contained sdist/wheel (cibuildwheel). See cmake/PecletDeps.cmake.
@@ -63,6 +70,13 @@ if(PECLET_DEM_MPI)
   target_compile_definitions(dem PRIVATE PECLET_DEM_MPI=1)
   target_link_libraries(dem PRIVATE MPI::MPI_CXX)
   message(STATUS "dem: distributed step ENABLED (MPI)")
+endif()
+
+# Redistributable CUDA wheel: point the module at the nvidia-cuda-runtime wheel's libcudart via a
+# relative $ORIGIN RPATH (peclet/dem -> site-packages -> nvidia/cu13/lib).
+if(PECLET_CUDA_RUNTIME_WHEEL)
+  set_target_properties(dem PROPERTIES
+    INSTALL_RPATH "$ORIGIN/../../nvidia/cu13/lib" INSTALL_RPATH_USE_LINK_PATH OFF)
 endif()
 
 # --- pip / scikit-build-core install rule -------------------------------------------------------
