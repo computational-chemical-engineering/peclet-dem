@@ -35,6 +35,13 @@ peclet_sibling_include(peclet-core "${PECLET_TPX_TAG}" "../core" TPX_INCLUDE)
 # launch compiler regardless. NOMINSIZE: nanobind's default -Os is rejected by nvcc ("'s': expected a
 # number") since Kokkos device sources compile as CXX through the launch compiler.
 nanobind_add_module(dem NB_STATIC NOMINSIZE src/dem_bindings.cpp)
+if(Kokkos_ENABLE_HIP)
+  # HIP/lld experiment 1 (docs/RELEASE.md §8): nanobind sets CXX_VISIBILITY_PRESET hidden, and under hipcc
+  # the host objects then reference the Kokkos SharedAllocationRecord / shared_ptr control-block vtables
+  # as hidden symbols that nothing defines ("undefined hidden symbol: vtable for ..."). Default visibility
+  # on the HIP path only; CUDA/OpenMP builds are untouched.
+  set_target_properties(dem PROPERTIES CXX_VISIBILITY_PRESET default)
+endif()
 # -> peclet.dem._dem (NB_MODULE(_dem)), re-exported by peclet/dem/__init__.py. The __init__ is kept as a
 # plain file under packaging/ (OUTSIDE any importable peclet/ dir, so an incomplete source package can
 # never shadow the installed one) and staged into <build>/peclet/dem so `PYTHONPATH=<build> python …`
