@@ -2,11 +2,18 @@
 /// @brief nanobind module `dem` — the Kokkos + ArborX XPBD granular-dynamics simulation.
 ///
 /// Exposes peclet::dem::Simulation (the portable Kokkos+ArborX pipeline) with the essential
-/// sphere-packing API. Kokkos is initialized at import and left initialized for the interpreter's
-/// lifetime. Particle arrays cross the boundary through the shared peclet::core::python bridge
-/// (transport-core): inputs read as flat C-order buffers, getters move the result into the NumPy
+/// sphere-packing API. Particle arrays cross the boundary through the shared peclet::core::python
+/// bridge (core): inputs read as flat C-order buffers, getters move the result into the NumPy
 /// array's backing store (no extra copy), and under a GPU backend the bridge's device path lets
 /// CuPy arrays flow in/out zero-copy.
+///
+/// Kokkos teardown follows the suite-wide pattern of peclet/core/python/kokkos_teardown.hpp: Kokkos
+/// is initialized at import; Simulation keeps its own live registry (sim.hpp, Simulation::releaseAll
+/// drops every live Simulation's Views) which is plugged in as a release hook, and every zero-copy
+/// array (`get_*_view`) is a Releasable capsule; the module's single atexit hook (also
+/// `dem.finalize()`) releases all of them and THEN calls Kokkos::finalize, so a Simulation or array
+/// still referenced at interpreter exit (script globals, a Jupyter/Quarto kernel) can no longer be
+/// destroyed after finalize -- which is a Kokkos::abort (SIGABRT / exit 134, on OpenMP as on CUDA).
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/optional.h>
@@ -25,6 +32,7 @@
 #include <mpi.h>
 #endif
 
+#include "peclet/core/python/kokkos_teardown.hpp"
 #include "peclet/core/python/ndarray_interop.hpp"
 #include "sim.hpp"
 
@@ -52,23 +60,11 @@ static nb::ndarray<nb::numpy, float> flat(std::vector<float>&& v) {
 NB_MODULE(_dem, m) {
   m.attr("__doc__") = "DEM-GPU (Kokkos + ArborX): portable XPBD granular dynamics";
 
-  if (!Kokkos::is_initialized())
-    Kokkos::initialize();
-  // Teardown order matters on CUDA: releaseAll() drops every live Simulation's Views FIRST (so none
-  // outlive finalize -> no "deallocated after Kokkos::finalize"), THEN Kokkos::finalize() runs from
-  // a Python atexit hook while the CUDA driver is still up (so no cudaErrorCudartUnloading). Doing
-  // only one of the two aborts on CUDA. Returned arrays are backed by host std::vectors (no device
-  // Views).
-  auto shutdown = []() {
-    Simulation::releaseAll();
-    if (Kokkos::is_initialized() && !Kokkos::is_finalized())
-      Kokkos::finalize();
-  };
-  m.def("finalize", shutdown,
-        "Release all live Simulations and finalize Kokkos (deterministic teardown; also run at "
-        "exit).");
-  nb::module_::import_("atexit").attr("register")(nb::cpp_function(shutdown));
-  m.attr("execution_space") = nb::str(Kokkos::DefaultExecutionSpace::name());
+  // Kokkos init + the release-then-finalize atexit hook + finalize() + execution_space: the
+  // suite-wide pattern (file comment; peclet/core/python/kokkos_teardown.hpp). Simulation's own
+  // registry (sim.hpp) is released through a hook; the get_*_view capsules register themselves.
+  peclet::core::python::add_release_hook(&Simulation::releaseAll);
+  peclet::core::python::install(m);
 
   nb::class_<Simulation>(m, "Simulation")
       .def(nb::init<int>(), nb::arg("capacity"))
