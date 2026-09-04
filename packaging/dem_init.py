@@ -19,4 +19,11 @@ from ._dem import *  # noqa: F401,F403
 # module still imports if scikit-image is absent (only build_particle needs it).
 from .particle_builder import ParticleShape, WallSDF, build_particle, build_wall_sdf  # noqa: F401
 
-__version__ = "0.3.2"
+# The installed distribution's metadata (pyproject.toml) is the single source of truth for the version;
+# a build-tree import (PYTHONPATH=<build>) has no metadata and reports "0+unknown". This replaces a
+# hand-maintained literal that had drifted behind pyproject.toml in every package at 0.6.0.
+try:
+    from importlib.metadata import version as _dist_version
+    __version__ = _dist_version("peclet-dem")
+except Exception:  # PackageNotFoundError (dev build), or a broken metadata install
+    __version__ = "0+unknown"
