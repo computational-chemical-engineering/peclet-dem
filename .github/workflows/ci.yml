@@ -73,6 +73,6 @@ jobs:
           # the kernel tests take core from the module build's FetchContent checkout (no sibling on CI)
           cmake -S tests/kokkos -B build_kokkos \
             -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/deps-install" \
-            -DTPX_DIR="$PWD/build/_deps/peclet-core-src"
+            -DTPX_DIR="$PWD/build/_deps/peclet_sib_peclet-core-src"
           cmake --build build_kokkos -j
           ctest --test-dir build_kokkos --output-on-failure
