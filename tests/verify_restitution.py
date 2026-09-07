@@ -25,7 +25,7 @@ def test_restitution():
     vel = np.zeros_like(pos)
     scales = np.ones(1, dtype=np.float32)
     
-    sim.initialize(0) # Sphere
+    sim.initialize_shape(0, radius=0.5) # Sphere
     sim.set_positions(pos)
     sim.set_velocities(vel)
     sim.set_scales(scales)
@@ -93,7 +93,7 @@ def test_restitution():
     # Let's set initial vel to 0.
     scales = np.ones(1, dtype=np.float32)
     
-    sim2.initialize(0)
+    sim2.initialize_shape(0, radius=0.5)
     sim2.set_positions(pos)
     sim2.set_velocities(vel)
     sim2.set_scales(scales)

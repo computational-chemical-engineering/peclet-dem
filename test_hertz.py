@@ -17,7 +17,7 @@ def base(n, lo, hi, e, mu, wall_f=None, wall_res=64):
     s = dem.Simulation(n)
     s.set_sphere_shape(0.5)
     s.set_domain(lo, hi)
-    s.enable_periodicity(False, False, False)
+    s.set_periodic(False, False, False)
     s.set_material_params(e, 0.0, mu)
     s.set_hertz_material(0, E0, NU0)
     s.set_thermostat(0, 0)

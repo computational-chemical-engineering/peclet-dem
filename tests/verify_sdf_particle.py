@@ -50,7 +50,7 @@ def _two_body_gap(make_shape, r, sep, steps=40):
     s = dem.Simulation(2)
     make_shape(s)
     s.set_domain((-4, -4, -4), (4, 4, 4))
-    s.enable_periodicity(False, False, False)
+    s.set_periodic(False, False, False)
     s.set_gravity(0, 0, 0)
     s.set_material_params(0.0, 0.0, 0.0)
     s.set_solver_iterations(40, 0)
@@ -60,13 +60,13 @@ def _two_body_gap(make_shape, r, sep, steps=40):
     for _ in range(steps):
         s.step(0.01)
     p = s.get_positions().reshape(-1, 3)
-    return float(abs(p[1, 0] - p[0, 0])), float(s.get_max_overlap())
+    return float(abs(p[1, 0] - p[0, 0])), float(s.max_overlap())
 
 
 def test_grid_vs_analytic_collision():
     r = 0.5
     sep = 0.8  # overlapping (2r = 1.0)
-    gap_an, ov_an = _two_body_gap(lambda s: s.initialize(shape_type=1, radius=r), r, sep)
+    gap_an, ov_an = _two_body_gap(lambda s: s.initialize_shape(shape_type=1, radius=r), r, sep)
     sp = build_particle(sphere_sdf(r), ((-0.7, -0.7, -0.7), (0.7, 0.7, 0.7)), resolution=64)
     gap_sdf, ov_sdf = _two_body_gap(lambda s: sp.apply_to(s), r, sep)
     print(f"[collide] analytic sphere: final gap={gap_an:.4f}  overlap={ov_an:.2e}")
@@ -89,7 +89,7 @@ def test_rounded_box_pack():
     sp.apply_to(s)
     half = 1.6
     s.set_domain((-half, -half, -half), (half, half, half))
-    s.enable_periodicity(True, True, True)
+    s.set_periodic(True, True, True)
     s.set_gravity(0, 0, 0)
     s.set_material_params(0.0, 0.0, 0.0)
     s.set_solver_iterations(30, 0)
@@ -103,7 +103,7 @@ def test_rounded_box_pack():
     ov0 = None
     for i in range(60):
         s.step(0.01)
-        ov = s.get_max_overlap()
+        ov = s.max_overlap()
         if ov0 is None:
             ov0 = ov
     p = s.get_positions().reshape(-1, 3)

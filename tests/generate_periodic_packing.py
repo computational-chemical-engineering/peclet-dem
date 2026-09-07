@@ -31,7 +31,7 @@ def run_periodic_growth():
     print(f"Domain Side: {domain_side:.3f}")
     
     sim = dem.Simulation(num_particles)
-    sim.initialize(shape_type=2, radius=radius_base, height=height_base, thickness=thickness_base)
+    sim.initialize_shape(shape_type=2, radius=radius_base, height=height_base, thickness=thickness_base)
     
     # Set Domain (Automatic Periodicity)
     half_d = domain_side / 2.0
@@ -39,7 +39,7 @@ def run_periodic_growth():
     
     # Zero Gravity (Floating/Jamming)
     sim.set_gravity(0, 0, 0)
-    sim.enable_periodicity(True, True, True)
+    sim.set_periodic(True, True, True)
     
     # Initialize Random Positions & Orientations
     # Since we grow from 0, overlaps initially don't matter much, but good to spread.

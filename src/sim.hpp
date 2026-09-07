@@ -962,12 +962,6 @@ class Simulation {
     P_.domain.periodic_y = y;
     P_.domain.periodic_z = z;
   }
-  std::tuple<float, float, float> getDomainMin() const {
-    return {P_.domain.min.x, P_.domain.min.y, P_.domain.min.z};
-  }
-  std::tuple<float, float, float> getDomainMax() const {
-    return {P_.domain.max.x, P_.domain.max.y, P_.domain.max.z};
-  }
   // The suite-canonical domain quartet (suite/docs/NAMING.md 1.1): `origin` is the lower corner,
   // `extent` the SIZE, `periodic` the per-axis flags — the same four names flow, voro and the AMR
   // octree use. `setDomainCanonical` is what the keyword form of `set_domain` binds to.

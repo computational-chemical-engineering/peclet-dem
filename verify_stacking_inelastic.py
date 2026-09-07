@@ -13,7 +13,7 @@ def verify_stacking_inelastic():
     n = shape[0]*shape[1]*shape[2]
     sim = dem.Simulation(n)
     radius = 0.6
-    sim.initialize(0, radius=radius)  # Base Radius 1.0 so Scale acts as Radius 
+    sim.initialize_shape(0, radius=radius)  # Base Radius 1.0 so Scale acts as Radius 
     
     # Material: Restitution=0.0, Friction=0.0
     sim.set_material_params(0.0, 0.0, 0.0) # Inelastic

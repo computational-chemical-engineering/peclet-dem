@@ -53,8 +53,8 @@ def build_sim(n):
     m = rcut + 0.5
     s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m),
                  (dmin[0] + L[0] + m, dmin[1] + L[1] + m, dmin[2] + L[2] + m))
-    s.enable_periodicity(False, False, False)
-    s.initialize(shape_type=0, radius=radius)  # spheres
+    s.set_periodic(False, False, False)
+    s.initialize_shape(shape_type=0, radius=radius)  # spheres
     s.set_solver_iterations(8, 0)
     return s
 

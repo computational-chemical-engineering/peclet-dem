@@ -17,7 +17,7 @@ def generate_unit_sdf_stl(radius, height, thickness, filename):
     
     # 1. Create a 1-particle simulation
     sim_unit = dem.Simulation(1)
-    sim_unit.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
+    sim_unit.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
     
     # Domain large enough to contain the unit shape
     bound = max(height, 2.0*radius) * 1.5 
@@ -88,15 +88,15 @@ def run_collision_test():
     
     # --- Initialize Simulation ---
     sim = dem.Simulation(num_particles)
-    sim.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
+    sim.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
     
     # Large domain, periodic
     domain_size = 6.0*radius
     sim.set_domain((-domain_size, -domain_size, -domain_size), 
                    (domain_size, domain_size, domain_size))
-    # sim.enable_periodicity(False, False, False) # Default is False for Large Domain? 
+    # sim.set_periodic(False, False, False) # Default is False for Large Domain? 
     # Actually set_domain enables it by default in code. Disable explicitly for test.
-    sim.enable_periodicity(True, True, True)
+    sim.set_periodic(True, True, True)
     
     sim.set_gravity(0, 0, 0) # Disable Gravity
     sim.set_material_params(restitution, restitution_t, friction) # e_n, e_t, mu
@@ -227,7 +227,7 @@ def run_collision_test():
             # Simple distance check and contact count
             p = sim.get_positions()
             d = np.linalg.norm(p[0, :3] - p[1, :3])
-            num_contacts = sim.get_num_contacts()
+            num_contacts = sim.num_contacts()
             _, _, KE = calculate_metrics(sim)
             print(f"Step {i}: Dist={d:.4f}, Contacts={num_contacts}, KE={KE:.6f}")
             

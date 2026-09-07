@@ -34,7 +34,7 @@ def make_sim(n, lz=140.0):
     s.set_sphere_shape(R)
     lo, hi = (0.0, 0.0, -1.0), (NX * 1.05 + 1.0, NY * 1.05 + 1.0, lz)
     s.set_domain(lo, hi)
-    s.enable_periodicity(False, False, False)
+    s.set_periodic(False, False, False)
     wall = build_wall_sdf(
         lambda p: np.minimum.reduce([p[:, 2], p[:, 0] - lo[0], hi[0] - p[:, 0],
                                      p[:, 1] - lo[1], hi[1] - p[:, 1]]),
@@ -62,7 +62,7 @@ def metrics(s, n):
     z = p[:, 2]
     z95 = float(np.quantile(z, 0.95))
     vz = float(np.abs(v[:, 2]).mean())
-    ov = float(s.get_max_overlap())
+    ov = float(s.max_overlap())
     # nn spacing on a subsample
     idx = np.random.default_rng(0).choice(n, size=min(4000, n), replace=False)
     from scipy.spatial import cKDTree

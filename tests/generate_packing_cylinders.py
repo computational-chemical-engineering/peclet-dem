@@ -37,7 +37,7 @@ def run_cylinder_packing():
     # Setup Sim
     sim = dem.Simulation(num_particles)
     # New initialize signature
-    sim.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
+    sim.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
     
     half_d = domain_side / 2.0
     sim.set_domain((-half_d, -half_d, -half_d), (half_d, half_d, half_d))

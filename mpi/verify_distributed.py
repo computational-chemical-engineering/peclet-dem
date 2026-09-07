@@ -57,8 +57,8 @@ def make_sim(n, restitution, friction, grav, planes):
     s = dem.Simulation(num_particles=int(n))
     m = rcut + 0.5
     s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m), (L[0] + m, L[1] + m, L[2] + m))
-    s.enable_periodicity(False, False, False)
-    s.initialize(shape_type=1, radius=radius)
+    s.set_periodic(False, False, False)
+    s.initialize_shape(shape_type=1, radius=radius)
     s.set_material_params(restitution, 0.0, friction)
     s.set_solver_iterations(8, 20)
     s.set_gravity(*grav)

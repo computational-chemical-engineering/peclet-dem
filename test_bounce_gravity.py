@@ -7,7 +7,7 @@ def test_bounce_gravity():
     
     # Init
     sim = dem.Simulation(1)
-    sim.initialize(0) # Sphere
+    sim.initialize_shape(0, radius=0.5) # Sphere
     
     # Material: Restitution=0.5
     sim.set_material_params(0.5, 0.0, 0.0) 

@@ -26,7 +26,7 @@ def run_packing_sdf():
     
     # Simulation Setup
     sim = dem.Simulation(num_particles) # Exact count
-    sim.initialize(shape_type=1) # Sphere
+    sim.initialize_shape(shape_type=1, radius=0.5) # Sphere
     
     half_d = domain_size / 2.0
     sim.set_domain((-half_d, -half_d, -half_d), 

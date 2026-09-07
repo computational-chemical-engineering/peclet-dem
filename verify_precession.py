@@ -18,7 +18,7 @@ def verify_precession():
     
     # Init Simulation
     sim = dem.Simulation(1)
-    sim.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
+    sim.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
     
     # Domain (Arbitrary, no boundaries needed for free flight)
     sim.set_domain((-10, -10, -10), (10, 10, 10))

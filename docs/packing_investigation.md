@@ -87,16 +87,16 @@ not proof of an engine bug.
 ### Finding 1.3 — the overlap query defeats the protocol (the engine defect)
 Running the full RingBed annealing protocol (MB seed, elastic + thermostat during adaptive growth, then
 dissipative cooling) the engine grows **unchecked** to a collapsed state — φ_protocol=0.72, but
-φ_corrected=0.465, max_overlap=90 %, Z=5.7 — because **`get_max_overlap()` reads ≈0 throughout growth**, so
+φ_corrected=0.465, max_overlap=90 %, Z=5.7 — because **`max_overlap()` reads ≈0 throughout growth**, so
 the overlap-criterion feedback never backs the growth off. Direct comparison on a φ=0.68 grown state:
 
 ```
-engine get_max_overlap() = 0.035   <- the protocol's control signal (under-reports ~10-30x)
+engine max_overlap() = 0.035   <- the protocol's control signal (under-reports ~10-30x)
 engine compute_overlaps() = 0.95   <- a CORRECT signal exists, sees the deep overlap
 meter: max_overlap 0.41,  phi_corr 0.674,  Z 6.17,  rattlers 4/1000
 ```
 
-`get_max_overlap()` returns the **position solver's mid-iteration residual** (`solver_position.cu:240`,
+`max_overlap()` returns the **position solver's mid-iteration residual** (`solver_position.cu:240`,
 zeroed every iteration), not the committed overlap — it under-reports by ~10-30×. `compute_overlaps()`
 re-runs detection and reports the real value. The packing at φ=0.68 actually has a healthy network
 (Z≈6, 4 rattlers) but a few **pathologically deep stuck overlaps** the position solver never resolves, and
@@ -104,7 +104,7 @@ the control signal is blind to them.
 
 ### Phase 1 conclusion
 The engine defect is twofold and actionable:
-1. **`get_max_overlap()` is not a valid overlap measure** (position-solver residual, under-reports ~10-30×).
+1. **`max_overlap()` is not a valid overlap measure** (position-solver residual, under-reports ~10-30×).
    Any protocol that controls growth off it steers blind → unchecked inflation → collapse. A correct
    signal (`compute_overlaps()`) already exists.
 2. **A few contacts are left deeply unresolved** (stuck deep overlaps) even when the bulk network is fine —
@@ -125,7 +125,7 @@ isolated overlaps exactly; it does not "leave overlaps unresolved" as Phase 0 su
 
 ### Finding 2.2 — both engine overlap *queries* are wrong; the solve is fine
 Ground truth (brute-force min-image, confirmed by `pack_meter`) on a dense φ=0.68 state: true max overlap
-**0.389**. The engine reports `get_max_overlap()` = **0.035** (under, position-solver residual on the stale
+**0.389**. The engine reports `max_overlap()` = **0.035** (under, position-solver residual on the stale
 once-per-step contact list) and `compute_overlaps()` = **0.963** (over, a periodic-ghost artifact). Periodic
 vs walls packings are otherwise identical (φ_corr 0.658, Z 4.6 both), so the bad ghost overlaps corrupt the
 *measurement*, not the *solve*. The deep "stuck overlaps" of Phase 0/1 were **over-jamming defects created
@@ -147,7 +147,7 @@ coordination Z vs contact gap tolerance (RCP contacts are ~touching, so a compre
 
 ### Phase 2 conclusion
 The packing engine is fundamentally **sound**. "Periodic packing doesn't reach max density" was caused by
-(1) the broken meter (reported the design φ), (2) the broken control signal (`get_max_overlap` under-reports
+(1) the broken meter (reported the design φ), (2) the broken control signal (`max_overlap` under-reports
 → the adaptive growth overshoots past RCP into a collapsed/over-jammed state), and (3) growth too fast for
 the feedback to engage near jamming — not a defect in the XPBD solver. With a correct overlap signal and a
 gentle-growth + quench protocol the engine produces a genuine RCP.
@@ -165,9 +165,9 @@ Driving the annealing protocol with the **native fixed** `compute_overlaps()` (n
 genuine RCP: φ=0.635, Z=6.27 at the contact gap (0 rattlers), g(r) contact peak r/D=0.990. So the engine
 now exposes a correct overlap signal natively.
 
-`get_max_overlap()` is left as-is: it is the position solver's last-iteration residual (a solve-convergence
+`max_overlap()` is left as-is: it is the position solver's last-iteration residual (a solve-convergence
 metric), NOT the committed overlap — `compute_overlaps()` is the query protocols should use for the
-overlap criterion. (Making `get_max_overlap()` report the committed value would require a per-step
+overlap criterion. (Making `max_overlap()` report the committed value would require a per-step
 re-detection; not worth perturbing the validated step() pipeline.)
 
 Remaining work: package the tuned protocol as a reusable entry point (replacing the broken

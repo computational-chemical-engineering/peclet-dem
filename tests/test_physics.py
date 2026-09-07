@@ -24,7 +24,7 @@ def run_simulation(num_particles, density_target, steps=1000):
                    np.array([L/2, L/2, L/2], dtype=np.float32))
     
     # Initialize empty
-    sim.initialize(0)
+    sim.initialize_shape(0, radius=0.5)
     
     # Safe Grid Initialization (Manual)
     # Target L is calculated. 
@@ -132,7 +132,7 @@ def test_two_particles():
     print("\n--- Test: 2 Particles Overlap ---")
     sim = dem.Simulation(2)
     sim.set_domain(np.array([-10,-10,-10], dtype=np.float32), np.array([10,10,10], dtype=np.float32))
-    sim.initialize(0)
+    sim.initialize_shape(0, radius=0.5)
     
     pos = np.array([
         [0.0, 0.0, 0.0, 0.0],

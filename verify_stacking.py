@@ -7,7 +7,7 @@ def verify_stacking():
     
     # Init
     sim = dem.Simulation(200) # Smaller number for quick test
-    sim.initialize(0) # Sphere
+    sim.initialize_shape(0, radius=0.5) # Sphere
     
     # Material: Restitution=0.5, Friction=0.3
     sim.set_material_params(0.5, 0.5, 0.) 

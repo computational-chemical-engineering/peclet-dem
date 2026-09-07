@@ -9,13 +9,13 @@ def verify_thermostat():
     # 1. Initialize
     n_particles = 1000
     sim = dem.Simulation(n_particles)
-    sim.initialize(shape_type=1, radius=0.5) # Spheres
+    sim.initialize_shape(shape_type=1, radius=0.5) # Spheres
     
     # 2. Domain (Periodic)
     L = 20.0
     half = L/2
     sim.set_domain((-half, -half, -half), (half, half, half))
-    sim.enable_periodicity(True, True, True)
+    sim.set_periodic(True, True, True)
     
     # 3. Random Positions
     pos = (np.random.rand(n_particles, 3) * L) - half

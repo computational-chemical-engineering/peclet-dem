@@ -33,7 +33,7 @@ def verify_packing():
     domain_side = vol_domain_ref ** (1.0/3.0)
 
     sim = dem.Simulation(num_particles)
-    sim.initialize(shape_type=1, radius=radius) # Sphere
+    sim.initialize_shape(shape_type=1, radius=radius) # Sphere
 
     half_d = domain_side / 2.0
     sim.set_domain((-half_d, -half_d, -half_d), (half_d, half_d, half_d))
@@ -88,7 +88,7 @@ def verify_packing():
                         sim.export_lammps(f"{output_dir}/dump.stacking.{i}.lammps", i)
                     
                 # Update Max Phi (valid state)
-                final_ov = sim.get_max_overlap()
+                final_ov = sim.max_overlap()
                 vel = sim.get_velocities()
                 T_current = sum(vel[:, 0:3].ravel()**2) / (3*num_particles)
                 phi_current = (num_particles * vol_particle) / (domain_side**3)

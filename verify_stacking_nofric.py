@@ -6,7 +6,7 @@ def verify_stacking_nofric():
     print("--- Stacking Stability Test (No Friction) ---")
     
     sim = dem.Simulation(200)
-    sim.initialize(0) 
+    sim.initialize_shape(0, radius=0.5) 
     
     # Material: Restitution=0.5, Friction=0.0 (TESTING THIS)
     sim.set_material_params(0.5, 0.0, 0.) 

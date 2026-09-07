@@ -35,7 +35,7 @@ def build(seed=0):
     sim = dem.Simulation(400)
     sim.set_sphere_shape(1.0)          # grain radius 1, global_scale 1 (default)
     sim.set_domain(lo, hi)
-    sim.enable_periodicity(False, False, False)
+    sim.set_periodic(False, False, False)
     wall = build_wall_sdf(drum_sdf, (lo, hi), resolution=96)
     wid = wall.add_to(sim, restitution=0.1, friction=0.7)
     sim.set_gravity(0.0, -12.0, 0.0)
@@ -67,7 +67,7 @@ def settle_and_spin(sim, wid, omega, spin_steps):
     crit = 0.06
     # grow to full size, gated on overlap
     for _ in range(1500):
-        grow = sim.get_max_overlap() < crit and float(sim.get_scales().mean()) < 0.999
+        grow = sim.max_overlap() < crit and float(sim.get_scales().mean()) < 0.999
         sim.set_growth_params(1.0 if grow else 0.0, sim.get_growth_factor())
         sim.step(dt)
     sim.set_growth_params(0.0, sim.get_growth_factor())

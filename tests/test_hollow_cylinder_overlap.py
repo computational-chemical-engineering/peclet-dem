@@ -16,7 +16,7 @@ def generate_unit_sdf_stl(radius, height, thickness, filename):
     # 1. Create a 1-particle simulation
     sim_unit = dem.Simulation(1)
     # Use exact same shape params
-    sim_unit.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
+    sim_unit.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
     
     # Domain large enough to contain the unit shape
     # Max dimension is likely Height or Diameter. 
@@ -67,7 +67,7 @@ def test_static_overlap():
     # 2. Initialize Hollow Cylinder
     # Type 2 = Hollow Cylinder
     # Radius=0.1, Height=0.4, Thickness=0.05
-    sim.initialize(shape_type=2, radius=0.5, height=1.0, thickness=0.5)
+    sim.initialize_shape(shape_type=2, radius=0.5, height=1.0, thickness=0.5)
     
     # 3. Add 2 Particles with Known Overlap
     # P1 at (0,0,0)
@@ -97,7 +97,7 @@ def test_static_overlap():
     os.makedirs(output_dir, exist_ok=True)
 
     # Convert user params to unit params for STL
-    # Params used: sim.initialize(shape_type=2, radius=0.5, height=1.0, thickness=0.5)
+    # Params used: sim.initialize_shape(shape_type=2, radius=0.5, height=1.0, thickness=0.5)
     # Unit STL expects dimensions relative to R=1.0
     r_sim = 0.5
     h_sim = 1.0
@@ -119,9 +119,9 @@ def test_static_overlap():
         sim.export_lammps(f"{output_dir}/step.{i}.lammps", i)
     
         # 5. Check Results
-        num_contacts = sim.get_num_contacts()
-        num_manifolds = sim.get_num_manifolds()
-        max_overlap = sim.get_max_overlap()
+        num_contacts = sim.num_contacts()
+        num_manifolds = sim.num_manifolds()
+        max_overlap = sim.max_overlap()
         
         print(f"{i}, Contacts: {num_contacts}, Manifolds: {num_manifolds}, Max Overlap: {max_overlap}")
         

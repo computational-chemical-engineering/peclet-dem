@@ -39,12 +39,12 @@ def run_sphere_test():
         print(f"\nRunning Sphere Test with Offset={offset}")
         
         sim = dem.Simulation(num_particles)
-        sim.initialize(shape_type=1, radius=radius, height=0, thickness=0) # Sphere
+        sim.initialize_shape(shape_type=1, radius=radius, height=0, thickness=0) # Sphere
         
         domain_size = 6.0*radius
         sim.set_domain((-domain_size, -domain_size, -domain_size), 
                        (domain_size, domain_size, domain_size))
-        sim.enable_periodicity(False, False, False)
+        sim.set_periodic(False, False, False)
         
         sim.set_gravity(0, 0, 0) 
         sim.set_material_params(restitution, restitution_t, friction) 

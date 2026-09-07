@@ -36,7 +36,7 @@ def drum_sdf(p, rad=2.5):  # closed drum with ROUNDED interior edges (no sharp b
 def configure(sim):
     sim.set_sphere_shape(1.0)
     sim.set_domain(lo, hi)
-    sim.enable_periodicity(*periodic)
+    sim.set_periodic(*periodic)
     wid = build_wall_sdf(drum_sdf, (lo, hi), resolution=96).add_to(sim, restitution=0.1, friction=0.6)
     sim.set_gravity(0.0, -G, 0.0)
     sim.set_material_params(0.1, 0.0, 0.4)
@@ -57,7 +57,7 @@ if rank == 0:
     p = np.zeros((len(pts), 4), np.float32); p[:, :3] = pts; p[:, 3] = 1.0
     sim.set_positions(p); sim.set_scales(np.ones(len(pts), np.float32)); sim.set_growth_params(1.0, 0.15)
     for _ in range(1500):
-        grow = sim.get_max_overlap() < 0.06 and float(sim.get_scales().mean()) < 0.999
+        grow = sim.max_overlap() < 0.06 and float(sim.get_scales().mean()) < 0.999
         sim.set_growth_params(1.0 if grow else 0.0, sim.get_growth_factor()); sim.step(dt)
     sim.set_growth_params(0.0, sim.get_growth_factor())
     for _ in range(1000):

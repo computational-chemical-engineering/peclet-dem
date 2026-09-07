@@ -6,7 +6,7 @@ def test_bounce():
     
     # Init
     sim = dem.Simulation(2)
-    sim.initialize(0, 1.0, 0, 0) # Sphere, Radius 1.0
+    sim.initialize_shape(0, 1.0, 0, 0) # Sphere, Radius 1.0
     
     # Set Params: Elastic Bounce (e=1.0)
     sim.set_material_params(1.0, 0.0, 0.0) 

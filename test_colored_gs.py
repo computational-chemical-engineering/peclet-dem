@@ -41,7 +41,7 @@ def Rmat(q):  # (N,4) xyzw -> (N,3,3)
 # ----------------------------------------------------------------------------- A. binary exactness
 def test_binary(e, use_gs=True):
     r = 0.5; u = 1.0; dt = 0.005
-    s = dem.Simulation(2); s.initialize(shape_type=1, radius=r); s.set_sphere_shape(r)
+    s = dem.Simulation(2); s.initialize_shape(shape_type=1, radius=r); s.set_sphere_shape(r)
     s.set_domain((-10, -10, -10), (10, 10, 10)); s.set_gravity(0, 0, 0)
     s.set_material_params(e, 0.0, 0.0); s.set_solver_iterations(10, 12); s.set_dt(dt)
     s.set_velocity_use_gs(use_gs)
@@ -63,7 +63,7 @@ def test_conservation(use_gs=True, seed=0):
     momentum-conserving contact law. Returns the worst-case relative drift of |P| and |L|."""
     N = 24; dt = 0.004
     s = dem.Simulation(N)
-    s.initialize(shape_type=2, radius=0.5, height=1.0, thickness=0.2)   # cylinders -> off-centre hits
+    s.initialize_shape(shape_type=2, radius=0.5, height=1.0, thickness=0.2)   # cylinders -> off-centre hits
     s.set_domain((-20, -20, -20), (20, 20, 20)); s.set_gravity(0, 0, 0)
     s.set_material_params(0.7, 0.0, 0.0); s.set_solver_iterations(8, 10); s.set_dt(dt)
     s.set_velocity_use_gs(use_gs)
@@ -118,8 +118,8 @@ def test_cooling(use_gs=True):
     rng = np.random.default_rng(3)
     Pp = rng.uniform(0, L, (N, 3)).astype(np.float32)
     v = rng.normal(0, np.sqrt(T0), (N, 3)).astype(np.float32); v -= v.mean(0)
-    s = dem.Simulation(N + 64); s.initialize(shape_type=1, radius=rp); s.set_sphere_shape(rp)
-    s.set_domain((0, 0, 0), (L, L, L)); s.enable_periodicity(True, True, True)
+    s = dem.Simulation(N + 64); s.initialize_shape(shape_type=1, radius=rp); s.set_sphere_shape(rp)
+    s.set_domain((0, 0, 0), (L, L, L)); s.set_periodic(True, True, True)
     s.set_gravity(0, 0, 0); s.set_material_params(e, 0.0, 0.0); s.set_solver_iterations(6, 8)
     s.set_dt(dt); s.set_velocity_use_gs(use_gs)
     s.set_positions(np.c_[Pp, np.ones(N, np.float32)]); s.set_velocities(v)
@@ -148,8 +148,8 @@ def test_coloring_valid():
     L = 12.0; rp = 0.5; N = 900
     # a loose cloud that settles into a dense multi-contact pile under gravity
     Pp = np.c_[rng.uniform(1, L - 1, (N, 2)), rng.uniform(1, L - 1, N)].astype(np.float32)
-    s = dem.Simulation(N + 64); s.initialize(shape_type=1, radius=rp); s.set_sphere_shape(rp)
-    s.set_domain((0, 0, 0), (L, L, L)); s.enable_periodicity(False, False, False)
+    s = dem.Simulation(N + 64); s.initialize_shape(shape_type=1, radius=rp); s.set_sphere_shape(rp)
+    s.set_domain((0, 0, 0), (L, L, L)); s.set_periodic(False, False, False)
     s.add_plane((0, 0, 0), (0, 0, 1))
     s.set_gravity(0, 0, -9.81); s.set_material_params(0.4, 0.3, 0.3)
     s.set_solver_iterations(12, 8); s.set_dt(2e-3); s.set_velocity_use_gs(True)

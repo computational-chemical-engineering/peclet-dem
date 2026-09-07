@@ -60,7 +60,7 @@ static nb::ndarray<nb::numpy, float> flat(std::vector<float>&& v) {
 }
 
 NB_MODULE(_dem, m) {
-  m.attr("__doc__") = "DEM-GPU (Kokkos + ArborX): portable XPBD granular dynamics";
+  m.attr("__doc__") = "peclet.dem (Kokkos + ArborX): performance-portable XPBD granular dynamics";
 
   // Kokkos init + the release-then-finalize atexit hook + finalize() + execution_space: the
   // suite-wide pattern (file comment; peclet/core/python/kokkos_teardown.hpp). Simulation's own
@@ -74,11 +74,12 @@ NB_MODULE(_dem, m) {
            "Use a uniform sphere of the given radius for all particles.")
       .def("initialize_shape", &Simulation::initializeShape, nb::arg("shape_type"),
            nb::arg("radius"), nb::arg("height") = 0.0f, nb::arg("thickness") = 0.0f,
-           "Select the particle shape (sphere/cylinder/ring/...) and its dimensions.")
-      // CUDA-API alias: initialize(shape_type, radius, height, thickness).
-      .def("initialize", &Simulation::initializeShape, nb::arg("shape_type"),
-           nb::arg("radius") = 0.5f, nb::arg("height") = 2.0f, nb::arg("thickness") = 0.0f,
-           "CUDA-API alias for initialize_shape.")
+           "Select the single particle shape and its dimensions: shape_type 1 = sphere (radius), "
+           "2 = hollow cylinder (radius, height, thickness), 3 = box (half-extent = radius); any "
+           "other value is treated as a sphere. RESETS the shape registry to this one shape (use "
+           "add_shape for a mixture) and records the unit-mass inverse inertia that set_positions "
+           "applies to every particle -- so call it BEFORE set_positions. `radius` has no default: "
+           "the retired `initialize` alias defaulted it to 0.5 (and height to 2.0).")
       // Import a general particle as a grid SDF + surface point shell (all particles share it).
       // grid: flat [nx*ny*nz] signed-distance samples, x-fastest (idx = x + y*nx + z*nx*ny), at
       // nodes origin + (x,y,z)*spacing (negative inside). shell: (M,3) surface points. inv_inertia:
@@ -135,9 +136,10 @@ NB_MODULE(_dem, m) {
             s.setShapeIds(std::vector<int>(ids.data(), ids.data() + ids.size()));
           },
           nb::arg("ids"),
-          "Per-particle shape index (one int per particle). Also refreshes each particle's "
-          "inverse inertia from its new shape, so the order of set_positions/set_shape_ids does "
-          "not matter.")
+          "Per-particle shape index (one int per particle, each < num_shapes()). Refreshes each "
+          "particle's inverse inertia from its new shape. Call it AFTER set_positions: "
+          "set_positions resets every particle to shape 0 (and sizes the particle set this call "
+          "is checked against).")
       .def(
           "add_scene_shape",
           [](Simulation& s, nb::ndarray<int, nb::c_contig> ni, nb::ndarray<float, nb::c_contig> nr,
@@ -163,10 +165,7 @@ NB_MODULE(_dem, m) {
           "runs the diagonal-inertia rotational update on the wrong frame, silently. Returns the "
           "shape id for set_shape_ids.")
       .def("num_shapes", &Simulation::numShapes, "Number of registered shapes.")
-      .def("set_domain", &Simulation::setDomain, nb::arg("lx"), nb::arg("ly"), nb::arg("lz"),
-           nb::arg("px") = true, nb::arg("py") = true, nb::arg("pz") = false,
-           "Set the box size (lx,ly,lz) and per-axis periodicity.")
-      // CUDA-API overload: set_domain(min, max) tuples (arbitrary origin); keeps current
+      // Corner overload: set_domain(min, max) 3-tuples (arbitrary origin); keeps the current
       // periodicity.
       .def(
           "set_domain",
@@ -179,9 +178,9 @@ NB_MODULE(_dem, m) {
           "Set the domain by (min, max) corner tuples (arbitrary origin); keeps current "
           "periodicity.")
       // The suite-canonical form (suite/docs/NAMING.md 1.1): keyword `extent` / `origin` /
-      // `periodic`, the same three names flow.Solver, peclet.voro and the AMR octree take. It is
-      // bound AFTER the two positional overloads, so every existing call still resolves to the one
-      // it always did; `extent=` is what selects this one.
+      // `periodic`, the same three names flow.Solver, peclet.voro and the AMR octree take. Bound
+      // AFTER the corner overload, so a two-positional call still resolves to (min, max);
+      // `extent=` selects this one.
       .def(
           "set_domain",
           [](Simulation& s, std::array<float, 3> extent, std::array<float, 3> origin,
@@ -194,17 +193,12 @@ NB_MODULE(_dem, m) {
           nb::arg("periodic") = std::array<bool, 3>{true, true, false},
           "Set the domain the suite-canonical way: `extent` is the box SIZE (not the far corner), "
           "`origin` the lower corner, `periodic` the per-axis flags. Equivalent to "
-          "`set_domain(min=origin, max=origin+extent)` plus `set_periodic(*periodic)`. The "
-          "positional `set_domain(lx, ly, lz, px, py, pz)` and `set_domain(min, max)` spellings "
-          "still work.")
+          "`set_domain(min=origin, max=origin+extent)` plus `set_periodic(*periodic)`. Either "
+          "form resets the broad-phase skin to 0.1 x the global scale (as set_global_scale does).")
       .def("set_periodic", &Simulation::enablePeriodicity, nb::arg("x"), nb::arg("y"),
            nb::arg("z"),
-           "Set periodic boundaries per axis (x, y, z). The suite-canonical spelling "
-           "(suite/docs/NAMING.md 1.4); `enable_periodicity` is the same call.")
-      .def("enable_periodicity", &Simulation::enablePeriodicity, nb::arg("x"), nb::arg("y"),
-           nb::arg("z"),
-           "Enable periodic boundaries per axis (x, y, z). ALIAS of the canonical `set_periodic`; "
-           "both ship.")
+           "Set periodic boundaries per axis (x, y, z); read back with the `periodic` property "
+           "(suite/docs/NAMING.md 1.4).")
       .def_prop_ro("origin", &Simulation::domainOrigin,
                    "The domain's lower corner (x, y, z) — read-only; set it with `set_domain`.")
       .def_prop_ro("extent", &Simulation::domainExtent,
@@ -212,12 +206,6 @@ NB_MODULE(_dem, m) {
                    "far corner, which is `origin + extent` (suite/docs/NAMING.md 1.1).")
       .def_prop_ro("periodic", &Simulation::domainPeriodic,
                    "Per-axis periodicity (x, y, z) — read-only; set it with `set_periodic`.")
-      .def("get_domain_min", &Simulation::getDomainMin,
-           "Return the domain minimum corner (x, y, z). ALIAS of the canonical `origin` property; "
-           "both ship.")
-      .def("get_domain_max", &Simulation::getDomainMax,
-           "Return the domain maximum corner (x, y, z). Canonically `origin + extent` — note that "
-           "`extent` is the SIZE, so it is not this value.")
       .def("set_gravity", &Simulation::setGravity,
            "Set the gravitational acceleration vector (gx, gy, gz).")
       .def("set_thermostat", &Simulation::setThermostat, nb::arg("temperature"), nb::arg("tau"),
@@ -297,8 +285,6 @@ NB_MODULE(_dem, m) {
           "invert=False for a stirrer/obstacle (grains outside the solid); invert=True for a "
           "container, built from a SOLID body (a solid cylinder for a drum). The wall is "
           "positioned by the node TRANSFORM -- an identity transform sits at the origin.")
-      .def("add_plane", &Simulation::addPlane, "Add a boundary wall plane (px,py,pz, nx,ny,nz).")
-      // CUDA-API overload: add_plane(point, normal) as 3-sequences.
       .def(
           "add_plane",
           [](Simulation& s, std::tuple<float, float, float> p, std::tuple<float, float, float> n) {
@@ -306,7 +292,8 @@ NB_MODULE(_dem, m) {
                        std::get<1>(n), std::get<2>(n));
           },
           nb::arg("point"), nb::arg("normal"),
-          "Add a boundary wall plane from a point and a normal (3-sequences).")
+          "Add an infinite boundary wall plane through `point`, with `normal` pointing into the "
+          "half-space the grains occupy (both 3-sequences).")
       // Static world-space SDF wall/container (drum barrel, hopper, vibrating tray). grid: flat
       // [nx*ny*nz] signed distance, x-fastest (idx = x + y*nx + z*nx*ny), at world nodes
       // origin+(x,y,z)*spacing — POSITIVE in the void where grains live, NEGATIVE in the solid
@@ -448,9 +435,13 @@ NB_MODULE(_dem, m) {
           "set_inv_mass",
           [](Simulation& s, nb::ndarray<float, nb::c_contig> a) { s.setInvMass(to_vec(a)); },
           "Set per-particle inverse mass (0 => fixed/immovable).")
-      .def("get_angular_velocities",
-           [](const Simulation& s) { return rows(s.getAngularVelocities(), 3); })
-      .def("get_inv_inertia", [](const Simulation& s) { return rows(s.getInvInertia(), 3); })
+      .def(
+          "get_angular_velocities",
+          [](const Simulation& s) { return rows(s.getAngularVelocities(), 3); },
+          "Return particle angular velocities (body frame) as an (N,3) numpy array.")
+      .def(
+          "get_inv_inertia", [](const Simulation& s) { return rows(s.getInvInertia(), 3); },
+          "Return the per-particle principal-frame diagonal inverse inertia as an (N,3) array.")
       .def("set_scales_uniform", &Simulation::setScalesUniform,
            "Set a single uniform scale for all particles.")
       .def(
@@ -462,7 +453,9 @@ NB_MODULE(_dem, m) {
       .def("get_growth_factor", &Simulation::growthFactor,
            "Return the current particle growth factor.")
       .def("get_growth_rate", &Simulation::getGrowthRate, "Return the particle growth rate.")
-      .def("get_masses", [](const Simulation& s) { return flat(s.getMasses()); })
+      .def(
+          "get_masses", [](const Simulation& s) { return flat(s.getMasses()); },
+          "Return per-particle masses (1 / inverse mass; 0 for fixed bodies) as an (N,) array.")
       .def(
           "get_positions", [](const Simulation& s) { return rows(s.getPositions(), 3); },
           "Return particle positions as an (N,3) numpy array.")
@@ -529,8 +522,10 @@ NB_MODULE(_dem, m) {
       .def("write_vtp", &Simulation::writeVtp, nb::arg("filename"),
            "Write particle state to a VTP file (ParaView/Ovito).")
       .def("num_particles", &Simulation::numParticles, "Return the number of particles.")
-      .def("num_contacts", &Simulation::numContacts, "Return the number of broad-phase contacts.")
-      .def("num_manifolds", &Simulation::numManifolds, "Return the number of contact manifolds.")
+      .def("num_contacts", &Simulation::numContacts,
+           "Number of broad-phase candidate pairs found in the last step (ArborX BVH query).")
+      .def("num_manifolds", &Simulation::numManifolds,
+           "Number of narrow-phase contact manifolds (touching pairs) resolved in the last step.")
       .def(
           "set_sleeping", &Simulation::setSleeping, nb::arg("enabled"),
           nb::arg("threshold_scale") = 2.0f, nb::arg("consecutive") = 64,
@@ -546,12 +541,12 @@ NB_MODULE(_dem, m) {
       .def("debug_coloring_conflicts", &Simulation::debugColoringConflicts,
            "TEST-ONLY: (velocity, position) colouring-invariant violations in the last substep; "
            "a valid colouring returns (0, 0).")
-      .def("max_overlap", &Simulation::maxOverlap, "Return the maximum particle-particle overlap.")
-      // CUDA-API parity: overlap measurement + LAMMPS/SDF export + profiling.
-      .def("get_num_contacts", &Simulation::numContacts)    // CUDA-API alias
-      .def("get_num_manifolds", &Simulation::numManifolds)  // CUDA-API alias
-      .def("get_max_overlap", &Simulation::maxOverlap)      // CUDA-API alias
-      .def("compute_overlaps", &Simulation::computeOverlaps, "Recompute particle overlaps.")
+      .def("max_overlap", &Simulation::maxOverlap,
+           "Maximum pair interpenetration recorded by the position solver in the last step (its "
+           "last-iteration residual, so it under-reports the committed overlap -- see "
+           "docs/packing_investigation.md). compute_overlaps() measures the committed state.")
+      .def("compute_overlaps", &Simulation::computeOverlaps,
+           "Measure and return the maximum pair interpenetration of the current committed state.")
       .def("export_lammps", &Simulation::exportLammps, nb::arg("filename"), nb::arg("step"),
            "Export particle state to a LAMMPS dump file.")
       .def(
@@ -574,7 +569,7 @@ NB_MODULE(_dem, m) {
           },
           "Return a dict of particle/contact/manifold counts and the max overlap.")
 #ifdef PECLET_DEM_MPI
-      // Gated MPI step (mirrors the CUDA dem MPI binding); built only with -DDEM_MPI.
+      // Gated MPI step; built only with -DPECLET_DEM_MPI=ON.
       .def(
           "init_mpi",
           [](Simulation& s, std::tuple<double, double, double> origin,
@@ -632,7 +627,7 @@ NB_MODULE(_dem, m) {
          nb::ndarray<float, nb::c_contig> vel, nb::ndarray<float, nb::c_contig> quats,
          nb::ndarray<float, nb::c_contig> radii,
          std::optional<std::tuple<float, float, float>> box_min,
-         std::optional<std::tuple<float, float, float>> box_max, bool pbc_enabled) {
+         std::optional<std::tuple<float, float, float>> box_max, bool periodic) {
         float bmin[3], bmax[3];
         const float *pmn = nullptr, *pmx = nullptr;
         if (box_min) {
@@ -648,11 +643,11 @@ NB_MODULE(_dem, m) {
           pmx = bmax;
         }
         peclet::dem::writeLammpsDump(filename, step, to_vec(pos), to_vec(vel), to_vec(quats),
-                                     to_vec(radii), pmn, pmx, pbc_enabled);
+                                     to_vec(radii), pmn, pmx, periodic);
       },
       nb::arg("filename"), nb::arg("step"), nb::arg("pos"), nb::arg("vel"), nb::arg("quats"),
       nb::arg("radii"), nb::arg("box_min") = std::nullopt, nb::arg("box_max") = std::nullopt,
-      nb::arg("pbc_enabled") = false,
+      nb::arg("periodic") = false,
       "Module-level LAMMPS dump writer from raw arrays (filename, step, pos, vel, quats, radii, "
-      "box, pbc).");
+      "box corners, periodic flag).");
 }

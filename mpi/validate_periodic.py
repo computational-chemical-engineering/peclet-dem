@@ -6,7 +6,7 @@ axes 0,1 at np=4, so this test makes exactly the split axes periodic (via the tr
 and walls the rest, then compares against a serial reference that uses dem's *internal*
 periodicity. Agreement means the halo's periodic image ghosts reproduce true periodic interactions.
 
-  serial      : one Simulation, enable_periodicity(*split) + walls on the unsplit axes.
+  serial      : one Simulation, set_periodic(*split) + walls on the unsplit axes.
   distributed : per-block non-periodic + walls; mpi_init(periodic=split) so the halo supplies the
                 wrap-ghosts; migration wraps positions on the periodic axes.
 
@@ -64,12 +64,12 @@ def make_sim(n, dist):
         # per-block solver: non-periodic, domain padded so wrap-image ghosts (just outside [0,L]) fit.
         m = rcut + 0.5
         s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m), (L[0] + m, L[1] + m, L[2] + m))
-        s.enable_periodicity(False, False, False)
+        s.set_periodic(False, False, False)
     else:
         # serial reference: TRUE [0,L] domain so dem's internal periodicity wraps at the right box.
         s.set_domain((dmin[0], dmin[1], dmin[2]), (L[0], L[1], L[2]))
-        s.enable_periodicity(*periodic)
-    s.initialize(shape_type=1, radius=radius)
+        s.set_periodic(*periodic)
+    s.initialize_shape(shape_type=1, radius=radius)
     s.set_material_params(1.0, 0.0, 0.0)
     s.set_solver_iterations(8, 4)
     s.set_gravity(0.0, 0.0, 0.0)

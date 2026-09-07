@@ -50,9 +50,9 @@ def pack_spheres(N=800, phi_ref=0.68, radius=0.5, friction=0.0, temperature=1.0,
     rng = np.random.default_rng(seed)
 
     s = dem.Simulation(N)
-    s.initialize(shape_type=1, radius=radius)
+    s.initialize_shape(shape_type=1, radius=radius)
     s.set_domain((-half, -half, -half), (half, half, half))
-    s.enable_periodicity(True, True, True)
+    s.set_periodic(True, True, True)
     s.set_gravity(0.0, 0.0, 0.0)
     s.set_material_params(rest_pre, 1.0, friction)
     s.set_solver_iterations(iters, iters)
@@ -108,7 +108,7 @@ def analyze_spheres(sim, radius=0.5, gaps=(0.0, 0.002, 0.005)):
     rattler fraction and the g(r) contact-peak position."""
     pos = sim.get_positions()[:, :3]
     r = radius * sim.get_scales().ravel()
-    dmin = np.array(sim.get_domain_min()); dmax = np.array(sim.get_domain_max())
+    dmin = np.array(sim.origin); dmax = dmin + np.array(sim.extent)
     m = pack_meter.measure(pos, r, dmin, dmax, gofr=True)
     box = dmax - dmin
     wp = np.mod(np.asarray(pos)[:, :3].astype(np.float64) - dmin, box)
@@ -154,9 +154,9 @@ def pack_rings(N=400, phi_ref=0.55, radius=0.5, height=1.0, thickness=0.15, temp
     rng = np.random.default_rng(seed)
 
     s = dem.Simulation(N)
-    s.initialize(shape_type=2, radius=radius, height=height, thickness=thickness)
+    s.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
     s.set_domain((-half, -half, -half), (half, half, half))
-    s.enable_periodicity(True, True, True)
+    s.set_periodic(True, True, True)
     s.set_gravity(0.0, 0.0, 0.0)
     s.set_material_params(rest_pre, 1.0, 0.0)
     s.set_solver_iterations(iters, iters)
