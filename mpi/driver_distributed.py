@@ -18,7 +18,7 @@ owned particles but are never integrated. dem detects collisions once per subste
 Jacobi iterations on the fixed contact set, so "ghosts fixed during the iterations" matches its serial
 behaviour; FROZEN only approximates the boundary mass-split (owned takes the full correction).
 The EXACT scheme (reverse-accumulate ghost constraint deltas to owners via ParticleHalo, so each
-owner gets its mass-weighted share) is the next step -- see mpi/README.md.
+owner gets its mass-weighted share) is the next step -- see docs/mpi.md.
 """
 import sys
 import numpy as np

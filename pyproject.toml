@@ -44,12 +44,10 @@ cmake.version = ">=3.24"
 # SKBUILD) into the peclet namespace; disable package auto-discovery so nothing else is added.
 wheel.install-dir = "."
 wheel.packages = []
-sdist.include = ["src", "mpi", "packaging", "cmake", "CMakeLists.txt", "README.md", "LICENSE"]
-# Root-level verify_*/test_*/debug_*/diag_* scripts and logs are development scratch (RELEASE.md A4):
+sdist.include = ["src", "packaging", "cmake", "CMakeLists.txt", "README.md", "LICENSE"]
+# Root-level verify_*/test_* scripts are development entry points, not part of the package (RELEASE.md A4):
 # keep them out of the source distribution.
-sdist.exclude = ["/verify_*.py", "/test_*.py", "/debug_*.py", "/diag_*.py", "/phase*_*.py", "/pack.py",
-                 "/pack_meter.py", "/generate_particles.py", "/verify_output.txt", "/build_log*.txt",
-                 "/plan_*.md", "/build_project.sh", "/activate_env.sh", "/*.vtp"]
+sdist.exclude = ["/verify_*.py", "/test_*.py", "/pack.py", "/pack_meter.py", "/generate_particles.py"]
 
 # ---------------------------------------------------------------------------
 # Self-contained redistributable CPU wheels (cibuildwheel). PECLET_VENDOR_DEPS=ON FetchContent-builds

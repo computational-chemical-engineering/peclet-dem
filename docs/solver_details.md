@@ -47,7 +47,7 @@ band (`ghostBand = global_scale`) of the periodic faces, shifted by the box peri
 the full per-particle state (including the **predicted** position, so it aligns with the solver) and
 records its real owner in `realIndices` for momentum conservation. Ghosts are not integrated themselves.
 (In the distributed step this ghost layer is supplied by cross-rank exchange instead — see
-`../mpi/README.md`.)
+`mpi.md`.)
 
 ## 2. Collision Detection
 

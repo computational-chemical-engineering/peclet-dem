@@ -37,6 +37,6 @@ jobs:
       - run: pip install "clang-format==18.1.8"
       - name: clang-format dry-run (uses the repo .clang-format)
         run: |
-          files=$(git ls-files 'src/*.hpp' 'src/*.cpp' 'tests/*.hpp' 'tests/*.cpp' 'mpi/*.hpp' 'mpi/*.cpp')
+          files=$(git ls-files 'src/*.hpp' 'src/*.cpp' 'tests/*.hpp' 'tests/*.cpp')
           [ -z "$files" ] && { echo "no C++ sources"; exit 0; }
           clang-format --dry-run --Werror $files

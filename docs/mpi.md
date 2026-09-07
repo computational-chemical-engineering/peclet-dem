@@ -8,19 +8,19 @@ runs locally), plus periodic **load rebalancing** (weighted-ORB SoA ownership mi
 
 The distributed step now ships **inside the `dem` Kokkos module** as `step_mpi`, gated behind the
 `PECLET_DEM_MPI` build option (the default module never defines it, so the single-rank module stays
-byte-identical). This document is the status + how-to-build/run + what-is-validated for that step, plus
-the standalone core bring-up harness that still lives in this directory.
+byte-identical). This document is the status + how-to-build/run + what-is-validated for that step. The Python
+validation scripts it refers to live in `../mpi/`.
 
-## The shipped distributed step (`dem`, `-DDEM_MPI=ON`)
+## The shipped distributed step (`dem`, `-DPECLET_DEM_MPI=ON`)
 
 Build the `peclet.dem` module with MPI exposed, against the bootstrapped Kokkos prefix:
 ```bash
-cd dem && source .venv/bin/activate
-cmake -S . -B build -DDEM_MPI=ON -DCMAKE_PREFIX_PATH="$PWD/../extern/install/<backend>"
+cd dem && source ../.venv/bin/activate
+cmake -S . -B build -DPECLET_DEM_MPI=ON -DCMAKE_PREFIX_PATH="$PWD/../extern/install/<backend>"
 cmake --build build -j$(nproc)            # -> build/peclet/dem/_dem.*.so with init_mpi/enable_mpi_step/step_mpi
 ```
 
-Python surface (gated; present only when built with `-DDEM_MPI=ON`):
+Python surface (gated; present only when built with `-DPECLET_DEM_MPI=ON`):
 ```python
 from peclet import dem
 sim = dem.Simulation()
@@ -87,37 +87,12 @@ particle count (weighted ORB) and SoA ownership is migrated — keeping per-rank
 packing evolves. See the suite memory note on dynamic load balancing and `core`'s
 `particle_rebalance` / `rebalanceByParticleCount`.
 
-## Standalone bring-up harness (host C++ + core)
-
-This directory also holds the original bring-up tests — host C++ + MPI + header-only core,
-no Kokkos/ArborX/Python needed — that validated the migration + ghost-exchange machinery before it was
-wired into the module. They still build and run:
-```bash
-cmake -S mpi -B mpi/build -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun
-cmake --build mpi/build -j
-ctest --test-dir mpi/build --output-on-failure        # *_np{1,2,4}
-```
-Force `-DMPIEXEC_EXECUTABLE=/usr/bin/mpirun` (FindMPI may otherwise pick ParaView's bundled mpiexec,
-which launches OpenMPI binaries as singletons).
-
-- **`test_particle_migration.cpp`** — decomposes the periodic domain (`peclet::core::decomp::BlockDecomposer`),
-  builds a `peclet::core::halo::DomainMap`, and migrates particles with `peclet::core::halo::ParticleMigrator`. Each
-  particle's full SoA record is the opaque payload; its position drives ownership. Then calls
-  `gatherGhosts(rcut)` to collect copies within one interaction radius of the block boundary (periodic
-  images handled) — the input to a local broad-phase. Validated: count conserved, every particle on its
-  owning rank, id multiset preserved, np=1,2,4.
-- **The three ghost-exchange schemes** (built on core's persistent `ParticleHalo` —
-  `build` + field-agnostic `forward` / `reverse(sum)`), each matched to a serial reference cell-for-cell
-  at np=1,2,4 with a toy soft-sphere force in place of XPBD so they build with just MPI + core:
-  - **A — replicate / frozen ghosts** (`test_dem_step.cpp`): import ghost state, compute boundary pairs
-    twice, integrate owned.
-  - **B — Newton-on** (`test_dem_scheme_b.cpp`): import ghost state, compute each pair once,
-    `reverse(force, sum)` the ghost reactions to owners, integrate owned.
-  - **C — force-accumulation, local ghost integration** (`test_dem_scheme_c.cpp`): compute each pair
-    once, `reverse(force)` to owners, `forward(totalForce)` to ghosts, integrate owned + ghosts locally.
-
-The shipped `step_mpi` follows the **EXACT** variant (full owner→ghost state refresh, every owned
-particle computes its complete serial delta locally) rather than the reverse-reduction schemes B/C.
+The original host-C++ bring-up harness (particle migration + the three ghost-exchange schemes A/B/C
+matched cell-for-cell to a serial reference) validated this machinery before it was wired into the
+module; it was retired at 1.0.0 (it targeted core's pre-`peclet::core` headers) and lives in git
+history before dem `b43040c`. The shipped `step_mpi` follows the **EXACT** variant (full owner→ghost
+state refresh, every owned particle computes its complete serial delta locally) rather than the
+reverse-reduction schemes B/C.
 
 See [multi_gpu_testing.md](multi_gpu_testing.md) for the multi-GPU profiling/scaling playbook, `../../docs/ROADMAP.md`
 (Phase 4 / Phase 7) and the "MPI / sdflow" section of `../../flow/CLAUDE.md` for the Eulerian precedent.

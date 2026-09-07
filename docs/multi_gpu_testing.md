@@ -1,6 +1,6 @@
 # dem — multi-GPU testing & profiling guide
 
-The MPI-aware XPBD step (`Simulation::step_mpi`, see [README.md](README.md)) is **correctness-complete
+The MPI-aware XPBD step (`Simulation::step_mpi`, see [mpi.md](mpi.md)) is **correctness-complete
 and validated** (`tests/kokkos_mpi`, np=1,2,4, closed + periodic) but at-scale multi-GPU tuning is the
 remaining roadmap work. On a single GPU, `np>1` ranks **share one device** (the GPU contexts serialise
 and the wall-clock is contention-bound). This document is the plan for running and profiling on **real
@@ -43,12 +43,12 @@ correctness pass but with zero speedup. (For HIP, use `ROCR_VISIBLE_DEVICES`.)
 
 ### 1.2 Launcher & build
 Use the system MPI, not ParaView's bundled one (it launches OpenMPI binaries as singletons):
-`-DMPIEXEC_EXECUTABLE=/usr/bin/mpirun`. Build the `dem` module with `-DDEM_MPI=ON` against the
+`-DMPIEXEC_EXECUTABLE=/usr/bin/mpirun`. Build the `dem` module with `-DPECLET_DEM_MPI=ON` against the
 bootstrapped backend prefix:
 ```bash
 cd dem && source .venv/bin/activate
 export PATH=/usr/local/cuda-13.2/bin:$PATH              # nvcc on PATH for the CUDA backend
-cmake -S . -B build -DDEM_MPI=ON -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda"
+cmake -S . -B build -DPECLET_DEM_MPI=ON -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda"
 cmake --build build -j$(nproc)
 ```
 `mpi4py` must live in the same Python (`.venv`) as the `dem` module.
@@ -74,7 +74,7 @@ The mpi4py drivers in this directory each construct a `dem.Simulation` per rank 
 
 ```bash
 cd dem && source .venv/bin/activate
-PYP=$PWD/build                                           # the -DDEM_MPI=ON module build dir
+PYP=$PWD/build                                           # the -DPECLET_DEM_MPI=ON module build dir
 
 # Correctness across GPUs (per-particle vs a serial reference; spheres settling on a floor):
 PYTHONPATH=$PYP mpirun -np 2 --map-by ppr:1:gpu python3 mpi/validate_exact.py

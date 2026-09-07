@@ -4,7 +4,7 @@ Systematic investigation of why periodic monodisperse sphere packing fails to re
 close packing density (φ ≈ 0.64, coordination Z ≈ 6). Reference benchmark: frictionless monodisperse RCP
 φ ≈ 0.64, isostatic Z ≈ 6, residual overlap ≪ 1 %.
 
-Artifacts: `pack_meter.py` (trustworthy meter), `phase0_sphere_repro.py` (reproduction sweep).
+Artifacts: `pack_meter.py` (trustworthy meter), `phase0_sphere_repro.py` (reproduction sweep; retired at 1.0.0, in git history before `b43040c`).
 
 ## Phase 0 — trustworthy measurement + reproduction
 
@@ -65,7 +65,7 @@ and only then layer the adaptive jamming-search protocol and extend to rings.
 
 ## Phase 1 — localize the engine defect
 
-Artifact: `phase1_protocol_spheres.py` (the RingBed annealing protocol ported to spheres).
+Artifact: `phase1_protocol_spheres.py` (the RingBed annealing protocol ported to spheres; retired at 1.0.0, in git history).
 
 ### Finding 1.1 — not a regression
 The solver translation units (`solver_position.cu`, `solver_velocity.cu`, `xpbd_solver.cu`,
@@ -117,7 +117,7 @@ detection-time overlap; have the protocol use it), (b) trace and fix the stuck d
 
 ## Phase 2 — the engine is sound; the fix is a correct signal + a tuned protocol
 
-Artifact: `phase2_protocol_fixed.py` (the annealing protocol driven by a correct Python overlap signal).
+Artifact: `phase2_protocol_fixed.py` (the annealing protocol driven by a correct Python overlap signal; retired at 1.0.0, in git history).
 
 ### Finding 2.1 — the position solver is correct
 Two spheres at 50 % overlap snap to exactly touching (`d=1.0000`) in a single step. The solver resolves
