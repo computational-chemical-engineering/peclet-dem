@@ -2,7 +2,7 @@
 #
 # Standalone find_package project (like tests/kokkos + tests/arborx, and cfd's tests/kokkos_mpi):
 # Kokkos + ArborX + MPI + the header-only core + the dem Kokkos headers (src/). The
-# distributed demStep is gated behind DEM_MPI (the default dem module never defines
+# distributed demStep is gated behind PECLET_DEM_MPI (the default dem module never defines
 # it -> byte-identical single-GPU). Build:
 #   cmake -S tests/kokkos_mpi -B build_kmpi \
 #         -DCMAKE_PREFIX_PATH="<suite>/extern/install/<backend>" \

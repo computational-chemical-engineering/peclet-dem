@@ -1,14 +1,23 @@
 cmake_minimum_required(VERSION 3.24)
-project(dem LANGUAGES CXX)
 
-# Canonical packing-gpu build: the Kokkos + ArborX `dem` XPBD DEM module (CUDA / HIP / OpenMP backends,
-# selected by the install prefix). Kokkos, ArborX and pybind11 are found via find_package against the
-# bootstrapped install prefix (../extern/install/<backend>, built once by ../tools/bootstrap_deps.sh -- a
-# HARD build dependency). With nvcc, put it on PATH (export PATH=/usr/local/cuda-13.2/bin:$PATH).
+# One version source per repo (suite/docs/QUALITY_PLAN.md D4): pyproject.toml's `version = "x.y.z"`.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml" _peclet_dem_version_line REGEX "^version = \"")
+string(REGEX REPLACE "^version = \"([0-9]+\.[0-9]+\.[0-9]+).*$" "\\1" PECLET_DEM_VERSION
+       "${_peclet_dem_version_line}")
+if(NOT PECLET_DEM_VERSION MATCHES "^[0-9]+\.[0-9]+\.[0-9]+$")
+  message(FATAL_ERROR "dem: could not read `version = \"x.y.z\"` from pyproject.toml")
+endif()
+project(dem VERSION ${PECLET_DEM_VERSION} LANGUAGES CXX)
+
+# The `peclet.dem` module: the Kokkos + ArborX XPBD DEM engine (CUDA / HIP / OpenMP backends, selected
+# by the install prefix). Kokkos and ArborX are found via find_package against the bootstrapped install
+# prefix (../extern/install/<backend>, built once by ../tools/bootstrap_deps.sh -- a HARD build
+# dependency); nanobind via the active Python interpreter (SuiteNanobind). With nvcc, put it on PATH
+# (export PATH=/usr/local/cuda-13.2/bin:$PATH).
 #
-# Build (single-rank Python module); nanobind is found via the active interpreter (SuiteNanobind):
+# Build (single-rank Python module):
 #   cmake -S . -B build -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda"
-#   cmake --build build -j        ->  build/dem.*.so
+#   cmake --build build -j        ->  build/peclet/dem/_dem.*.so   (PYTHONPATH=build; import peclet.dem)
 #
 # Multi-rank: -DPECLET_DEM_MPI=ON links MPI + exposes init_mpi/enable_mpi_step/step_mpi in the module; the
 # distributed step is also covered by the tests/kokkos_mpi ctests (run under mpirun).
@@ -81,7 +90,7 @@ endif()
 
 # --- pip / scikit-build-core install rule -------------------------------------------------------
 # `pip install .` (driven by pyproject.toml) builds against a Kokkos+ArborX prefix on
-# CMAKE_PREFIX_PATH and installs the extension as a top-level `dem` module. The rule is inert for a
+# CMAKE_PREFIX_PATH and installs the extension as `peclet.dem`. The rule is inert for a
 # plain `cmake --build` (no `cmake --install`), so the developer workflow is unchanged. SKBUILD is set
 # by scikit-build-core; SKBUILD_PROJECT_NAME-style guards keep it from interfering elsewhere.
 if(DEFINED SKBUILD)

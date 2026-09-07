@@ -38,3 +38,6 @@ output/
 # Generated Doxygen output (built in CI, published to Pages)
 docs/html/
 docs/latex/
+
+# Script outputs written to the repo root
+/*.vtp

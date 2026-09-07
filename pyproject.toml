@@ -1,7 +1,7 @@
-# Python packaging for the `dem` (dem-gpu) XPBD DEM module.
+# Python packaging for `peclet.dem`, the Kokkos + ArborX XPBD DEM module.
 #
-# `pip install .` builds the Kokkos + ArborX extension via scikit-build-core and installs it as a
-# top-level `dem` module. The Kokkos/ArborX prefix is NOT pulled from PyPI (it is GPU-arch / MPI-ABI /
+# `pip install .` builds the extension via scikit-build-core and installs it as `peclet.dem`
+# (peclet/dem/_dem.*.so + __init__.py + the pure-Python particle builder). The Kokkos/ArborX prefix is NOT pulled from PyPI (it is GPU-arch / MPI-ABI /
 # ROCm-version specific): point the build at a prefix you bootstrapped once with
 # ../tools/bootstrap_deps.sh by exporting CMAKE_PREFIX_PATH. The backend (Serial / OpenMP / CUDA /
 # HIP) is whatever that prefix was built for — that is how one source serves every environment.
@@ -51,7 +51,7 @@ sdist.exclude = ["/verify_*.py", "/test_*.py", "/pack.py", "/pack_meter.py", "/g
 
 # ---------------------------------------------------------------------------
 # Self-contained redistributable CPU wheels (cibuildwheel). PECLET_VENDOR_DEPS=ON FetchContent-builds
-# Kokkos (OpenMP+Serial) + ArborX + the transport-core headers, so the wheel needs no prefix and runs
+# Kokkos (OpenMP+Serial) + ArborX + the peclet-core headers, so the wheel needs no prefix and runs
 # multicore on any x86-64 Linux. The distributed (MPI) step (PECLET_DEM_MPI) stays OFF in the wheel — MPI is a
 # source (sdist) / container build. GPU/HIP likewise stay source/container.
 # ---------------------------------------------------------------------------

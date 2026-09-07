@@ -21,23 +21,38 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 ## Folder Structure
 
 ```text
-├── CMakeLists.txt              # Build configuration (find_package Kokkos + ArborX)
+├── CMakeLists.txt              # Build configuration (find_package Kokkos + ArborX; version from pyproject.toml)
+├── pyproject.toml              # scikit-build-core packaging (peclet-dem); THE version source
+├── packaging/                  # peclet/dem/__init__.py, particle_builder.py, scene_particle.py, CUDA-wheel pyproject
 ├── src                         # Kokkos sources (header-only, namespace peclet::dem)
-│   ├── dem_bindings.cpp        # nanobind module entry point (the `peclet.dem` module)
-│   ├── sim.hpp                 # Simulation facade + the demStep XPBD substep
-│   ├── integration.hpp         # Time integration & prediction
-│   ├── broadphase_arborx.hpp   # ArborX BVH broad-phase
-│   ├── narrowphase.hpp         # Narrow-phase point-shell-vs-SDF collision
-│   ├── solver_velocity.hpp     # Velocity solver kernels
-│   ├── solver_position.hpp     # Position solver kernels (XPBD overlap removal)
-│   ├── solver_friction.hpp     # Coulomb friction cluster
-│   ├── output_sdf.hpp          # SDF/VTI grid generation (Eikonal)
-│   ├── shapes_portable.hpp     # Analytic shapes (sphere / hollow cylinder / box)
-│   ├── io.hpp                  # LAMMPS-dump + SDF-VTI export
-│   └── mpi_halo.hpp            # Distributed particle halo (core), gated PECLET_DEM_MPI
-├── tests                       # C++ unit tests: kokkos/ (kernels), arborx/, kokkos_mpi/
-├── docs                        # Documentation
-└── *.py                        # Python verification/example scripts (verify_*.py)
+│   ├── dem_bindings.cpp          # nanobind module entry point (the `peclet.dem` module)
+│   ├── sim.hpp                   # Simulation facade: the host-facing driver, shape registry, MPI hooks
+│   ├── dem_portable.hpp          # POD types + math + analytic SDFs shared by every kernel
+│   ├── particles.hpp             # Particle SoA container (the Kokkos Views)
+│   ├── shapes_portable.hpp       # Surface-shell point generators for the analytic shapes
+│   ├── broadphase_arborx.hpp     # ArborX BVH broad-phase
+│   ├── narrowphase.hpp           # Narrow-phase point-shell-vs-SDF collision + boundary planes
+│   ├── contact_preprocessing.hpp # Contact -> manifold reduction
+│   ├── solve_driver.hpp          # The shared XPBD contact-solve driver (velocity + position, coloured GS)
+│   ├── solve_driver_force.hpp    # The force-based (explicit Hertz-Mindlin) step driver
+│   ├── solver_velocity.hpp       # Manifold velocity solve (restitution impulse)
+│   ├── solver_position.hpp       # XPBD position solve (overlap removal)
+│   ├── solver_friction.hpp       # Coulomb friction cluster
+│   ├── solver_fused.hpp          # Fused colour sweeps (one persistent kernel per sweep)
+│   ├── solver_multilevel.hpp     # Multilevel (GraphMG-style) contact stabilization
+│   ├── solver_hertz.hpp          # Soft-sphere Hertz-Mindlin force model
+│   ├── sleeping.hpp              # Island sleeping / freezing for the statics path
+│   ├── integration.hpp           # Time integration & prediction
+│   ├── periodicity.hpp           # Periodic ghost generation
+│   ├── output_sdf.hpp            # Packed-bed SDF grid reconstruction (get_sdf_grid)
+│   ├── io.hpp                    # LAMMPS-dump + SDF-VTI export
+│   └── mpi_halo.hpp              # Distributed particle halo (core), gated PECLET_DEM_MPI
+├── tests                       # C++ test projects: kokkos/ (kernels), arborx/ (broad-phase + pipeline),
+│                               #   kokkos_mpi/ (distributed step, np=1,2,4); plus Python verify/test scripts
+├── mpi                         # Python validation/benchmark scripts for the distributed step
+├── docs                        # Documentation (mpi.md, multi_gpu_testing.md, solver notes; Doxyfile)
+├── notebooks                   # packing_analysis.ipynb
+└── *.py                        # Python verification (verify_*.py) and assert-bearing test (test_*.py) scripts
 ```
 
 ## Prerequisites
@@ -49,12 +64,12 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 - **nanobind** + **scikit-build-core** (found via the active Python interpreter; see `pyproject.toml`)
 - a backend compiler: **nvcc** (CUDA) on `PATH`, **hipcc** (ROCm), or just a host C++ compiler (OpenMP)
 - **Python** >= 3.10
-- **MPI** (optional, `-DDEM_MPI=ON`) — OpenMPI or MPICH
+- **MPI** (optional, `-DPECLET_DEM_MPI=ON`) — OpenMPI or MPICH
 
 ## Build Instructions
 
 ```bash
-python -m venv .venv && source .venv/bin/activate && pip install nanobind numpy
+source ../.venv/bin/activate                      # the ONE suite venv (nanobind, numpy, ...)
 export PATH=/usr/local/cuda-13.2/bin:$PATH        # if building the CUDA backend
 
 # Canonical: build + install the module via scikit-build-core
@@ -64,7 +79,7 @@ CMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda" pip install .
 cmake -B build -S . -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda"
 cmake --build build -j$(nproc)
 ```
-*Swap the prefix to `../extern/install/host-openmp` for the OpenMP backend. `-DDEM_MPI=ON` links MPI
+*Swap the prefix to `../extern/install/host-openmp` for the OpenMP backend. `-DPECLET_DEM_MPI=ON` links MPI
 and exposes the distributed step (`init_mpi` / `enable_mpi_step` / `step_mpi`), including dynamic load
 balancing — `enable_mpi_step(..., rebalance_every=N)` or an explicit `rebalance()` re-decomposes by
 particle count (weighted ORB) and migrates ownership so each rank keeps a near-equal share.*
@@ -73,14 +88,17 @@ The compiled `peclet.dem` extension is placed in `build/peclet/dem/`; run script
 
 ## Running Simulations
 
-Example scripts are provided in the root directory:
+The root directory holds the Python entry points: `verify_*.py` demos (sphere / hollow-cylinder
+packing, collisions, stacking, precession, thermostat), assert-bearing `test_*.py` checks (Hertz
+contact, coloured Gauss-Seidel, pair materials, cone friction, statics battery), the `pack.py` /
+`pack_meter.py` packing protocol + meter, and `generate_particles.py` (Ovito shape mesh). `tests/`
+adds SDF-particle, restitution and rotating-drum checks; `mpi/` the distributed-step validation
+scripts (`mpirun -np N python mpi/validate_exact.py`). All are run from the build tree:
 
 ```bash
-# Add build artifact to python path if needed (or symlink it)
-export PYTHONPATH=$PYTHONPATH:$(pwd)/build
-
-# Run a verification script
-python verify_packing_hollow_cylinders.py
+export PYTHONPATH=$PYTHONPATH:$(pwd)/build        # import peclet.dem from the dev build
+python verify_packing_spheres.py
+python test_hertz.py
 ```
 
 ## Output & Visualization
