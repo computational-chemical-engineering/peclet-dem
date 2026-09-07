@@ -968,6 +968,27 @@ class Simulation {
   std::tuple<float, float, float> getDomainMax() const {
     return {P_.domain.max.x, P_.domain.max.y, P_.domain.max.z};
   }
+  // The suite-canonical domain quartet (suite/docs/NAMING.md 1.1): `origin` is the lower corner,
+  // `extent` the SIZE, `periodic` the per-axis flags — the same four names flow, voro and the AMR
+  // octree use. `setDomainCanonical` is what the keyword form of `set_domain` binds to.
+  void setDomainCanonical(F3 extent, F3 origin, bool px, bool py, bool pz) {
+    P_.domain = Domain{origin,
+                       F3{origin.x + extent.x, origin.y + extent.y, origin.z + extent.z},
+                       extent,
+                       px,
+                       py,
+                       pz};
+    P_.skin = 0.1f * P_.globalScale;
+  }
+  std::tuple<float, float, float> domainOrigin() const {
+    return {P_.domain.min.x, P_.domain.min.y, P_.domain.min.z};
+  }
+  std::tuple<float, float, float> domainExtent() const {
+    return {P_.domain.size.x, P_.domain.size.y, P_.domain.size.z};
+  }
+  std::tuple<bool, bool, bool> domainPeriodic() const {
+    return {P_.domain.periodic_x, P_.domain.periodic_y, P_.domain.periodic_z};
+  }
   void setGravity(float gx, float gy, float gz) { P_.gravity = F3{gx, gy, gz}; }
   void setThermostat(float temperature, float tau, float kB) {  // Berendsen; tau=0 disables
     P_.thermostatTemp = temperature;

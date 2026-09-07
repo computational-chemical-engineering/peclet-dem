@@ -16,12 +16,14 @@
 /// destroyed after finalize -- which is a Kokkos::abort (SIGABRT / exit 134, on OpenMP as on CUDA).
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/array.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
 
+#include <array>
 #include <cstdint>
 #include <Kokkos_Core.hpp>
 #include <optional>
@@ -176,12 +178,46 @@ NB_MODULE(_dem, m) {
           nb::arg("min"), nb::arg("max"),
           "Set the domain by (min, max) corner tuples (arbitrary origin); keeps current "
           "periodicity.")
+      // The suite-canonical form (suite/docs/NAMING.md 1.1): keyword `extent` / `origin` /
+      // `periodic`, the same three names flow.Solver, peclet.voro and the AMR octree take. It is
+      // bound AFTER the two positional overloads, so every existing call still resolves to the one
+      // it always did; `extent=` is what selects this one.
+      .def(
+          "set_domain",
+          [](Simulation& s, std::array<float, 3> extent, std::array<float, 3> origin,
+             std::array<bool, 3> periodic) {
+            s.setDomainCanonical(peclet::dem::F3{extent[0], extent[1], extent[2]},
+                                 peclet::dem::F3{origin[0], origin[1], origin[2]}, periodic[0],
+                                 periodic[1], periodic[2]);
+          },
+          nb::arg("extent"), nb::arg("origin") = std::array<float, 3>{0, 0, 0},
+          nb::arg("periodic") = std::array<bool, 3>{true, true, false},
+          "Set the domain the suite-canonical way: `extent` is the box SIZE (not the far corner), "
+          "`origin` the lower corner, `periodic` the per-axis flags. Equivalent to "
+          "`set_domain(min=origin, max=origin+extent)` plus `set_periodic(*periodic)`. The "
+          "positional `set_domain(lx, ly, lz, px, py, pz)` and `set_domain(min, max)` spellings "
+          "still work.")
+      .def("set_periodic", &Simulation::enablePeriodicity, nb::arg("x"), nb::arg("y"),
+           nb::arg("z"),
+           "Set periodic boundaries per axis (x, y, z). The suite-canonical spelling "
+           "(suite/docs/NAMING.md 1.4); `enable_periodicity` is the same call.")
       .def("enable_periodicity", &Simulation::enablePeriodicity, nb::arg("x"), nb::arg("y"),
-           nb::arg("z"), "Enable periodic boundaries per axis (x, y, z).")
+           nb::arg("z"),
+           "Enable periodic boundaries per axis (x, y, z). ALIAS of the canonical `set_periodic`; "
+           "both ship.")
+      .def_prop_ro("origin", &Simulation::domainOrigin,
+                   "The domain's lower corner (x, y, z) — read-only; set it with `set_domain`.")
+      .def_prop_ro("extent", &Simulation::domainExtent,
+                   "The domain's SIZE (Lx, Ly, Lz) — read-only, and note it is a size and not the "
+                   "far corner, which is `origin + extent` (suite/docs/NAMING.md 1.1).")
+      .def_prop_ro("periodic", &Simulation::domainPeriodic,
+                   "Per-axis periodicity (x, y, z) — read-only; set it with `set_periodic`.")
       .def("get_domain_min", &Simulation::getDomainMin,
-           "Return the domain minimum corner (x, y, z).")
+           "Return the domain minimum corner (x, y, z). ALIAS of the canonical `origin` property; "
+           "both ship.")
       .def("get_domain_max", &Simulation::getDomainMax,
-           "Return the domain maximum corner (x, y, z).")
+           "Return the domain maximum corner (x, y, z). Canonically `origin + extent` — note that "
+           "`extent` is the SIZE, so it is not this value.")
       .def("set_gravity", &Simulation::setGravity,
            "Set the gravitational acceleration vector (gx, gy, gz).")
       .def("set_thermostat", &Simulation::setThermostat, nb::arg("temperature"), nb::arg("tau"),
