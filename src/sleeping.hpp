@@ -15,7 +15,7 @@
 /// (a fast approaching neighbour, a change in its contact set, or a moving wall).
 ///
 /// Single-GPU only (gravity on, no external force). Under MPI / CFD-DEM drag the caller leaves
-/// sleeping disabled, so this whole path is inert. Default ON (set_sleeping / PECLET_DEM_SLEEP=0).
+/// sleeping disabled, so this whole path is inert. Default ON (set_sleeping(False) disables).
 #ifndef DEM_SLEEPING_HPP
 #define DEM_SLEEPING_HPP
 

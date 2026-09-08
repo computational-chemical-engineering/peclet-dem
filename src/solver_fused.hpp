@@ -16,7 +16,7 @@
 /// launching at most cudaOccupancyMaxActiveBlocksPerMultiprocessor blocks — every launched
 /// block is co-resident, exactly the invariant cooperative launch enforces.
 ///
-/// CUDA-only; every other backend (and PECLET_DEM_NO_FUSED=1) keeps the per-colour launch path.
+/// CUDA-only; every other backend (and set_fused_sweeps('off')) keeps the per-colour launch path.
 #ifndef DEM_SOLVER_FUSED_HPP
 #define DEM_SOLVER_FUSED_HPP
 

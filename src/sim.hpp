@@ -1010,7 +1010,7 @@ class Simulation {
     else
       throw std::invalid_argument("set_restitution_model: expected 'newton' or 'poisson'");
   }
-  /// Island sleeping / freezing (single-GPU statics, default ON; PECLET_DEM_SLEEP=0 disables). A
+  /// Island sleeping / freezing (single-GPU statics, default ON; `enabled=False` disables). A
   /// REAL body whose linear AND
   /// angular motion stays below `scale` x the resting floor (2 dt |g|) for K substeps while
   /// grounded is put to sleep: velocity zeroed, integration skipped, and a manifold whose BOTH
