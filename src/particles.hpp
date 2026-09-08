@@ -239,24 +239,24 @@ struct Particles {
   Kokkos::View<unsigned char*, CpMem> manifoldSleep;
   Kokkos::View<unsigned char*, CpMem> contactSleep;
   bool sleepingEnabled = true;  // set_sleeping / PECLET_DEM_SLEEP=0 disables; default ON
-  float sleepScale = 2.0f;       // cSleep: sleep threshold = sleepScale * vRest
-  float wakeScale = 40.0f;       // cWake: wake if an awake neighbour exceeds wakeScale * vRest
-                                 // (hysteresis: >> the residual settling jitter so a frozen bed
-                                 // stays frozen; only a genuine impact/disturbance wakes it)
-  int sleepK = 64;               // substeps below threshold before sleeping (high enough that an
+  float sleepScale = 2.0f;      // cSleep: sleep threshold = sleepScale * vRest
+  float wakeScale = 40.0f;      // cWake: wake if an awake neighbour exceeds wakeScale * vRest
+                                // (hysteresis: >> the residual settling jitter so a frozen bed
+                                // stays frozen; only a genuine impact/disturbance wakes it)
+  int sleepK = 64;              // substeps below threshold before sleeping (high enough that an
                     // impact's unloading/rebound completes before the network re-sleeps)
   bool sleepWakeLostContact = false;  // rule (b): wake on a LOST contact (support removed)
   // Effective inverse-mass fraction of a sleeper for the solve (0 = exactly immovable). A small
-  // POSITIVE value keeps the sleeper very heavy but not infinitely rigid, so an awake body wedged at
-  // a frozen-pocket boundary can relieve against it instead of the PGS normal impulse diverging
+  // POSITIVE value keeps the sleeper very heavy but not infinitely rigid, so an awake body wedged
+  // at a frozen-pocket boundary can relieve against it instead of the PGS normal impulse diverging
   // (trapped-between-two-rigid-constraints blow-up that a settling column reliably hit, ejected via
   // the friction cone to NaN); the sleeper's velocity is re-zeroed each substep so no momentum
   // accumulates and both-asleep interior manifolds are still fully excluded (the speed win). 0.01 =
   // sleeper 100x a grain's mass: stable through the 96k column + violent pour, case3 penetration
   // and the settled-bed freeze both preserved. PECLET_DEM_SLEEP_INVMASS_FRAC overrides.
   float sleepImmovableFrac = 0.01f;
-  bool extForceActive = false;        // CFD-DEM drag present -> sleeping disabled this step
-  bool extTorqueActive = false;       // external couple present -> sleeping disabled this step
+  bool extForceActive = false;   // CFD-DEM drag present -> sleeping disabled this step
+  bool extTorqueActive = false;  // external couple present -> sleeping disabled this step
   // --- Verlet-cached broadphase for the impulse step (single-GPU, non-periodic; see demStep) ---
   // The impulse broadphase rebuilds the ArborX pair list every step; between rebuilds no new pair
   // can appear if no particle has moved more than skin/2 (with the list built at margin + skin).

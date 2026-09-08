@@ -152,8 +152,8 @@ inline void haloUnpackF4(V4 field, peclet::core::View<F4> ghost, int no, int ng)
 inline void haloPackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invInertia, V4 quat,
                            V4 quatPred, Vf scale, Vf invMass, Vi shapeId, Vi gid,
                            Kokkos::View<unsigned char*, CpMem> materialId,
-                           Kokkos::View<unsigned char*, CpMem> grounded, Vf orphan,
-                           Vf orphanVPeak, peclet::core::View<MpiGatherPack> owned, int n) {
+                           Kokkos::View<unsigned char*, CpMem> grounded, Vf orphan, Vf orphanVPeak,
+                           peclet::core::View<MpiGatherPack> owned, int n) {
   Kokkos::parallel_for(
       "peclet::dem::halo::packGather", Kokkos::RangePolicy<CpExec>(0, n), KOKKOS_LAMBDA(int i) {
         MpiGatherPack g;
@@ -248,8 +248,8 @@ class ParticleHalo {
     inited_ = true;
   }
   // Shared-decomposition overload: adopt an EXTERNALLY-built ORB (so dem shares one BlockDecomposer
-  // with the flow solver in a coupled run, and migrateTo() can move onto a re-decomposed partition).
-  // `size`/`origin` map the ORB cell grid (= dec.globalSize()) to the physical domain.
+  // with the flow solver in a coupled run, and migrateTo() can move onto a re-decomposed
+  // partition). `size`/`origin` map the ORB cell grid (= dec.globalSize()) to the physical domain.
   void initMpi(const peclet::core::decomp::BlockDecomposer<3>& dec, std::array<double, 3> origin,
                std::array<double, 3> size, std::array<bool, 3> periodic, MPI_Comm comm) {
     comm_ = comm;
@@ -405,7 +405,8 @@ class ParticleHalo {
     std::vector<peclet::core::Vec<3>> pos;
     std::vector<char> payload;
     packState(P, pos, payload);
-    dec_ = newDec;  // in place: mig_ still points at dec_; mig_.migrate() sends to dec_.ownerOf(...)
+    dec_ =
+        newDec;  // in place: mig_ still points at dec_; mig_.migrate() sends to dec_.ownerOf(...)
     const std::size_t newN = mig_.migrate(pos, payload, sizeof(MigratePack));
     if ((int)newN > P.capacity)
       throw std::runtime_error("ParticleHalo::migrateTo: owned overflow -- rank received " +
@@ -414,9 +415,10 @@ class ParticleHalo {
     unpackState(P, pos, payload, newN);
     return (int)newN;
   }
-  // Migrate onto the weighted ORB of per-cell weights `w` (global x-fastest, matching the ORB grid).
-  // The Lagrangian half of the co-rebalance: dem builds the SAME deterministic partition flow does
-  // from the same weight field, so no BlockDecomposer object crosses the language boundary.
+  // Migrate onto the weighted ORB of per-cell weights `w` (global x-fastest, matching the ORB
+  // grid). The Lagrangian half of the co-rebalance: dem builds the SAME deterministic partition
+  // flow does from the same weight field, so no BlockDecomposer object crosses the language
+  // boundary.
   int migrateToWeights(Particles& P, const std::vector<peclet::core::Real>& w) {
     int size = 1;
     MPI_Comm_size(comm_, &size);
@@ -706,11 +708,10 @@ class ParticleHalo {
     // exactly the layout the warm-start gather's binary search expects.
     std::sort(ledger.begin(), ledger.end(),
               [](const WarmPairEntry& a, const WarmPairEntry& b) { return a.key < b.key; });
-    ledger.erase(std::unique(ledger.begin(), ledger.end(),
-                             [](const WarmPairEntry& a, const WarmPairEntry& b) {
-                               return a.key == b.key;
-                             }),
-                 ledger.end());
+    ledger.erase(
+        std::unique(ledger.begin(), ledger.end(),
+                    [](const WarmPairEntry& a, const WarmPairEntry& b) { return a.key == b.key; }),
+        ledger.end());
     const int nl = std::min<int>((int)ledger.size(), (int)P.prevPairKeys.extent(0));
     {
       auto hk = Kokkos::create_mirror_view(P.prevPairKeys);

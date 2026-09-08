@@ -170,7 +170,8 @@ inline void solveContactFrictionKokkos(
         if (idB >= 0)
           vBc = add3(ldF3(velPred, realB), cross3v(ldF3(angVelPred, realB), rB));
         else
-          vBc = F3{c.boundaryVel.x, c.boundaryVel.y, c.boundaryVel.z};  // moving wall drags the grain
+          vBc =
+              F3{c.boundaryVel.x, c.boundaryVel.y, c.boundaryVel.z};  // moving wall drags the grain
         const F3 vrel = sub3(vAc, vBc);
         const float vn = dot3(vrel, n);
         const F3 vt = sub3(vrel, scale3(n, vn));
@@ -186,8 +187,9 @@ inline void solveContactFrictionKokkos(
         if (w_t < 1e-6f)
           return;
 
-        // friction_lambda_n now carries the accumulated force-chain load for BOTH body-body and wall
-        // contacts (see accumulateNormalImpulseKokkos), so it is the Coulomb bound in both cases.
+        // friction_lambda_n now carries the accumulated force-chain load for BOTH body-body and
+        // wall contacts (see accumulateNormalImpulseKokkos), so it is the Coulomb bound in both
+        // cases.
         const float bound = lambda_n;
         const float nA = planeFriction(realA, 1);
         const float nB = (idB >= 0) ? planeFriction(realB, 1) : 0.0f;

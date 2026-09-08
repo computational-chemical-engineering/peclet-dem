@@ -29,9 +29,9 @@
 #include "output_sdf.hpp"
 #include "particles.hpp"
 #include "peclet/core/common/view.hpp"  // peclet::core::toVector — single-copy device View -> host std::vector (S2a)
+#include "peclet/core/geom/scene_builder.hpp"
 #include "periodicity.hpp"
 #include "shapes_portable.hpp"
-#include "peclet/core/geom/scene_builder.hpp"
 #include "sleeping.hpp"            // island sleeping / freezing (single-GPU statics)
 #include "solve_driver.hpp"        // demSolveContacts + SoloSolveHooks + readInt/readFloat
 #include "solve_driver_force.hpp"  // demStepForce + HertzMindlinLaw + demStepHertz
@@ -67,59 +67,59 @@ namespace peclet::dem {
 /// contacts (several GB across the ~40 buffers) with a 1625-probe particle. See narrowPhaseGrow.
 inline void growContactBuffers(Particles& P, long nBodies, long floorWant = 0) {
   const int perParticle = std::max(16, P.shellPoints);
-    const long want = std::max(
-        floorWant, nBodies * perParticle + nBodies * std::max(1, P.shellPoints) * P.numWalls);
-    if (want > P.maxContacts) {
-      P.maxContacts = static_cast<int>(want);
-      // Reallocate EVERY maxContacts-sized view, not just contacts/manifolds: the solve writes all
-      // of them up to the live contact/manifold count, so any view left at the old size is an
-      // out-of-bounds write once the count grows past it (silent device corruption on GPU, heap
-      // corruption on host backends). Warm-start history is cleared by the fresh zeroed views —
-      // growth happens at setup (shape/wall registration), so nothing warm is lost mid-run.
-      P.contacts = Kokkos::View<ContactC*, CpMem>("contacts", want);
-      P.manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", want);
-      P.manifoldColor = Kokkos::View<int*, CpMem>("manifoldColor", want);
-      P.pairKeys = Kokkos::View<unsigned long long*, CpMem>("pairKeys", want);
-      P.prevPairKeys = Kokkos::View<unsigned long long*, CpMem>("prevPairKeys", want);
-      P.manifoldPersistent = Kokkos::View<unsigned char*, CpMem>("manifoldPersistent", want);
-      P.contactColor = Kokkos::View<int*, CpMem>("contactColor", want);
-      P.lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", want);
-      P.lambdaT = Kokkos::View<float* [3], CpMem>("lambdaT", want);
-      P.posLambdaContact = Kokkos::View<float*, CpMem>("posLambdaContact", want);
-      P.posImpulse = Kokkos::View<float*, CpMem>("posImpulse", want);
-      P.prevPosImpulse = Kokkos::View<float*, CpMem>("prevPosImpulse", want);
-      P.restBank = Kokkos::View<float*, CpMem>("restBank", want);
-      P.prevRestBank = Kokkos::View<float*, CpMem>("prevRestBank", want);
-      P.restRel = Kokkos::View<float*, CpMem>("restRel", want);
-      P.restVPeak = Kokkos::View<float*, CpMem>("restVPeak", want);
-      P.prevRestVPeak = Kokkos::View<float*, CpMem>("prevRestVPeak", want);
-      P.prevMatched = Kokkos::View<unsigned char*, CpMem>("prevMatched", want);
-      P.velPerm = Kokkos::View<int*, CpMem>("velPerm", want);
-      P.commitPerm = Kokkos::View<int*, CpMem>("commitPerm", want);
-      P.sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", want);
-      P.prevLambdaT = Kokkos::View<float* [3], CpMem>("prevLambdaT", want);
-      P.contactSlot = Kokkos::View<int*, CpMem>("contactSlot", want);
-      P.prevLambda = Kokkos::View<float*, CpMem>("prevLambda", want);
-      P.vn0 = Kokkos::View<float*, CpMem>("vn0", want);
-      P.vt0 = Kokkos::View<float* [3], CpMem>("vt0", want);
-      P.levelKey = Kokkos::View<int*, CpMem>("levelKey", want);
-      P.levelPerm = Kokkos::View<int*, CpMem>("levelPerm", want);
-      P.mlColorPacked = Kokkos::View<long long*, CpMem>("mlColorPacked", want);
-      // Incremental-colouring ledgers + fused position permutation + sleeping masks are all
-      // maxContacts-sized and the solve indexes them up to the live contact/manifold count too —
-      // they MUST grow with the buffer or nc > extent is an out-of-bounds write (NaN / heap
-      // corruption in dense multi-contact scenes such as the statics column/pour).
-      P.prevManifoldColor = Kokkos::View<int*, CpMem>("prevManifoldColor", want);
-      P.contactKeys = Kokkos::View<unsigned long long*, CpMem>("contactKeys", want);
-      P.prevContactKeys = Kokkos::View<unsigned long long*, CpMem>("prevContactKeys", want);
-      P.prevContactColor = Kokkos::View<int*, CpMem>("prevContactColor", want);
-      P.posCommitPerm = Kokkos::View<int*, CpMem>("posCommitPerm", want);
-      P.posPerm = Kokkos::View<int*, CpMem>("posPerm", want);
-      P.manifoldSleep = Kokkos::View<unsigned char*, CpMem>("manifoldSleep", want);
-      P.contactSleep = Kokkos::View<unsigned char*, CpMem>("contactSleep", want);
-      P.posPrevContactCount = 0;  // the cleared position ledger must not be gathered against
-      P.prevPairCount = 0;        // the cleared prevPairKeys must not be gathered against
-    }
+  const long want = std::max(
+      floorWant, nBodies * perParticle + nBodies * std::max(1, P.shellPoints) * P.numWalls);
+  if (want > P.maxContacts) {
+    P.maxContacts = static_cast<int>(want);
+    // Reallocate EVERY maxContacts-sized view, not just contacts/manifolds: the solve writes all
+    // of them up to the live contact/manifold count, so any view left at the old size is an
+    // out-of-bounds write once the count grows past it (silent device corruption on GPU, heap
+    // corruption on host backends). Warm-start history is cleared by the fresh zeroed views —
+    // growth happens at setup (shape/wall registration), so nothing warm is lost mid-run.
+    P.contacts = Kokkos::View<ContactC*, CpMem>("contacts", want);
+    P.manifolds = Kokkos::View<ManifoldC*, CpMem>("manifolds", want);
+    P.manifoldColor = Kokkos::View<int*, CpMem>("manifoldColor", want);
+    P.pairKeys = Kokkos::View<unsigned long long*, CpMem>("pairKeys", want);
+    P.prevPairKeys = Kokkos::View<unsigned long long*, CpMem>("prevPairKeys", want);
+    P.manifoldPersistent = Kokkos::View<unsigned char*, CpMem>("manifoldPersistent", want);
+    P.contactColor = Kokkos::View<int*, CpMem>("contactColor", want);
+    P.lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", want);
+    P.lambdaT = Kokkos::View<float* [3], CpMem>("lambdaT", want);
+    P.posLambdaContact = Kokkos::View<float*, CpMem>("posLambdaContact", want);
+    P.posImpulse = Kokkos::View<float*, CpMem>("posImpulse", want);
+    P.prevPosImpulse = Kokkos::View<float*, CpMem>("prevPosImpulse", want);
+    P.restBank = Kokkos::View<float*, CpMem>("restBank", want);
+    P.prevRestBank = Kokkos::View<float*, CpMem>("prevRestBank", want);
+    P.restRel = Kokkos::View<float*, CpMem>("restRel", want);
+    P.restVPeak = Kokkos::View<float*, CpMem>("restVPeak", want);
+    P.prevRestVPeak = Kokkos::View<float*, CpMem>("prevRestVPeak", want);
+    P.prevMatched = Kokkos::View<unsigned char*, CpMem>("prevMatched", want);
+    P.velPerm = Kokkos::View<int*, CpMem>("velPerm", want);
+    P.commitPerm = Kokkos::View<int*, CpMem>("commitPerm", want);
+    P.sideFlags = Kokkos::View<unsigned char*, CpMem>("sideFlags", want);
+    P.prevLambdaT = Kokkos::View<float* [3], CpMem>("prevLambdaT", want);
+    P.contactSlot = Kokkos::View<int*, CpMem>("contactSlot", want);
+    P.prevLambda = Kokkos::View<float*, CpMem>("prevLambda", want);
+    P.vn0 = Kokkos::View<float*, CpMem>("vn0", want);
+    P.vt0 = Kokkos::View<float* [3], CpMem>("vt0", want);
+    P.levelKey = Kokkos::View<int*, CpMem>("levelKey", want);
+    P.levelPerm = Kokkos::View<int*, CpMem>("levelPerm", want);
+    P.mlColorPacked = Kokkos::View<long long*, CpMem>("mlColorPacked", want);
+    // Incremental-colouring ledgers + fused position permutation + sleeping masks are all
+    // maxContacts-sized and the solve indexes them up to the live contact/manifold count too —
+    // they MUST grow with the buffer or nc > extent is an out-of-bounds write (NaN / heap
+    // corruption in dense multi-contact scenes such as the statics column/pour).
+    P.prevManifoldColor = Kokkos::View<int*, CpMem>("prevManifoldColor", want);
+    P.contactKeys = Kokkos::View<unsigned long long*, CpMem>("contactKeys", want);
+    P.prevContactKeys = Kokkos::View<unsigned long long*, CpMem>("prevContactKeys", want);
+    P.prevContactColor = Kokkos::View<int*, CpMem>("prevContactColor", want);
+    P.posCommitPerm = Kokkos::View<int*, CpMem>("posCommitPerm", want);
+    P.posPerm = Kokkos::View<int*, CpMem>("posPerm", want);
+    P.manifoldSleep = Kokkos::View<unsigned char*, CpMem>("manifoldSleep", want);
+    P.contactSleep = Kokkos::View<unsigned char*, CpMem>("contactSleep", want);
+    P.posPrevContactCount = 0;  // the cleared position ledger must not be gathered against
+    P.prevPairCount = 0;        // the cleared prevPairKeys must not be gathered against
+  }
 }
 
 /// Narrow phase with an automatically-grown contact buffer.
@@ -142,15 +142,15 @@ inline int narrowPhaseGrow(Particles& P, int np, float margin) {
   auto detect = [&]() {
     Kokkos::deep_copy(space, P.contactCount, 0);
     detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
-                         P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap,
-                         P.sdfGrid, P.materialId, P.pairMaterials);
+                         P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid,
+                         P.materialId, P.pairMaterials);
     detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId,
                          P.shapes, P.shell, P.planes, P.globalScale, margin, P.contacts,
                          P.contactCount, P.maxOverlap);
     if (P.numWalls > 0)
       detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId,
-                          P.shapes, P.shell, P.walls, P.wallGrid, P.globalScale, margin,
-                          P.contacts, P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials);
+                          P.shapes, P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
+                          P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials);
     return readInt(P.contactCount);
   };
   int nc = detect();
@@ -634,7 +634,7 @@ class Simulation {
     std::vector<F3> keepShell = shellHost_;
     std::vector<F3> keepInvI = invIHost_;
     std::vector<float> keepBase = baseRadiusHost_;
-    std::vector<float> keepSamples = sdfSamplesHost_;  // initializeShape clears these too
+    std::vector<float> keepSamples = sdfSamplesHost_;        // initializeShape clears these too
     initializeShape(shape_type, radius, height, thickness);  // leaves exactly one shape
     ShapeDesc added = shapesHost_[0];
     const std::vector<F3> addedShell = shellHost_;
@@ -690,8 +690,9 @@ class Simulation {
                           : shellFlat;
     const int nPts = static_cast<int>(shellUse.size() / 3);
     if (nPts <= 0)
-      throw std::runtime_error("add_sdf_shape: surface point shell is empty and could not be "
-                               "generated from the field");
+      throw std::runtime_error(
+          "add_sdf_shape: surface point shell is empty and could not be "
+          "generated from the field");
     ShapeDesc sd{};
     sd.type = SHAPE_GRID_SDF;
     sd.params = F4{boundingRadius, 0, 0, 0};
@@ -700,9 +701,9 @@ class Simulation {
     sd.grid.nz = nz;
     sd.grid.offset = static_cast<int>(sdfSamplesHost_.size());  // append to the shared pool
     sd.grid.origin = toCoreVec(origin);
-    sd.grid.invSpacing = peclet::core::Vec3<float>{
-        spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
-        spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    sd.grid.invSpacing = peclet::core::Vec3<float>{spacing.x > 0 ? 1.0f / spacing.x : 0.0f,
+                                                   spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
+                                                   spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
     sd.grid.extension = peclet::core::geom::GridExtension::kObject;
     sdfSamplesHost_.insert(sdfSamplesHost_.end(), grid.begin(), grid.end());
     std::vector<F3> shellPts(nPts);
@@ -739,8 +740,9 @@ class Simulation {
                           : shellFlat;
     const int nPts = static_cast<int>(shellUse.size() / 3);
     if (nPts <= 0)
-      throw std::runtime_error("setSdfShape: surface point shell is empty and could not be "
-                               "generated from the field");
+      throw std::runtime_error(
+          "setSdfShape: surface point shell is empty and could not be "
+          "generated from the field");
 
     // Upload the signed-distance samples.
     P_.sdfGrid = Kokkos::View<float*, CpMem>("sdfGrid", grid.size());
@@ -770,16 +772,16 @@ class Simulation {
     sd.grid.ny = ny;
     sd.grid.nz = nz;
     sd.grid.origin = toCoreVec(origin);
-    sd.grid.invSpacing = peclet::core::Vec3<float>{
-        spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
-        spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    sd.grid.invSpacing = peclet::core::Vec3<float>{spacing.x > 0 ? 1.0f / spacing.x : 0.0f,
+                                                   spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
+                                                   spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
     sd.grid.extension = peclet::core::geom::GridExtension::kObject;  // a body
 
     std::vector<F3> shellPts(nPts);
     for (int i = 0; i < nPts; ++i)
       shellPts[i] = F3{shellUse[3 * i], shellUse[3 * i + 1], shellUse[3 * i + 2]};
     clearShapes();
-    sdfSamplesHost_ = grid;   // this shape owns the whole pool when it is the only shape
+    sdfSamplesHost_ = grid;  // this shape owns the whole pool when it is the only shape
     sd.grid.offset = 0;
     appendShape(sd, shellPts, invInertia, boundingRadius);
     uploadShapes();
@@ -817,9 +819,8 @@ class Simulation {
   // canonical frame is trusted to be the PRINCIPAL frame -- SceneBuilder.principal_frame emits
   // that; passing a non-principal tree runs the diagonal-inertia rotational update on the wrong
   // frame, silently, which is why the docstring shouts about it.
-  int addSceneShape(const std::vector<int>& nodeInts, const std::vector<float>& nodeReals,
-                    int root, const std::vector<float>& shellFlat, F3 invInertia,
-                    float boundingRadius) {
+  int addSceneShape(const std::vector<int>& nodeInts, const std::vector<float>& nodeReals, int root,
+                    const std::vector<float>& shellFlat, F3 invInertia, float boundingRadius) {
     namespace g = peclet::core::geom;
     if (nodeInts.size() % g::kNodeIntStride || nodeReals.size() % g::kNodeRealStride)
       throw std::runtime_error("add_scene_shape: node arrays are not a whole number of records");
@@ -855,14 +856,13 @@ class Simulation {
     ShapeDesc sd{};
     sd.type = SHAPE_SCENE;
     sd.params = F4{boundingRadius, 0, 0, 0};
-    sd.nodeCount = 0;   // patched at uploadShapes (whole-pool count; root is absolute)
+    sd.nodeCount = 0;  // patched at uploadShapes (whole-pool count; root is absolute)
     sd.shapeRoot = base + root;
     appendShape(sd, shellPts, invInertia, boundingRadius);
     uploadShapes();
     ensureContactCapacity();  // every other shape adder does this; its absence dropped contacts
     return static_cast<int>(shapesHost_.size()) - 1;
   }
-
 
   int addAnalyticWall(const std::vector<int>& nodeInts, const std::vector<float>& nodeReals,
                       int root, bool invert, float restitution, float friction) {
@@ -921,18 +921,17 @@ class Simulation {
                                F3 spacing, float boundingRadius) const {
     namespace g = peclet::core::geom;
     g::SceneBuilder<float> b;
-    const int node = b.addGrid(grid, nx, ny, nz,
-                               peclet::core::Vec3<float>{origin.x, origin.y, origin.z},
-                               peclet::core::Vec3<float>{spacing.x, spacing.y, spacing.z},
-                               g::GridExtension::kObject);
+    const int node = b.addGrid(
+        grid, nx, ny, nz, peclet::core::Vec3<float>{origin.x, origin.y, origin.z},
+        peclet::core::Vec3<float>{spacing.x, spacing.y, spacing.z}, g::GridExtension::kObject);
     // Pitch: fine enough that the shell resolves the body, coarse enough not to explode the
     // contact buffers -- ~1/12 of the bounding radius matches the density of the hand-written
     // cylinder/box shells.
     const float pitch = std::max(boundingRadius / 12.0f, 1e-4f);
     const float r = boundingRadius * 1.05f;
-    const std::vector<peclet::core::Vec3<float>> pts = g::surfacePoints<float>(
-        b.view(), node, pitch, peclet::core::Vec3<float>{-r, -r, -r},
-        peclet::core::Vec3<float>{r, r, r});
+    const std::vector<peclet::core::Vec3<float>> pts =
+        g::surfacePoints<float>(b.view(), node, pitch, peclet::core::Vec3<float>{-r, -r, -r},
+                                peclet::core::Vec3<float>{r, r, r});
     std::vector<float> flat;
     flat.reserve(pts.size() * 3);
     for (const auto& q : pts) {
@@ -966,12 +965,9 @@ class Simulation {
   // `extent` the SIZE, `periodic` the per-axis flags — the same four names flow, voro and the AMR
   // octree use. `setDomainCanonical` is what the keyword form of `set_domain` binds to.
   void setDomainCanonical(F3 extent, F3 origin, bool px, bool py, bool pz) {
-    P_.domain = Domain{origin,
-                       F3{origin.x + extent.x, origin.y + extent.y, origin.z + extent.z},
-                       extent,
-                       px,
-                       py,
-                       pz};
+    P_.domain = Domain{origin, F3{origin.x + extent.x, origin.y + extent.y, origin.z + extent.z},
+                       extent, px,
+                       py,     pz};
     P_.skin = 0.1f * P_.globalScale;
   }
   std::tuple<float, float, float> domainOrigin() const {
@@ -1042,8 +1038,8 @@ class Simulation {
   /// grounded is put to sleep: velocity zeroed, integration skipped, and a manifold whose BOTH
   /// endpoints are asleep (a static wall counts) is excluded from the colouring / sweeps /
   /// multilevel hierarchy — so a settled bed collapses to the broad/narrow-phase floor. A sleeper
-  /// keeps a small POSITIVE effective inverse mass in the solve (sleepImmovableFrac x its own; heavy
-  /// but not perfectly rigid), so an awake body wedged between sleepers relieves against them
+  /// keeps a small POSITIVE effective inverse mass in the solve (sleepImmovableFrac x its own;
+  /// heavy but not perfectly rigid), so an awake body wedged between sleepers relieves against them
   /// instead of the PGS normal impulse diverging; its velocity is re-zeroed each substep so no
   /// momentum accumulates. It wakes only when disturbed (fast approaching neighbour, contact-set
   /// change, moving wall).
@@ -1189,9 +1185,9 @@ class Simulation {
     w.grid.nz = nz;
     w.grid.offset = static_cast<int>(wallGridHost_.size());
     w.grid.origin = toCoreVec(origin);
-    w.grid.invSpacing = peclet::core::Vec3<float>{
-        spacing.x > 0 ? 1.0f / spacing.x : 0.0f, spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
-        spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
+    w.grid.invSpacing = peclet::core::Vec3<float>{spacing.x > 0 ? 1.0f / spacing.x : 0.0f,
+                                                  spacing.y > 0 ? 1.0f / spacing.y : 0.0f,
+                                                  spacing.z > 0 ? 1.0f / spacing.z : 0.0f};
     // A CONTAINER: beyond the stored box is wall-side, so the off-grid residual is SUBTRACTED.
     w.grid.extension = peclet::core::geom::GridExtension::kContainer;
     w.restitution = restitution;
@@ -1598,10 +1594,10 @@ class Simulation {
   // SDF grid (get_sdf_grid): Eikonal reconstruction over the domain, flat x-fastest, negative
   // inside solid.
   std::vector<float> getSdfGrid(int rx, int ry, int rz) {
-    return peclet::dem::generateSdfKokkos(
-        rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal, P_.pos, P_.quat, P_.scale, P_.shapeId,
-        P_.shapes, P_.domain.periodic_x, P_.domain.periodic_y, P_.domain.periodic_z, P_.sdfGrid,
-        P_.globalScale);
+    return peclet::dem::generateSdfKokkos(rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal,
+                                          P_.pos, P_.quat, P_.scale, P_.shapeId, P_.shapes,
+                                          P_.domain.periodic_x, P_.domain.periodic_y,
+                                          P_.domain.periodic_z, P_.sdfGrid, P_.globalScale);
   }
 
   int numParticles() const { return P_.numReal; }
@@ -1758,8 +1754,8 @@ class Simulation {
   // the authoritative copy on the host is what makes a MIXTURE of shapes possible at all: the old
   // code wrote descriptor slot 0 directly and had nowhere to put a second shell.
   std::vector<ShapeDesc> shapesHost_;
-  std::vector<F3> shellHost_;         // concatenated shells; ShapeDesc::shellOffset indexes it
-  std::vector<F3> invIHost_;          // per-shape unit-mass inverse inertia
+  std::vector<F3> shellHost_;          // concatenated shells; ShapeDesc::shellOffset indexes it
+  std::vector<F3> invIHost_;           // per-shape unit-mass inverse inertia
   std::vector<float> baseRadiusHost_;  // per-shape canonical bounding radius
   std::vector<float> sdfSamplesHost_;  // concatenated grid-SDF samples
 

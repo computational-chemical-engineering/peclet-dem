@@ -16,12 +16,13 @@
 
 namespace peclet::dem {
 
-/// Padded particle-array capacity that leaves room for the periodic ghosts generateGhostsKokkos will
-/// emit: the real count plus an estimate of the boundary-shell ghost population, gated on which axes
-/// are actually periodic. Faithful port of the CUDA Simulation::calculate_capacity (small/dense box
-/// -> full 26-neighbour headroom; large box -> a few times the boundary-shell volume fraction), with
-/// the periodicity gating added so a closed or partly-periodic box is not over-allocated. `skin` is
-/// the ghost band width at each periodic face (1.0*globalScale in the solver).
+/// Padded particle-array capacity that leaves room for the periodic ghosts generateGhostsKokkos
+/// will emit: the real count plus an estimate of the boundary-shell ghost population, gated on
+/// which axes are actually periodic. Faithful port of the CUDA Simulation::calculate_capacity
+/// (small/dense box
+/// -> full 26-neighbour headroom; large box -> a few times the boundary-shell volume fraction),
+/// with the periodicity gating added so a closed or partly-periodic box is not over-allocated.
+/// `skin` is the ghost band width at each periodic face (1.0*globalScale in the solver).
 inline int calculateGhostCapacity(int nReal, Domain dom, float skin) {
   const float sx = dom.periodic_x ? skin : 0.0f;
   const float sy = dom.periodic_y ? skin : 0.0f;

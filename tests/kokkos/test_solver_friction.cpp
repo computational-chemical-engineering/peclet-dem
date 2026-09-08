@@ -197,7 +197,8 @@ int main(int argc, char** argv) {
     // 2. accumulate force-chain load (body-body AND wall)
     for (int k = 0; k < M; ++k) {
       const ContactC& c = contacts[k];
-      if (c.bodyB < 0) {  // wall: transmitted load on the owned grain (A term only, vs wall velocity)
+      if (c.bodyB <
+          0) {  // wall: transmitted load on the owned grain (A term only, vs wall velocity)
         int a = c.bodyA;
         if (invMass[a] <= 0)
           continue;
@@ -263,7 +264,8 @@ int main(int argc, char** argv) {
                  rnB.z * rnB.z * invIB.z;
       if (wt < 1e-6f)
         continue;
-      float bound = lam;  // accumulated force-chain load bounds friction for both body-body and wall
+      float bound =
+          lam;  // accumulated force-chain load bounds friction for both body-body and wall
       float nA = pfy[a], nB = (b >= 0) ? pfy[b] : 0.f;
       float invn = 1.f / std::fmax(std::fmax(nA, nB), 1.f);
       float lt = -vl / wt;

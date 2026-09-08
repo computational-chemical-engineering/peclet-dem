@@ -89,8 +89,7 @@ static std::vector<float> scenePositions(const Scene& s, int& n) {
 // ---- ownership: which global particles this rank owns (ORB block of the gsize cell grid) ----
 static void ownedOf(const std::vector<float>& gpos, int n, const double boxSize[3], bool per[3],
                     int rank, int size, std::vector<float>& ownedPos, std::vector<int>& ownedGid) {
-  peclet::core::decomp::BlockDecomposer<3> dec(static_cast<std::size_t>(size),
-                                               IVec<3>{GX, GX, GX});
+  peclet::core::decomp::BlockDecomposer<3> dec(static_cast<std::size_t>(size), IVec<3>{GX, GX, GX});
   peclet::core::halo::DomainMap<3> map;
   for (int i = 0; i < 3; ++i) {
     map.origin[i] = 0;
@@ -175,8 +174,8 @@ static int runJacobi(bool periodic, int rank, int size) {
   // test): subtract the mean displacement per axis; minimum image on periodic axes.
   double lsum[3] = {0, 0, 0};
   auto disp = [&](int i, int c) {
-    double d = static_cast<double>(distPos[3 * i + c]) -
-               static_cast<double>(refPos[3 * ownedGid[i] + c]);
+    double d =
+        static_cast<double>(distPos[3 * i + c]) - static_cast<double>(refPos[3 * ownedGid[i] + c]);
     if (scene.per[c])
       d -= L * std::round(d / L);
     return d;
@@ -462,8 +461,8 @@ static int runHertz(bool rebal, int rank, int size) {
     double localMax = 0.0;
     for (int i = 0; i < nOwned; ++i)
       for (int c = 0; c < 3; ++c)
-        localMax = std::max(localMax, std::fabs((double)distPos[3 * i + c] -
-                                                (double)refPos[3 * ownedGid[i] + c]));
+        localMax = std::max(
+            localMax, std::fabs((double)distPos[3 * i + c] - (double)refPos[3 * ownedGid[i] + c]));
     MPI_Allreduce(&localMax, &posErr, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
   }
   double lzsum = 0.0, lzmax = 0.0;

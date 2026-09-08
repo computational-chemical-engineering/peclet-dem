@@ -239,9 +239,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // contacts are excluded from the colouring / sweeps / multilevel hierarchy (their masks were
   // filled by the caller). Empty views leave every colouring bit-identical to the sleeping-off
   // path. The caller has already swapped P.invMass to the effective (sleeper -> 0) inverse mass.
-  const bool sleepOn =
-      P.sleepingEnabled && !Hooks::distributed && usePersistPre && !P.extForceActive &&
-      !P.extTorqueActive;
+  const bool sleepOn = P.sleepingEnabled && !Hooks::distributed && usePersistPre &&
+                       !P.extForceActive && !P.extTorqueActive;
   const Kokkos::View<const unsigned char*, CpMem> mSleep =
       sleepOn ? Kokkos::View<const unsigned char*, CpMem>(P.manifoldSleep)
               : Kokkos::View<const unsigned char*, CpMem>();

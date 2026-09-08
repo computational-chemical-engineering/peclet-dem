@@ -1,5 +1,5 @@
-// Correctness of the ArborX broad-phase (peclet::dem::findCollisionsArborX) against a brute-force O(N^2)
-// AABB-overlap oracle — the unambiguous ground truth the cuBQL broad-phase also satisfies.
+// Correctness of the ArborX broad-phase (peclet::dem::findCollisionsArborX) against a brute-force
+// O(N^2) AABB-overlap oracle — the unambiguous ground truth the cuBQL broad-phase also satisfies.
 //
 // Generate random particles with varied radii (and a block of "ghost" particles that issue no
 // queries but can be hit), run the ArborX broad-phase, and require the emitted pair set {(i<j)} to
@@ -57,8 +57,8 @@ int main(int argc, char** argv) {
     Kokkos::View<int* [2], peclet::dem::BpMem> outPairs("pairs", maxPairs);
     Kokkos::View<int, peclet::dem::BpMem> outCount("count");
 
-    const int n =
-        peclet::dem::findCollisionsArborX(pos, rad, numParticles, numReal, margin, outPairs, outCount);
+    const int n = peclet::dem::findCollisionsArborX(pos, rad, numParticles, numReal, margin,
+                                                    outPairs, outCount);
 
     if (n > maxPairs) {
       std::fprintf(stderr, "FAIL: pair buffer overflow (%d > %d)\n", n, maxPairs);

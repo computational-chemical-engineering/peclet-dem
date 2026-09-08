@@ -53,11 +53,12 @@ int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   int status = 0;
   {
-    const int G = 6;             // 6x6x6 grid
-    const int N = G * G * G;     // 216 spheres
+    const int G = 6;                 // 6x6x6 grid
+    const int N = G * G * G;         // 216 spheres
     const float globalScale = 0.7f;  // non-unit: exercises the canonical->world globalScale folding
-    // all lengths scale with globalScale so the config is the unit-scale one in world units: spacing
-    // < world diameter (2*globalScale) => face neighbours overlap; lift = one world radius onto z=0.
+    // all lengths scale with globalScale so the config is the unit-scale one in world units:
+    // spacing < world diameter (2*globalScale) => face neighbours overlap; lift = one world radius
+    // onto z=0.
     const float spacing = 1.8f * globalScale;
     const float margin = 0.1f * globalScale;
 

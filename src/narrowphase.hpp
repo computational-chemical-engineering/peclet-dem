@@ -24,9 +24,9 @@ namespace peclet::dem {
 /// For an imported grid SDF (type == SHAPE_GRID_SDF) the analytic `params` is unused except
 /// params.x, which carries the canonical bounding radius (used by the broad-phase splat / VTI
 /// export). The signed-distance samples live in the shared Particles::sdfGrid View at
-/// [gridOffset, gridOffset + nx*ny*nz), x-fastest (idx = x + y*nx + z*nx*ny), located at the regular
-/// lattice nodes q = gridOrigin + (x,y,z) / gridInvSpacing in canonical (unrotated, unit-scale)
-/// particle space. Analytic shapes leave these zero.
+/// [gridOffset, gridOffset + nx*ny*nz), x-fastest (idx = x + y*nx + z*nx*ny), located at the
+/// regular lattice nodes q = gridOrigin + (x,y,z) / gridInvSpacing in canonical (unrotated,
+/// unit-scale) particle space. Analytic shapes leave these zero.
 struct ShapeDesc {
   int type;         // peclet::dem::ShapeKind
   F4 params;        // analytic parameters (see sdf_analytic); grid: params.x = bounding radius
@@ -52,13 +52,15 @@ struct PlaneP {
   F3 normal;
 };
 
-/// Static, world-space SDF container/geometry the particles collide against (a drum barrel, a hopper,
-/// a vibrating tray, ...). Unlike a particle grid SDF (canonical body space, `sdfEvalShape`), this
-/// field is sampled directly in WORLD coordinates, and its zero level set is the container wall.
+/// Static, world-space SDF container/geometry the particles collide against (a drum barrel, a
+/// hopper, a vibrating tray, ...). Unlike a particle grid SDF (canonical body space,
+/// `sdfEvalShape`), this field is sampled directly in WORLD coordinates, and its zero level set is
+/// the container wall.
 ///
 /// SIGN: positive in the void where the grains live, negative inside the solid wall — so a grain
-/// surface point has SDF > 0 when clear and SDF < 0 when it has poked into the wall (the penetration
-/// depth), and the outward gradient points from the wall back into the void (the push-out normal).
+/// surface point has SDF > 0 when clear and SDF < 0 when it has poked into the wall (the
+/// penetration depth), and the outward gradient points from the wall back into the void (the
+/// push-out normal).
 ///
 /// The geometry never moves, but it carries a rigid-body SURFACE VELOCITY field
 ///   v(x) = linVel + angVel × (x − center)
@@ -156,7 +158,8 @@ KOKKOS_INLINE_FUNCTION float sdfEvalShape(F3 p, const ShapeDesc& d, GridView gri
   if (d.type == SHAPE_SCENE)  // composed analytic tree, exact in canonical body space
     return peclet::core::geom::evalTree<float>(
         peclet::core::geom::TablePtr<peclet::core::geom::ShapeNode<float>>{d.nodes}, d.nodeCount,
-        d.shapeRoot, toCoreVec(p), peclet::core::geom::TablePtr<peclet::core::geom::GridDesc<float>>{nullptr},
+        d.shapeRoot, toCoreVec(p),
+        peclet::core::geom::TablePtr<peclet::core::geom::GridDesc<float>>{nullptr},
         peclet::core::geom::PoolPtr<float>{nullptr});
   return sdfEval(p, d.type, d.params);
 }
@@ -216,8 +219,9 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
                                  float globalScale, float margin,
                                  Kokkos::View<ContactC*, CpMem> outContacts,
                                  Kokkos::View<int, CpMem> outCount,
-                                 Kokkos::View<float, CpMem> maxOverlap, GridView sdfGrid = GridView{},
-                                 MatIdView matId = MatIdView{}, PairTableView pairTable = PairTableView{}) {
+                                 Kokkos::View<float, CpMem> maxOverlap,
+                                 GridView sdfGrid = GridView{}, MatIdView matId = MatIdView{},
+                                 PairTableView pairTable = PairTableView{}) {
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
@@ -232,7 +236,8 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
         // shell placement, the canonical remap of B, and the distance rescale exactly as it does in
         // the sphere probe radius below — else a non-unit global_scale makes A's and B's radii
         // disagree (grains a real diameter apart read a huge penetration and the solver explodes).
-        // The plane/wall boundary kernels already fold globalScale into their `s = scale*globalScale`.
+        // The plane/wall boundary kernels already fold globalScale into their `s =
+        // scale*globalScale`.
         const float effScaleA = scale(idA) * globalScale, effScaleB = scale(idB) * globalScale;
 
         const int countA = dA.numPoints;
@@ -296,21 +301,20 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
 }
 
 /// Per-real-particle contacts against a static world-space wall SDF set (a drum barrel, hopper,
-/// vibrating tray, ...). Mirrors detectBoundaryKokkos but the boundary is the wall's zero level set:
-/// each surface point (or the sphere centre) is tested against sampleWallSdf, the outward gradient is
-/// the contact normal, and every emitted contact carries the wall's rigid-body surface velocity at
-/// the contact point plus the wall's binary (particle–wall) restitution/friction — so the moving-wall
-/// terms flow through the manifold velocity solve and the per-contact friction sweep. bodyB = -1
-/// (a boundary, like a plane); the wall surface point is stored in rB for the position solve's
-/// plane-linearised non-penetration constraint.
-inline void detectWallSdfKokkos(int numReal, int numWalls, PosView pos, QuatView quat, ScalarF scale,
-                                ScalarI shapeId, Kokkos::View<const ShapeDesc*, CpMem> shapes,
-                                ShellView shell, Kokkos::View<const WallSdf*, CpMem> walls,
-                                GridView wallGrid, float globalScale, float margin,
-                                Kokkos::View<ContactC*, CpMem> outContacts,
-                                Kokkos::View<int, CpMem> outCount,
-                                Kokkos::View<float, CpMem> maxOverlap,
-                                MatIdView matId = MatIdView{}, PairTableView pairTable = PairTableView{}) {
+/// vibrating tray, ...). Mirrors detectBoundaryKokkos but the boundary is the wall's zero level
+/// set: each surface point (or the sphere centre) is tested against sampleWallSdf, the outward
+/// gradient is the contact normal, and every emitted contact carries the wall's rigid-body surface
+/// velocity at the contact point plus the wall's binary (particle–wall) restitution/friction — so
+/// the moving-wall terms flow through the manifold velocity solve and the per-contact friction
+/// sweep. bodyB = -1 (a boundary, like a plane); the wall surface point is stored in rB for the
+/// position solve's plane-linearised non-penetration constraint.
+inline void detectWallSdfKokkos(
+    int numReal, int numWalls, PosView pos, QuatView quat, ScalarF scale, ScalarI shapeId,
+    Kokkos::View<const ShapeDesc*, CpMem> shapes, ShellView shell,
+    Kokkos::View<const WallSdf*, CpMem> walls, GridView wallGrid, float globalScale, float margin,
+    Kokkos::View<ContactC*, CpMem> outContacts, Kokkos::View<int, CpMem> outCount,
+    Kokkos::View<float, CpMem> maxOverlap, MatIdView matId = MatIdView{},
+    PairTableView pairTable = PairTableView{}) {
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
@@ -369,7 +373,7 @@ inline void detectWallSdfKokkos(int numReal, int numWalls, PosView pos, QuatView
             if (dist >= margin)
               continue;
             const F3 rAeff = (numPts > 0) ? rA : scale3(n, -radius);
-            const F3 pSurfA = add3(posA, rAeff);           // particle surface point
+            const F3 pSurfA = add3(posA, rAeff);             // particle surface point
             const F3 pWall = sub3(pSurfA, scale3(n, dist));  // point on the wall along the normal
 
             if (dist < 0.0f)
@@ -379,7 +383,8 @@ inline void detectWallSdfKokkos(int numReal, int numWalls, PosView pos, QuatView
               Kokkos::atomic_add(&outCount(), -1);
               continue;
             }
-            // Rigid-body wall surface velocity at the contact point: linVel + angVel × (r − center).
+            // Rigid-body wall surface velocity at the contact point: linVel + angVel × (r −
+            // center).
             const F3 r = sub3(pWall, w.center);
             const F3 vWall = add3(w.linVel, cross3v(w.angVel, r));
 

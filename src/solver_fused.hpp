@@ -22,9 +22,8 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "contact_preprocessing.hpp"  // CpExec/CpMem
 
@@ -197,14 +196,14 @@ inline int demFusedMaxGrid(Kernel kernel) {
 /// path cannot run (no occupancy info) — caller falls back.
 template <class Sweep>
 inline bool demLaunchFusedColorSweep(CpExec& space, const Sweep& f,
-                                     Kokkos::View<const int*, CpMem> perm,
-                                     const FusedSweepCtx& ctx, int numColors) {
+                                     Kokkos::View<const int*, CpMem> perm, const FusedSweepCtx& ctx,
+                                     int numColors) {
   const int maxGrid = std::min(demFusedMaxGrid(demFusedColorSweepK<Sweep>),
                                (static_cast<int>(ctx.bar.extent(0)) - 1) / 8);
   if (maxGrid <= 0 || numColors <= 0 || ctx.maxBucket <= 0)
     return false;
-  const int want = std::min((ctx.maxBucket + kFusedBlock - 1) / kFusedBlock,
-                            std::max(1, demFusedGridCap()));
+  const int want =
+      std::min((ctx.maxBucket + kFusedBlock - 1) / kFusedBlock, std::max(1, demFusedGridCap()));
   const int grid = want < maxGrid ? want : maxGrid;
   cudaStream_t str = space.cuda_stream();
   cudaMemsetAsync(ctx.bar.data(), 0, (static_cast<std::size_t>(grid) * 8 + 1) * sizeof(unsigned),
@@ -219,22 +218,21 @@ inline bool demLaunchFusedColorSweep(CpExec& space, const Sweep& f,
 /// whatever the host reads after the loop (e.g. the stabilization trigger).
 template <class Sweep>
 inline bool demLaunchFusedSweepLoop(CpExec& space, const Sweep& f,
-                                    Kokkos::View<const int*, CpMem> perm,
-                                    const FusedSweepCtx& ctx, int numColors,
-                                    const FusedLoopSpec& spec, float* res) {
+                                    Kokkos::View<const int*, CpMem> perm, const FusedSweepCtx& ctx,
+                                    int numColors, const FusedLoopSpec& spec, float* res) {
   const int maxGrid = std::min(demFusedMaxGrid(demFusedSweepLoopK<Sweep>),
                                (static_cast<int>(ctx.bar.extent(0)) - 1) / 8);
   if (maxGrid <= 0 || numColors <= 0 || ctx.maxBucket <= 0 || res == nullptr)
     return false;
-  const int want = std::min((ctx.maxBucket + kFusedBlock - 1) / kFusedBlock,
-                            std::max(1, demFusedGridCap()));
+  const int want =
+      std::min((ctx.maxBucket + kFusedBlock - 1) / kFusedBlock, std::max(1, demFusedGridCap()));
   const int grid = want < maxGrid ? want : maxGrid;
   cudaStream_t str = space.cuda_stream();
   cudaMemsetAsync(ctx.bar.data(), 0, (static_cast<std::size_t>(grid) * 8 + 1) * sizeof(unsigned),
                   str);
   demFusedSweepLoopK<Sweep><<<grid, kFusedBlock, 0, str>>>(f, perm, ctx.offsDev, numColors,
-                                                           spec.maxIters, spec.tol,
-                                                           spec.strictLess, res, ctx.bar.data());
+                                                           spec.maxIters, spec.tol, spec.strictLess,
+                                                           res, ctx.bar.data());
   return true;
 }
 
@@ -255,8 +253,8 @@ inline FusedSweepCtx demMakeFusedCtx(CpExec& space, const std::vector<int>& offs
     maxBucket = std::max(maxBucket, offs[c + 1] - offs[c]);
   if (maxBucket <= 0)
     return ctx;
-  const Kokkos::View<const int*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged> h(
-      offs.data(), offs.size());
+  const Kokkos::View<const int*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged> h(offs.data(),
+                                                                               offs.size());
   auto d = Kokkos::subview(offsDev, Kokkos::pair<std::size_t, std::size_t>(0, offs.size()));
   Kokkos::deep_copy(space, d, h);
   ctx.offsDev = Kokkos::subview(Kokkos::View<const int*, CpMem>(offsDev),

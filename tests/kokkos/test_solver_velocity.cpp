@@ -74,7 +74,8 @@ int main(int argc, char** argv) {
       m.rA_sum = F4{uf(rng), uf(rng), uf(rng), 0};
       m.rB_sum = F4{uf(rng), uf(rng), uf(rng), 0};
       m.num_points = 1 + (int)(rng() % 5);
-      // Boundary (idB<0) moving-wall extension: half the walls carry an explicit per-wall restitution
+      // Boundary (idB<0) moving-wall extension: half the walls carry an explicit per-wall
+      // restitution
       // + surface velocity (summed over num_points, count-averaged by the solve), half use the < 0
       // sentinel = the global material + a static wall. Body-body manifolds never read these.
       if (b < 0) {

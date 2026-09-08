@@ -1,12 +1,12 @@
 // End-to-end smoke test of the assembled Kokkos+ArborX DEM pipeline (the dem pipeline).
 //
-// Composes EVERY ported unit on the peclet::dem::Particles SoA container in the real simulation.cpp step()
-// order — predict -> ghosts -> broad-phase(ArborX) -> narrow-phase -> contact->manifold -> velocity
-// solve -> re-integrate -> position solve -> final commit — and runs several steps on a small
-// periodic sphere packing under gravity with a ground plane. This proves the ported headers compose
-// (no cross-header conflicts) and the pipeline runs end-to-end on the active backend; it asserts
-// the state stays finite and bounded (gross-error guard). Bit-exact parity with the CUDA solver is
-// the job of verify_packing_hollow_cylinders.py once wired into dem.so.
+// Composes EVERY ported unit on the peclet::dem::Particles SoA container in the real simulation.cpp
+// step() order — predict -> ghosts -> broad-phase(ArborX) -> narrow-phase -> contact->manifold ->
+// velocity solve -> re-integrate -> position solve -> final commit — and runs several steps on a
+// small periodic sphere packing under gravity with a ground plane. This proves the ported headers
+// compose (no cross-header conflicts) and the pipeline runs end-to-end on the active backend; it
+// asserts the state stays finite and bounded (gross-error guard). Bit-exact parity with the CUDA
+// solver is the job of verify_packing_hollow_cylinders.py once wired into dem.so.
 #include <cmath>
 #include <cstdio>
 #include <Kokkos_Core.hpp>

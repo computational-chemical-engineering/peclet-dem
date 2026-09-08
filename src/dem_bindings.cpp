@@ -8,12 +8,13 @@
 /// CuPy arrays flow in/out zero-copy.
 ///
 /// Kokkos teardown follows the suite-wide pattern of peclet/core/python/kokkos_teardown.hpp: Kokkos
-/// is initialized at import; Simulation keeps its own live registry (sim.hpp, Simulation::releaseAll
-/// drops every live Simulation's Views) which is plugged in as a release hook, and every zero-copy
-/// array (`get_*_view`) is a Releasable capsule; the module's single atexit hook (also
-/// `dem.finalize()`) releases all of them and THEN calls Kokkos::finalize, so a Simulation or array
-/// still referenced at interpreter exit (script globals, a Jupyter/Quarto kernel) can no longer be
-/// destroyed after finalize -- which is a Kokkos::abort (SIGABRT / exit 134, on OpenMP as on CUDA).
+/// is initialized at import; Simulation keeps its own live registry (sim.hpp,
+/// Simulation::releaseAll drops every live Simulation's Views) which is plugged in as a release
+/// hook, and every zero-copy array (`get_*_view`) is a Releasable capsule; the module's single
+/// atexit hook (also `dem.finalize()`) releases all of them and THEN calls Kokkos::finalize, so a
+/// Simulation or array still referenced at interpreter exit (script globals, a Jupyter/Quarto
+/// kernel) can no longer be destroyed after finalize -- which is a Kokkos::abort (SIGABRT / exit
+/// 134, on OpenMP as on CUDA).
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/array.h>
@@ -195,8 +196,7 @@ NB_MODULE(_dem, m) {
           "`origin` the lower corner, `periodic` the per-axis flags. Equivalent to "
           "`set_domain(min=origin, max=origin+extent)` plus `set_periodic(*periodic)`. Either "
           "form resets the broad-phase skin to 0.1 x the global scale (as set_global_scale does).")
-      .def("set_periodic", &Simulation::enablePeriodicity, nb::arg("x"), nb::arg("y"),
-           nb::arg("z"),
+      .def("set_periodic", &Simulation::enablePeriodicity, nb::arg("x"), nb::arg("y"), nb::arg("z"),
            "Set periodic boundaries per axis (x, y, z); read back with the `periodic` property "
            "(suite/docs/NAMING.md 1.4).")
       .def_prop_ro("origin", &Simulation::domainOrigin,
@@ -407,7 +407,9 @@ NB_MODULE(_dem, m) {
            "Zero all per-particle external forces.")
       .def(
           "set_external_torques",
-          [](Simulation& s, nb::ndarray<float, nb::c_contig> a) { s.setExternalTorques(to_vec(a)); },
+          [](Simulation& s, nb::ndarray<float, nb::c_contig> a) {
+            s.setExternalTorques(to_vec(a));
+          },
           "Set the per-particle external TORQUE in the WORLD frame from an (N,3) array (the "
           "resolved-CFD-DEM hydrodynamic torque, a magnetic couple, ...). Applied each step in the "
           "angular predictor as Euler's equation in the body frame, dw = invI*(tau_body - w x I "

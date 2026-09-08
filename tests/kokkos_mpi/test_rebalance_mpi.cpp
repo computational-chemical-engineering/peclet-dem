@@ -23,13 +23,13 @@
 #include <Kokkos_Core.hpp>
 #include <vector>
 
-#include "sim.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/decomp/block_decomposer.hpp"
 #include "peclet/core/halo/particle_migrator.hpp"
+#include "sim.hpp"
 
-using peclet::dem::Simulation;
 using peclet::core::IVec;
+using peclet::dem::Simulation;
 
 static constexpr double R = 1.0, GS = 1.0;
 static constexpr int GX = 16;      // ORB cell grid per axis

@@ -38,17 +38,16 @@ inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numRea
   BpExec space;
   using Box = ArborX::Box<3>;
 
-  // Sanitize the AABB half-width + centre: a non-finite (NaN/inf) or absurdly large box — a particle
-  // blown up by a bad coupling/DEM transient — would otherwise overlap ~every other box and make the
-  // ArborX query allocate billions of intersections (observed: a 36 GiB "bp::values" OOM). SANE_BOX
-  // parks such a particle in a degenerate far box that matches nothing, so one bad particle can't
-  // crash the run. boxCap<=0 disables the size clamp (NaN/inf are always caught).
-#define PECLET_DEM_SANE_BOX(i, px, py, pz, b)                                        \
-  float px = pos(i, 0), py = pos(i, 1), pz = pos(i, 2), b = rad(i) + margin;         \
-  if (!(b == b) || !(px == px) || !(py == py) || !(pz == pz) ||                      \
-      (boxCap > 0.0f && b > boxCap)) {                                               \
-    px = py = pz = -1.0e30f;                                                         \
-    b = 0.0f;                                                                        \
+  // Sanitize the AABB half-width + centre: a non-finite (NaN/inf) or absurdly large box — a
+  // particle blown up by a bad coupling/DEM transient — would otherwise overlap ~every other box
+  // and make the ArborX query allocate billions of intersections (observed: a 36 GiB "bp::values"
+  // OOM). SANE_BOX parks such a particle in a degenerate far box that matches nothing, so one bad
+  // particle can't crash the run. boxCap<=0 disables the size clamp (NaN/inf are always caught).
+#define PECLET_DEM_SANE_BOX(i, px, py, pz, b)                                                    \
+  float px = pos(i, 0), py = pos(i, 1), pz = pos(i, 2), b = rad(i) + margin;                     \
+  if (!(b == b) || !(px == px) || !(py == py) || !(pz == pz) || (boxCap > 0.0f && b > boxCap)) { \
+    px = py = pz = -1.0e30f;                                                                     \
+    b = 0.0f;                                                                                    \
   }
 
   // AABBs over all particles (these are the BVH primitives).

@@ -54,8 +54,8 @@ inline void predictVelocityKokkos(int n, V3 pos, Vf invMass, V3 vel, V4 quat, V3
         F3 v = ldF3(vel, i);
         if (invM > 0.0f) {
           v = add3(v, scale3(gravity, dt));
-          // external force (fluid drag, etc.): F=ma => dv = F*invMass*dt (extForce is a FORCE, so it
-          // scales with 1/mass; gravity above is already an acceleration).
+          // external force (fluid drag, etc.): F=ma => dv = F*invMass*dt (extForce is a FORCE, so
+          // it scales with 1/mass; gravity above is already an acceleration).
           v = add3(v, scale3(ldF3(extForce, i), invM * dt));
         }
         detail::st3(velPred, i, v);

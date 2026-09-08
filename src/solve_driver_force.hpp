@@ -122,8 +122,7 @@ inline void hertzCommitHistory(Particles& P) {
   auto xi = P.hertzXi;
   auto px = P.hertzPrevXi;
   Kokkos::parallel_for(
-      "peclet::dem::hertz_gather", Kokkos::RangePolicy<CpExec>(space, 0, n),
-      KOKKOS_LAMBDA(int i) {
+      "peclet::dem::hertz_gather", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
         const int j = perm(i);
         px(i, 0) = xi(j, 0);
         px(i, 1) = xi(j, 1);
@@ -148,8 +147,8 @@ struct HertzMindlinLaw {
   }
   void pairForces(Particles& P, float dt, bool hasShapes) const {
     if (hasShapes)
-      hertzShapePairForcesKokkos(P.pairs, P.hertzNumPairs, P.pos, P.quat, P.vel, P.angVel,
-                                 P.scale, P.shapeId, P.shapes, P.shell, P.sdfGrid, P.globalScale,
+      hertzShapePairForcesKokkos(P.pairs, P.hertzNumPairs, P.pos, P.quat, P.vel, P.angVel, P.scale,
+                                 P.shapeId, P.shapes, P.shell, P.sdfGrid, P.globalScale,
                                  P.hertzContactRadiusFrac, P.invMass, MatIdView(P.materialId),
                                  PairTableView(P.pairMaterials), P.restitutionNormal,
                                  P.frictionDynamic, P.hertzE, P.hertzNu, dt, P.hertzXi,
@@ -162,16 +161,14 @@ struct HertzMindlinLaw {
   }
   void wallForces(Particles& P, float dt, bool hasShapes) const {
     if (P.numWalls > 0 && P.hertzNumWallCand > 0)
-      hertzWallForcesKokkos(Kokkos::View<const int*, CpMem>(P.hertzWallCand), P.hertzNumWallCand,
-                            P.walls, P.wallGrid, P.pos, P.vel, P.angVel,
-                            P.rad, P.invMass, MatIdView(P.materialId),
-                            PairTableView(P.pairMaterials), P.restitutionNormal, P.frictionDynamic,
-                            P.hertzE, P.hertzNu, dt, P.hertzXiWall, Particles::kHertzMaxWalls,
-                            P.deltaVel, P.deltaAngVel,
-                            Kokkos::View<const float* [4], CpMem>(P.quat),
-                            Kokkos::View<const float*, CpMem>(P.scale), P.shapeId, P.shapes,
-                            P.shell, P.globalScale, P.hertzContactRadiusFrac, hasShapes,
-                            P.hertzSnWall);
+      hertzWallForcesKokkos(
+          Kokkos::View<const int*, CpMem>(P.hertzWallCand), P.hertzNumWallCand, P.walls, P.wallGrid,
+          P.pos, P.vel, P.angVel, P.rad, P.invMass, MatIdView(P.materialId),
+          PairTableView(P.pairMaterials), P.restitutionNormal, P.frictionDynamic, P.hertzE,
+          P.hertzNu, dt, P.hertzXiWall, Particles::kHertzMaxWalls, P.deltaVel, P.deltaAngVel,
+          Kokkos::View<const float* [4], CpMem>(P.quat), Kokkos::View<const float*, CpMem>(P.scale),
+          P.shapeId, P.shapes, P.shell, P.globalScale, P.hertzContactRadiusFrac, hasShapes,
+          P.hertzSnWall);
   }
   /// Engine-support restrictions of this law (probed once per call).
   void validate(const Particles& P) const {
@@ -323,10 +320,11 @@ inline void demStepForce(Particles& P, float dt, int nsteps, float skinFrac, con
     }
   }
   if (profile)
-    std::printf("[hertz profile] steps=%d pairs=%d wallcand=%d rebuilds=%d | pair %.3fs wall %.3fs "
-                "integrate %.3fs check %.3fs rebuild %.3fs\n",
-                nsteps, P.hertzNumPairs, P.hertzNumWallCand, nRebuilds, tPair, tWall, tInt, tCheck,
-                tRebuild);
+    std::printf(
+        "[hertz profile] steps=%d pairs=%d wallcand=%d rebuilds=%d | pair %.3fs wall %.3fs "
+        "integrate %.3fs check %.3fs rebuild %.3fs\n",
+        nsteps, P.hertzNumPairs, P.hertzNumWallCand, nRebuilds, tPair, tWall, tInt, tCheck,
+        tRebuild);
   CpExec space;
   Kokkos::deep_copy(space, P.posPred, P.pos);  // keep the impulse-path views coherent
   Kokkos::deep_copy(space, P.velPred, P.vel);
