@@ -501,28 +501,6 @@ class Simulation {
     P_.allocate(capacity, capacity * 64, capacity * 16, /*shapes*/ 1, /*shell*/ 1, /*planes*/ 8);
     // default sphere shape (radius 1) + identity-ish defaults
     setSphereShape(1.0f);
-    // A/B hook for the validation battery (mirrors PECLET_DEM_STAB_MODE's role): switch the
-    // restitution model without touching driver scripts.
-    if (const char* e = std::getenv("PECLET_DEM_REST_MODEL"); e && *e)
-      setRestitutionModel(e);
-    // Island sleeping A/B env (default ON): PECLET_DEM_SLEEP=1 enables, =0 disables; the scales /
-    // K / wake threshold have their own overrides for the tuning battery.
-    if (const char* e = std::getenv("PECLET_DEM_SLEEP"); e && *e)
-      P_.sleepingEnabled = std::atoi(e) != 0;
-    if (const char* e = std::getenv("PECLET_DEM_SLEEP_SCALE"); e && *e)
-      P_.sleepScale = std::atof(e);
-    if (const char* e = std::getenv("PECLET_DEM_SLEEP_K"); e && *e)
-      P_.sleepK = std::atoi(e);
-    if (const char* e = std::getenv("PECLET_DEM_WAKE_SCALE"); e && *e)
-      P_.wakeScale = std::atof(e);
-    if (const char* e = std::getenv("PECLET_DEM_SLEEP_WAKELOST"); e && *e)
-      P_.sleepWakeLostContact = std::atoi(e) != 0;
-    if (const char* e = std::getenv("PECLET_DEM_SLEEP_INVMASS_FRAC"); e && *e)
-      P_.sleepImmovableFrac = std::atof(e);
-    // Verlet-cached impulse broadphase (default OFF): PECLET_DEM_VERLET_SKIN = skin fraction of the
-    // max grain radius (e.g. 0.3). 0 = rebuild every step.
-    if (const char* e = std::getenv("PECLET_DEM_VERLET_SKIN"); e && *e)
-      P_.verletSkinFrac = std::atof(e);
   }
   ~Simulation() {
     auto& r = registry();
@@ -1023,7 +1001,7 @@ class Simulation {
   /// the pre-solve approach — the pre-existing behaviour) or "poisson" (event-level: each pair
   /// banks its kinetic compression impulse and releases e x the bank as a budget-capped
   /// separation-velocity target during unloading — restores the multi-substep-impact rebound that
-  /// per-substep Newton structurally cannot return). PECLET_DEM_REST_MODEL overrides at startup.
+  /// per-substep Newton structurally cannot return).
   void setRestitutionModel(const std::string& model) {
     if (model == "newton")
       P_.restitutionModel = 0;
@@ -1043,10 +1021,13 @@ class Simulation {
   /// instead of the PGS normal impulse diverging; its velocity is re-zeroed each substep so no
   /// momentum accumulates. It wakes only when disturbed (fast approaching neighbour, contact-set
   /// change, moving wall).
-  /// Requires gravity on and no external (CFD-DEM drag) force; inert under MPI. PECLET_DEM_SLEEP
-  /// overrides at startup.
+  /// Requires gravity on and no external (CFD-DEM drag) force; inert under MPI.
+  /// wake_on_lost_contact additionally wakes a sleeper whose support disappeared (rule (b));
+  /// immovable_frac is the sleeper's effective inverse-mass fraction in the solve (0 = exactly
+  /// immovable; the default 0.01 keeps it 100x a grain's mass but not infinitely rigid).
   void setSleeping(bool enabled, float threshold_scale = 2.0f, int consecutive = 64,
-                   float wake_scale = 40.0f) {
+                   float wake_scale = 40.0f, bool wake_on_lost_contact = false,
+                   float immovable_frac = 0.01f) {
     P_.sleepingEnabled = enabled;
     if (threshold_scale > 0.0f)
       P_.sleepScale = threshold_scale;
@@ -1054,7 +1035,12 @@ class Simulation {
       P_.sleepK = consecutive;
     if (wake_scale > 0.0f)
       P_.wakeScale = wake_scale;  // hysteresis: wake only well above the residual settling jitter
+    P_.sleepWakeLostContact = wake_on_lost_contact;
+    if (immovable_frac >= 0.0f)
+      P_.sleepImmovableFrac = immovable_frac;
   }
+  /// True while island sleeping is enabled.
+  bool sleeping() const { return P_.sleepingEnabled; }
   /// Verlet-cached impulse broadphase (single-GPU, non-periodic; default OFF). skin_frac is the
   /// broadphase-skin fraction of the max grain radius: the ArborX rebuild is skipped while no
   /// particle has moved more than skin/2, so between rebuilds the candidate list is a superset and
@@ -1064,6 +1050,36 @@ class Simulation {
     P_.verletSkinFrac = skin_frac;
     P_.impNumPairs = -1;  // invalidate the cache
   }
+  float verletSkin() const { return P_.verletSkinFrac; }
+  /// CUDA-graph replay of the solver's iteration loops (single-rank CUDA; default ON). Capture
+  /// collapses each iteration's launch storm into one replay; the arithmetic, the residual
+  /// readback and the adaptive stop are unchanged, so results are bit-identical either way.
+  /// Inert on every non-CUDA backend and on the distributed step (ghost syncs forbid capture).
+  void setCudaGraphs(bool enabled) { P_.cudaGraphs = enabled; }
+  bool cudaGraphs() const { return P_.cudaGraphs; }
+  /// Fused colour sweeps (CUDA): run a whole sweep — and where eligible the whole adaptive
+  /// iteration loop — as ONE kernel iterating device-side behind software grid barriers.
+  /// "auto" (default) uses them exactly where graph replay is unavailable (the distributed step,
+  /// or set_cuda_graphs(False)); "on"/"off" force. Same colour ordering, bit-identical results.
+  void setFusedSweeps(const std::string& mode) {
+    if (mode == "auto")
+      P_.fusedSweeps = -1;
+    else if (mode == "off")
+      P_.fusedSweeps = 0;
+    else if (mode == "on")
+      P_.fusedSweeps = 1;
+    else
+      throw std::invalid_argument("set_fused_sweeps: expected 'auto', 'on' or 'off'");
+  }
+  std::string fusedSweeps() const {
+    return P_.fusedSweeps < 0 ? "auto" : (P_.fusedSweeps == 1 ? "on" : "off");
+  }
+  /// Incremental (warm-started) graph colouring of the contact manifolds (default ON): reuse
+  /// last substep's colours and repair only the conflicts instead of recolouring from scratch.
+  /// This CHANGES RESULTS -- the colouring fixes the Gauss-Seidel sweep order -- so it is a
+  /// numerical option, not just a speed one; False reproduces the pre-incremental behaviour.
+  void setIncrementalColoring(bool enabled) { P_.incrementalColoring = enabled; }
+  bool incrementalColoring() const { return P_.incrementalColoring; }
   /// Number of currently-sleeping real bodies (diagnostics / tests).
   int numAsleep() {
     int n = 0;

@@ -631,7 +631,7 @@ inline bool demLaunchFusedMlLoop(
                         maxApproachQS,
                         restRel};
   const int work = std::max(velCtx.maxBucket, ml.maxWork);
-  const int want = std::min((work + kFusedBlock - 1) / kFusedBlock, std::max(1, demFusedGridCap()));
+  const int want = (work + kFusedBlock - 1) / kFusedBlock;
   const int grid = want < maxGrid ? want : maxGrid;
   cudaStream_t str = space.cuda_stream();
   cudaMemsetAsync(ml.bar.data(), 0, (static_cast<std::size_t>(grid) * 8 + 1) * sizeof(unsigned),
@@ -720,8 +720,7 @@ inline void multilevelCoarseCycleKokkos(
     const int maxGrid = std::min(demFusedMaxGrid(demFusedCoarseCycleK),
                                  (static_cast<int>(fused->bar.extent(0)) - 1) / 8);
     if (maxGrid > 0) {
-      const int want = std::min((fused->maxWork + kFusedBlock - 1) / kFusedBlock,
-                                std::max(1, demFusedGridCap()));
+      const int want = (fused->maxWork + kFusedBlock - 1) / kFusedBlock;
       const int grid = want < maxGrid ? want : maxGrid;
       cudaStream_t str = space.cuda_stream();
       cudaMemsetAsync(fused->bar.data(), 0,

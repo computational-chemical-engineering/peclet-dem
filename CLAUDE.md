@@ -76,18 +76,37 @@ periodic test keeps its straddlers symmetric about the face for that reason.
   (overlap removal only). `set_dt` only stores dt; `step` overwrites it with its argument.
 - The default body-body material is FRICTIONLESS (`set_material_params`); walls carry their own.
 
-## Environment variables read in `src/` (retiring them is QUALITY_PLAN package E; do not add more)
+## Environment variables (QUALITY_PLAN package E is DONE — do not add more)
 
-Constructor (`sim.hpp`, startup overrides): `PECLET_DEM_REST_MODEL` (newton|poisson restitution model),
-`PECLET_DEM_SLEEP` (1/0 island sleeping), `PECLET_DEM_SLEEP_SCALE`, `PECLET_DEM_SLEEP_K`,
-`PECLET_DEM_WAKE_SCALE`, `PECLET_DEM_SLEEP_WAKELOST`, `PECLET_DEM_SLEEP_INVMASS_FRAC` (sleeping tuning),
-`PECLET_DEM_VERLET_SKIN` (Verlet-cached broad-phase skin fraction).
-Solve driver (`solve_driver.hpp`, read once per process): `PECLET_DEM_NO_GRAPH` (disable CUDA-graph replay),
-`PECLET_DEM_NO_INCR_COLOR` (full recolouring instead of incremental), `PECLET_DEM_REST_NEWTON_OFF`,
-`PECLET_DEM_REST_ONESIDED` (restitution A/B ablations), `PECLET_DEM_ML_GATES` (multilevel gate mask).
-Fused sweeps (`solver_fused.hpp`, CUDA): `PECLET_DEM_FUSED` / `PECLET_DEM_NO_FUSED` (force the path),
-`PECLET_DEM_FUSED_GRID` (block-count cap). Force driver: `PECLET_DEM_HERTZ_PROFILE` (timing print).
-`PECLET_DEM_STAB_MODE` / `PECLET_DEM_SYMMETRIC_PGS` appear in comments only — not read.
+**No environment variable changes what `peclet.dem` computes.** The 16 `PECLET_DEM_*` runtime reads
+were retired at 1.0.0: every knob that selected an algorithm became a `Simulation` setter with the
+old behaviour as its default, and the four pure A/B ablations were deleted together with the code
+they gated. `getenv` in `src/` is now exactly one call — `PECLET_DEM_HERTZ_PROFILE` (a timing
+print in `solve_driver_force.hpp`).
+
+| retired variable | replacement |
+|---|---|
+| `PECLET_DEM_REST_MODEL` | `set_restitution_model('newton'\|'poisson')` — default `'newton'` |
+| `PECLET_DEM_SLEEP` | `set_sleeping(enabled)` — default `True` |
+| `PECLET_DEM_SLEEP_SCALE` / `_K` / `PECLET_DEM_WAKE_SCALE` | `set_sleeping(threshold_scale=2.0, consecutive=64, wake_scale=40.0)` |
+| `PECLET_DEM_SLEEP_WAKELOST` | `set_sleeping(wake_on_lost_contact=False)` |
+| `PECLET_DEM_SLEEP_INVMASS_FRAC` | `set_sleeping(immovable_frac=0.01)` |
+| `PECLET_DEM_VERLET_SKIN` | `set_verlet_skin(skin_frac)` — default `0.0` (off) |
+| `PECLET_DEM_NO_GRAPH` | `set_cuda_graphs(enabled)` — default `True` |
+| `PECLET_DEM_FUSED` / `PECLET_DEM_NO_FUSED` | `set_fused_sweeps('auto'\|'on'\|'off')` — default `'auto'` |
+| `PECLET_DEM_NO_INCR_COLOR` | `set_incremental_coloring(enabled)` — default `True` |
+| `PECLET_DEM_FUSED_GRID` | deleted (tuning knob; uncapped measured best at every size) |
+| `PECLET_DEM_ML_GATES` | deleted (A/B over the multilevel gate mask; `kGateSlip` ships) |
+| `PECLET_DEM_REST_NEWTON_OFF`, `PECLET_DEM_REST_ONESIDED` | deleted with their kernels (both measured worse) |
+
+The stored scalars read back as properties: `sleeping`, `verlet_skin`, `cuda_graphs`,
+`fused_sweeps`, `incremental_coloring`. `set_cuda_graphs` / `set_fused_sweeps` only choose how the
+same arithmetic is submitted to a GPU (bit-identical results, inert on non-CUDA backends);
+`set_incremental_coloring(False)` DOES change results — the colouring fixes the Gauss-Seidel sweep
+order. `PECLET_DEM_STAB_MODE` and `PECLET_DEM_SYMMETRIC_PGS` were never read by any version of the
+code (they survived only in comments); `set_stabilization_mode('off')` is what those scripts meant.
+
+`PECLET_DEM_MPI` / `PECLET_DEM_MPI_HALO_HPP` are compile-time macros, not environment variables.
 
 ## CI (`.github/workflows`)
 

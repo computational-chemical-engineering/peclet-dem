@@ -243,7 +243,7 @@ NB_MODULE(_dem, m) {
            "restitution on the pre-solve approach) or 'poisson' (event-level: each pair banks its "
            "kinetic compression impulse and releases e x the bank as a budget-capped "
            "separation-velocity target during unloading -- restores the multi-substep-impact "
-           "rebound per-substep Newton cannot return). PECLET_DEM_REST_MODEL overrides.")
+           "rebound per-substep Newton cannot return).")
       .def("set_velocity_use_gs", &Simulation::setVelocityUseGS, nb::arg("use_gs"),
            "Select the single-GPU restitution solve: True (default) = colored Gauss–Seidel "
            "(correct multi-contact dissipation), False = count-averaged Jacobi (legacy).")
@@ -528,18 +528,44 @@ NB_MODULE(_dem, m) {
            "Number of broad-phase candidate pairs found in the last step (ArborX BVH query).")
       .def("num_manifolds", &Simulation::numManifolds,
            "Number of narrow-phase contact manifolds (touching pairs) resolved in the last step.")
-      .def(
-          "set_sleeping", &Simulation::setSleeping, nb::arg("enabled"),
-          nb::arg("threshold_scale") = 2.0f, nb::arg("consecutive") = 64,
-          nb::arg("wake_scale") = 40.0f,
-          "Enable island sleeping (single-GPU statics, default OFF): freeze grounded bodies whose "
-          "motion stays below threshold_scale x the resting floor for `consecutive` substeps; wake "
-          "only above wake_scale x that floor (hysteresis vs residual jitter).")
+      .def("set_sleeping", &Simulation::setSleeping, nb::arg("enabled"),
+           nb::arg("threshold_scale") = 2.0f, nb::arg("consecutive") = 64,
+           nb::arg("wake_scale") = 40.0f, nb::arg("wake_on_lost_contact") = false,
+           nb::arg("immovable_frac") = 0.01f,
+           "Island sleeping (single-GPU statics, default ON): freeze grounded bodies whose motion "
+           "stays below threshold_scale x the resting floor for `consecutive` substeps; wake only "
+           "above wake_scale x that floor (hysteresis vs residual jitter). wake_on_lost_contact "
+           "additionally wakes a sleeper whose support disappeared; immovable_frac is a sleeper's "
+           "effective inverse-mass fraction in the solve (0 = exactly immovable). Requires gravity "
+           "and no external force; inert under MPI.")
+      .def_prop_ro("sleeping", &Simulation::sleeping, "Whether island sleeping is enabled.")
       .def("num_asleep", &Simulation::numAsleep, "Number of currently-sleeping real bodies.")
       .def("set_verlet_skin", &Simulation::setVerletSkin, nb::arg("skin_frac"),
-           "Enable the Verlet-cached impulse broadphase (single-GPU, non-periodic, default OFF): "
-           "skip the ArborX rebuild while nothing moved more than skin/2 (skin = skin_frac x max "
-           "grain radius).")
+           "Enable the Verlet-cached impulse broadphase (single-GPU, non-periodic, default OFF, "
+           "i.e. skin_frac = 0): skip the ArborX rebuild while nothing moved more than skin/2 "
+           "(skin = skin_frac x max grain radius).")
+      .def_prop_ro("verlet_skin", &Simulation::verletSkin,
+                   "Broadphase-skin fraction of the max grain radius (0 = rebuild every step).")
+      .def("set_cuda_graphs", &Simulation::setCudaGraphs, nb::arg("enabled"),
+           "CUDA-graph replay of the solver's iteration loops (default True): capture collapses "
+           "each iteration's launch storm into one replay. Results are bit-identical either way; "
+           "inert on non-CUDA backends and on the distributed step.")
+      .def_prop_ro("cuda_graphs", &Simulation::cudaGraphs,
+                   "Whether CUDA-graph replay of the solver loops is enabled.")
+      .def("set_fused_sweeps", &Simulation::setFusedSweeps, nb::arg("mode"),
+           "Fused colour sweeps (CUDA): a whole sweep -- and where eligible the whole adaptive "
+           "iteration loop -- as ONE kernel behind software grid barriers. 'auto' (default) uses "
+           "them exactly where graph replay is unavailable (the distributed step, or "
+           "set_cuda_graphs(False)); 'on'/'off' force. Bit-identical results either way.")
+      .def_prop_ro("fused_sweeps", &Simulation::fusedSweeps,
+                   "Fused-sweep policy: 'auto', 'on' or 'off'.")
+      .def("set_incremental_coloring", &Simulation::setIncrementalColoring, nb::arg("enabled"),
+           "Incremental (warm-started) graph colouring of the contact manifolds (default True): "
+           "reuse last substep's colours and repair only the conflicts. This CHANGES RESULTS -- "
+           "the colouring fixes the Gauss-Seidel sweep order -- so False reproduces the "
+           "pre-incremental behaviour rather than merely running slower.")
+      .def_prop_ro("incremental_coloring", &Simulation::incrementalColoring,
+                   "Whether incremental (warm-started) colouring is enabled.")
       .def("debug_coloring_conflicts", &Simulation::debugColoringConflicts,
            "TEST-ONLY: (velocity, position) colouring-invariant violations in the last substep; "
            "a valid colouring returns (0, 0).")

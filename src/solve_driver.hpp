@@ -191,11 +191,12 @@ struct CudaIterGraph {
   void launch(CpExec& space) { cudaGraphLaunch(exec, space.cuda_stream()); }
   // the executable is owned by the cross-step cache slot, not this per-step handle
 };
-#define PECLET_DEM_GRAPH_LOOP(useVar, graphVar, emitVar, slotVar)           \
-  if constexpr (!Hooks::distributed) {                                      \
-    static const bool gOff = std::getenv("PECLET_DEM_NO_GRAPH") != nullptr; \
-    if (!gOff)                                                              \
-      useVar = graphVar.capture(space, emitVar, slotVar);                   \
+/// Capture `emitVar`'s launches as a CUDA graph into `slotVar` (single-rank only). `P` is the
+/// enclosing scope's Particles: P.cudaGraphs is the set_cuda_graphs() policy.
+#define PECLET_DEM_GRAPH_LOOP(useVar, graphVar, emitVar, slotVar) \
+  if constexpr (!Hooks::distributed) {                            \
+    if (P.cudaGraphs)                                             \
+      useVar = graphVar.capture(space, emitVar, slotVar);         \
   }
 #else
 struct CudaIterGraph {
@@ -228,13 +229,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // A frictional wall drives friction even when the body-body material is frictionless.
   const bool friction = (P.frictionDynamic > 0.0f || P.wallFrictionMax > 0.0f);
   const bool usePersistPre = (P.gravity.x != 0.0f || P.gravity.y != 0.0f || P.gravity.z != 0.0f);
-  // Incremental (warm-started) colouring A/B gate: PECLET_DEM_NO_INCR_COLOR=1 forces the full
-  // per-substep recolour (the pre-incremental behaviour) for validation; default on (single-GPU
-  // PGS path). Read once — the flag never changes within a run.
-  static const bool incrColorOff = [] {
-    const char* e = std::getenv("PECLET_DEM_NO_INCR_COLOR");
-    return e && std::atoi(e) != 0;
-  }();
+  // Incremental (warm-started) colouring (set_incremental_coloring, default on; single-GPU PGS
+  // path). Off forces the full per-substep recolour — the pre-incremental behaviour, kept for
+  // validation. The colouring decides the Gauss-Seidel sweep order, so this DOES change results.
+  const bool incrColorOff = !P.incrementalColoring;
   // Island sleeping (single-GPU statics, gravity on, no external drag): both-asleep manifolds /
   // contacts are excluded from the colouring / sweeps / multilevel hierarchy (their masks were
   // filled by the caller). Empty views leave every colouring bit-identical to the sleeping-off
@@ -296,10 +294,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   const std::vector<int>* velOffsP = velBuckets ? &velOffs : nullptr;
   // Fused colour sweeps (CUDA): the whole PGS sweep — and where eligible the whole adaptive
   // iteration loop — as ONE kernel iterating device-side (see solver_fused.hpp); same colour
-  // ordering, bit-identical. Default policy: on exactly where CUDA-graph replay is unavailable
-  // (the distributed step, PECLET_DEM_NO_GRAPH); PECLET_DEM_FUSED / PECLET_DEM_NO_FUSED force.
-  static const bool graphEnvOff = std::getenv("PECLET_DEM_NO_GRAPH") != nullptr;
-  const bool wantFused = demFusedWanted(!Hooks::distributed && !graphEnvOff);
+  // ordering, bit-identical. Default policy ("auto"): on exactly where CUDA-graph replay is
+  // unavailable — the distributed step, or set_cuda_graphs(False); set_fused_sweeps("on"/"off")
+  // forces either way.
+  const bool wantFused = demFusedWanted(!Hooks::distributed && P.cudaGraphs, P.fusedSweeps);
   const FusedSweepCtx velFused = (velBuckets && wantFused)
                                      ? demMakeFusedCtx(space, velOffs, P.velOffsDev, P.fusedBar)
                                      : FusedSweepCtx{};
@@ -325,29 +323,13 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   const bool poisson = usePGS && P.restitutionModel == 1;
   const Kokkos::View<float*, CpMem> bankV = poisson ? P.restBank : Kokkos::View<float*, CpMem>();
   const Kokkos::View<float*, CpMem> relV = poisson ? P.restRel : Kokkos::View<float*, CpMem>();
-  const Kokkos::View<const unsigned char*, CpMem> persC =
-      poisson ? Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent)
-              : Kokkos::View<const unsigned char*, CpMem>();
   const Kokkos::View<const float*, CpMem> vpkC =
       poisson ? Kokkos::View<const float*, CpMem>(P.restVPeak)
               : Kokkos::View<const float*, CpMem>();
-  const Kokkos::View<const unsigned char*, CpMem> grdC =
-      poisson ? Kokkos::View<const unsigned char*, CpMem>(P.groundedLevel)
-              : Kokkos::View<const unsigned char*, CpMem>();
   const Kokkos::View<float*, CpMem> orphV = poisson ? P.bodyOrphan : Kokkos::View<float*, CpMem>();
   const Kokkos::View<const float*, CpMem> orphPk =
       poisson ? Kokkos::View<const float*, CpMem>(P.bodyOrphanVPeak)
               : Kokkos::View<const float*, CpMem>();
-  // A/B measurement toggles for the Poisson channel (default: Newton alive + symmetric release —
-  // the measured-best config on the 25k Dosta impact).
-  static const bool restNewtonOff = [] {
-    const char* e2 = std::getenv("PECLET_DEM_REST_NEWTON_OFF");
-    return e2 && std::atoi(e2) != 0;
-  }();
-  static const bool restOneSided = [] {
-    const char* e2 = std::getenv("PECLET_DEM_REST_ONESIDED");
-    return e2 && std::atoi(e2) != 0;
-  }();
   if (usePGS) {
     if (poisson && P.prevPairCount > 0) {  // reset the prev-ledger survival flags for the gather
       auto mt = Kokkos::subview(P.prevMatched, Kokkos::pair<int, int>(0, P.prevPairCount));
@@ -429,13 +411,13 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // stop — and the physics — are bit-identical to the submission path.
   auto emitVelIter = [&] {
     Kokkos::deep_copy(space, P.maxApproach, 0.0f);
-    solveVelocityPGSKokkos(
-        P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia, P.quat, P.velPred,
-        P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.maxApproach,
-        P.lambdaAcc, P.vn0, Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
-        P.frictionDynamic, P.vt0, P.restitutionTangent,
-        Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, persC, vpkC, gHat, grdC,
-        restNewtonOff, restOneSided, orphV, orphPk, velPermC, velOffsP, velFusedP);
+    solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia,
+                           P.quat, P.velPred, P.angVelPred, P.realIndices, P.growthRate,
+                           P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
+                           Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+                           P.frictionDynamic, P.vt0, P.restitutionTangent,
+                           Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC,
+                           orphV, orphPk, velPermC, velOffsP, velFusedP);
   };
   // Device-side iteration loop (CUDA, single-rank): the whole adaptive velocity loop as ONE
   // kernel — same sweeps, same residual, same stop; the per-iteration readback and the graph
@@ -449,8 +431,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.maxApproach,
           P.lambdaAcc, P.vn0, Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
           P.frictionDynamic, P.vt0, P.restitutionTangent,
-          Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, persC, vpkC, gHat, grdC,
-          restNewtonOff, restOneSided, orphV, orphPk, velPermC, velOffsP, velFusedP, &spec);
+          Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC, orphV, orphPk,
+          velPermC, velOffsP, velFusedP, &spec);
     }
   }
   bool graphVel = false;
@@ -513,8 +495,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // column needs ~one sweep per layer to carry its weight to the floor -- unaffordable), arrest
   // the remaining quasi-static approach with grounded one-sided sweeps. In dynamic scenes the
   // residual is below the threshold and this pass never runs, so impact/discharge/shear keep
-  // pure momentum-conserving physics. (PECLET_DEM_SYMMETRIC_PGS=1 disables the pass -- sandbox
-  // A/B toggle.)
+  // pure momentum-conserving physics. (set_stabilization_mode('off') disables the pass.)
   if (usePGS) {
     const float vRestS = 2.0f * P.dt * gMagP;
     const int smode = P.stabilizationMode;
@@ -535,8 +516,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
               P.maxApproach, P.lambdaAcc, P.vn0,
               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
               P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {},
-              bankV, relV, persC, vpkC, gHat, grdC, restNewtonOff, restOneSided, orphV, orphPk,
-              velPermC, velOffsP, velFusedP);
+              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP);
         };
         bool osLoopDone = false;
         if constexpr (!Hooks::distributed) {
@@ -548,9 +528,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                 P.maxApproach, P.lambdaAcc, P.vn0,
                 Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
                 P.frictionDynamic, P.vt0, P.restitutionTangent,
-                Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, persC, vpkC, gHat,
-                grdC, restNewtonOff, restOneSided, orphV, orphPk, velPermC, velOffsP, velFusedP,
-                &spec);
+                Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC, orphV,
+                orphPk, velPermC, velOffsP, velFusedP, &spec);
           }
         }
         bool graphOs = false;
@@ -584,13 +563,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         // the hierarchy is built rank-locally over owned + ghost bodies (aggregates never cross
         // a rank boundary beyond the ghost band; the syncEvery refresh reconciles).
         const float qsThr = 8.0f * P.dt * gMagP;
-        // Eligibility gates (mldetail::kGate*): slip is the production default -- it keeps the
-        // pass off sustained shear (silo bulk) without starving a crushing bed's aggregation.
-        // PECLET_DEM_ML_GATES overrides the mask for A/B measurement.
-        static const int mlGates = [] {
-          const char* e = std::getenv("PECLET_DEM_ML_GATES");
-          return e ? std::atoi(e) : mldetail::kGateSlip;
-        }();
+        // Eligibility gates (mldetail::kGate*): slip keeps the pass off sustained shear (silo
+        // bulk) without starving a crushing bed's aggregation. (The env A/B over the mask was
+        // retired in 1.0.0; the measured-best mask is the only one that ships.)
+        constexpr int mlGates = mldetail::kGateSlip;
         MlScratch S{P.mlColorPacked, P.mlParent, P.mlInvMassG, P.mlVelG,
                     P.mlVelG0,       P.mlMassG,  P.mlGrp,      P.mlMate};
         const ContactHierarchy H = buildContactHierarchyKokkos(
@@ -632,8 +608,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
               P.maxApproach, P.lambdaAcc, P.vn0,
               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
               P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse),
-              P.maxApproachQS, bankV, relV, persC, vpkC, gHat, grdC, restNewtonOff, restOneSided,
-              orphV, orphPk, velPermC, velOffsP, velFusedP);
+              P.maxApproachQS, bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP);
           if (H.numLevels > 0)
             multilevelCoarseCycleKokkos(
                 P.manifolds, nm, P.realIndices, Kokkos::View<const float*, CpMem>(P.invMass),
@@ -654,8 +629,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                   P.maxApproachQS, P.lambdaAcc, P.vn0,
                   Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
                   P.frictionDynamic, P.vt0, P.restitutionTangent,
-                  Kokkos::View<const float*, CpMem>(P.posImpulse), bankV, relV, persC, vpkC, gHat,
-                  grdC, restNewtonOff, restOneSided, orphV, orphPk);
+                  Kokkos::View<const float*, CpMem>(P.posImpulse), bankV, relV, vpkC, orphV,
+                  orphPk);
               mlLoopDone = demLaunchFusedMlLoop(
                   space, fStab, velPermC, *velFusedP, numColors, P.manifolds, P.realIndices,
                   Kokkos::View<const float*, CpMem>(P.invMass), P.velPred, P.lambdaAcc,
@@ -672,8 +647,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                   Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
                   P.frictionDynamic, P.vt0, P.restitutionTangent,
                   Kokkos::View<const float*, CpMem>(P.posImpulse), P.maxApproachQS, bankV, relV,
-                  persC, vpkC, gHat, grdC, restNewtonOff, restOneSided, orphV, orphPk, velPermC,
-                  velOffsP, velFusedP, &spec);
+                  vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, &spec);
             }
           }
         }
@@ -729,12 +703,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                      Kokkos::View<const float*, CpMem>(P.posImpulse),
                                      bankV,
                                      relV,
-                                     persC,
                                      vpkC,
-                                     gHat,
-                                     grdC,
-                                     restNewtonOff,
-                                     restOneSided,
                                      orphV,
                                      orphPk};
         for (int it = 0; it < 2 * P.velocityIterations; ++it) {
@@ -762,8 +731,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
               P.maxApproach, P.lambdaAcc, P.vn0,
               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
               P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {},
-              bankV, relV, persC, vpkC, gHat, grdC, restNewtonOff, restOneSided, orphV, orphPk,
-              velPermC, velOffsP, velFusedP);
+              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP);
           if (hooks.allMax(readFloat(P.maxApproach)) <= vRestS)
             break;
           if constexpr (Hooks::distributed) {

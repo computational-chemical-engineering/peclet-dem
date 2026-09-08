@@ -47,26 +47,20 @@ struct FusedLoopSpec {
   bool strictLess;  // position loop breaks on res < tol; velocity loops on res <= tol
 };
 
-/// Fused-sweep policy (read once). PECLET_DEM_NO_FUSED=1 forces the launch path everywhere;
-/// PECLET_DEM_FUSED=1 forces the fused path everywhere it applies. Default: fused only where
+/// Fused-sweep policy. `mode` is Particles::fusedSweeps (set_fused_sweeps): -1 auto, 0 off
+/// (launch path everywhere), 1 on (fused everywhere it applies). Auto = fused only where
 /// CUDA-graph replay is unavailable — the distributed step (ghost syncs inside the loops forbid
-/// capture) and PECLET_DEM_NO_GRAPH runs. Measured on the 25k/100k Dosta beds (RTX 5080): graph
-/// replay beats the fused kernels by 2-4% on the solo GPU (pipelined graph-node transitions are
-/// cheaper than software grid barriers once the step is GPU-bound), while capture-less paths
-/// pay the full per-launch submission storm that fusion removes (25k multilevel: 17.4 -> 16.2
-/// ms/step with graphs off).
-inline bool demFusedWanted(bool graphReplayAvailable) {
+/// capture) and set_cuda_graphs(False) runs. Measured on the 25k/100k Dosta beds (RTX 5080):
+/// graph replay beats the fused kernels by 2-4% on the solo GPU (pipelined graph-node
+/// transitions are cheaper than software grid barriers once the step is GPU-bound), while
+/// capture-less paths pay the full per-launch submission storm that fusion removes (25k
+/// multilevel: 17.4 -> 16.2 ms/step with graphs off). Either way the arithmetic is identical.
+inline bool demFusedWanted(bool graphReplayAvailable, int mode) {
 #ifdef KOKKOS_ENABLE_CUDA
-  static const int mode = [] {
-    if (std::getenv("PECLET_DEM_NO_FUSED"))
-      return 0;
-    if (std::getenv("PECLET_DEM_FUSED"))
-      return 1;
-    return -1;  // auto
-  }();
   return mode < 0 ? !graphReplayAvailable : mode == 1;
 #else
   (void)graphReplayAvailable;
+  (void)mode;
   return false;
 #endif
 }
@@ -156,18 +150,6 @@ __global__ void demFusedSweepLoopK(Sweep f, Kokkos::View<const int*, CpMem> perm
 
 inline constexpr int kFusedBlock = 256;
 
-/// Grid cap for the fused kernels (PECLET_DEM_FUSED_GRID, tuning knob). Default: uncapped —
-/// measured on the 25k Dosta bed (RTX 5080), wall-clock improves monotonically with the block
-/// count all the way to the occupancy bound (16 -> 20.4, 48 -> 15.7, 128/auto -> 15.6 ms/step):
-/// the barrier's arrival serialization is cheap next to the coverage the extra blocks buy.
-inline int demFusedGridCap() {
-  static const int cap = [] {
-    const char* e = std::getenv("PECLET_DEM_FUSED_GRID");
-    return e ? std::atoi(e) : 1 << 30;
-  }();
-  return cap;
-}
-
 /// Largest launchable co-resident grid for `kernel` at kFusedBlock threads (cached per kernel:
 /// the barrier deadlocks if any launched block is not resident, so this bound is the safety
 /// contract). Returns 0 when the query fails — caller falls back to per-colour launches.
@@ -202,8 +184,7 @@ inline bool demLaunchFusedColorSweep(CpExec& space, const Sweep& f,
                                (static_cast<int>(ctx.bar.extent(0)) - 1) / 8);
   if (maxGrid <= 0 || numColors <= 0 || ctx.maxBucket <= 0)
     return false;
-  const int want =
-      std::min((ctx.maxBucket + kFusedBlock - 1) / kFusedBlock, std::max(1, demFusedGridCap()));
+  const int want = (ctx.maxBucket + kFusedBlock - 1) / kFusedBlock;
   const int grid = want < maxGrid ? want : maxGrid;
   cudaStream_t str = space.cuda_stream();
   cudaMemsetAsync(ctx.bar.data(), 0, (static_cast<std::size_t>(grid) * 8 + 1) * sizeof(unsigned),
@@ -224,8 +205,7 @@ inline bool demLaunchFusedSweepLoop(CpExec& space, const Sweep& f,
                                (static_cast<int>(ctx.bar.extent(0)) - 1) / 8);
   if (maxGrid <= 0 || numColors <= 0 || ctx.maxBucket <= 0 || res == nullptr)
     return false;
-  const int want =
-      std::min((ctx.maxBucket + kFusedBlock - 1) / kFusedBlock, std::max(1, demFusedGridCap()));
+  const int want = (ctx.maxBucket + kFusedBlock - 1) / kFusedBlock;
   const int grid = want < maxGrid ? want : maxGrid;
   cudaStream_t str = space.cuda_stream();
   cudaMemsetAsync(ctx.bar.data(), 0, (static_cast<std::size_t>(grid) * 8 + 1) * sizeof(unsigned),

@@ -238,14 +238,15 @@ struct Particles {
   Kokkos::View<float*, CpMem> invMassEff;
   Kokkos::View<unsigned char*, CpMem> manifoldSleep;
   Kokkos::View<unsigned char*, CpMem> contactSleep;
-  bool sleepingEnabled = true;  // set_sleeping / PECLET_DEM_SLEEP=0 disables; default ON
+  bool sleepingEnabled = true;  // set_sleeping(enabled=False) disables; default ON
   float sleepScale = 2.0f;      // cSleep: sleep threshold = sleepScale * vRest
   float wakeScale = 40.0f;      // cWake: wake if an awake neighbour exceeds wakeScale * vRest
                                 // (hysteresis: >> the residual settling jitter so a frozen bed
                                 // stays frozen; only a genuine impact/disturbance wakes it)
   int sleepK = 64;              // substeps below threshold before sleeping (high enough that an
                     // impact's unloading/rebound completes before the network re-sleeps)
-  bool sleepWakeLostContact = false;  // rule (b): wake on a LOST contact (support removed)
+  // rule (b): wake on a LOST contact (support removed); set_sleeping(wake_on_lost_contact=)
+  bool sleepWakeLostContact = false;
   // Effective inverse-mass fraction of a sleeper for the solve (0 = exactly immovable). A small
   // POSITIVE value keeps the sleeper very heavy but not infinitely rigid, so an awake body wedged
   // at a frozen-pocket boundary can relieve against it instead of the PGS normal impulse diverging
@@ -253,7 +254,7 @@ struct Particles {
   // the friction cone to NaN); the sleeper's velocity is re-zeroed each substep so no momentum
   // accumulates and both-asleep interior manifolds are still fully excluded (the speed win). 0.01 =
   // sleeper 100x a grain's mass: stable through the 96k column + violent pour, case3 penetration
-  // and the settled-bed freeze both preserved. PECLET_DEM_SLEEP_INVMASS_FRAC overrides.
+  // and the settled-bed freeze both preserved. set_sleeping(immovable_frac=) overrides.
   float sleepImmovableFrac = 0.01f;
   bool extForceActive = false;   // CFD-DEM drag present -> sleeping disabled this step
   bool extTorqueActive = false;  // external couple present -> sleeping disabled this step
@@ -267,7 +268,15 @@ struct Particles {
   Kokkos::View<float, CpMem> impDispMax;
   int impNumPairs = -1;
   float impRefMaxRad = 0.0f;    // max effective radius at the last build (growth bound)
-  float verletSkinFrac = 0.0f;  // PECLET_DEM_VERLET_SKIN; 0 = off
+  float verletSkinFrac = 0.0f;  // set_verlet_skin; 0 = off (rebuild every step)
+
+  // --- solver execution policy (Simulation setters; see solve_driver.hpp / solver_fused.hpp) ---
+  // cudaGraphs and fusedSweeps only choose HOW the same arithmetic is submitted to the GPU (both
+  // paths are bit-identical, and both are inert on a non-CUDA backend). incrementalColoring does
+  // change results: the colouring fixes the Gauss-Seidel sweep order.
+  bool cudaGraphs = true;           // set_cuda_graphs: capture+replay the sweep loops (CUDA)
+  int fusedSweeps = -1;             // set_fused_sweeps: -1 auto, 0 off, 1 on (CUDA)
+  bool incrementalColoring = true;  // set_incremental_coloring: warm-started recolouring
 
   // --- atomic counters / scalars (rank-0 Views) ---
   Kokkos::View<int, CpMem> pairCount, contactCount, manifoldCount, topGhost;

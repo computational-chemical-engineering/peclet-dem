@@ -1006,11 +1006,10 @@ struct PGSManifoldSweep {
   Kokkos::View<const float* [3], CpMem> vt0;
   float restitutionTangent;
   Kokkos::View<const float*, CpMem> posImpulse;
-  // Event-level (Poisson) restitution release (restitutionModel == 1; all three views empty
+  // Event-level (Poisson) restitution release (restitutionModel == 1; both views empty
   // otherwise): restBank(idx) is the pair's remaining OWED separation impulse (physical units,
-  // warm-carried by pair key), restRel(idx) the per-substep release accumulator (lambda units,
-  // zeroed each substep), and restPersistent(idx) the existed-last-substep flag (used only by
-  // the restNewtonOff A/B). Per-substep Newton restitution stays ALIVE by default alongside the
+  // warm-carried by pair key) and restRel(idx) the per-substep release accumulator (lambda
+  // units, zeroed each substep). Per-substep Newton restitution stays ALIVE alongside the
   // bank — its micro-reflections are genuine returned energy, and the accounting's pR term
   // deducts each one from the owed budget so the channels never double-count (measured: forcing
   // e = 0 on persistent contacts cost more rebound than the bank recovered). restBank is
@@ -1020,22 +1019,11 @@ struct PGSManifoldSweep {
   // in-place body-account read-modify-write is race-free without atomics.
   Kokkos::View<float*, CpMem> restBank;
   Kokkos::View<float*, CpMem> restRel;
-  Kokkos::View<const unsigned char*, CpMem> restPersistent;
   // Event peak approach speed (physical): caps the release separation-velocity target at
   // e x vPeak — the event-level rebound speed — so a large flux-banked budget against a light
   // partner becomes a SUSTAINED unloading push over many substeps (the Hertz-like collective
   // rebound) instead of an impulsive dump (a 190 m/s kick to a 1e-5 kg grain, measured absurd).
   Kokkos::View<const float*, CpMem> restVPeak;
-  // Optional release sidedness (restOneSided; the shock-propagation pass in reverse): hold a
-  // grounded LOWER side and push only the upper. Measured WORSE than symmetric release on the
-  // 25k Dosta impact (+0.60 vs +0.88 rebound) — the light partner's downward reaction is what
-  // re-compresses and re-releases the layers below, so symmetric stays the default; kept as an
-  // env-gated A/B (PECLET_DEM_REST_ONESIDED=1).
-  F3 restGHat{0, 0, 0};
-  Kokkos::View<const unsigned char*, CpMem> restGrounded;
-  // A/B toggles (env-driven, see solve_driver.hpp): bank-owns-restitution / one-sided release.
-  bool restNewtonOff = false;
-  bool restOneSided = false;
   // Orphan accounts (see Particles::bodyOrphan): balance + carried event peak speed per REAL
   // body. The peak matters as much as the balance — a contact formed late under a decelerating
   // impactor only saw the residual approach, so its own e*vPeak target would cap the rebound at
@@ -1118,10 +1106,7 @@ struct PGSManifoldSweep {
       // micro-reflections it produces are genuine returned energy (measured: forcing e = 0 on
       // persistent contacts cost more rebound than the bank recovered), and the accounting's pR
       // term deducts every reflection from the owed budget, so the two channels never
-      // double-count. (PECLET_DEM_REST_NEWTON_OFF=1 re-enables the bank-owns-everything A/B.)
-      if (restRel.extent(0) > 0 && restPersistent.extent(0) > 0 && restPersistent(idx) != 0 &&
-          restNewtonOff)
-        restitution = 0.0f;
+      // double-count.
       const float target = (v0til > 0.0f) ? -restitution * v0til : 0.0f;
       const float vtil = sgn * vn;
       const float dp = (vtil - target) / wTotal;
@@ -1208,22 +1193,12 @@ struct PGSManifoldSweep {
                       dot3(wB3, TauB);
           vn3 += dot3(vGrowth, Nsum);
           const float vtil3 = sgn * vn3;
-          // One-sided release against a grounded support (see restGHat comment): hold the lower
-          // grounded side, push only the other. dx = posA - posB = rB - rA (contact identity).
-          bool relA = true, relB = (idB >= 0);
-          float wRel = wTotal;
-          if (restOneSided && idB >= 0 && restGrounded.extent(0) > 0) {
-            const F3 dx = sub3(rBavg, rAavg);
-            const float up = -(dx.x * restGHat.x + dx.y * restGHat.y + dx.z * restGHat.z);
-            const float thr3 = 0.3f * Kokkos::sqrt(dot3(dx, dx));
-            if (up > thr3 && restGrounded(realB) > 0) {  // A above grounded B: push A only
-              relB = false;
-              wRel = Nsq * invMassA + genInvMass(TauA, invIA, qA);
-            } else if (up < -thr3 && restGrounded(realA) > 0) {  // B above grounded A
-              relA = false;
-              wRel = Nsq * invMassB + genInvMass(TauB, invIB, qB);
-            }
-          }
+          // Symmetric release: both endpoints are pushed. (A one-sided variant that held a
+          // grounded lower side was measured WORSE on the 25k Dosta impact — +0.60 vs +0.88
+          // rebound — because the light partner's downward reaction is what re-compresses and
+          // re-releases the layers below; it was retired with the env A/B in 1.0.0.)
+          const bool relA = true, relB = (idB >= 0);
+          const float wRel = wTotal;
           if (wRel > 0.0f) {
             // Separation-velocity target: the event-level rebound speed e x vPeak. The budget is
             // enforced by the accumulator clamp alone — folding it into the velocity target
@@ -1420,9 +1395,7 @@ inline PGSManifoldSweep makePGSManifoldSweep(
     Kokkos::View<float* [3], CpMem> lambdaT, float frictionDynamic,
     Kokkos::View<const float* [3], CpMem> vt0, float restitutionTangent,
     Kokkos::View<const float*, CpMem> posImpulse, Kokkos::View<float*, CpMem> restBank,
-    Kokkos::View<float*, CpMem> restRel, Kokkos::View<const unsigned char*, CpMem> restPersistent,
-    Kokkos::View<const float*, CpMem> restVPeak, F3 restGHat,
-    Kokkos::View<const unsigned char*, CpMem> restGrounded, bool restNewtonOff, bool restOneSided,
+    Kokkos::View<float*, CpMem> restRel, Kokkos::View<const float*, CpMem> restVPeak,
     Kokkos::View<float*, CpMem> restOrphan, Kokkos::View<const float*, CpMem> restOrphanVPeak) {
   return PGSManifoldSweep{manifolds,
                           invMass,
@@ -1446,12 +1419,7 @@ inline PGSManifoldSweep makePGSManifoldSweep(
                           posImpulse,
                           restBank,
                           restRel,
-                          restPersistent,
                           restVPeak,
-                          restGHat,
-                          restGrounded,
-                          restNewtonOff,
-                          restOneSided,
                           restOrphan,
                           restOrphanVPeak};
 }
@@ -1472,11 +1440,8 @@ inline bool solveVelocityPGSKokkos(
     Kokkos::View<const float* [3], CpMem> vt0 = {}, float restitutionTangent = 0.0f,
     Kokkos::View<const float*, CpMem> posImpulse = {},
     Kokkos::View<float, CpMem> maxApproachQS = {}, Kokkos::View<float*, CpMem> restBank = {},
-    Kokkos::View<float*, CpMem> restRel = {},
-    Kokkos::View<const unsigned char*, CpMem> restPersistent = {},
-    Kokkos::View<const float*, CpMem> restVPeak = {}, F3 restGHat = {},
-    Kokkos::View<const unsigned char*, CpMem> restGrounded = {}, bool restNewtonOff = false,
-    bool restOneSided = false, Kokkos::View<float*, CpMem> restOrphan = {},
+    Kokkos::View<float*, CpMem> restRel = {}, Kokkos::View<const float*, CpMem> restVPeak = {},
+    Kokkos::View<float*, CpMem> restOrphan = {},
     Kokkos::View<const float*, CpMem> restOrphanVPeak = {},
     Kokkos::View<const int*, CpMem> colorPerm = {}, const std::vector<int>* colorOffs = nullptr,
     const FusedSweepCtx* fused = nullptr, const FusedLoopSpec* loop = nullptr) {
@@ -1484,9 +1449,8 @@ inline bool solveVelocityPGSKokkos(
   const PGSManifoldSweep f = makePGSManifoldSweep(
       manifolds, invMass, invInertia, quat, velPred, angVelPred, realIdx, growthRate,
       restitutionNormal, restVelThreshold, maxApproach, maxApproachQS, lambdaAcc, vn0, sideFlag,
-      lambdaT, frictionDynamic, vt0, restitutionTangent, posImpulse, restBank, restRel,
-      restPersistent, restVPeak, restGHat, restGrounded, restNewtonOff, restOneSided, restOrphan,
-      restOrphanVPeak);
+      lambdaT, frictionDynamic, vt0, restitutionTangent, posImpulse, restBank, restRel, restVPeak,
+      restOrphan, restOrphanVPeak);
   // Fused mode (CUDA): one persistent kernel iterates the colours device-side with a grid
   // barrier between them — same per-manifold math, same colour ordering, bit-identical to the
   // launch loop below (see solver_fused.hpp). Loop mode additionally iterates the whole
