@@ -105,7 +105,8 @@ if(PECLET_DEM_BUILD_TESTS)
   # importable; under PECLET_DEM_MPI they are additionally launched through mpirun at np = 1, 2, 4
   # (each returns 77 = ctest SKIP when the Python MPI stack is missing, never a silent pass).
   add_test(NAME python_tests
-           COMMAND ${Python_EXECUTABLE} -m pytest -q --ignore=tests/python/mpi
+           COMMAND ${Python_EXECUTABLE} -m pytest -q
+                   --ignore=${CMAKE_CURRENT_SOURCE_DIR}/tests/python/mpi
                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/python)
   # The build tree is PREPENDED to PYTHONPATH at test time (the caller's PYTHONPATH -- e.g. a
   # built peclet.core python tree for the MPI tests -- is kept).

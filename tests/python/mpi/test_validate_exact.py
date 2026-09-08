@@ -110,11 +110,15 @@ def test_exact_step_matches_serial():
         q95, nbad = float(np.quantile(pe, 0.95)), int((pe > 2e-2).sum())
         print(f"np={size}: max|dist-serial|={maxerr:.3e}  mean={meanerr:.3e}  q95={q95:.3e}  "
               f"particles>2e-2: {nbad}/{N} over {nsteps} steps, N={N}")
-        # np=1 agrees to float noise (~1e-4). At np>=2 the modern MPI stack (processor-block
+        # np=1 on a deterministic backend (one OpenMP thread; device atomics are not ordered)
+        # agrees to float noise (~1e-4). At np>=2 the modern MPI stack (processor-block
         # Gauss-Seidel, rank-local colouring) sweeps the finite-iteration PGS in a different order
-        # than single-rank, and this IC is a randomly overlapping cloud (chaotic amplification),
-        # so agreement is statistical: measured 2026-09-08 mean 5e-3, q95 4e-2, max 0.11 at np=2,4.
-        if size == 1:
+        # than single-rank -- and on this randomly overlapping IC any ordering change is amplified
+        # chaotically (2 OpenMP threads alone give max 0.08 at np=1) -- so agreement is statistical:
+        # measured 2026-09-08 mean 5e-3, q95 4e-2, max 0.11 at np=2,4.
+        deterministic = (os.environ.get("OMP_NUM_THREADS") == "1"
+                         and not any(k in dem.execution_space for k in ("Cuda", "HIP")))
+        if size == 1 and deterministic:
             assert maxerr < 1e-3
         assert meanerr < 2e-2 and q95 < 1e-1
         assert maxerr < 0.4, "a particle is off by ~a diameter: a lost ghost contact"
