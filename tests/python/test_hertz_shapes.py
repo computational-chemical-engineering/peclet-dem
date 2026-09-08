@@ -42,11 +42,12 @@ def binary_sdf_sphere(e):
     s.set_inv_mass(np.ones(2, np.float32))
     s.set_inv_inertia(np.full((2, 3), 1.0, np.float32))
     s.set_velocities(np.array([[1, 0, 0], [-1, 0, 0]], np.float32))
-    s.set_gravity(0, 0, 0)
+    s.set_gravity((0, 0, 0))
     s.set_thermostat(0, 0)
     s.set_material_params(e, 0.0, 0.0)
     s.set_hertz_material(0, E0, NU0)
-    s.step_hertz(DT, 150000)
+    s.set_dt(DT)
+    s.step_hertz(150000)
     v = s.get_velocities()
     return (v[1, 0] - v[0, 0]) / 2.0
 
@@ -67,12 +68,13 @@ def cube_slide(mu, steps=400000):
     # cube inertia: I = (2/3) m a^2 for half-edge a=0.5 -> I=1/6
     s.set_inv_inertia(np.full((n, 3), 6.0, np.float32))
     s.set_velocities(np.zeros((n, 3), np.float32))
-    s.set_gravity(5.0, 0.0, -10.0)
+    s.set_gravity((5.0, 0.0, -10.0))
     s.set_thermostat(0, 0)
     s.set_material_params(0.1, 0.0, mu)
     s.set_hertz_material(0, E0, NU0)
     x0 = pts[:, 0].mean()
-    s.step_hertz(DT, steps)
+    s.set_dt(DT)
+    s.step_hertz(steps)
     p = s.get_positions()
     return float(p[:, 0].mean() - x0), float(p[:, 2].mean())
 

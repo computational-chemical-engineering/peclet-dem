@@ -15,7 +15,7 @@ def generate_unit_sdf_stl(radius, height, thickness, filename):
     # 1. Create a 1-particle simulation
     sim_unit = dem.Simulation(1)
     # Use exact same shape params
-    sim_unit.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
+    sim_unit.initialize_shape('hollow_cylinder', radius=radius, height=height, thickness=thickness)
     
     # Domain large enough to contain the unit shape
     # Max dimension is likely Height or Diameter. 
@@ -103,13 +103,13 @@ def verify_packing():
     generate_unit_sdf_stl(r_unit, h_unit, t_unit, f"{output_dir}/ring_unit.stl")
 
     sim = dem.Simulation(num_particles)
-    sim.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness) #hollow cylinder
+    sim.initialize_shape('hollow_cylinder', radius=radius, height=height, thickness=thickness) #hollow cylinder
 
 
     half_d = domain_side / 2.0
     sim.set_domain((-half_d, -half_d, -half_d), (half_d, half_d, half_d))
     
-    sim.set_gravity(0, 0, 0)
+    sim.set_gravity((0, 0, 0))
     rng = np.random.default_rng(42)
 
     print(f"Hollow Cylinder Packing Optimization Study (N={num_particles})")
@@ -153,34 +153,35 @@ def verify_packing():
 
     print(f"Jamming Study: Target Phi={phi_ref}, Growth Rate={growth_rate}, Steps={limit_steps}")
       
+    sim.set_dt(dt)
     for i in range(limit_steps):
         if i==i_switch_cooling:
             restitution = 0.5
             sim.set_material_params(restitution, restitution_t, friction)
             sim.set_thermostat(0, 1e4*dt)
-        sim.step(dt)
-        max_ov = sim.max_overlap()
+        sim.step()
+        max_ov = sim.max_overlap
         is_jammed = max_ov > criterion_ov
         if is_jammed:
             do_iter = True
             num_iter = 0
             while do_iter:
                 #sim.set_solver_iterations(0, iters)
-                sim.step(0.0)
+                sim.relax()
                 num_iter += 1
-                max_ov_new = sim.max_overlap()
+                max_ov_new = sim.max_overlap
                 if max_ov_new >= 0.95*max_ov and num_iter > 6:
                     do_iter = False
                 max_ov = max_ov_new
             is_jammed = max_ov > criterion_ov
             if is_jammed:
-                growth_factor = sim.get_growth_factor()
+                growth_factor = sim.growth_factor
                 growth_factor *= math.exp(-growth_rate*dt)
                 growth_rate *= 0.95
                 sim.set_growth_params(growth_rate, growth_factor)
         else:
             growth_rate = min(growth_rate*1.02, growth_rate_init)
-            growth_factor = sim.get_growth_factor()
+            growth_factor = sim.growth_factor
             sim.set_growth_params(growth_rate, growth_factor)
         if (i % dump_interval == 0):
             s = sim.get_scales()
@@ -191,8 +192,8 @@ def verify_packing():
             vel = sim.get_velocities()
             T_current = np.sum(vel[:, 0:3]**2) / (3*num_particles)
             
-            num_contacts = sim.num_contacts()
-            num_manifolds = sim.num_manifolds()
+            num_contacts = sim.num_contacts
+            num_manifolds = sim.num_manifolds
 
             print(f"Step {i}: Scale={np.mean(s):.4f}, Growth Rate={growth_rate:.4f}, T={T_current:.4f}, Phi={phi_current:.4f}, Overlap={max_ov}, Contacts={num_contacts}, Manifolds={num_manifolds}")
             sim.export_lammps(f"{output_dir}/dump.jamming.{i}.lammps", i)

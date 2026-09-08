@@ -71,15 +71,15 @@ class Setup:
             # serial reference: TRUE [0,L] domain so dem's internal periodicity wraps at the box.
             s.set_domain((dmin[0], dmin[1], dmin[2]), (L[0], L[1], L[2]))
             s.set_periodic(*self.periodic)
-        s.initialize_shape(shape_type=1, radius=radius)
+        s.initialize_shape('sphere', radius=radius)
         s.set_material_params(1.0, 0.0, 0.0)
         s.set_solver_iterations(8, 4)
-        s.set_gravity(0.0, 0.0, 0.0)
+        s.set_gravity((0.0, 0.0, 0.0))
         s.set_dt(dt)
         for pt, nr in self.wall_planes():
             s.add_plane(pt, nr)
         if dist:
-            s.init_mpi(origin=tuple(dmin), size=tuple(L), gsize=tuple(gs), periodic=self.periodic)
+            s.init_mpi(origin=tuple(dmin), extent=tuple(L), cells=tuple(gs), periodic=self.periodic)
             s.enable_mpi_step(rcut, 1, False)
         return s
 
@@ -98,7 +98,7 @@ class Setup:
             s.set_positions(g_pos.astype(np.float32))
             s.set_velocities(g_vel.astype(np.float32))
             for _ in range(nsteps):
-                s.step(dt)
+                s.step()
             ref = np.array(s.get_positions())
         mig = core_mpi.ParticleMigrator(origin=dmin, extent=L, cells=gs, periodic=list(self.periodic))
         ids = np.arange(g_pos.shape[0])

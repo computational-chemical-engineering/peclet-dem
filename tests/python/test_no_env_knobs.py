@@ -28,17 +28,21 @@ def test_src_reads_no_numerics_env_vars():
         "(QUALITY_PLAN D3); see the table in dem/CLAUDE.md.")
 
 
-@pytest.mark.parametrize("setter,prop,value,default", [
-    ("set_sleeping", "sleeping", False, True),
-    ("set_verlet_skin", "verlet_skin", 0.3, 0.0),
-    ("set_cuda_graphs", "cuda_graphs", False, True),
-    ("set_fused_sweeps", "fused_sweeps", "off", "auto"),
-    ("set_incremental_coloring", "incremental_coloring", False, True),
+@pytest.mark.parametrize("tier,setter,prop,value,default", [
+    ("public", "set_sleeping", "sleeping", False, True),
+    ("public", "set_verlet_skin", "verlet_skin", 0.3, 0.0),
+    ("public", "set_incremental_coloring", "incremental_coloring", False, True),
+    # bit-identical execution policies live on the diagnostics tier (QUALITY_PLAN D2)
+    ("diagnostics", "set_cuda_graphs", "cuda_graphs", False, True),
+    ("diagnostics", "set_fused_sweeps", "fused_sweeps", "off", "auto"),
 ])
-def test_execution_policy_setters_round_trip(setter, prop, value, default):
+def test_execution_policy_setters_round_trip(tier, setter, prop, value, default):
     from peclet import dem
     s = dem.Simulation(8)
+    obj = s.diagnostics if tier == "diagnostics" else s
     approx = pytest.approx if isinstance(value, float) else (lambda x: x)
-    assert getattr(s, prop) == approx(default)
-    getattr(s, setter)(value)
-    assert getattr(s, prop) == approx(value)
+    assert getattr(obj, prop) == approx(default)
+    getattr(obj, setter)(value)
+    assert getattr(obj, prop) == approx(value)
+    assert not hasattr(s.diagnostics if tier == "public" else s, setter), (
+        f"{setter} is bound on both tiers")

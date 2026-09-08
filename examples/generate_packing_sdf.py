@@ -23,7 +23,7 @@ def run_packing_sdf():
     
     # Simulation Setup
     sim = dem.Simulation(num_particles) # Exact count
-    sim.initialize_shape(shape_type=1, radius=0.5) # Sphere
+    sim.initialize_shape('sphere', radius=0.5) # Sphere
     
     half_d = domain_size / 2.0
     sim.set_domain((-half_d, -half_d, -half_d), 
@@ -61,10 +61,11 @@ def run_packing_sdf():
     sim.set_scales(scales) # Set radius specifically
     
     # Run a few steps to let them jiggle (optional, but good for validity)
-    sim.set_gravity(0, -9.8, 0)
+    sim.set_gravity((0, -9.8, 0))
     print("Simulating 500 steps to settle...")
+    sim.set_dt(0.005)
     for i in range(500):
-        sim.step(0.005)
+        sim.step()
         
     # Export SDF
     os.makedirs("output/sdf", exist_ok=True)

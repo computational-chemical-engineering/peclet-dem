@@ -6,11 +6,11 @@ def verify_stacking_nofric():
     print("--- Stacking Stability Test (No Friction) ---")
     
     sim = dem.Simulation(200)
-    sim.initialize_shape(0, radius=0.5) 
+    sim.initialize_shape('sphere', radius=0.5) 
     
     # Material: Restitution=0.5, Friction=0.0 (TESTING THIS)
     sim.set_material_params(0.5, 0.0, 0.) 
-    sim.set_gravity(0, -9.8, 0)
+    sim.set_gravity((0, -9.8, 0))
     
     sim.add_plane([0, -5.0, 0], [0, 1.0, 0])
     
@@ -37,8 +37,9 @@ def verify_stacking_nofric():
     
     print(f"Running {steps} steps (dt={dt})...")
     
+    sim.set_dt(dt)
     for i in range(steps):
-        sim.step(dt)
+        sim.step()
         if i % 100 == 0:
             vels = sim.get_velocities()
             v_mag = np.linalg.norm(vels, axis=1)

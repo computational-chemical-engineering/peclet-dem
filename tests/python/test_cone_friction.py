@@ -25,7 +25,7 @@ def slab_slide(mu, steps=1500):
     pts = np.array(pts, np.float32)
     n = len(pts)
     s = dem.Simulation(n)
-    s.set_sphere_shape(r)
+    s.initialize_shape('sphere', r)
     lo, hi = (0, 0, -1.0), (60, 12, 8)
     s.set_domain(lo, hi)
     s.set_periodic(False, False, False)
@@ -36,13 +36,14 @@ def slab_slide(mu, steps=1500):
     s.set_inv_mass(np.ones(n, np.float32))
     s.set_inv_inertia(np.zeros((n, 3), np.float32))  # rotation locked: pure slide
     s.set_velocities(np.zeros((n, 3), np.float32))
-    s.set_gravity(5.0, 0.0, -10.0)  # tan(theta) = 0.5
+    s.set_gravity((5.0, 0.0, -10.0))  # tan(theta) = 0.5
     s.set_material_params(0.0, 0.0, mu)
     s.set_thermostat(0, 0)
     s.set_solver_iterations(12, 8)
     x0 = pts[:, 0].mean()
+    s.set_dt(0.01)
     for _ in range(steps):
-        s.step(0.01)
+        s.step()
     return float(s.get_positions()[:, 0].mean() - x0)
 
 
@@ -51,7 +52,7 @@ def single_slide(mu, gx=8.0, steps=800):
     a = gx - mu*gz -> distance = 0.5*a*t^2."""
     r = 0.5
     s = dem.Simulation(2)
-    s.set_sphere_shape(r)
+    s.initialize_shape('sphere', r)
     lo, hi = (0, 0, -1.0), (200, 8, 6)
     s.set_domain(lo, hi)
     s.set_periodic(False, False, False)
@@ -62,12 +63,13 @@ def single_slide(mu, gx=8.0, steps=800):
     s.set_inv_mass(np.ones(1, np.float32))
     s.set_inv_inertia(np.zeros((1, 3), np.float32))  # no rotation: pure slide
     s.set_velocities(np.zeros((1, 3), np.float32))
-    s.set_gravity(gx, 0.0, -10.0)
+    s.set_gravity((gx, 0.0, -10.0))
     s.set_material_params(0.0, 0.0, mu)
     s.set_thermostat(0, 0)
     s.set_solver_iterations(12, 8)
+    s.set_dt(0.01)
     for _ in range(steps):
-        s.step(0.01)
+        s.step()
     return float(s.get_positions()[0, 0] - 5.0)
 
 
@@ -76,7 +78,7 @@ def roll_ratio(v0=4.0, mu=0.5, steps=1200):
     torques it up to rolling; terminal v = 5/7 v0 (classic)."""
     r = 0.5
     s = dem.Simulation(2)
-    s.set_sphere_shape(r)
+    s.initialize_shape('sphere', r)
     lo, hi = (0, 0, -1.0), (200, 8, 6)
     s.set_domain(lo, hi)
     s.set_periodic(False, False, False)
@@ -87,12 +89,13 @@ def roll_ratio(v0=4.0, mu=0.5, steps=1200):
     s.set_inv_mass(np.ones(1, np.float32))
     s.set_inv_inertia(np.full((1, 3), 1.0 / (0.4 * 1.0 * r * r), np.float32))
     s.set_velocities(np.array([[v0, 0, 0]], np.float32))
-    s.set_gravity(0.0, 0.0, -10.0)
+    s.set_gravity((0.0, 0.0, -10.0))
     s.set_material_params(0.0, 0.0, mu)
     s.set_thermostat(0, 0)
     s.set_solver_iterations(12, 8)
+    s.set_dt(0.005)
     for _ in range(steps):
-        s.step(0.005)
+        s.step()
     v = s.get_velocities()[0]
     w = s.get_angular_velocities()[0]
     # rolling without slipping in +x: contact velocity v_x - w_y*r = 0 -> w_y = +v_x/r
@@ -101,7 +104,7 @@ def roll_ratio(v0=4.0, mu=0.5, steps=1200):
 
 def binary_e(e):
     s = dem.Simulation(4)
-    s.set_sphere_shape(0.5)
+    s.initialize_shape('sphere', 0.5)
     s.set_domain((0, 0, 0), (20, 20, 20))
     s.set_periodic(False, False, False)
     s.set_positions(np.array([[8, 10, 10], [12, 10, 10]], np.float32))
@@ -109,12 +112,13 @@ def binary_e(e):
     s.set_inv_mass(np.ones(2, np.float32))
     s.set_inv_inertia(np.full((2, 3), 1.0, np.float32))
     s.set_velocities(np.array([[1, 0, 0], [-1, 0, 0]], np.float32))
-    s.set_gravity(0, 0, -1e-6)  # tiny g so the PGS path is exercised
+    s.set_gravity((0, 0, -1e-6))  # tiny g so the PGS path is exercised
     s.set_thermostat(0, 0)
     s.set_material_params(e, 0.0, 0.5)
     s.set_solver_iterations(8, 4)
+    s.set_dt(0.01)
     for _ in range(400):
-        s.step(0.01)
+        s.step()
     v = s.get_velocities()
     return (v[1, 0] - v[0, 0]) / 2.0
 
@@ -126,7 +130,7 @@ def oblique(vx, vz, e=0.6, mu=0.4, beta=0.5, steps=400, dt=0.002):
     from peclet.dem import build_wall_sdf
     r = 0.5
     s = dem.Simulation(2)
-    s.set_sphere_shape(r)
+    s.initialize_shape('sphere', r)
     lo, hi = (0, 0, -1.0), (40, 8, 12)
     s.set_domain(lo, hi)
     s.set_periodic(False, False, False)
@@ -137,12 +141,13 @@ def oblique(vx, vz, e=0.6, mu=0.4, beta=0.5, steps=400, dt=0.002):
     s.set_inv_mass(np.ones(1, np.float32))
     s.set_inv_inertia(np.full((1, 3), 1.0 / (0.4 * 1.0 * r * r), np.float32))
     s.set_velocities(np.array([[vx, 0, -vz]], np.float32))
-    s.set_gravity(0.0, 0.0, -0.02)  # tiny: enables the PGS path, negligible over the bounce
+    s.set_gravity((0.0, 0.0, -0.02))  # tiny: enables the PGS path, negligible over the bounce
     s.set_material_params(e, beta, mu)
     s.set_thermostat(0, 0)
     s.set_solver_iterations(12, 8)
+    s.set_dt(dt)
     for _ in range(steps):
-        s.step(dt)
+        s.step()
     v = s.get_velocities()[0]
     w = s.get_angular_velocities()[0]
     return float(v[0]), float(v[2]), float(v[0] - w[1] * r)  # vx', vz', surface u_t'

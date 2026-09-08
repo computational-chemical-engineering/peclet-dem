@@ -53,10 +53,10 @@ def make_sim(n, restitution, friction, grav, planes):
     m = rcut + 0.5
     s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m), (L[0] + m, L[1] + m, L[2] + m))
     s.set_periodic(False, False, False)
-    s.initialize_shape(shape_type=1, radius=radius)
+    s.initialize_shape('sphere', radius=radius)
     s.set_material_params(restitution, 0.0, friction)
     s.set_solver_iterations(8, 20)
-    s.set_gravity(*grav)
+    s.set_gravity(grav)
     s.set_dt(dt)
     for pt, nrm in planes:
         s.add_plane(pt, nrm)
@@ -77,7 +77,7 @@ def run_serial(g_pos, g_vel, nsteps, **kw):
         if quat is not None:
             s.set_quaternions(quat.astype(np.float32))
             s.set_angular_velocities(ang.astype(np.float32))
-        s.step(dt)
+        s.step()
         pos = np.array(s.get_positions()).astype(np.float64)
         vel = np.array(s.get_velocities()).astype(np.float64)
         quat = np.array(s.get_quaternions()).astype(np.float64)
@@ -109,7 +109,7 @@ def run_distributed(comm, g_pos, g_vel, nsteps, **kw):
         s.set_velocities(vel.astype(np.float32))
         s.set_quaternions(quat.astype(np.float32))
         s.set_angular_velocities(ang.astype(np.float32))
-        s.init_mpi(origin=tuple(dmin), size=tuple(L), gsize=(16, 16, 16),
+        s.init_mpi(origin=tuple(dmin), extent=tuple(L), cells=(16, 16, 16),
                    periodic=(False, False, False))
         s.enable_mpi_step(rcut, sync_every=1, forward_rotation=True)
         s.step_mpi(1)

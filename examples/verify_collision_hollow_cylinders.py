@@ -15,7 +15,7 @@ def generate_unit_sdf_stl(radius, height, thickness, filename):
     
     # 1. Create a 1-particle simulation
     sim_unit = dem.Simulation(1)
-    sim_unit.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
+    sim_unit.initialize_shape('hollow_cylinder', radius=radius, height=height, thickness=thickness)
     
     # Domain large enough to contain the unit shape
     bound = max(height, 2.0*radius) * 1.5 
@@ -86,7 +86,7 @@ def run_collision_test():
     
     # --- Initialize Simulation ---
     sim = dem.Simulation(num_particles)
-    sim.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
+    sim.initialize_shape('hollow_cylinder', radius=radius, height=height, thickness=thickness)
     
     # Large domain, periodic
     domain_size = 6.0*radius
@@ -96,7 +96,7 @@ def run_collision_test():
     # Actually set_domain enables it by default in code. Disable explicitly for test.
     sim.set_periodic(True, True, True)
     
-    sim.set_gravity(0, 0, 0) # Disable Gravity
+    sim.set_gravity((0, 0, 0)) # Disable Gravity
     sim.set_material_params(restitution, restitution_t, friction) # e_n, e_t, mu
     sim.set_solver_iterations(sim_iterations_pos, sim_iterations_vel)
     
@@ -214,9 +214,10 @@ def run_collision_test():
     dump_interval = 1
     if dump_interval < 1: dump_interval = 1
     
+    sim.set_dt(dt)
     for i in range(limit_steps):
         # Step
-        sim.step(dt)
+        sim.step()
         
         # Logging
         if i % dump_interval == 0:
@@ -225,7 +226,7 @@ def run_collision_test():
             # Simple distance check and contact count
             p = sim.get_positions()
             d = np.linalg.norm(p[0, :3] - p[1, :3])
-            num_contacts = sim.num_contacts()
+            num_contacts = sim.num_contacts
             _, _, KE = calculate_metrics(sim)
             print(f"Step {i}: Dist={d:.4f}, Contacts={num_contacts}, KE={KE:.6f}")
             

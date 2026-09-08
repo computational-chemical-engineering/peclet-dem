@@ -7,7 +7,7 @@ def verify_thermostat():
     # 1. Initialize
     n_particles = 1000
     sim = dem.Simulation(n_particles)
-    sim.initialize_shape(shape_type=1, radius=0.5) # Spheres
+    sim.initialize_shape('sphere', radius=0.5) # Spheres
     
     # 2. Domain (Periodic)
     L = 20.0
@@ -56,8 +56,9 @@ def verify_thermostat():
     inv_I_init = sim.get_inv_inertia()
     print(f"Initial Inv I sample: {inv_I_init[0]}")
 
+    sim.set_dt(dt)
     for i in range(steps):
-        sim.step(dt)
+        sim.step()
         
         # Compute T manually
         v = sim.get_velocities() # (N, 3)

@@ -35,16 +35,16 @@ def Rmat(q):  # (N,4) xyzw -> (N,3,3)
 # ----------------------------------------------------------------------------- A. binary exactness
 def run_binary(e, use_gs=True):
     r = 0.5; u = 1.0; dt = 0.005
-    s = dem.Simulation(2); s.initialize_shape(shape_type=1, radius=r); s.set_sphere_shape(r)
-    s.set_domain((-10, -10, -10), (10, 10, 10)); s.set_gravity(0, 0, 0)
+    s = dem.Simulation(2); s.initialize_shape('sphere', radius=r)
+    s.set_domain((-10, -10, -10), (10, 10, 10)); s.set_gravity((0, 0, 0))
     s.set_material_params(e, 0.0, 0.0); s.set_solver_iterations(10, 12); s.set_dt(dt)
-    s.set_velocity_use_gs(use_gs)
+    s.diagnostics.set_velocity_solver('gauss_seidel' if use_gs else 'jacobi')
     P = np.array([[-2.0, 0, 0, 1.0], [2.0, 0, 0, 1.0]], np.float32)   # .w = invMass = 1
     V = np.array([[+u, 0, 0], [-u, 0, 0]], np.float32)
     s.set_positions(P); s.set_velocities(V)
     ke0 = 0.5 * (V ** 2).sum()
     for i in range(1200):
-        s.step(dt)
+        s.step()
     Vf = _np(s.get_velocities())[:2]
     ke1 = 0.5 * (Vf ** 2).sum()
     p_drift = np.abs(Vf.sum(0)).max()          # total momentum should stay 0
@@ -57,10 +57,10 @@ def run_conservation(use_gs=True, seed=0):
     momentum-conserving contact law. Returns the worst-case relative drift of |P| and |L|."""
     N = 24; dt = 0.004
     s = dem.Simulation(N)
-    s.initialize_shape(shape_type=2, radius=0.5, height=1.0, thickness=0.2)   # cylinders -> off-centre hits
-    s.set_domain((-20, -20, -20), (20, 20, 20)); s.set_gravity(0, 0, 0)
+    s.initialize_shape('hollow_cylinder', radius=0.5, height=1.0, thickness=0.2)   # cylinders -> off-centre hits
+    s.set_domain((-20, -20, -20), (20, 20, 20)); s.set_gravity((0, 0, 0))
     s.set_material_params(0.7, 0.0, 0.0); s.set_solver_iterations(8, 10); s.set_dt(dt)
-    s.set_velocity_use_gs(use_gs)
+    s.diagnostics.set_velocity_solver('gauss_seidel' if use_gs else 'jacobi')
     rng = np.random.default_rng(seed)
     P0 = rng.uniform(-3, 3, (N, 3)).astype(np.float32)
     pos = np.c_[P0, np.ones(N, np.float32)]                            # invMass = 1 -> mass = 1
@@ -90,7 +90,7 @@ def run_conservation(use_gs=True, seed=0):
     Pscale = np.abs(m * vel).sum()
     spun = 0.0; Lscale = 1e-30
     for i in range(500):
-        s.step(dt)
+        s.step()
         if i == 250:
             spun = np.abs(_np(s.get_angular_velocities())[:N]).max()   # confirm spin was imparted
         _, _, sc = PL(); Lscale = max(Lscale, sc)
@@ -112,15 +112,15 @@ def run_cooling(use_gs=True):
     rng = np.random.default_rng(3)
     Pp = rng.uniform(0, L, (N, 3)).astype(np.float32)
     v = rng.normal(0, np.sqrt(T0), (N, 3)).astype(np.float32); v -= v.mean(0)
-    s = dem.Simulation(N + 64); s.initialize_shape(shape_type=1, radius=rp); s.set_sphere_shape(rp)
+    s = dem.Simulation(N + 64); s.initialize_shape('sphere', radius=rp)
     s.set_domain((0, 0, 0), (L, L, L)); s.set_periodic(True, True, True)
-    s.set_gravity(0, 0, 0); s.set_material_params(e, 0.0, 0.0); s.set_solver_iterations(6, 8)
-    s.set_dt(dt); s.set_velocity_use_gs(use_gs)
+    s.set_gravity((0, 0, 0)); s.set_material_params(e, 0.0, 0.0); s.set_solver_iterations(6, 8)
+    s.set_dt(dt); s.diagnostics.set_velocity_solver('gauss_seidel' if use_gs else 'jacobi')
     s.set_positions(np.c_[Pp, np.ones(N, np.float32)]); s.set_velocities(v)
     def gT(V): vp = V - V.mean(0); return float((vp * vp).sum(1).mean() / 3.0)
     ts, Tr = [0.0], [1.0]
     for i in range(400):
-        s.step(dt); t = (i + 1) * dt
+        s.step(); t = (i + 1) * dt
         if (i + 1) % 10 == 0:
             Tr.append(gT(_np(s.get_velocities())[:N]) / T0); ts.append(t)
     ts, Tr = np.array(ts), np.array(Tr)
@@ -136,25 +136,25 @@ def run_coloring_valid():
     colouring is active, including creep-recompaction and per-substep carries), the colouring
     invariant "no two same-colour manifolds/contacts share a body" must hold every step. Returns
     the worst (velocity, position) conflict counts seen over the run — must be (0, 0)."""
-    if not hasattr(dem.Simulation, "debug_coloring_conflicts"):
+    if not hasattr(dem.Diagnostics, "coloring_conflicts"):
         return None
     rng = np.random.default_rng(7)
     L = 12.0; rp = 0.5; N = 900
     # a loose cloud that settles into a dense multi-contact pile under gravity
     Pp = np.c_[rng.uniform(1, L - 1, (N, 2)), rng.uniform(1, L - 1, N)].astype(np.float32)
-    s = dem.Simulation(N + 64); s.initialize_shape(shape_type=1, radius=rp); s.set_sphere_shape(rp)
+    s = dem.Simulation(N + 64); s.initialize_shape('sphere', radius=rp)
     s.set_domain((0, 0, 0), (L, L, L)); s.set_periodic(False, False, False)
     s.add_plane((0, 0, 0), (0, 0, 1))
-    s.set_gravity(0, 0, -9.81); s.set_material_params(0.4, 0.3, 0.3)
-    s.set_solver_iterations(12, 8); s.set_dt(2e-3); s.set_velocity_use_gs(True)
-    s.set_stabilization_mode("multilevel")
+    s.set_gravity((0, 0, -9.81)); s.set_material_params(0.4, 0.3, 0.3)
+    s.set_solver_iterations(12, 8); s.set_dt(2e-3); s.diagnostics.set_velocity_solver('gauss_seidel')
+    s.set_stabilization("multilevel")
     s.set_positions(np.c_[Pp, np.ones(N, np.float32)])
     s.set_velocities(np.zeros((N, 3), np.float32))
     worst = (0, 0)
     for i in range(500):
-        s.step(2e-3)
+        s.step()
         if i % 3 == 0:  # sample the invariant across churn + settled regimes
-            vc, pc = s.debug_coloring_conflicts()
+            vc, pc = s.diagnostics.coloring_conflicts()
             worst = (max(worst[0], vc), max(worst[1], pc))
     return worst
 
@@ -197,8 +197,8 @@ def test_cooling_slope_vs_enskog():
 
 def test_incremental_coloring_invariant():
     """No two same-colour manifolds/contacts share a body, every step of a settling pile."""
-    if not hasattr(dem.Simulation, "debug_coloring_conflicts"):
-        pytest.skip("debug_coloring_conflicts not exposed by this build")
+    if not hasattr(dem.Diagnostics, "coloring_conflicts"):
+        pytest.skip("diagnostics.coloring_conflicts not exposed by this build")
     worst = run_coloring_valid()
     print(f"   worst conflicts over run: velocity={worst[0]}  position={worst[1]}")
     assert worst == (0, 0)

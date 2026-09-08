@@ -31,11 +31,11 @@ def verify_packing():
     domain_side = vol_domain_ref ** (1.0/3.0)
 
     sim = dem.Simulation(num_particles)
-    sim.initialize_shape(shape_type=1, radius=radius) # Sphere
+    sim.initialize_shape('sphere', radius=radius) # Sphere
 
     half_d = domain_side / 2.0
     sim.set_domain((-half_d, -half_d, -half_d), (half_d, half_d, half_d))
-    sim.set_gravity(0, 0, 0)
+    sim.set_gravity((0, 0, 0))
     rng = np.random.default_rng(42)
 
     print(f"Sphere Packing Optimization Study (N={num_particles})")
@@ -72,8 +72,9 @@ def verify_packing():
                 sim.set_scales(np.full(num_particles, 1.0, dtype=np.float32))
                 sim.set_growth_params(growth_rate, 0.05)
                         
+                sim.set_dt(dt)
                 for i in range(limit_steps):
-                    sim.step(dt)
+                    sim.step()
                     if i % 1 == 0:
                         p = sim.get_positions()
                         v = sim.get_velocities()
@@ -86,7 +87,7 @@ def verify_packing():
                         sim.export_lammps(f"{output_dir}/dump.stacking.{i}.lammps", i)
                     
                 # Update Max Phi (valid state)
-                final_ov = sim.max_overlap()
+                final_ov = sim.max_overlap
                 vel = sim.get_velocities()
                 T_current = sum(vel[:, 0:3].ravel()**2) / (3*num_particles)
                 phi_current = (num_particles * vol_particle) / (domain_side**3)

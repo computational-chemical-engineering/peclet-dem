@@ -60,6 +60,26 @@ beyond that band is detected from one side and the whole overlap correction land
 (measured 2026-09-08). The distributed step resolves the same pair symmetrically; the Python MPI
 periodic test keeps its straddlers symmetric about the face for that reason.
 
+## The two API tiers (QUALITY_PLAN §3.F, D2 — landed 2026-09-08)
+
+`Simulation` carries only what a user needs to set up, run and read out a run; every instrument,
+ablation and execution-policy switch lives on `sim.diagnostics` (a `Diagnostics` view holding a
+reference to the simulation, no state of its own): `set_stabilization` with the two measurement
+modes `'escalate'`/`'ordered'`, `set_velocity_solver('gauss_seidel'|'jacobi')` (the Jacobi A/B —
+CHANGES RESULTS), `set_cuda_graphs` / `set_fused_sweeps` (bit-identical GPU submission policies),
+`coloring_conflicts()`, `rest_orphan_stats()` / `rest_bank_stats()`, `wall_sdf_at()`,
+`profiling_info()`, and under MPI `mpi_rebuilds` / `mpi_gathers`. `set_incremental_coloring` stays
+public because it changes the Gauss-Seidel order. Conventions (suite `docs/NAMING.md`): stored scalars
+are properties (`num_particles`, `num_contacts`, `max_overlap`, `dt`, `gravity`, `growth_factor`,
+`stabilization`, `rank`, ...), computed scalars are bare methods (`compute_overlaps()`), array copies
+are `get_*`; every triple is a 3-sequence (`set_gravity((0, 0, -9.8))`, `add_plane(point, normal)`);
+every grid SDF is ONE `(nx, ny, nz)` array indexed `[x, y, z]` (`set_sdf_shape`, `add_sdf_shape`,
+`add_sdf_wall` take it, `get_sdf_grid` returns it — a C-order input converts implicitly); shapes are
+strings (`initialize_shape('sphere'|'hollow_cylinder'|'box', radius, ...)`, `set_sphere_shape` is
+gone); `set_dt(dt)` + `step(n)` / `step_hertz(substeps)` / `step_mpi(n)` / `step_hertz_mpi(substeps)`
+— no stepper takes `dt`, and a step before `set_dt` RAISES; `relax(n)` is the dynamics-free
+overlap-removal substep that `step(0.0)` used to be.
+
 ## Call-order requirements (confirmed in `src/sim.hpp`)
 
 - `initialize_shape(...)` / `set_sdf_shape(...)` RESET the shape registry to one shape; `add_shape` /
@@ -72,8 +92,10 @@ periodic test keeps its straddlers symmetric about the face for that reason.
   exactly one id per particle.
 - `set_domain(...)` (either form) and `set_global_scale(s)` BOTH reset the broad-phase skin to
   `0.1 * globalScale` — call `set_global_scale` first, then `set_domain`, if you rely on the skin.
-- `step(dt)`: `dt > 0` advances; `dt == 0` (the default) is a dynamics-free relaxation substep
-  (overlap removal only). `set_dt` only stores dt; `step` overwrites it with its argument.
+- `set_dt(dt)` (dt > 0) BEFORE any of `step(n)`, `step_hertz(substeps)`, `step_mpi(n)`,
+  `step_hertz_mpi(substeps)` — each raises `RuntimeError` otherwise (no default time step).
+  `relax(n)` (overlap removal only) needs no dt. `set_positions` raises if N exceeds `capacity`,
+  and every per-particle setter raises if its row count is not `num_particles`.
 - The default body-body material is FRICTIONLESS (`set_material_params`); walls carry their own.
 
 ## Environment variables (QUALITY_PLAN package E is DONE — do not add more)
@@ -92,19 +114,20 @@ print in `solve_driver_force.hpp`).
 | `PECLET_DEM_SLEEP_WAKELOST` | `set_sleeping(wake_on_lost_contact=False)` |
 | `PECLET_DEM_SLEEP_INVMASS_FRAC` | `set_sleeping(immovable_frac=0.01)` |
 | `PECLET_DEM_VERLET_SKIN` | `set_verlet_skin(skin_frac)` — default `0.0` (off) |
-| `PECLET_DEM_NO_GRAPH` | `set_cuda_graphs(enabled)` — default `True` |
-| `PECLET_DEM_FUSED` / `PECLET_DEM_NO_FUSED` | `set_fused_sweeps('auto'\|'on'\|'off')` — default `'auto'` |
+| `PECLET_DEM_NO_GRAPH` | `diagnostics.set_cuda_graphs(enabled)` — default `True` |
+| `PECLET_DEM_FUSED` / `PECLET_DEM_NO_FUSED` | `diagnostics.set_fused_sweeps('auto'\|'on'\|'off')` — default `'auto'` |
 | `PECLET_DEM_NO_INCR_COLOR` | `set_incremental_coloring(enabled)` — default `True` |
 | `PECLET_DEM_FUSED_GRID` | deleted (tuning knob; uncapped measured best at every size) |
 | `PECLET_DEM_ML_GATES` | deleted (A/B over the multilevel gate mask; `kGateSlip` ships) |
 | `PECLET_DEM_REST_NEWTON_OFF`, `PECLET_DEM_REST_ONESIDED` | deleted with their kernels (both measured worse) |
 
-The stored scalars read back as properties: `sleeping`, `verlet_skin`, `cuda_graphs`,
-`fused_sweeps`, `incremental_coloring`. `set_cuda_graphs` / `set_fused_sweeps` only choose how the
-same arithmetic is submitted to a GPU (bit-identical results, inert on non-CUDA backends);
-`set_incremental_coloring(False)` DOES change results — the colouring fixes the Gauss-Seidel sweep
-order. `PECLET_DEM_STAB_MODE` and `PECLET_DEM_SYMMETRIC_PGS` were never read by any version of the
-code (they survived only in comments); `set_stabilization_mode('off')` is what those scripts meant.
+The stored scalars read back as properties: `sleeping`, `verlet_skin`, `incremental_coloring` on
+`Simulation`; `cuda_graphs`, `fused_sweeps` on `diagnostics`. `set_cuda_graphs` / `set_fused_sweeps`
+only choose how the same arithmetic is submitted to a GPU (bit-identical results, inert on non-CUDA
+backends), which is why they are diagnostics; `set_incremental_coloring(False)` DOES change results —
+the colouring fixes the Gauss-Seidel sweep order. `PECLET_DEM_STAB_MODE` and `PECLET_DEM_SYMMETRIC_PGS`
+were never read by any version of the code (they survived only in comments);
+`set_stabilization('off')` is what those scripts meant.
 
 `PECLET_DEM_MPI` / `PECLET_DEM_MPI_HALO_HPP` are compile-time macros, not environment variables.
 

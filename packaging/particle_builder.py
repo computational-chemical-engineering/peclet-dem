@@ -88,14 +88,9 @@ class ParticleShape:
         particles). With ``unit_mass=True`` (the packing default) particles keep ``inv_mass = 1`` and
         get this shape's unit-mass inertia; pass ``unit_mass=False`` then override per particle with
         ``sim.set_inv_mass``/``sim.set_inv_inertia`` for the real density."""
-        nx, ny, nz = self.grid.shape
-        grid_flat = np.asarray(self.grid, dtype=np.float32).ravel(order="F")  # x-fastest
         inv_i = self.inv_inertia_unit if unit_mass else (1.0 / self.inertia)
         sim.set_sdf_shape(
-            grid_flat,
-            int(nx),
-            int(ny),
-            int(nz),
+            np.asfortranarray(self.grid, dtype=np.float32),  # (nx, ny, nz) indexed [x, y, z]
             tuple(float(v) for v in self.origin),
             tuple(float(v) for v in self.spacing),
             np.ascontiguousarray(self.shell, dtype=np.float32),
@@ -415,13 +410,8 @@ class WallSDF:
     def add_to(self, sim, *, restitution: float = 0.0, friction: float = 0.0) -> int:
         """Upload this wall onto a :class:`peclet.dem.Simulation` with the given binary particle–wall
         material. Returns the wall index (pass it to ``sim.set_wall_velocity`` for a moving wall)."""
-        nx, ny, nz = self.grid.shape
-        grid_flat = np.asarray(self.grid, dtype=np.float32).ravel(order="F")  # x-fastest
         return sim.add_sdf_wall(
-            grid_flat,
-            int(nx),
-            int(ny),
-            int(nz),
+            np.asfortranarray(self.grid, dtype=np.float32),  # (nx, ny, nz) indexed [x, y, z]
             tuple(float(v) for v in self.origin),
             tuple(float(v) for v in self.spacing),
             float(restitution),

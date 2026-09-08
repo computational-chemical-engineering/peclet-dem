@@ -37,14 +37,14 @@ def run_sphere_test():
         print(f"\nRunning Sphere Test with Offset={offset}")
         
         sim = dem.Simulation(num_particles)
-        sim.initialize_shape(shape_type=1, radius=radius, height=0, thickness=0) # Sphere
+        sim.initialize_shape('sphere', radius=radius, height=0, thickness=0) # Sphere
         
         domain_size = 6.0*radius
         sim.set_domain((-domain_size, -domain_size, -domain_size), 
                        (domain_size, domain_size, domain_size))
         sim.set_periodic(False, False, False)
         
-        sim.set_gravity(0, 0, 0) 
+        sim.set_gravity((0, 0, 0)) 
         sim.set_material_params(restitution, restitution_t, friction) 
         sim.set_solver_iterations(sim_iterations_pos, sim_iterations_vel)
         
@@ -81,8 +81,9 @@ def run_sphere_test():
         ke_init = fast_ke(sim)
         print(f"Initial KE: {ke_init:.6f}")
         
+        sim.set_dt(dt)
         for i in range(limit_steps):
-            sim.step(dt)
+            sim.step()
             if i % 100 == 0:
                 p = sim.get_positions()
                 d = np.linalg.norm(p[0, :3] - p[1, :3])

@@ -105,7 +105,7 @@ primary correctness gate; the Python drivers are for at-scale throughput/observa
 | **M-knob sweep** | M=1,2,4,8 | ms/step **and** mean‖dist−serial‖ | trade boundary error for fewer exchanges |
 | **Load balance** | per-rank owned count + ms/step | max/mean | weighted-ORB split quality; imbalance caps speedup. Try `rebalance_every=N` |
 
-Record alongside each run: np, N, N/rank, ghost fraction, `gsize` (ORB cell grid), `rcut`,
+Record alongside each run: np, N, N/rank, ghost fraction, `cells` (ORB cell grid), `rcut`,
 `sync_every`, `forward_rotation`, `rebalance_every`, GPU model, MPI build (CUDA-aware?), interconnect
 (NVLink/PCIe/IB).
 
@@ -168,7 +168,7 @@ cap speedup. Track per-rank owned-count max/mean alongside ms/step.
 
 ### 5.5 Bigger blocks / fewer ranks per GPU
 Ghost (surface) cost scales as $N^{2/3}$; larger blocks amortise comm. One fat rank per GPU beats many
-thin ones. Tune `gsize` so the ORB blocks are compact (low surface/volume).
+thin ones. Tune `cells` (init_mpi) so the ORB blocks are compact (low surface/volume).
 
 ---
 

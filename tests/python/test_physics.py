@@ -16,14 +16,15 @@ from peclet import dem
 def test_two_particles_pushed_apart():
     sim = dem.Simulation(2)
     sim.set_domain(np.array([-10, -10, -10], dtype=np.float32), np.array([10, 10, 10], dtype=np.float32))
-    sim.initialize_shape(0, radius=0.5)
+    sim.initialize_shape('sphere', radius=0.5)
     sim.set_solver_iterations(10, 0)
     pos = np.array([[0.0, 0.0, 0.0, 1.0], [0.7, 0.0, 0.0, 1.0]], dtype=np.float32)  # overlap 0.3 (r=0.5); w = inverse mass
     sim.set_positions(pos)
-    sim.set_velocities(np.zeros_like(pos))
+    sim.set_velocities(np.zeros((2, 3), dtype=np.float32))
     sim.set_scales(np.ones(2, dtype=np.float32))
     sim.set_global_scale(1.0)
-    sim.step(0.01)
+    sim.set_dt(0.01)
+    sim.step()
     p = sim.get_positions()
     d = float(np.linalg.norm(p[0][:3] - p[1][:3]))
     print(f"final distance {d:.4f}")
@@ -44,7 +45,7 @@ def test_growth_packing(num_particles, density_target, steps=500):
     print(f"phi={density_target} N={num_particles} L={L:.3f}")
     sim = dem.Simulation(num_particles)
     sim.set_domain(np.array([-L / 2] * 3, dtype=np.float32), np.array([L / 2] * 3, dtype=np.float32))
-    sim.initialize_shape(0, radius=0.5)
+    sim.initialize_shape('sphere', radius=0.5)
     sim.set_solver_iterations(10, 4)
     k = int(np.ceil(num_particles ** (1 / 3)))
     spacing = L / k
@@ -52,11 +53,12 @@ def test_growth_packing(num_particles, density_target, steps=500):
     grid = [[offset + x * spacing, offset + y * spacing, offset + z * spacing, 1.0]
             for x in range(k) for y in range(k) for z in range(k)][:num_particles]
     sim.set_positions(np.array(grid, dtype=np.float32))
-    sim.set_velocities(np.zeros((num_particles, 4), dtype=np.float32))
+    sim.set_velocities(np.zeros((num_particles, 3), dtype=np.float32))
     sim.set_global_scale(0.1)
+    sim.set_dt(0.01)
     for i in range(steps):
         sim.set_global_scale(min(1.0, 0.1 + 0.9 * i / (steps * 0.8)))   # linear growth to full size
-        sim.step(0.01)
+        sim.step()
     pos = sim.get_positions()[:, :3]
     max_overlap = _max_pair_overlap(pos, 2.0 * r)
     max_dist = float(np.max(np.abs(pos)))

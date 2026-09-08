@@ -958,6 +958,9 @@ class Simulation {
     return {P_.domain.periodic_x, P_.domain.periodic_y, P_.domain.periodic_z};
   }
   void setGravity(float gx, float gy, float gz) { P_.gravity = F3{gx, gy, gz}; }
+  std::tuple<float, float, float> gravity() const {
+    return {P_.gravity.x, P_.gravity.y, P_.gravity.z};
+  }
   void setThermostat(float temperature, float tau, float kB) {  // Berendsen; tau=0 disables
     P_.thermostatTemp = temperature;
     P_.thermostatTau = tau;
@@ -970,11 +973,7 @@ class Simulation {
   // Select the single-GPU collision solves: true (default) = colored Gauss–Seidel for both the
   // restitution and the overlap solve, false = count-averaged Jacobi (legacy). For A/B validation.
   void setVelocityUseGS(bool useGS) { P_.velocityUseGS = useGS; }
-  /// Enable/disable the stabilization pass (default on). Off = pure momentum-conserving PGS
-  /// everywhere -- exact ballistic response, but deep static columns mid-collapse cannot be
-  /// arrested within the iteration budget. Backward-compatible boolean form of
-  /// setStabilizationMode: true selects "onesided", false selects "off".
-  void setStabilization(bool enabled) { P_.stabilizationMode = enabled ? 1 : 0; }
+  bool velocityUseGS() const { return P_.velocityUseGS; }
   /// Select the stabilization pass of the staged velocity solve: "off" (pure symmetric PGS),
   /// "onesided" (default: held-lower-side grounded impulses -- arrests any collapse but is a
   /// momentum sink), "multilevel" (GraphMG contact-graph aggregation: coarse inelastic solves
@@ -994,8 +993,12 @@ class Simulation {
       P_.stabilizationMode = 4;
     else
       throw std::invalid_argument(
-          "set_stabilization_mode: expected 'off', 'onesided', 'multilevel', 'escalate' or "
+          "set_stabilization: expected 'off', 'onesided', 'multilevel', 'escalate' or "
           "'ordered'");
+  }
+  std::string stabilizationMode() const {
+    static const char* const names[] = {"off", "onesided", "multilevel", "escalate", "ordered"};
+    return names[P_.stabilizationMode];
   }
   /// Restitution model of the PGS velocity solve: "newton" (default; per-substep restitution on
   /// the pre-solve approach — the pre-existing behaviour) or "poisson" (event-level: each pair
@@ -1010,6 +1013,7 @@ class Simulation {
     else
       throw std::invalid_argument("set_restitution_model: expected 'newton' or 'poisson'");
   }
+  std::string restitutionModel() const { return P_.restitutionModel == 1 ? "poisson" : "newton"; }
   /// Island sleeping / freezing (single-GPU statics, default ON; `enabled=False` disables). A
   /// REAL body whose linear AND
   /// angular motion stays below `scale` x the resting floor (2 dt |g|) for K substeps while
@@ -1103,17 +1107,27 @@ class Simulation {
     Kokkos::deep_copy(P_.hertzE, he);
     Kokkos::deep_copy(P_.hertzNu, hn);
   }
-  /// Advance `substeps` explicit soft-sphere Hertz-Mindlin steps of size dt (device-side loop;
-  /// the (e, mu) pairs come from the impulse solver's material tables).
-  void stepHertz(float dt, int substeps, float skin_frac) {
-    P_.dt = dt;
-    demStepHertz(P_, dt, substeps, skin_frac);
+  /// Advance `substeps` explicit soft-sphere Hertz-Mindlin steps of the stored dt (device-side
+  /// loop; the (e, mu) pairs come from the impulse solver's material tables).
+  void stepHertz(int substeps, float skin_frac) {
+    requireDt("step_hertz");
+    demStepHertz(P_, P_.dt, substeps, skin_frac);
   }
   void setGlobalScale(float s) {
     P_.globalScale = s;
     P_.skin = 0.1f * s;
   }
-  void setDt(float dt) { P_.dt = dt; }
+  float globalScale() const { return P_.globalScale; }
+  /// The time step every stepper uses (suite/docs/NAMING.md 1.5). Must be > 0; a step called
+  /// before set_dt raises instead of silently running on a default.
+  void setDt(float dt) {
+    if (!(dt > 0.0f))
+      throw std::invalid_argument("set_dt: dt must be > 0 (relax() is the dynamics-free substep)");
+    P_.dt = dt;
+    dtSet_ = true;
+  }
+  float dt() const { return P_.dt; }
+  int capacity() const { return P_.capacity; }
   // (restitution_normal, restitution_tangent, friction) to match CUDA set_material_params; the
   // Kokkos pipeline currently carries normal restitution + dynamic friction (tangential restitution
   // unused).
@@ -1304,6 +1318,10 @@ class Simulation {
   // positions: flat [n*3]; (re)sets the real-particle count and default state.
   void setPositions(const std::vector<float>& xyz) {
     const int n = static_cast<int>(xyz.size() / 3);
+    if (n > P_.capacity)
+      throw std::invalid_argument(
+          "set_positions: " + std::to_string(n) +
+          " particles exceed Simulation(capacity=" + std::to_string(P_.capacity) + ")");
     P_.numReal = n;
     P_.numParticles = n;
     P_.hertzNumPairs = -1;  // particle indices changed: invalidate the hertz pair cache
@@ -1493,11 +1511,21 @@ class Simulation {
     return peclet::core::toVector(Kokkos::subview(P_.scale, Kokkos::make_pair(0, P_.numReal)));
   }
 
-  // One XPBD substep (CUDA Simulation::step(dt) semantics): dt>0 sets the timestep; dt==0 is a
-  // dynamics-free relaxation step (overlap removal only). Drive the loop from Python.
-  void step(float dt) {
+  /// Advance `n` XPBD substeps of the stored dt (set_dt first; suite/docs/NAMING.md 1.5).
+  void step(int n = 1) {
+    requireDt("step");
+    for (int i = 0; i < n; ++i)
+      demStep(P_);
+  }
+  /// `n` dynamics-free RELAXATION substeps (overlap removal only, no gravity / velocity update):
+  /// the growth-packing protocol's "settle" move. Runs the pipeline with dt = 0 and restores the
+  /// stored dt afterwards; does not require set_dt.
+  void relax(int n = 1) {
+    const float dt = P_.dt;
+    P_.dt = 0.0f;
+    for (int i = 0; i < n; ++i)
+      demStep(P_);
     P_.dt = dt;
-    demStep(P_);
   }
 
   // Max pair interpenetration on the current committed state (CUDA Simulation::compute_overlaps).
@@ -1582,6 +1610,7 @@ class Simulation {
     mpiGidsGlobal_ = true;
   }
   void stepMpi(int nsteps) {
+    requireDt("step_mpi");
     const double rcut = (mpiRcut_ > 0.0) ? mpiRcut_ : maxOwnedRadius(P_);
     ensureGlobalGids();
     for (int s = 0; s < nsteps; ++s) {
@@ -1591,17 +1620,17 @@ class Simulation {
       ++mpiStepCount_;
     }
   }
-  /// Advance `substeps` distributed explicit Hertz–Mindlin (force-based) steps of size dt — the
-  /// MPI counterpart of step_hertz, on the same halo/decomposition as step_mpi (init_mpi +
+  /// Advance `substeps` distributed explicit Hertz–Mindlin (force-based) steps of the stored dt —
+  /// the MPI counterpart of step_hertz, on the same halo/decomposition as step_mpi (init_mpi +
   /// enable_mpi_step first). rebalance_every counts CALLS of this method (each call = one
   /// Rayleigh-limited inner batch); the migration carries the Mindlin pair/wall history.
-  void stepHertzMpi(float dt, int substeps, float skin_frac) {
-    P_.dt = dt;
+  void stepHertzMpi(int substeps, float skin_frac) {
+    requireDt("step_hertz_mpi");
     ensureGlobalGids();
     if (mpiRebalanceEvery_ > 0 && mpiHertzCalls_ % mpiRebalanceEvery_ == 0)
       halo_->rebalance(P_);
     ++mpiHertzCalls_;
-    demStepHertzMpi(P_, *halo_, dt, substeps, skin_frac);
+    demStepHertzMpi(P_, *halo_, P_.dt, substeps, skin_frac);
   }
   int rank() const { return halo_->rank(); }
   int numGhost() const { return halo_->numGhost(); }
@@ -1740,6 +1769,12 @@ class Simulation {
   }
 
  private:
+  bool dtSet_ = false;  // set_dt was called: every stepper checks it (no silent default)
+  void requireDt(const char* who) const {
+    if (!dtSet_)
+      throw std::runtime_error(std::string(who) +
+                               ": call set_dt(dt) first (there is no default time step)");
+  }
   // (Re)upload just the small WallSdf array (velocity fields change every step for a vibrating
   // wall; the grid samples are uploaded once in addSdfWall).
   void uploadWalls() {

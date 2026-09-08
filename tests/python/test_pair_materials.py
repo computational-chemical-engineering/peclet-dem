@@ -12,7 +12,7 @@ from peclet import dem
 
 def binary(e_global, use_pair, pair_e=0.7):
     s = dem.Simulation(4)
-    s.set_sphere_shape(0.5)
+    s.initialize_shape('sphere', 0.5)
     s.set_domain((0, 0, 0), (20, 20, 20))
     s.set_periodic(False, False, False)
     s.set_positions(np.array([[8, 10, 10], [12, 10, 10]], np.float32))
@@ -20,15 +20,16 @@ def binary(e_global, use_pair, pair_e=0.7):
     s.set_inv_mass(np.ones(2, np.float32))
     s.set_inv_inertia(np.full((2, 3), 1.0, np.float32))
     s.set_velocities(np.array([[1, 0, 0], [-1, 0, 0]], np.float32))
-    s.set_gravity(0, 0, 0)
+    s.set_gravity((0, 0, 0))
     s.set_thermostat(0, 0)
     s.set_material_params(e_global, 0.0, 0.0)
     if use_pair:
         s.set_material_ids([0, 1])
         s.set_pair_material(0, 1, pair_e, 0.0)
     s.set_solver_iterations(8, 4)
+    s.set_dt(0.01)
     for _ in range(400):
-        s.step(0.01)
+        s.step()
     v = s.get_velocities()
     return (v[1, 0] - v[0, 0]) / 2.0
 
@@ -47,7 +48,7 @@ def slab_slide(mu, steps=1500):
     pts = np.array(pts, np.float32)
     n = len(pts)
     s = dem.Simulation(n)
-    s.set_sphere_shape(r)
+    s.initialize_shape('sphere', r)
     lo, hi = (0, 0, -1.0), (40, 12, 8)
     s.set_domain(lo, hi)
     s.set_periodic(False, False, False)
@@ -58,13 +59,14 @@ def slab_slide(mu, steps=1500):
     s.set_inv_mass(np.ones(n, np.float32))
     s.set_inv_inertia(np.zeros((n, 3), np.float32))  # rotation locked: pure slide
     s.set_velocities(np.zeros((n, 3), np.float32))
-    s.set_gravity(5.0, 0.0, -10.0)  # tan(theta) = 0.5
+    s.set_gravity((5.0, 0.0, -10.0))  # tan(theta) = 0.5
     s.set_material_params(0.0, 0.0, mu)
     s.set_thermostat(0, 0)
     s.set_solver_iterations(12, 8)
     x0 = pts[:, 0].mean()
+    s.set_dt(0.01)
     for _ in range(steps):
-        s.step(0.01)
+        s.step()
     return float(s.get_positions()[:, 0].mean() - x0)
 
 

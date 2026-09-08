@@ -31,24 +31,25 @@ m = rcut + 0.5
 s = dem.Simulation(int(mine.size))
 s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m), (L[0] + m, L[1] + m, L[2] + m))
 s.set_periodic(False, False, False)
-s.initialize_shape(shape_type=0, radius=radius)
+s.initialize_shape('sphere', radius=radius)
 s.add_plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))
 s.set_solver_iterations(int(os.environ.get('PI', '8')), int(os.environ.get('VI', '4')))
-s.set_gravity(0.0, 0.0, -9.8)
+s.set_gravity((0.0, 0.0, -9.8))
 s.set_positions(pos)
 s.set_velocities(vel)
-s.init_mpi(origin=tuple(dmin), size=tuple(L), gsize=(16, 16, 16), periodic=(False, False, False))
+s.init_mpi(origin=tuple(dmin), extent=tuple(L), cells=(16, 16, 16), periodic=(False, False, False))
 s.enable_mpi_step(rcut, sync_every=int(os.environ.get('M','1')), forward_rotation=bool(int(os.environ.get('R','1'))))
 
+s.set_dt(dt)
 for _ in range(warmup):
-    s.step(dt)
+    s.step()
 comm.Barrier()
 t0 = time.perf_counter()
 for _ in range(nsteps):
-    s.step(dt)
+    s.step()
 comm.Barrier()
 dt_ms = (time.perf_counter() - t0) / nsteps * 1e3
-ng = s.num_ghost()
+ng = s.num_ghost
 ng_tot = comm.reduce(ng, op=MPI.SUM, root=0)
 if rank == 0:
     print(f"np={size} N={N}: {dt_ms:.3f} ms/step  (ghosts/step total ~{ng_tot})")

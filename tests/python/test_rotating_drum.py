@@ -32,12 +32,12 @@ def drum_sdf(p):
 
 def build(seed=0):
     sim = dem.Simulation(400)
-    sim.set_sphere_shape(1.0)          # grain radius 1, global_scale 1 (default)
+    sim.initialize_shape('sphere', 1.0)          # grain radius 1, global_scale 1 (default)
     sim.set_domain(lo, hi)
     sim.set_periodic(False, False, False)
     wall = build_wall_sdf(drum_sdf, (lo, hi), resolution=96)
     wid = wall.add_to(sim, restitution=0.1, friction=0.7)
-    sim.set_gravity(0.0, -12.0, 0.0)
+    sim.set_gravity((0.0, -12.0, 0.0))
     sim.set_material_params(0.1, 0.0, 0.4)
     sim.set_solver_iterations(24, 6)
 
@@ -70,18 +70,19 @@ def settle_and_spin(sim, wid, omega, spin_steps):
     dt = 0.004
     crit = 0.06
     # grow to full size, gated on overlap
+    sim.set_dt(dt)
     for _ in range(1500):
-        grow = sim.max_overlap() < crit and float(sim.get_scales().mean()) < 0.999
-        sim.set_growth_params(1.0 if grow else 0.0, sim.get_growth_factor())
-        sim.step(dt)
-    sim.set_growth_params(0.0, sim.get_growth_factor())
+        grow = sim.max_overlap < crit and float(sim.get_scales().mean()) < 0.999
+        sim.set_growth_params(1.0 if grow else 0.0, sim.growth_factor)
+        sim.step()
+    sim.set_growth_params(0.0, sim.growth_factor)
     # settle the packed bed (drum still)
     for _ in range(1200):
-        sim.step(dt)
+        sim.step()
     # spin the drum about its z-axis through the axis point (cx, cy)
     sim.set_wall_velocity(wid, (0.0, 0.0, 0.0), (0.0, 0.0, omega), (cx, cy, 0.0))
     for _ in range(spin_steps):
-        sim.step(dt)
+        sim.step()
     pos = sim.get_positions().reshape(-1, 3)
     r = np.sqrt((pos[:, 0] - cx) ** 2 + (pos[:, 1] - cy) ** 2)
     return float((r - R).max()), bed_tilt(pos)

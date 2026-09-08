@@ -15,7 +15,7 @@ DT = 5e-5
 
 def base(n, lo, hi, e, mu, wall_f=None, wall_res=64):
     s = dem.Simulation(n)
-    s.set_sphere_shape(0.5)
+    s.initialize_shape('sphere', 0.5)
     s.set_domain(lo, hi)
     s.set_periodic(False, False, False)
     s.set_material_params(e, 0.0, mu)
@@ -31,8 +31,9 @@ def binary(e):
     s.set_inv_mass(np.ones(2, np.float32))
     s.set_inv_inertia(np.full((2, 3), 1.0, np.float32))
     s.set_velocities(np.array([[1, 0, 0], [-1, 0, 0]], np.float32))
-    s.set_gravity(0, 0, 0)
-    s.step_hertz(DT, 60000)
+    s.set_gravity((0, 0, 0))
+    s.set_dt(DT)
+    s.step_hertz(60000)
     v = s.get_velocities()
     return (v[1, 0] - v[0, 0]) / 2.0
 
@@ -52,9 +53,10 @@ def slab_slide(mu, lock_rotation=True, steps=200000):
     inv_i = 0.0 if lock_rotation else 1.0 / (0.4 * 0.25)
     s.set_inv_inertia(np.full((n, 3), inv_i, np.float32))
     s.set_velocities(np.zeros((n, 3), np.float32))
-    s.set_gravity(5.0, 0.0, -10.0)
+    s.set_gravity((5.0, 0.0, -10.0))
     x0 = pts[:, 0].mean()
-    s.step_hertz(DT, steps)
+    s.set_dt(DT)
+    s.step_hertz(steps)
     return float(s.get_positions()[:, 0].mean() - x0)
 
 
@@ -67,8 +69,9 @@ def single_slide(mu, gx=8.0, steps=160000):
     s.set_inv_mass(np.ones(1, np.float32))
     s.set_inv_inertia(np.zeros((1, 3), np.float32))
     s.set_velocities(np.zeros((1, 3), np.float32))
-    s.set_gravity(gx, 0.0, -10.0)
-    s.step_hertz(DT, steps)
+    s.set_gravity((gx, 0.0, -10.0))
+    s.set_dt(DT)
+    s.step_hertz(steps)
     return float(s.get_positions()[0, 0] - 5.0)
 
 
@@ -81,8 +84,9 @@ def roll_ratio(v0=4.0, mu=0.5, steps=120000):
     s.set_inv_mass(np.ones(1, np.float32))
     s.set_inv_inertia(np.full((1, 3), 1.0 / (0.4 * 0.25), np.float32))
     s.set_velocities(np.array([[v0, 0, 0]], np.float32))
-    s.set_gravity(0.0, 0.0, -10.0)
-    s.step_hertz(DT, steps)
+    s.set_gravity((0.0, 0.0, -10.0))
+    s.set_dt(DT)
+    s.step_hertz(steps)
     v = s.get_velocities()[0]
     w = s.get_angular_velocities()[0]
     return float(v[0]) / v0, float(w[1] * 0.5) / v0

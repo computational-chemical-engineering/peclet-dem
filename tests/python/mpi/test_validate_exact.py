@@ -46,10 +46,10 @@ def make_sim(n):
     m = rcut + 0.5
     s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m), (L[0] + m, L[1] + m, L[2] + m))
     s.set_periodic(False, False, False)
-    s.initialize_shape(shape_type=1, radius=radius)
+    s.initialize_shape('sphere', radius=radius)
     s.add_plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))  # ground at z=0
     s.set_solver_iterations(8, 4)
-    s.set_gravity(0.0, 0.0, -9.8)
+    s.set_gravity((0.0, 0.0, -9.8))
     s.set_dt(dt)
     return s
 
@@ -68,8 +68,9 @@ def test_exact_step_matches_serial():
         ref = make_sim(N)
         ref.set_positions(g_pos.astype(np.float32))
         ref.set_velocities(g_vel.astype(np.float32))
+        ref.set_dt(dt)
         for _ in range(nsteps):
-            ref.step(dt)
+            ref.step()
         ref_pos = np.array(ref.get_positions())
 
     # --- distributed: round-robin ownership, migrate + distributed step each step ---
@@ -88,7 +89,7 @@ def test_exact_step_matches_serial():
         s = make_sim(n)
         s.set_positions(pos.astype(np.float32))
         s.set_velocities(vel.astype(np.float32))
-        s.init_mpi(origin=tuple(dmin), size=tuple(L), gsize=(16, 16, 16),
+        s.init_mpi(origin=tuple(dmin), extent=tuple(L), cells=(16, 16, 16),
                    periodic=(False, False, False))
         s.enable_mpi_step(rcut, sync_every=SYNC_EVERY, forward_rotation=FWD_ROT)
         s.step_mpi(1)

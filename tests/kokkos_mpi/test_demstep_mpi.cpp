@@ -300,7 +300,7 @@ static int runModern(bool rebal, int rank, int size) {
     ref.setPositions(gpos);
     ref.setMaterialIds(gmat);
     for (int s = 0; s < NSTEP; ++s)
-      ref.step(dt);
+      ref.step();
     refPos = ref.getPositions();
   }
   MPI_Bcast(refPos.data(), n * 3, MPI_FLOAT, 0, MPI_COMM_WORLD);
@@ -435,7 +435,7 @@ static int runHertz(bool rebal, int rank, int size) {
   dist.enableMpiStep(/*rcut (unused by the force path)*/ 2.0, 1, true,
                      /*rebalance_every=*/rebal ? 2 : 0);
   for (int c = 0; c < CALLS; ++c)
-    dist.stepHertzMpi(dt, SUB, 0.3f);
+    dist.stepHertzMpi(SUB, 0.3f);
   const std::vector<float> distPos = dist.getPositions();
   long lc = dist.numParticles(), gc = 0;
   MPI_Allreduce(&lc, &gc, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
@@ -450,7 +450,7 @@ static int runHertz(bool rebal, int rank, int size) {
     ref.setPositions(gpos);
     ref.setMaterialIds(gmat);
     for (int c = 0; c < CALLS; ++c)
-      ref.stepHertz(dt, SUB, 0.3f);
+      ref.stepHertz(SUB, 0.3f);
     refPos = ref.getPositions();
   }
   MPI_Bcast(refPos.data(), n * 3, MPI_FLOAT, 0, MPI_COMM_WORLD);

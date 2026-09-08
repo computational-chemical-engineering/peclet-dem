@@ -15,11 +15,11 @@ def verify_precession():
     
     # Init Simulation
     sim = dem.Simulation(1)
-    sim.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
+    sim.initialize_shape('hollow_cylinder', radius=radius, height=height, thickness=thickness)
     
     # Domain (Arbitrary, no boundaries needed for free flight)
     sim.set_domain((-10, -10, -10), (10, 10, 10))
-    sim.set_gravity(0, 0, 0)
+    sim.set_gravity((0, 0, 0))
     
     # Particle Setup
     pos = np.zeros((1, 4), dtype=np.float32)
@@ -88,8 +88,9 @@ def verify_precession():
     
     history_w = []
     
+    sim.set_dt(dt)
     for i in range(num_steps):
-        sim.step(dt)
+        sim.step()
         if i % 100 == 0:
             w, L, E = get_metrics(sim)
             # print(f"Step {i}: W={w}, L={L}, E={E:.6f}")

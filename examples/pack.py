@@ -48,10 +48,10 @@ def pack_spheres(N=800, phi_ref=0.68, radius=0.5, friction=0.0, temperature=1.0,
     rng = np.random.default_rng(seed)
 
     s = dem.Simulation(N)
-    s.initialize_shape(shape_type=1, radius=radius)
+    s.initialize_shape('sphere', radius=radius)
     s.set_domain((-half, -half, -half), (half, half, half))
     s.set_periodic(True, True, True)
-    s.set_gravity(0.0, 0.0, 0.0)
+    s.set_gravity((0.0, 0.0, 0.0))
     s.set_material_params(rest_pre, 1.0, friction)
     s.set_solver_iterations(iters, iters)
     pos = rng.uniform(-half, half, (N, 4)).astype(np.float32); pos[:, 3] = 1.0
@@ -65,27 +65,28 @@ def pack_spheres(N=800, phi_ref=0.68, radius=0.5, friction=0.0, temperature=1.0,
         contact = 2.0 * radius * float(s.get_scales().ravel().mean())
         return float(s.compute_overlaps()) / max(contact, 1e-9)
 
+    s.set_dt(dt)
     for step in range(int(limit_time / dt)):
         if step == cooling_step:
             s.set_material_params(rest_post, 1.0, friction)
             s.set_thermostat(0.0, 1.0e4 * dt)
-        s.step(dt)
+        s.step()
         mo = overlap_frac()
         if mo > criterion:
             it = 0
             while True:
-                s.step(0.0); it += 1
+                s.relax(); it += 1
                 mn = overlap_frac()
                 if mn >= 0.95 * mo and it > settle_patience:
                     break
                 mo = mn
             if mo > criterion:
-                gf = float(s.get_growth_factor()) * math.exp(-growth_rate * dt)
+                gf = float(s.growth_factor) * math.exp(-growth_rate * dt)
                 growth_rate *= growth_decay
                 s.set_growth_params(growth_rate, gf)
         else:
             growth_rate = min(growth_rate * growth_accel, growth_rate_init)
-            s.set_growth_params(growth_rate, float(s.get_growth_factor()))
+            s.set_growth_params(growth_rate, float(s.growth_factor))
         if verbose and step % 200 == 0:
             sc = s.get_scales().ravel()
             print(f"  step {step:5d} phi~{phi_ref*np.mean(sc**3):.3f} overlap={mo:.2e}", flush=True)
@@ -94,7 +95,7 @@ def pack_spheres(N=800, phi_ref=0.68, radius=0.5, friction=0.0, temperature=1.0,
     s.set_material_params(0.0, 0.0, friction)
     s.set_thermostat(0.0, 10.0 * dt)
     for _ in range(quench_steps):
-        s.step(dt)
+        s.step()
 
     sc = s.get_scales().ravel()
     return s, dict(N=N, phi_ref=phi_ref, friction=friction, phi=phi_ref * float(np.mean(sc ** 3)),
@@ -152,10 +153,10 @@ def pack_rings(N=400, phi_ref=0.55, radius=0.5, height=1.0, thickness=0.15, temp
     rng = np.random.default_rng(seed)
 
     s = dem.Simulation(N)
-    s.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
+    s.initialize_shape('hollow_cylinder', radius=radius, height=height, thickness=thickness)
     s.set_domain((-half, -half, -half), (half, half, half))
     s.set_periodic(True, True, True)
-    s.set_gravity(0.0, 0.0, 0.0)
+    s.set_gravity((0.0, 0.0, 0.0))
     s.set_material_params(rest_pre, 1.0, 0.0)
     s.set_solver_iterations(iters, iters)
     pos = rng.uniform(-half, half, (N, 4)).astype(np.float32); pos[:, 3] = 1.0
@@ -167,34 +168,35 @@ def pack_rings(N=400, phi_ref=0.55, radius=0.5, height=1.0, thickness=0.15, temp
     s.set_growth_params(growth_rate, scale_init)
     s.set_thermostat(temperature, 1.0 * dt)
 
+    s.set_dt(dt)
     for step in range(int(limit_time / dt)):
         if step == cooling_step:
             s.set_material_params(rest_post, 1.0, 0.0)
             s.set_thermostat(0.0, 1.0e4 * dt)
-        s.step(dt)
+        s.step()
         mo = float(s.compute_overlaps())            # absolute SDF penetration (engine fixed)
         if mo > criterion:
             it = 0
             while True:
-                s.step(0.0); it += 1
+                s.relax(); it += 1
                 mn = float(s.compute_overlaps())
                 if mn >= 0.95 * mo and it > settle_patience:
                     break
                 mo = mn
             if mo > criterion:
-                gf = float(s.get_growth_factor()) * math.exp(-growth_rate * dt)
+                gf = float(s.growth_factor) * math.exp(-growth_rate * dt)
                 growth_rate *= growth_decay
                 s.set_growth_params(growth_rate, gf)
         else:
             growth_rate = min(growth_rate * growth_accel, growth_rate_init)
-            s.set_growth_params(growth_rate, float(s.get_growth_factor()))
+            s.set_growth_params(growth_rate, float(s.growth_factor))
         if verbose and step % 200 == 0:
             sc = s.get_scales().ravel()
             print(f"  step {step:5d} phi~{phi_ref*np.mean(sc**3):.3f} overlap={mo:.2e}", flush=True)
 
     s.set_material_params(0.0, 0.0, 0.0); s.set_thermostat(0.0, 10.0 * dt)
     for _ in range(quench_steps):
-        s.step(dt)
+        s.step()
     sc = s.get_scales().ravel()
     return s, dict(N=N, phi_ref=phi_ref, phi=phi_ref * float(np.mean(sc ** 3)),
                    max_overlap=float(s.compute_overlaps()),

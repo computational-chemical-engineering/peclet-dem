@@ -43,11 +43,11 @@ def drum_sdf(p, rad=2.5):
 
 
 def configure(sim):
-    sim.set_sphere_shape(1.0)
+    sim.initialize_shape('sphere', 1.0)
     sim.set_domain(lo, hi)
     sim.set_periodic(*periodic)
     wid = build_wall_sdf(drum_sdf, (lo, hi), resolution=96).add_to(sim, restitution=0.1, friction=0.6)
-    sim.set_gravity(0.0, -G, 0.0)
+    sim.set_gravity((0.0, -G, 0.0))
     sim.set_material_params(0.1, 0.0, 0.4)
     sim.set_solver_iterations(24, 6)
     sim.set_dt(dt)
@@ -79,12 +79,12 @@ def test_rotating_drum_mpi():
         sim.set_scales(np.ones(len(pts), np.float32))
         sim.set_growth_params(1.0, 0.15)
         for _ in range(1500):
-            grow = sim.max_overlap() < 0.06 and float(sim.get_scales().mean()) < 0.999
-            sim.set_growth_params(1.0 if grow else 0.0, sim.get_growth_factor())
-            sim.step(dt)
-        sim.set_growth_params(0.0, sim.get_growth_factor())
+            grow = sim.max_overlap < 0.06 and float(sim.get_scales().mean()) < 0.999
+            sim.set_growth_params(1.0 if grow else 0.0, sim.growth_factor)
+            sim.step()
+        sim.set_growth_params(0.0, sim.growth_factor)
         for _ in range(1000):
-            sim.step(dt)
+            sim.step()
         packed = sim.get_positions().reshape(-1, 3).astype(np.float64)
     packed = comm.bcast(packed, root=0)
 
@@ -98,13 +98,13 @@ def test_rotating_drum_mpi():
     sim = dem.Simulation(max(400, 4 * len(mine)))
     wid = configure(sim)
     sim.set_positions(p)
-    sim.init_mpi(origin=lo, size=extent, gsize=gsize, periodic=periodic)
+    sim.init_mpi(origin=lo, extent=extent, cells=gsize, periodic=periodic)
     sim.enable_mpi_step(rcut, sync_every=1, forward_rotation=True, rebalance_every=15)
     sim.set_wall_velocity(wid, lin_vel=(0, 0, 0), ang_vel=(0, 0, omega), center=(cx, cy, 0))
     for _ in range(90):
         sim.step_mpi(29)
 
-    mypos = sim.get_positions().reshape(-1, 3)[:sim.num_particles()].astype(np.float64)
+    mypos = sim.get_positions().reshape(-1, 3)[:sim.num_particles].astype(np.float64)
     allpos = comm.gather(mypos, root=0)
     if rank == 0:
         P = np.concatenate(allpos, axis=0)

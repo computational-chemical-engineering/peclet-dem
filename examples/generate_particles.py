@@ -22,7 +22,7 @@ R_SIM, H_SIM, T_SIM = 0.7, 1.4, 0.3
 def unit_shape_sdf(radius, height, thickness, resolution=128, margin=1.5):
     """(grid, origin, spacing): SDF of the shape centred at the origin, identity rotation, scale 1."""
     sim = dem.Simulation(1)
-    sim.initialize_shape(shape_type=2, radius=radius, height=height, thickness=thickness)
+    sim.initialize_shape('hollow_cylinder', radius=radius, height=height, thickness=thickness)
     bound = max(height, 2.0 * radius) * margin / 2.0
     sim.set_domain((-bound, -bound, -bound), (bound, bound, bound))
     sim.set_positions(np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32))

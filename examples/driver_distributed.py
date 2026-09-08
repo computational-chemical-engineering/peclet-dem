@@ -54,8 +54,9 @@ def build_sim(n):
     s.set_domain((dmin[0] - m, dmin[1] - m, dmin[2] - m),
                  (dmin[0] + L[0] + m, dmin[1] + L[1] + m, dmin[2] + L[2] + m))
     s.set_periodic(False, False, False)
-    s.initialize_shape(shape_type=0, radius=radius)  # spheres
+    s.initialize_shape('sphere', radius=radius)  # spheres
     s.set_solver_iterations(8, 0)
+    s.set_dt(0.002)
     return s
 
 
@@ -88,7 +89,7 @@ for step in range(5):
     sim.set_inv_mass(inv_mass)  # freeze the ghosts (must come after set_positions)
     sim.set_velocities(combined_vel.astype(np.float32))
 
-    sim.step(0.002)
+    sim.step()
 
     # 4) keep only owned particles' updated state; verify the ghosts stayed frozen
     out_pos = np.array(sim.get_positions())

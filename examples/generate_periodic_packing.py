@@ -28,14 +28,14 @@ def run_periodic_growth():
     print(f"Domain Side: {domain_side:.3f}")
     
     sim = dem.Simulation(num_particles)
-    sim.initialize_shape(shape_type=2, radius=radius_base, height=height_base, thickness=thickness_base)
+    sim.initialize_shape('hollow_cylinder', radius=radius_base, height=height_base, thickness=thickness_base)
     
     # Set Domain (Automatic Periodicity)
     half_d = domain_side / 2.0
     sim.set_domain((-half_d, -half_d, -half_d), (half_d, half_d, half_d))
     
     # Zero Gravity (Floating/Jamming)
-    sim.set_gravity(0, 0, 0)
+    sim.set_gravity((0, 0, 0))
     sim.set_periodic(True, True, True)
     
     # Initialize Random Positions & Orientations
@@ -65,11 +65,12 @@ def run_periodic_growth():
     print("Starting Growth Phase...")
     scales = np.zeros(num_particles, dtype=np.float32)
     
+    sim.set_dt(0.005)
     for i in range(grow_steps):
         s = (i + 1) / grow_steps
         scales[:] = s
         sim.set_scales(scales)
-        sim.step(0.005)
+        sim.step()
         if i % 100 == 0:
             print(f"Step {i}/{grow_steps}: Scale {s:.3f}")
             
@@ -77,7 +78,7 @@ def run_periodic_growth():
     scales[:] = 1.0
     sim.set_scales(scales)
     for i in range(settle_steps):
-        sim.step(0.005)
+        sim.step()
         if i % 200 == 0:
             print(f"Settle {i}/{settle_steps}")
             

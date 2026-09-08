@@ -7,11 +7,11 @@ def verify_stacking():
     
     # Init
     sim = dem.Simulation(200) # Smaller number for quick test
-    sim.initialize_shape(0, radius=0.5) # Sphere
+    sim.initialize_shape('sphere', radius=0.5) # Sphere
     
     # Material: Restitution=0.5, Friction=0.3
     sim.set_material_params(0.5, 0.5, 0.) 
-    sim.set_gravity(0, -9.8, 0)
+    sim.set_gravity((0, -9.8, 0))
     
     # Add Floor Plane at y = -5.0
     sim.add_plane([0, -5.0, 0], [0, 1.0, 0])
@@ -43,8 +43,9 @@ def verify_stacking():
     
     print(f"Running {steps} steps (dt={dt})...")
     
+    sim.set_dt(dt)
     for i in range(steps):
-        sim.step(dt)
+        sim.step()
         if i % 100 == 0:
             vels = sim.get_velocities()
             v_mag = np.linalg.norm(vels, axis=1)

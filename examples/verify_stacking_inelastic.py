@@ -10,11 +10,11 @@ def verify_stacking_inelastic():
     n = shape[0]*shape[1]*shape[2]
     sim = dem.Simulation(n)
     radius = 0.6
-    sim.initialize_shape(0, radius=radius)  # Base Radius 1.0 so Scale acts as Radius 
+    sim.initialize_shape('sphere', radius=radius)  # Base Radius 1.0 so Scale acts as Radius 
     
     # Material: Restitution=0.0, Friction=0.0
     sim.set_material_params(0.0, 0.0, 0.0) # Inelastic
-    sim.set_gravity(0, -9.8, 0)
+    sim.set_gravity((0, -9.8, 0))
     sim.set_solver_iterations(10, 100) # Pos=10, Vel=20
     sim.set_global_scale(1.0)
     
@@ -64,8 +64,9 @@ def verify_stacking_inelastic():
     
     print(f"Running {steps} steps (dt={dt})...")
     
+    sim.set_dt(dt)
     for i in range(steps):
-        sim.step(dt)
+        sim.step()
         
         if i % 1 == 0:
             p = sim.get_positions()
