@@ -67,8 +67,8 @@ packed = comm.bcast(packed, root=0)
 N = len(packed)
 
 # --- distribute grains by ORB ownership, spin under step_mpi ---
-mig = core_mpi.Migrator(origin=lo, size=(hi[0]-lo[0], hi[1]-lo[1], hi[2]-lo[2]),
-                        gsize=gsize, periodic=periodic)
+mig = core_mpi.ParticleMigrator(origin=lo, extent=(hi[0]-lo[0], hi[1]-lo[1], hi[2]-lo[2]),
+                        cells=gsize, periodic=periodic)
 mine = np.where(np.array([mig.owner_of(tuple(x)) for x in packed]) == rank)[0]
 p = np.zeros((len(mine), 4), np.float32); p[:, :3] = packed[mine]; p[:, 3] = 1.0
 

@@ -16,7 +16,7 @@ import sys
 import numpy as np
 from mpi4py import MPI
 from peclet import dem
-from peclet.core import mpi as tpx_mpi
+from peclet.core import mpi as core_mpi
 
 # M = sync_every (1 = EXACT), R = forward_rotation (1 = forward ghost quaternions). Defaults = EXACT.
 SYNC_EVERY = int(os.environ.get("M", "1"))
@@ -61,7 +61,7 @@ if rank == 0:
     ref_pos = np.array(ref.get_positions(False))
 
 # --- distributed: round-robin ownership, migrate + MPI-aware step each step ---
-mig = tpx_mpi.Migrator(origin=dmin, size=L, gsize=[16, 16, 16], periodic=[False, False, False])
+mig = core_mpi.ParticleMigrator(origin=dmin, extent=L, cells=[16, 16, 16], periodic=[False, False, False])
 mine = np.arange(rank, N, size)
 pos = g_pos[mine].copy()
 vel = g_vel[mine].copy()

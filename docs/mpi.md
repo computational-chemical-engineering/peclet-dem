@@ -25,7 +25,7 @@ Python surface (gated; present only when built with `-DPECLET_DEM_MPI=ON`):
 from peclet import dem
 sim = dem.Simulation()
 sim.initialize_shape(...); sim.set_positions(...)        # as usual
-sim.init_mpi(origin, size, gsize, periodic)              # ORB block decomposition + tpx particle halo
+sim.init_mpi(origin, size, gsize, periodic)              # ORB block decomposition + core particle halo
 sim.enable_mpi_step(rcut, sync_every=1,                  # ghost cutoff; owner->ghost refresh cadence
                     forward_rotation=True,               # False = spheres (skips quaternion forward)
                     rebalance_every=0)                   # >0 = re-decompose by particle count every N steps

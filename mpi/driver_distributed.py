@@ -1,5 +1,5 @@
 """Distributed packing-gpu driver skeleton: dem Simulation per rank, orchestrated by mpi4py +
-transport-core's tpx_mpi (block decomposition + particle migration/ghosts).
+core's peclet.core.mpi (block decomposition + particle migration/ghosts).
 
 Per step, each rank:
     get owned particles from its Simulation -> migrate (reassign ownership) -> gather ghosts within
@@ -24,7 +24,7 @@ import sys
 import numpy as np
 from mpi4py import MPI
 from peclet import dem
-from peclet.core import mpi as tpx_mpi
+from peclet.core import mpi as core_mpi
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
@@ -34,7 +34,7 @@ dmin = [0.0, 0.0, 0.0]
 L = [8.0, 8.0, 8.0]
 radius = 0.5
 rcut = 2.0 * radius
-mig = tpx_mpi.Migrator(origin=dmin, size=L, gsize=[32, 32, 32], periodic=[True, True, True])
+mig = core_mpi.ParticleMigrator(origin=dmin, extent=L, cells=[32, 32, 32], periodic=[True, True, True])
 
 # initial global particles (id 0..N-1), each rank seeds those it initially owns by id % size
 N = 256

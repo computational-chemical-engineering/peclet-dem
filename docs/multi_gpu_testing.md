@@ -58,12 +58,12 @@ The stock `/usr/bin` OpenMPI is built without CUDA (device-pointer MPI segfaults
 CUDA-aware stack (OpenMPI + UCX, both `--with-cuda`) is required for device→device transfers; see
 [`../../core/docs/cuda-aware-mpi.md`](../../core/docs/cuda-aware-mpi.md) for the
 build/runtime recipe. core's `GridHalo` device-pointer branch is runtime-gated on
-`TPX_CUDA_AWARE_MPI` (not `MPIX_Query_cuda_support()`, which mis-reports here). Bringing the `dem`
+`PECLET_CORE_GPU_AWARE_MPI` (not `MPIX_Query_cuda_support()`, which mis-reports here). Bringing the `dem`
 particle halo's gather/scatter onto the device-pointer path (§5.1) is the remaining piece.
 
 ```bash
 source ~/opt/cudampi-env.sh                              # PATH/LD_LIBRARY_PATH/OPAL_PREFIX + OMPI_MCA_pml=ucx
-TPX_CUDA_AWARE_MPI=1 mpirun -x TPX_CUDA_AWARE_MPI -np N ... # device-pointer path
+PECLET_CORE_GPU_AWARE_MPI=1 mpirun -x PECLET_CORE_GPU_AWARE_MPI -np N ... # device-pointer path
 ```
 
 ---
@@ -148,7 +148,7 @@ contiguous ghost slab `[num_real, num_real+num_ghost)` (positions get a per-ghos
 the Kokkos counterpart of core's device `GridHalo` path; it is **groundwork for real
 multi-GPU/multi-node** — on a single shared GPU the per-transfer overhead beats the tiny host bounce,
 but across NVLink / GPUDirect RDMA it eliminates the D2H + network + H2D round trip. Build against the
-CUDA-aware MPI (§1.3) and gate on `TPX_CUDA_AWARE_MPI`.
+CUDA-aware MPI (§1.3) and gate on `PECLET_CORE_GPU_AWARE_MPI`.
 
 ### 5.2 Overlap comm with compute
 Post the ghost forward asynchronously and compute the **interior** (owned particles with no ghost

@@ -17,7 +17,7 @@ import sys
 import numpy as np
 from mpi4py import MPI
 from peclet import dem
-from peclet.core import mpi as tpx_mpi
+from peclet.core import mpi as core_mpi
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
@@ -36,7 +36,7 @@ N = 200
 nsteps = 15
 
 # which axes does ORB split? -> those are the periodic ones (others get walls).
-_m = tpx_mpi.Migrator(origin=dmin, size=L, gsize=gs, periodic=[True, True, True])
+_m = core_mpi.ParticleMigrator(origin=dmin, extent=L, cells=gs, periodic=[True, True, True])
 split = []
 for ax in range(3):
     lo = [4.0, 4.0, 4.0]; lo[ax] = 1.0
@@ -99,7 +99,7 @@ def run(g_pos, g_vel, nsteps):
         for _ in range(nsteps):
             s.step(dt)
         ref = np.array(s.get_positions(False))
-    mig = tpx_mpi.Migrator(origin=dmin, size=L, gsize=gs, periodic=list(periodic))
+    mig = core_mpi.ParticleMigrator(origin=dmin, extent=L, cells=gs, periodic=list(periodic))
     ids = np.arange(g_pos.shape[0])
     own = np.array([mig.owner_of(tuple(p)) for p in g_pos])
     mine = np.where(own == rank)[0]

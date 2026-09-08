@@ -21,7 +21,7 @@ import sys
 import numpy as np
 from mpi4py import MPI
 from peclet import dem
-from peclet.core import mpi as tpx_mpi
+from peclet.core import mpi as core_mpi
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
@@ -92,7 +92,7 @@ def run_serial(g_pos, g_vel, nsteps, **kw):
 def run_distributed(g_pos, g_vel, nsteps, **kw):
     N = g_pos.shape[0]
     ids = np.arange(N)
-    mig = tpx_mpi.Migrator(origin=dmin, size=L, gsize=[16, 16, 16], periodic=[False, False, False])
+    mig = core_mpi.ParticleMigrator(origin=dmin, extent=L, cells=[16, 16, 16], periodic=[False, False, False])
     own = np.array([mig.owner_of(tuple(p)) for p in g_pos])
     mine = np.where(own == rank)[0]
     pos, vel, idd = g_pos[mine].copy(), g_vel[mine].copy(), ids[mine].astype(np.float64)

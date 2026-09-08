@@ -18,7 +18,7 @@ The prefix picks the backend; never hard-code an arch. `pip install .` is the ca
 ## Tests (three standalone CMake projects + Python scripts)
 
 Each is its own `project()` configured against the same prefix (`-DCMAKE_PREFIX_PATH=...`), with the
-header-only core found via `-DTPX_DIR=<suite>/core` (default: the sibling checkout):
+header-only core found via `-DPECLET_CORE_DIR=<suite>/core` (default: the sibling checkout):
 
 | project | what | run |
 |---|---|---|

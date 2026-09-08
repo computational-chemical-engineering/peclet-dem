@@ -45,7 +45,7 @@ include(PecletDeps)
 peclet_require_kokkos()
 peclet_require_arborx()
 peclet_require_nanobind()   # nanobind + core's View<->ndarray zero-copy bridge
-peclet_sibling_include(peclet-core "${PECLET_TPX_TAG}" "../core" TPX_INCLUDE)
+peclet_sibling_include(peclet-core "${PECLET_CORE_TAG}" "../core" PECLET_CORE_INCLUDE)
 
 # NB_STATIC: bundle nanobind's runtime into the module; the Kokkos device path is routed by the
 # launch compiler regardless. NOMINSIZE: nanobind's default -Os is rejected by nvcc ("'s': expected a
@@ -71,7 +71,7 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packaging/particle_builder.py
                ${CMAKE_CURRENT_BINARY_DIR}/peclet/dem/particle_builder.py COPYONLY)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packaging/scene_particle.py
                ${CMAKE_CURRENT_BINARY_DIR}/peclet/dem/scene_particle.py COPYONLY)
-target_include_directories(dem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${TPX_INCLUDE})
+target_include_directories(dem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${PECLET_CORE_INCLUDE})
 target_link_libraries(dem PRIVATE ArborX::ArborX Kokkos::kokkos)
 
 if(PECLET_DEM_MPI)
