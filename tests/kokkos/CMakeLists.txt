@@ -1,68 +1,31 @@
-# Standalone portable-kernel unit tests (Phase 2). Kokkos-only (no ArborX, no cuBQL): each ported
-# compute kernel is validated in isolation before dem is flipped onto Kokkos. Build:
+# Kokkos-only kernel unit tests (no ArborX, no MPI): each compute kernel validated in isolation against
+# a serial reference. Normally built by the root CMake under -DPECLET_DEM_BUILD_TESTS=ON (one tree per
+# backend); the standalone form is kept for a quick kernel-only loop:
 #   cmake -S tests/kokkos -B build_kokkos -DCMAKE_PREFIX_PATH=<suite>/extern/install/<backend>
 #   cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure
-cmake_minimum_required(VERSION 3.24)
-project(dem_kokkos_kernels LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  cmake_minimum_required(VERSION 3.24)
+  project(dem_kokkos_kernels LANGUAGES CXX)
+  set(CMAKE_CXX_STANDARD 20)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+  endif()
+  find_package(Kokkos CONFIG REQUIRED)
+  message(STATUS "dem/kokkos: Kokkos ${Kokkos_VERSION} (${Kokkos_DEVICES})")
+  # The header-only core: dem's SDF layer delegates to peclet::core::geom, so the kernel tests need
+  # core's include path too (the sibling checkout by default).
+  set(PECLET_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../core" CACHE PATH "core repo")
+  set(PECLET_CORE_INCLUDE "${PECLET_CORE_DIR}/include")
+  enable_testing()
 endif()
 
-find_package(Kokkos CONFIG REQUIRED)
-message(STATUS "dem/kokkos: Kokkos ${Kokkos_VERSION} (${Kokkos_DEVICES})")
-
-# The header-only core: dem's SDF layer delegates to peclet::core::geom (Layer 0 rung 3), so these
-# standalone kernel tests need core's include path too.
-set(PECLET_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../core" CACHE PATH "core repo")
-
-enable_testing()
-add_executable(test_contact_preprocessing test_contact_preprocessing.cpp)
-target_include_directories(test_contact_preprocessing PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${PECLET_CORE_DIR}/include)
-target_link_libraries(test_contact_preprocessing PRIVATE Kokkos::kokkos)
-add_test(NAME contact_preprocessing COMMAND test_contact_preprocessing)
-
-add_executable(test_narrowphase test_narrowphase.cpp)
-target_include_directories(test_narrowphase PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${PECLET_CORE_DIR}/include)
-target_link_libraries(test_narrowphase PRIVATE Kokkos::kokkos)
-add_test(NAME narrowphase COMMAND test_narrowphase)
-
-add_executable(test_solver_velocity test_solver_velocity.cpp)
-target_include_directories(test_solver_velocity PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${PECLET_CORE_DIR}/include)
-target_link_libraries(test_solver_velocity PRIVATE Kokkos::kokkos)
-add_test(NAME solver_velocity COMMAND test_solver_velocity)
-
-add_executable(test_solver_position test_solver_position.cpp)
-target_include_directories(test_solver_position PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${PECLET_CORE_DIR}/include)
-target_link_libraries(test_solver_position PRIVATE Kokkos::kokkos)
-add_test(NAME solver_position COMMAND test_solver_position)
-
-add_executable(test_solver_friction test_solver_friction.cpp)
-target_include_directories(test_solver_friction PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${PECLET_CORE_DIR}/include)
-target_link_libraries(test_solver_friction PRIVATE Kokkos::kokkos)
-add_test(NAME solver_friction COMMAND test_solver_friction)
-
-add_executable(test_integration test_integration.cpp)
-target_include_directories(test_integration PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${PECLET_CORE_DIR}/include)
-target_link_libraries(test_integration PRIVATE Kokkos::kokkos)
-add_test(NAME integration COMMAND test_integration)
-
-add_executable(test_periodicity test_periodicity.cpp)
-target_include_directories(test_periodicity PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${PECLET_CORE_DIR}/include)
-target_link_libraries(test_periodicity PRIVATE Kokkos::kokkos)
-add_test(NAME periodicity COMMAND test_periodicity)
-
-add_executable(test_thermostat test_thermostat.cpp)
-target_include_directories(test_thermostat PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../src ${PECLET_CORE_DIR}/include)
-target_link_libraries(test_thermostat PRIVATE Kokkos::kokkos)
-add_test(NAME thermostat COMMAND test_thermostat)
+set(_dem_src "${CMAKE_CURRENT_SOURCE_DIR}/../../src")
+foreach(t contact_preprocessing narrowphase solver_velocity solver_position solver_friction
+          integration periodicity thermostat)
+  add_executable(test_${t} test_${t}.cpp)
+  target_include_directories(test_${t} PRIVATE ${_dem_src} ${PECLET_CORE_INCLUDE})
+  target_link_libraries(test_${t} PRIVATE Kokkos::kokkos)
+  add_test(NAME ${t} COMMAND test_${t})
+  set_tests_properties(${t} PROPERTIES SKIP_RETURN_CODE 77)
+endforeach()

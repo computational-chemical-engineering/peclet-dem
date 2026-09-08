@@ -1,4 +1,4 @@
-// Correctness of the ArborX broad-phase (dem::findCollisionsArborX) against a brute-force O(N^2)
+// Correctness of the ArborX broad-phase (peclet::dem::findCollisionsArborX) against a brute-force O(N^2)
 // AABB-overlap oracle — the unambiguous ground truth the cuBQL broad-phase also satisfies.
 //
 // Generate random particles with varied radii (and a block of "ghost" particles that issue no
@@ -38,8 +38,8 @@ int main(int argc, char** argv) {
     }
 
     // Upload to device Views.
-    Kokkos::View<float* [3], dem::BpMem> pos("pos", numParticles);
-    Kokkos::View<float*, dem::BpMem> rad("rad", numParticles);
+    Kokkos::View<float* [3], peclet::dem::BpMem> pos("pos", numParticles);
+    Kokkos::View<float*, peclet::dem::BpMem> rad("rad", numParticles);
     {
       auto hpos = Kokkos::create_mirror_view(pos);
       auto hrad = Kokkos::create_mirror_view(rad);
@@ -54,11 +54,11 @@ int main(int argc, char** argv) {
     }
 
     const int maxPairs = numParticles * 64;
-    Kokkos::View<int* [2], dem::BpMem> outPairs("pairs", maxPairs);
-    Kokkos::View<int, dem::BpMem> outCount("count");
+    Kokkos::View<int* [2], peclet::dem::BpMem> outPairs("pairs", maxPairs);
+    Kokkos::View<int, peclet::dem::BpMem> outCount("count");
 
     const int n =
-        dem::findCollisionsArborX(pos, rad, numParticles, numReal, margin, outPairs, outCount);
+        peclet::dem::findCollisionsArborX(pos, rad, numParticles, numReal, margin, outPairs, outCount);
 
     if (n > maxPairs) {
       std::fprintf(stderr, "FAIL: pair buffer overflow (%d > %d)\n", n, maxPairs);
@@ -102,7 +102,7 @@ int main(int argc, char** argv) {
       status = 1;
     } else {
       std::printf("[arborx_broadphase] PASS: %zu candidate pairs match brute force (exec: %s)\n",
-                  expect.size(), dem::BpExec::name());
+                  expect.size(), peclet::dem::BpExec::name());
     }
   }
   Kokkos::finalize();

@@ -1,6 +1,6 @@
 // End-to-end smoke test of the assembled Kokkos+ArborX DEM pipeline (the dem pipeline).
 //
-// Composes EVERY ported unit on the dem::Particles SoA container in the real simulation.cpp step()
+// Composes EVERY ported unit on the peclet::dem::Particles SoA container in the real simulation.cpp step()
 // order — predict -> ghosts -> broad-phase(ArborX) -> narrow-phase -> contact->manifold -> velocity
 // solve -> re-integrate -> position solve -> final commit — and runs several steps on a small
 // periodic sphere packing under gravity with a ground plane. This proves the ported headers compose
@@ -21,7 +21,7 @@
 #include "solver_position.hpp"
 #include "solver_velocity.hpp"
 
-using namespace dem;
+using namespace peclet::dem;
 
 static int readi(Kokkos::View<int, CpMem> v) {
   int h;
@@ -111,7 +111,7 @@ int main(int argc, char** argv) {
       predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
                             P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
                             P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt,
-                            P.extForce);
+                            P.extForce, P.extTorque);
       // 2. periodic ghosts from predicted state.
       Kokkos::deep_copy(space, P.topGhost, P.numReal);
       generateGhostsKokkos(P.numReal, P.capacity, P.domain, P.skin, P.pos, P.invMass, P.posPred,
@@ -148,8 +148,8 @@ int main(int argc, char** argv) {
 
       // 6. velocity solve (one iteration) + apply.
       solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                          P.realIndices, P.growthRate, P.restitutionNormal, P.deltaVel,
-                          P.deltaAngVel);
+                          P.realIndices, P.growthRate, P.restitutionNormal, 0.0f, P.deltaVel,
+                          P.deltaAngVel, P.constraintCounts);
       applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
 
       // 7. re-integrate (persist v, predict x, integrate q).

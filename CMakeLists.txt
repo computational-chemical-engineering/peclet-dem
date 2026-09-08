@@ -29,6 +29,10 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(PECLET_DEM_MPI "Build the dem module with the distributed (MPI) step exposed" OFF)
+# The test suites (tests/kokkos, tests/arborx, tests/kokkos_mpi under PECLET_DEM_MPI, plus the Python
+# tests under tests/python) are built from THIS tree under one option -- OFF by default so a wheel
+# build is unaffected, ON in CI and in the CLAUDE.md dev recipe (`ctest --test-dir build`).
+option(PECLET_DEM_BUILD_TESTS "Build the C++ test suites and register the Python tests with ctest" OFF)
 
 # Redistributable single-GPU CUDA wheel: libcudart is provided by the `nvidia-cuda-runtime` PyPI
 # dependency (installed to site-packages/nvidia/cu13/lib), not the system. ON sets the module's RPATH
@@ -86,6 +90,47 @@ endif()
 if(PECLET_CUDA_RUNTIME_WHEEL)
   set_target_properties(dem PROPERTIES
     INSTALL_RPATH "$ORIGIN/../../nvidia/cu13/lib" INSTALL_RPATH_USE_LINK_PATH OFF)
+endif()
+
+# --- tests -------------------------------------------------------------------------------------
+if(PECLET_DEM_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests/kokkos)      # 8 kernel unit tests (Kokkos only)
+  add_subdirectory(tests/arborx)      # broad-phase + full single-rank pipeline (2)
+  if(PECLET_DEM_MPI)
+    add_subdirectory(tests/kokkos_mpi)  # distributed step / migration / rebalance, np = 1, 2, 4 (24)
+  endif()
+  # Python tests (pytest functions under tests/python) against the module built in this tree. The
+  # MPI-only files under tests/python/mpi skip themselves unless mpi4py + peclet.core.mpi are
+  # importable; under PECLET_DEM_MPI they are additionally launched through mpirun at np = 1, 2, 4
+  # (each returns 77 = ctest SKIP when the Python MPI stack is missing, never a silent pass).
+  add_test(NAME python_tests
+           COMMAND ${Python_EXECUTABLE} -m pytest -q --ignore=tests/python/mpi
+                   ${CMAKE_CURRENT_SOURCE_DIR}/tests/python)
+  # The build tree is PREPENDED to PYTHONPATH at test time (the caller's PYTHONPATH -- e.g. a
+  # built peclet.core python tree for the MPI tests -- is kept).
+  set_tests_properties(python_tests PROPERTIES
+    ENVIRONMENT_MODIFICATION "PYTHONPATH=path_list_prepend:${CMAKE_CURRENT_BINARY_DIR}"
+    LABELS python)
+  if(PECLET_DEM_MPI)
+    if(NOT MPIEXEC_EXECUTABLE)
+      set(MPIEXEC_EXECUTABLE /usr/bin/mpirun)
+    endif()
+    if(NOT MPIEXEC_NUMPROC_FLAG)
+      set(MPIEXEC_NUMPROC_FLAG -np)
+    endif()
+    separate_arguments(_mpi_preflags NATIVE_COMMAND "${MPIEXEC_PREFLAGS}")
+    foreach(t validate_exact validate_periodic verify_distributed verify_rotating_drum_mpi)
+      foreach(np 1 2 4)
+        add_test(NAME python_mpi_${t}_np${np}
+                 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np} ${_mpi_preflags}
+                         ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/mpi/test_${t}.py)
+        set_tests_properties(python_mpi_${t}_np${np} PROPERTIES
+          ENVIRONMENT_MODIFICATION "PYTHONPATH=path_list_prepend:${CMAKE_CURRENT_BINARY_DIR}"
+          SKIP_RETURN_CODE 77 PROCESSORS ${np} LABELS "python;mpi")
+      endforeach()
+    endforeach()
+  endif()
 endif()
 
 # --- pip / scikit-build-core install rule -------------------------------------------------------

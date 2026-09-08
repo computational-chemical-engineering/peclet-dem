@@ -47,12 +47,13 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 │   ├── output_sdf.hpp            # Packed-bed SDF grid reconstruction (get_sdf_grid)
 │   ├── io.hpp                    # LAMMPS-dump + SDF-VTI export
 │   └── mpi_halo.hpp              # Distributed particle halo (core), gated PECLET_DEM_MPI
-├── tests                       # C++ test projects: kokkos/ (kernels), arborx/ (broad-phase + pipeline),
-│                               #   kokkos_mpi/ (distributed step, np=1,2,4); plus Python verify/test scripts
-├── mpi                         # Python validation/benchmark scripts for the distributed step
+├── tests                       # ctest suites, built by -DPECLET_DEM_BUILD_TESTS=ON: kokkos/ (kernels),
+│                               #   arborx/ (broad-phase + pipeline), kokkos_mpi/ (distributed step, np=1,2,4),
+│                               #   python/ (pytest) + python/mpi/ (mpirun-launched pytest files)
+├── examples                    # demos: packing / collision / stacking / precession / thermostat, pack.py,
+│                               #   shape + packing generators, the distributed driver + microbenchmark
 ├── docs                        # Documentation (mpi.md, multi_gpu_testing.md, solver notes; Doxyfile)
-├── notebooks                   # packing_analysis.ipynb
-└── *.py                        # Python verification (verify_*.py) and assert-bearing test (test_*.py) scripts
+└── notebooks                   # packing_analysis.ipynb
 ```
 
 ## Prerequisites
@@ -88,18 +89,26 @@ The compiled `peclet.dem` extension is placed in `build/peclet/dem/`; run script
 
 ## Running Simulations
 
-The root directory holds the Python entry points: `verify_*.py` demos (sphere / hollow-cylinder
-packing, collisions, stacking, precession, thermostat), assert-bearing `test_*.py` checks (Hertz
-contact, coloured Gauss-Seidel, pair materials, cone friction, statics battery), the `pack.py` /
-`pack_meter.py` packing protocol + meter, and `generate_particles.py` (Ovito shape mesh). `tests/`
-adds SDF-particle, restitution and rotating-drum checks; `mpi/` the distributed-step validation
-scripts (`mpirun -np N python mpi/validate_exact.py`). All are run from the build tree:
+`examples/` holds the Python demos: `verify_*.py` (sphere / hollow-cylinder packing, collisions,
+stacking, precession, thermostat), the `pack.py` / `pack_meter.py` packing protocol + meter,
+`generate_particles.py` (Ovito shape mesh) and the packing generators, plus the distributed
+`driver_distributed.py` skeleton and `bench_step.py` (`mpirun -np N python examples/bench_step.py`,
+needs a built `peclet.core.mpi` on `PYTHONPATH`). All run from the build tree:
 
 ```bash
 export PYTHONPATH=$PYTHONPATH:$(pwd)/build        # import peclet.dem from the dev build
-python verify_packing_spheres.py
-python test_hertz.py
+python examples/verify_packing_spheres.py
 ```
+
+## Tests
+
+Configure with `-DPECLET_DEM_BUILD_TESTS=ON` (add `-DPECLET_DEM_MPI=ON` for the distributed suites)
+and run `ctest`: the kernel unit tests (`tests/kokkos`), the ArborX broad-phase + pipeline tests
+(`tests/arborx`), the distributed ctests (`tests/kokkos_mpi`, np=1,2,4) and the Python suite
+(`tests/python`, pytest: Hertz + non-spherical Hertz, cone friction, pair materials, coloured
+Gauss-Seidel, statics battery, restitution, SDF particles, rotating drum, ...; `tests/python/mpi` is
+launched through `mpirun` on top of `peclet.core.mpi`). See `CLAUDE.md` for the exact recipe; CI
+(`.github/workflows/ci.yml`) runs all of it on the host OpenMP backend.
 
 ## Output & Visualization
 
@@ -110,7 +119,7 @@ The simulation supports two primary output formats:
 For particle visualization (especially non-spherical shapes), we use the LAMMPS dump format combined with an STL mesh.
 
 1.  **Generate Output**: The simulation writes `dump.custom.*` files.
-2.  **Generate Shape**: Run `python generate_particles.py` to create `particle_shape.stl`.
+2.  **Generate Shape**: Run `python examples/generate_particles.py` to create `particle_shape.stl`.
 3.  **Visualize**:
     - Open **Ovito**.
     - Load the `dump.custom.*` sequence.

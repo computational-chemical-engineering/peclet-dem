@@ -45,9 +45,9 @@ cmake.version = ">=3.24"
 wheel.install-dir = "."
 wheel.packages = []
 sdist.include = ["src", "packaging", "cmake", "CMakeLists.txt", "README.md", "LICENSE"]
-# Root-level verify_*/test_* scripts are development entry points, not part of the package (RELEASE.md A4):
-# keep them out of the source distribution.
-sdist.exclude = ["/verify_*.py", "/test_*.py", "/pack.py", "/pack_meter.py", "/generate_particles.py"]
+# examples/ and tests/ are development entry points, not part of the package (RELEASE.md A4): only the
+# sdist.include list above ships.
+sdist.exclude = ["/examples", "/tests"]
 
 # ---------------------------------------------------------------------------
 # Self-contained redistributable CPU wheels (cibuildwheel). PECLET_VENDOR_DEPS=ON FetchContent-builds

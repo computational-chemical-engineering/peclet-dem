@@ -1,8 +1,8 @@
 name: Quality
 
-# Lightweight, non-breaking code-quality gates. The Python job hard-fails on *critical* errors only
-# (syntax errors, undefined names, bad string formatting / comparisons — the classic stop-the-build
-# set), so it catches real bugs without drowning research scripts in style nits.
+# Code-quality gates. The Python job hard-fails on *critical* errors only (syntax errors, undefined
+# names, bad string formatting / comparisons — the classic stop-the-build set); the clang-format job
+# is BLOCKING over src/ and tests/ (the tree was reformatted in one commit, QUALITY_PLAN.md §3.D.7).
 
 on:
   push:
@@ -23,20 +23,20 @@ jobs:
       - name: Ruff critical-error check
         run: |
           ruff check . --select E9,F63,F7,F82 \
-            --exclude ".venv,venv,build,build_*,__pycache__,_deps,extern,legacy,notebooks"
+            --exclude ".venv,venv,build,build_*,__pycache__,_deps,extern,legacy,notebooks,output"
 
   cpp-format:
-    name: clang-format (informational)
+    name: clang-format
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install "clang-format==18.1.8"
-      - name: clang-format dry-run (uses the repo .clang-format)
+      - name: clang-format check (BLOCKING; uses the repo .clang-format)
         run: |
+          # src/ and tests/ were reformatted in one commit (QUALITY_PLAN.md §3.D.7); blocking since.
           files=$(git ls-files 'src/*.hpp' 'src/*.cpp' 'tests/*.hpp' 'tests/*.cpp')
           [ -z "$files" ] && { echo "no C++ sources"; exit 0; }
           clang-format --dry-run --Werror $files

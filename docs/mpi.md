@@ -9,7 +9,9 @@ runs locally), plus periodic **load rebalancing** (weighted-ORB SoA ownership mi
 The distributed step now ships **inside the `dem` Kokkos module** as `step_mpi`, gated behind the
 `PECLET_DEM_MPI` build option (the default module never defines it, so the single-rank module stays
 byte-identical). This document is the status + how-to-build/run + what-is-validated for that step. The Python
-validation scripts it refers to live in `../mpi/`.
+validation scripts it refers to live in `../tests/python/mpi/` (pytest files launched through
+`mpirun`, registered as ctests by `-DPECLET_DEM_BUILD_TESTS=ON`); the driver skeleton and the
+microbenchmark in `../examples/`.
 
 ## The shipped distributed step (`dem`, `-DPECLET_DEM_MPI=ON`)
 
@@ -63,14 +65,25 @@ quaternion forward and is **exact for spheres**.
 ### What is validated
 - `tests/kokkos_mpi/` — the distributed Kokkos `demStep`/`rebalance` ctests, run under `mpirun` at
   **np=1,2,4**, in both a closed (non-periodic) box and a fully-periodic lattice (the periodic case
-  exercises the local periodic self-ghosts on undecomposed axes). Build/run:
+  exercises the local periodic self-ghosts on undecomposed axes). Build/run (from the root tree):
   ```bash
-  cmake -S tests/kokkos_mpi -B build_kmpi \
-        -DCMAKE_PREFIX_PATH="<suite>/extern/install/<backend>" \
-        -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun
-  cmake --build build_kmpi -j && ctest --test-dir build_kmpi --output-on-failure
+  cmake -S . -B build_dev -DCMAKE_PREFIX_PATH="<suite>/extern/install/<backend>" \
+        -DPECLET_DEM_MPI=ON -DPECLET_DEM_BUILD_TESTS=ON -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun
+  cmake --build build_dev -j && OMP_NUM_THREADS=1 ctest --test-dir build_dev -L mpi --output-on-failure
   ```
-- np=1 is bit-exact to the single-rank step; np=2/4 agree to atomic-ordering float noise.
+  (`tests/kokkos_mpi` also still configures standalone.)
+- `tests/python/mpi/` — the Python drivers on core's `peclet.core.mpi` + mpi4py, registered as the
+  `python_mpi_*_np{1,2,4}` ctests (exit 77 = SKIP when that stack is missing): `test_validate_exact`
+  (per-particle vs serial), `test_validate_periodic` (wrap through the split axes: 2-body, corner,
+  N-body with resting straddlers), `test_verify_distributed` (elastic energy + settling-pack
+  observables) and `test_verify_rotating_drum_mpi` (moving SDF wall + rebalancing).
+- np=1 agrees with the single-rank step to float noise (max 1e-4 over 15 steps). At np=2/4 the
+  modern stack (processor-block Gauss–Seidel with rank-local colouring) sweeps the finite-iteration
+  PGS in a different order than single-rank, so per-particle agreement on a stiff, randomly
+  overlapping IC is *statistical* (measured 2026-09-08, N=200, 15 steps: mean 5e-3, 95 % quantile
+  4e-2, max 0.11 = a quarter diameter); resting wrap contacts agree exactly and the aggregate
+  observables (energy, overlap, pile geometry) match to their tolerances. The C++ `demstep_*`
+  ctests are the tolerance-based statement of the same thing.
 
 ### Validation lessons carried into the Kokkos step
 - **Full per-particle state must travel through migration** (quaternion + angular velocity, not just

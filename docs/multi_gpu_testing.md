@@ -77,15 +77,15 @@ cd dem && source .venv/bin/activate
 PYP=$PWD/build                                           # the -DPECLET_DEM_MPI=ON module build dir
 
 # Correctness across GPUs (per-particle vs a serial reference; spheres settling on a floor):
-PYTHONPATH=$PYP mpirun -np 2 --map-by ppr:1:gpu python3 mpi/validate_exact.py
-PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 mpi/validate_exact.py
+PYTHONPATH=$PYP mpirun -np 2 --map-by ppr:1:gpu python3 tests/python/mpi/test_validate_exact.py
+PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 tests/python/mpi/test_validate_exact.py
 
 # Cross-rank physics (restitution across a split, settled packing fraction/overlap):
-PYTHONPATH=$PYP mpirun -np 2 --map-by ppr:1:gpu python3 mpi/verify_distributed.py
+PYTHONPATH=$PYP mpirun -np 2 --map-by ppr:1:gpu python3 tests/python/mpi/test_verify_distributed.py
 
 # Steady-state throughput (env knobs PI/VI/M/R):
-PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 mpi/bench_step.py
-M=4 PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 mpi/bench_step.py
+PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 examples/bench_step.py
+M=4 PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 examples/bench_step.py
 ```
 
 `validate_exact.py`/`bench_step.py` env: `M`=`sync_every` (1=EXACT), `R`=`forward_rotation` (0 for
@@ -122,7 +122,7 @@ reduce-max across ranks. That single breakdown tells you whether to spend effort
   ```bash
   PYTHONPATH=$PYP mpirun -np 2 --map-by ppr:1:gpu \
     nsys profile -t cuda,mpi,nvtx -o nsys_rank_%q{OMPI_COMM_WORLD_RANK} \
-    python3 mpi/bench_step.py
+    python3 examples/bench_step.py
   ```
   Look for: the synchronous host-staged copies per step (each a GPU bubble), MPI wait time, and whether
   ranks rendezvous in lock-step (over-synchronisation).
