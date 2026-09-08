@@ -704,7 +704,8 @@ NB_MODULE(_dem, m) {
           "max_overlap", [](Simulation& s) { return s.maxOverlap(); },
           "Maximum pair interpenetration recorded by the position solver in the last step (its "
           "last-iteration residual, so it under-reports the committed overlap -- see "
-          "docs/packing_investigation.md). compute_overlaps() measures the committed state.")
+          "docs/archive/packing_investigation.md). compute_overlaps() measures the committed "
+          "state.")
       .def("compute_overlaps", &Simulation::computeOverlaps,
            "Measure and return the maximum pair interpenetration of the current committed state.")
       .def(

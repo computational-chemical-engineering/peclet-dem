@@ -12,7 +12,7 @@ A Lubachevsky-Stillinger-style growth + annealing protocol that converges to the
   * then a dissipative cooling phase + a final quench settle the packing into its rigid contact network.
 
 Validated for periodic monodisperse spheres: phi ~ 0.635 (random close packing ~ 0.64), isostatic
-coordination Z ~ 6 at the contact gap, g(r) contact peak at one diameter. See docs/packing_investigation.md.
+coordination Z ~ 6 at the contact gap, g(r) contact peak at one diameter. See docs/archive/packing_investigation.md.
 """
 from __future__ import annotations
 
