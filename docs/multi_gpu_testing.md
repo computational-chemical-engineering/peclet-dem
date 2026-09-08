@@ -13,8 +13,8 @@ by the `extern/install/<backend>` prefix the build is pointed at, not hard-coded
 below assume the **CUDA backend** (`nvidia-cuda` prefix); for HIP use the ROCm equivalents
 (`rocprof`/`omnitrace`).
 
-Read alongside: `../../core/docs/cuda-aware-mpi.md` (the CUDA-aware-MPI diagnosis &
-sysadmin ask), the "MPI / sdflow" section of `../../flow/CLAUDE.md` (the Eulerian precedent), and
+Read alongside: `../../core/docs/archive/cuda-aware-mpi.md` (the CUDA-aware-MPI diagnosis &
+sysadmin ask), the "MPI / flow" section of `../../flow/CLAUDE.md` (the Eulerian precedent), and
 `../../docs/ROADMAP.md` Phase 4 / Phase 7.
 
 ---
@@ -43,22 +43,22 @@ correctness pass but with zero speedup. (For HIP, use `ROCR_VISIBLE_DEVICES`.)
 
 ### 1.2 Launcher & build
 Use the system MPI, not ParaView's bundled one (it launches OpenMPI binaries as singletons):
-`-DMPIEXEC_EXECUTABLE=/usr/bin/mpirun`. Build the `dem` module with `-DPECLET_DEM_MPI=ON` against the
+`-DMPIEXEC_EXECUTABLE=/usr/bin/mpirun`. Build the `peclet.dem` module with `-DPECLET_DEM_MPI=ON` against the
 bootstrapped backend prefix:
 ```bash
-cd dem && source .venv/bin/activate
+cd dem && source ../.venv/bin/activate            # the ONE suite venv
 export PATH=/usr/local/cuda-13.2/bin:$PATH              # nvcc on PATH for the CUDA backend
 cmake -S . -B build -DPECLET_DEM_MPI=ON -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda"
 cmake --build build -j$(nproc)
 ```
-`mpi4py` must live in the same Python (`.venv`) as the `dem` module.
+`mpi4py` must live in the same Python (the one suite `../.venv`) as the `peclet.dem` module.
 
 ### 1.3 CUDA-aware MPI (unlocks the device-resident halo)
 The stock `/usr/bin` OpenMPI is built without CUDA (device-pointer MPI segfaults). A user-space
 CUDA-aware stack (OpenMPI + UCX, both `--with-cuda`) is required for device→device transfers; see
-[`../../core/docs/cuda-aware-mpi.md`](../../core/docs/cuda-aware-mpi.md) for the
+[`../../core/docs/archive/cuda-aware-mpi.md`](../../core/docs/archive/cuda-aware-mpi.md) for the
 build/runtime recipe. core's `GridHalo` device-pointer branch is runtime-gated on
-`PECLET_CORE_GPU_AWARE_MPI` (not `MPIX_Query_cuda_support()`, which mis-reports here). Bringing the `dem`
+`PECLET_CORE_GPU_AWARE_MPI` (not `MPIX_Query_cuda_support()`, which mis-reports here). Bringing the `peclet.dem`
 particle halo's gather/scatter onto the device-pointer path (§5.1) is the remaining piece.
 
 ```bash
@@ -73,7 +73,7 @@ PECLET_CORE_GPU_AWARE_MPI=1 mpirun -x PECLET_CORE_GPU_AWARE_MPI -np N ... # devi
 The mpi4py drivers in this directory each construct a `dem.Simulation` per rank and drive `step_mpi`:
 
 ```bash
-cd dem && source .venv/bin/activate
+cd dem && source ../.venv/bin/activate            # the ONE suite venv
 PYP=$PWD/build                                           # the -DPECLET_DEM_MPI=ON module build dir
 
 # Correctness across GPUs (per-particle vs a serial reference; spheres settling on a floor):
@@ -83,13 +83,15 @@ PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 tests/python/mpi/test_va
 # Cross-rank physics (restitution across a split, settled packing fraction/overlap):
 PYTHONPATH=$PYP mpirun -np 2 --map-by ppr:1:gpu python3 tests/python/mpi/test_verify_distributed.py
 
-# Steady-state throughput (env knobs PI/VI/M/R):
+# Steady-state throughput (the SCRIPTS read PI/VI/M/R from the environment; the library reads
+# no numerics env vars -- see CLAUDE.md "Environment variables"):
 PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 examples/bench_step.py
 M=4 PYTHONPATH=$PYP mpirun -np 4 --map-by ppr:1:gpu python3 examples/bench_step.py
 ```
 
-`validate_exact.py`/`bench_step.py` env: `M`=`sync_every` (1=EXACT), `R`=`forward_rotation` (0 for
-spheres), `PI`/`VI`=position/velocity iterations. The Kokkos `tests/kokkos_mpi` ctests are the
+`tests/python/mpi/test_validate_exact.py` and `examples/bench_step.py` read their own environment:
+`M`=`sync_every` (1=EXACT), `R`=`forward_rotation` (0 for spheres), `PI`/`VI`=the
+`set_solver_iterations(pos, vel)` counts. These are script arguments, not library knobs. The Kokkos `tests/kokkos_mpi` ctests are the
 primary correctness gate; the Python drivers are for at-scale throughput/observable checks.
 
 ---
@@ -101,7 +103,7 @@ primary correctness gate; the Python drivers are for at-scale throughput/observa
 | **Strong scaling** | fixed global N (e.g. 1e6), np = 1,2,4,8 | ms/step, speedup, parallel efficiency | near-linear until comm/halo dominates |
 | **Weak scaling** | fixed N **per rank** (e.g. 2e5), grow np | ms/step ~ flat | flat = comm not growing with np |
 | **Comm fraction** | per-step time split | gather + per-iter forward vs solve | shrinks with N/rank; sets the device-pack payoff |
-| **Ghost fraction** | `num_ghost()` / owned | surface/volume ratio | drops as N/rank grows; drives redundant compute |
+| **Ghost fraction** | `sim.num_ghost` / owned | surface/volume ratio | drops as N/rank grows; drives redundant compute |
 | **M-knob sweep** | M=1,2,4,8 | ms/step **and** mean‖dist−serial‖ | trade boundary error for fewer exchanges |
 | **Load balance** | per-rank owned count + ms/step | max/mean | weighted-ORB split quality; imbalance caps speedup. Try `rebalance_every=N` |
 

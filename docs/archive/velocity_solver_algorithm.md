@@ -6,7 +6,7 @@
 > validated engine** and is no longer accurate: with the current Kokkos solver the packing engine
 > reaches a genuine random close packing (φ ≈ 0.64, isostatic Z ≈ 6, max overlap ~0.3 %) and is stable.
 > For the full picture see:
-> - [`solver_details.md`](solver_details.md) — the current two-pass (velocity → position) pipeline.
+> - [`solver_details.md`](../solver_details.md) — the current two-pass (velocity → position) pipeline.
 > - [`packing_investigation.md`](packing_investigation.md) — the authoritative narrative + validation.
 >
 > This file is kept as a focused summary of the **velocity solve** only.

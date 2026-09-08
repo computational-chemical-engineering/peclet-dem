@@ -52,7 +52,8 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 │                               #   python/ (pytest) + python/mpi/ (mpirun-launched pytest files)
 ├── examples                    # demos: packing / collision / stacking / precession / thermostat, pack.py,
 │                               #   shape + packing generators, the distributed driver + microbenchmark
-├── docs                        # Documentation (mpi.md, multi_gpu_testing.md, solver notes; Doxyfile)
+├── docs                        # Reference docs: solver_details.md, mpi.md, multi_gpu_testing.md,
+│                               #   visualization.md, Doxyfile; archive/ = dated campaign records
 └── notebooks                   # packing_analysis.ipynb
 ```
 
@@ -86,6 +87,37 @@ balancing — `enable_mpi_step(..., rebalance_every=N)` or an explicit `rebalanc
 particle count (weighted ORB) and migrates ownership so each rank keeps a near-equal share.*
 
 The compiled `peclet.dem` extension is placed in `build/peclet/dem/`; run scripts with `build/` on `PYTHONPATH` (`import peclet.dem`).
+
+## Quick start
+
+```python
+import numpy as np
+from peclet import dem
+
+sim = dem.Simulation(capacity=20000)             # owned + periodic ghost slots
+sim.initialize_shape('sphere', 0.5)              # one shape; add_shape(...) appends more
+sim.set_global_scale(0.01)                       # grain size -- set it BEFORE set_domain (both reset the skin)
+sim.set_domain(extent=(0.2, 0.2, 0.4), origin=(0, 0, 0), periodic=(True, True, False))
+sim.add_plane(point=(0, 0, 0), normal=(0, 0, 1)) # there is no implicit floor
+
+xyz = np.random.rand(5000, 3) * [0.2, 0.2, 0.4]
+sim.set_positions(xyz.astype(np.float32))        # (N, 3), or (N, 4) whose 4th column is the INVERSE mass
+sim.set_gravity((0, 0, -9.81))                   # the default is ZERO
+sim.set_material_params(restitution_normal=0.3, friction=0.4)   # friction defaults to ZERO
+sim.set_solver_iterations(pos=10, vel=8)         # vel defaults to 0 = no restitution
+
+sim.set_dt(1e-4)                                 # every stepper RAISES before this
+sim.step(500)                                    # advance 500 substeps
+sim.relax(50)                                    # dynamics-free overlap removal (no dt needed)
+
+pos = sim.get_positions()                        # (N, 3) float32
+print(sim.num_particles, sim.num_contacts, sim.compute_overlaps())
+```
+
+Counts and stored scalars are **properties** (`num_particles`, `num_contacts`, `max_overlap`, `dt`,
+`gravity`, `stabilization`, ...); computed scalars are methods (`compute_overlaps()`); array copies
+are `get_*`. Developer instruments, ablations and GPU execution policies live on `sim.diagnostics`.
+See `CLAUDE.md` for the call-order requirements and `docs/solver_details.md` for what the step does.
 
 ## Running Simulations
 
@@ -133,7 +165,7 @@ For particle visualization (especially non-spherical shapes), we use the LAMMPS 
 
 For visualizing fields (like the Signed Distance Field or occupancy grids), the simulation exports VTI files (`.vti`).
 
-1.  **Generate Output**: Use `Simulation.export_sdf("filename.vti", resolution=...)`.
+1.  **Generate Output**: `sim.export_sdf("bed.vti", resolution=(128, 128, 128))` (the resolution is an `(rx, ry, rz)` triple; `sim.get_sdf_grid((rx, ry, rz))` returns the same field as an array indexed `[x, y, z]`).
 2.  **Visualize**:
     - Open **ParaView**.
     - Load the `.vti` file.
@@ -142,7 +174,7 @@ For visualizing fields (like the Signed Distance Field or occupancy grids), the 
 ## Status
 
 The single-GPU engine is complete and validated: it reaches stable high-density (random close)
-packing, and energy is conserved to ~0.3% (see `docs/packing_investigation.md`). Friction is
+packing, and energy is conserved to ~0.3% (see `docs/archive/packing_investigation.md`). Friction is
 stabilized for spheres; body-body tangential friction is a known follow-up (currently weaker than
 ideal). Active work is at-scale multi-GPU/MPI tuning.
 

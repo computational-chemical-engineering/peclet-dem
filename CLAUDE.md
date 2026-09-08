@@ -25,7 +25,7 @@ cmake -S . -B build_dev -DCMAKE_PREFIX_PATH="$PWD/../extern/install/host-openmp"
       -DPECLET_DEM_BUILD_TESTS=ON -DPECLET_DEM_MPI=ON -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun
 cmake --build build_dev -j8
 OMP_NUM_THREADS=2 OMP_PROC_BIND=false PYTHONPATH=<core-python-build> \
-    ctest --test-dir build_dev --output-on-failure -j1        # 47 tests (35 without PECLET_DEM_MPI)
+    ctest --test-dir build_dev --output-on-failure -j1        # 47 tests (11 without PECLET_DEM_MPI)
 ```
 
 | suite | what | ctests |
@@ -53,6 +53,18 @@ OMP_PROC_BIND=false`) for any battery — an unbounded pool on the 48-core host 
 to 0 (no velocity solve, so no restitution — call `set_solver_iterations(pos, vel)`), gravity defaults
 to zero, there is no implicit floor at the domain minimum (`add_plane`), and an `(N,4)` positions
 array's 4th column is the INVERSE mass (`w=0` = fixed body).
+
+**1.0.0 API traps (packages E + F, 2026-09-08).** A stepper called before `set_dt` raises
+`RuntimeError` — there is no default time step, and `relax(n)` is the only exception. Every
+per-particle setter raises if its row count is not `num_particles`, and `set_positions` raises past
+`capacity`, where all four used to corrupt or silently truncate (`set_velocities` read an `(N,4)`
+input as `(N,3)` and mis-indexed every row after the first). `get_sdf_grid((rx, ry, rz))` returns a
+**Fortran-order** `(rx, ry, rz)` array indexed `[x, y, z]` — it used to hand back a C-order array
+over x-fastest data, silently transposing the axes on a non-cubic grid; the setters
+(`set_sdf_shape` / `add_sdf_shape` / `add_sdf_wall`) take that same 3-D array and convert a C-order
+input implicitly. `max_overlap` is the position loop's last-iteration residual and under-reports;
+`compute_overlaps()` re-measures the committed state. Shape and mode arguments are strings whose
+error message lists the accepted set. No environment variable changes what the module computes.
 
 **Single-rank periodic wrap contacts are asymmetric** (`sim.hpp` `demStep`, `ghostBand = maxRad`): only
 grains within one radius of a periodic face get an image, so a wrap pair whose farther partner sits
@@ -140,6 +152,18 @@ oversubscribed, `OMP_NUM_THREADS=1`). `quality.yml`: ruff critical errors + a BL
 over `src/` and `tests/` (`.clang-format`; `.clang-tidy` is voro's, informational). Pinned inputs:
 Kokkos 5.1.1 / ArborX v2.1 (cached), nanobind 2.13.0. Watch a push with
 `gh run watch -R computational-chemical-engineering/peclet-dem <id> --exit-status`.
+
+## Docs (`docs/` vs `docs/archive/`)
+
+`docs/` holds only what describes the code that ships — `solver_details.md` (both engines, the
+shared solve driver, what changes results and what does not), `mpi.md` (the distributed step,
+`sync_every`, periodicity/capacity rules, what is validated), `multi_gpu_testing.md` (device
+binding, launch recipes, profiling, the optimisation backlog), `visualization.md` and `Doxyfile`.
+Dated campaign records go to `docs/archive/` with a row in `docs/archive/README.md` — never
+deleted, never maintained (QUALITY_PLAN D7). Currently archived: `packing_investigation.md` (the
+five-phase RCP investigation) and `velocity_solver_algorithm.md` (pre-PGS summary of the velocity
+solve). `src/dem_bindings.cpp` and `examples/pack.py` still cite `docs/packing_investigation.md`
+as plain text — add the `archive/` prefix when those files are next touched.
 
 ## Git
 

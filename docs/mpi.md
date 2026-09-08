@@ -1,12 +1,12 @@
 # dem — distributed (MPI) step
 
 MPI block-parallelism for the DEM/XPBD solver on the shared `core` library (sibling repo
-`../../core`), mirroring the approach validated for `sdflow`. The Lagrangian counterpart to
+`../../core`), mirroring the approach validated for `flow` (the Eulerian precedent). The Lagrangian counterpart to
 the Eulerian grid halo is **particle migration** (reassign particles to their owning rank) + **ghost
 particles** (copies within one interaction radius of a block boundary, so each rank's ArborX broad-phase
 runs locally), plus periodic **load rebalancing** (weighted-ORB SoA ownership migration).
 
-The distributed step now ships **inside the `dem` Kokkos module** as `step_mpi`, gated behind the
+The distributed step ships **inside the `peclet.dem` Kokkos module** as `step_mpi`, gated behind the
 `PECLET_DEM_MPI` build option (the default module never defines it, so the single-rank module stays
 byte-identical). This document is the status + how-to-build/run + what-is-validated for that step. The Python
 validation scripts it refers to live in `../tests/python/mpi/` (pytest files launched through
@@ -34,7 +34,8 @@ sim.enable_mpi_step(rcut, sync_every=1,                  # ghost cutoff; owner->
                     rebalance_every=0)                   # >0 = re-decompose by particle count every N steps
 sim.step_mpi(n)                                          # advance n steps with halo exchange
 sim.rebalance()                                          # force a load rebalance now (returns new owned count)
-# diagnostics: sim.rank(), sim.num_ghost()
+# diagnostics: sim.rank, sim.num_ghost (properties);
+#              sim.diagnostics.mpi_rebuilds / .mpi_gathers (ghost-reuse ratio)
 ```
 
 ### Implementation
@@ -48,18 +49,25 @@ sim.rebalance()                                          # force a load rebalanc
   solver iterations (and the last). Each owned particle therefore sees all its neighbours — owned or
   ghost — and computes its **full XPBD delta locally**; the ghost deltas land on self-mapped
   slots and are discarded. Friction (wall + body-body Coulomb) **is** carried — same kernels as the
-  single-rank step. **Solver parity gap (open):** the velocity/position solves here are still the
-  older count-averaged **Jacobi** kernels; the newer single-rank stack (graph-colored Gauss–Seidel,
-  warm-started PGS with persistent contacts, gravity statics / grounded shock propagation, adaptive
-  stop) is not yet wired into the MPI path, and `MigratePack` does not carry persistent-contact
-  state across a rebalance.
+  single-rank step.
+- `src/solve_driver.hpp` (`demSolveContacts`) — **one driver, two hook policies.** The distributed
+  step runs the SAME modern solve sequence as `step(n)` (graph-colored Gauss–Seidel restitution,
+  warm-started PGS with persistent contacts, gravity statics / stabilization passes, friction cone,
+  colored-GS overlap projection, adaptive stops) in its processor-block Gauss–Seidel form:
+  `SoloSolveHooks` compiles the single-GPU sequence, `MpiSolveHooks` adds the owner→ghost refreshes
+  and the `MPI_Allreduce(MAX)` on every adaptive-stop residual (a rank-local break would
+  desynchronise the collective refreshes and deadlock). Persistent-contact pair keys are built from
+  **global ids**, so the ledger survives halo rebuilds and ownership migration, and `MigratePack`
+  carries each particle's slice of it across a rebalance. The force-based engine has the same shape
+  in `src/solve_driver_force.hpp` (`SoloForceHooks` / `MpiForceHooks`, Mindlin history keyed by gid).
 - **Periodicity:** cross-rank ghosts supply the wrap on *decomposed* axes; local periodic self-ghosts
   (the halo built with `includePeriodicSelf`) supply it on *undecomposed* periodic axes.
 
 ### The EXACT scheme + the `sync_every` (M) knob
 `sync_every=1` is **EXACT**: every owned particle has all its neighbours refreshed every iteration, so
-it reproduces the serial XPBD delta (bit-exact at np=1; np=2/4 differ only by Jacobi atomic-ordering
-float noise at the block split, not physics). `sync_every=M>1` is an approximation — boundary error
+it reproduces the serial XPBD delta at np=1; at np=2/4 the rank-local sweep order of the colored
+PGS differs from single-rank, so agreement is statistical rather than bit-exact (numbers under *What
+is validated* below). `sync_every=M>1` is an approximation — boundary error
 grows with M in exchange for fewer halo exchanges per step. `forward_rotation=False` skips the ghost
 quaternion forward and is **exact for spheres**.
 
@@ -98,8 +106,8 @@ quaternion forward and is **exact for spheres**.
 ### Load rebalancing
 With `rebalance_every=N` (or an explicit `sim.rebalance()`), the decomposition is recomputed by
 particle count (weighted ORB) and SoA ownership is migrated — keeping per-rank work balanced as the
-packing evolves. See the suite memory note on dynamic load balancing and `core`'s
-`particle_rebalance` / `rebalanceByParticleCount`.
+packing evolves. See `core`'s `BlockDecomposer::init(..., weights)` /
+`DistributedOctree::rebalanceByParticleCount` and `../../core/CLAUDE.md`.
 
 The original host-C++ bring-up harness (particle migration + the three ghost-exchange schemes A/B/C
 matched cell-for-cell to a serial reference) validated this machinery before it was wired into the
@@ -109,4 +117,4 @@ state refresh, every owned particle computes its complete serial delta locally) 
 reverse-reduction schemes B/C.
 
 See [multi_gpu_testing.md](multi_gpu_testing.md) for the multi-GPU profiling/scaling playbook, `../../docs/ROADMAP.md`
-(Phase 4 / Phase 7) and the "MPI / sdflow" section of `../../flow/CLAUDE.md` for the Eulerian precedent.
+(Phase 4 / Phase 7) and the "MPI / flow" section of `../../flow/CLAUDE.md` for the Eulerian precedent.
