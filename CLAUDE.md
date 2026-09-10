@@ -1,7 +1,9 @@
 # CLAUDE.md — dem (`peclet.dem`)
 
 Kokkos + ArborX XPBD Discrete Element Method, header-only C++20 under `src/` behind one nanobind
-class (`Simulation`, `src/dem_bindings.cpp`). Drive it from Python; there is no C++ main. Read the
+class (`Simulation`, `src/dem_bindings.cpp`; the facade is `src/sim.hpp` on the `ShapeRegistry` base of
+`src/shape_registry.hpp`, the step drivers are the free functions of `src/step_solve.hpp` and
+`src/step_solve_mpi.hpp`). Drive it from Python; there is no C++ main. Read the
 umbrella `../CLAUDE.md` first (one venv, prefixes, `docs/NAMING.md`); `README.md` here has the folder map.
 
 ## Build
@@ -66,7 +68,7 @@ input implicitly. `max_overlap` is the position loop's last-iteration residual a
 `compute_overlaps()` re-measures the committed state. Shape and mode arguments are strings whose
 error message lists the accepted set. No environment variable changes what the module computes.
 
-**Single-rank periodic wrap contacts are asymmetric** (`sim.hpp` `demStep`, `ghostBand = maxRad`): only
+**Single-rank periodic wrap contacts are asymmetric** (`step_solve.hpp` `demStep`, `ghostBand = maxRad`): only
 grains within one radius of a periodic face get an image, so a wrap pair whose farther partner sits
 beyond that band is detected from one side and the whole overlap correction lands on that partner
 (measured 2026-09-08). The distributed step resolves the same pair symmetrically; the Python MPI
@@ -92,7 +94,7 @@ gone); `set_dt(dt)` + `step(n)` / `step_hertz(substeps)` / `step_mpi(n)` / `step
 — no stepper takes `dt`, and a step before `set_dt` RAISES; `relax(n)` is the dynamics-free
 overlap-removal substep that `step(0.0)` used to be.
 
-## Call-order requirements (confirmed in `src/sim.hpp`)
+## Call-order requirements (confirmed in `src/sim.hpp` + `src/shape_registry.hpp`)
 
 - `initialize_shape(...)` / `set_sdf_shape(...)` RESET the shape registry to one shape; `add_shape` /
   `add_sdf_shape` / `add_scene_shape` append and return the index. Call the single-shape entry point

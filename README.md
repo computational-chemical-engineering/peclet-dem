@@ -26,7 +26,10 @@ Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD 
 ├── packaging/                  # peclet/dem/__init__.py, particle_builder.py, scene_particle.py, CUDA-wheel pyproject
 ├── src                         # Kokkos sources (header-only, namespace peclet::dem)
 │   ├── dem_bindings.cpp          # nanobind module entry point (the `peclet.dem` module)
-│   ├── sim.hpp                   # Simulation facade: the host-facing driver, shape registry, MPI hooks
+│   ├── sim.hpp                   # Simulation facade: the host-facing setters/getters, walls, steppers, MPI driver state
+│   ├── shape_registry.hpp        # ShapeRegistry (Simulation's base): shapes, shells, inertias + the device upload
+│   ├── step_solve.hpp            # Single-rank step drivers: demStep, computeOverlapsKokkos, contact-buffer sizing
+│   ├── step_solve_mpi.hpp        # Distributed step drivers + MPI hook policies, gated PECLET_DEM_MPI
 │   ├── dem_portable.hpp          # POD types + math + analytic SDFs shared by every kernel
 │   ├── particles.hpp             # Particle SoA container (the Kokkos Views)
 │   ├── shapes_portable.hpp       # Surface-shell point generators for the analytic shapes

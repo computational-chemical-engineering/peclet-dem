@@ -7,7 +7,7 @@
 /// The two callers differ only through the `Hooks` policy:
 ///   * SoloSolveHooks (single-GPU): every hook is a no-op / identity — the driver compiles to
 ///     exactly the pre-extraction demStep sequence (validated bit-for-bit on the Serial backend).
-///   * MpiSolveHooks (sim.hpp, PECLET_DEM_MPI): processor-block Gauss–Seidel — the colouring and
+///   * MpiSolveHooks (step_solve_mpi.hpp, PECLET_DEM_MPI): processor-block Gauss–Seidel — the colouring and
 ///     the sweeps stay rank-local over owned + ghost bodies (ghost pairs are solved redundantly on
 ///     both owners; ghost deltas are discarded at the next refresh), `syncVelocities` /
 ///     `syncPositions` refresh the ghost copies owner->ghost every `syncEvery` iterations plus

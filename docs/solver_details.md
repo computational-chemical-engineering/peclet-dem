@@ -21,7 +21,7 @@ default time step.
 
 ---
 
-## 1. The impulse step (`demStep`, `src/sim.hpp`)
+## 1. The impulse step (`demStep`, `src/step_solve.hpp`)
 
 ```text
 growth ramp                    updateGrowthScalesKokkos           (growth_rate > 0)

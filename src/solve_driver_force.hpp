@@ -15,7 +15,7 @@
 /// policy:
 ///   * SoloForceHooks — every hook a no-op/identity; `demStepHertz` compiles to the historical
 ///     single-GPU engine (validated bit-for-bit on the Serial backend).
-///   * MpiForceHooks (sim.hpp, PECLET_DEM_MPI) — domain-decomposed explicit DEM in the classical
+///   * MpiForceHooks (step_solve_mpi.hpp, PECLET_DEM_MPI) — domain-decomposed explicit DEM in the classical
 ///     MD mold: at every pair-list rebuild the halo re-gathers ghosts in a band of
 ///     (pair cutoff + skin); between rebuilds only the ghost STATE (pos/vel/angVel/quat) is
 ///     forwarded owner->ghost each step. Every pair touching an owned particle is present
