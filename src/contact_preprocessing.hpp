@@ -63,17 +63,41 @@ struct ManifoldC {
   float friction_sum{0.0f};  // per-contact mu (pair table / wall); a < 0 average = global material
 };
 
-/// Persistent-contact detection for the gravity-gated restitution rule. Key = (min real body,
-/// max real body) packed in 64 bits; boundary manifolds (bodyB = -1: planes + SDF walls, merged per
-/// particle) use lo = 0xFFFFFFFF. Flags each manifold whose pair already existed in the PREVIOUS
+/// The one 64-bit pair identity every gid-keyed ledger uses (the XPBD persistent-contact and
+/// warm-start ledgers, the Hertz–Mindlin history): `(min(a, b) << 32) | max(a, b)`, symmetric in
+/// (a, b) so a pair is one key whichever body is A. `a`/`b` are whatever identity is stable for
+/// the run — the real index single-rank, the global id under MPI.
+KOKKOS_INLINE_FUNCTION unsigned long long pairKeyFromGids(unsigned a, unsigned b) {
+  const unsigned hi = a < b ? a : b, lo = a < b ? b : a;
+  return (static_cast<unsigned long long>(hi) << 32) | lo;
+}
+
+/// lower_bound over a ledger's sorted keys: the first index whose key is >= `key` (`count` when
+/// none). A hit is `i < count && keys(i) == key`; the index doubles as the ledger slot of the
+/// carried payload.
+template <class KeysView>
+KOKKOS_INLINE_FUNCTION int lowerBoundKey(const KeysView& keys, int count, unsigned long long key) {
+  int lo = 0, hi = count;
+  while (lo < hi) {
+    const int mid = (lo + hi) >> 1;
+    if (keys(mid) < key)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo;
+}
+
+/// Persistent-contact detection for the gravity-gated restitution rule. Key = pairKeyFromGids over
+/// (real body A, real body B); boundary manifolds (bodyB = -1: planes + SDF walls, merged per
+/// particle) use 0xFFFFFFFF for B. Flags each manifold whose pair already existed in the PREVIOUS
 /// substep (prevKeys sorted, device binary search). Real indices are stable within a single-GPU
 /// run, so the key identifies the physical pair across substeps.
 KOKKOS_INLINE_FUNCTION unsigned long long pairKeyOf(const ManifoldC& m,
                                                     Kokkos::View<const int*, CpMem> realIdx) {
   const unsigned a = static_cast<unsigned>(realIdx(m.bodyA));
   const unsigned b = (m.bodyB >= 0) ? static_cast<unsigned>(realIdx(m.bodyB)) : 0xFFFFFFFFu;
-  const unsigned hi = a < b ? a : b, lo = a < b ? b : a;
-  return (static_cast<unsigned long long>(hi) << 32) | lo;
+  return pairKeyFromGids(a, b);
 }
 
 /// `keyIdx` maps a body slot to the identity the pair key is built from: the REAL index map on the
@@ -99,14 +123,7 @@ inline void markPersistentManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> 
         }
         const unsigned long long k = pairKeyOf(m, keyIdx);
         outKeys(idx) = k;
-        int lo = 0, hi = prevCount;
-        while (lo < hi) {  // lower_bound on the sorted previous-substep keys
-          const int mid = (lo + hi) >> 1;
-          if (prevKeys(mid) < k)
-            lo = mid + 1;
-          else
-            hi = mid;
-        }
+        const int lo = lowerBoundKey(prevKeys, prevCount, k);
         outFlags(idx) = (lo < prevCount && prevKeys(lo) == k) ? 1 : 0;
       });
 }
@@ -146,14 +163,7 @@ inline void gatherWarmLambdaKokkos(
         }
         const unsigned long long k = pairKeyOf(m, keyIdx);
         outKeys(idx) = k;
-        int lo = 0, hi = prevCount;
-        while (lo < hi) {
-          const int mid = (lo + hi) >> 1;
-          if (prevKeys(mid) < k)
-            lo = mid + 1;
-          else
-            hi = mid;
-        }
+        const int lo = lowerBoundKey(prevKeys, prevCount, k);
         const bool hit = (lo < prevCount && prevKeys(lo) == k);
         if (hit && outMatched.extent(0) > 0)
           outMatched(lo) = 1;  // prev entry survives; unmatched entries orphan their bank

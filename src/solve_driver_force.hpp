@@ -72,18 +72,10 @@ inline void hertzRebuildPairs(Particles& P, float skin) {
     Kokkos::parallel_for(
         "peclet::dem::hertz_carry", Kokkos::RangePolicy<CpExec>(space, 0, np),
         KOKKOS_LAMBDA(int idx) {
-          const unsigned a = (unsigned)gid(pairs(idx, 0)), b = (unsigned)gid(pairs(idx, 1));
-          const unsigned lo = a < b ? a : b, hi = a < b ? b : a;
-          const unsigned long long k = ((unsigned long long)hi << 32) | lo;
+          const unsigned long long k =
+              pairKeyFromGids((unsigned)gid(pairs(idx, 0)), (unsigned)gid(pairs(idx, 1)));
           keys(idx) = k;
-          int l = 0, h = pc;
-          while (l < h) {
-            const int m = (l + h) >> 1;
-            if (pk(m) < k)
-              l = m + 1;
-            else
-              h = m;
-          }
+          const int l = lowerBoundKey(pk, pc, k);
           const bool hit = (l < pc && pk(l) == k);
           xi(idx, 0) = hit ? px(l, 0) : 0.0f;
           xi(idx, 1) = hit ? px(l, 1) : 0.0f;
