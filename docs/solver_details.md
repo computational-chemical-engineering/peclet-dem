@@ -27,7 +27,7 @@ default time step.
 growth ramp                    updateGrowthScalesKokkos           (growth_rate > 0)
 predict                        predictVelocityKokkos              gravity + gyroscopic + ext. force/torque
 freeze sleepers                freezeAsleepKokkos                 (sleeping, |g| > 0, no ext. drive)
-ghosts                         generateGhostsKokkos               periodic band = max grain radius
+ghosts                         generateGhostsKokkos               periodic band = 2 R_max + margin
 broad phase                    findCollisionsArborX / ...Verlet   ArborX BVH over real + ghost
 narrow phase                   detectContactsKokkos / detectWallSdfKokkos
 manifolds                      reduceContactsToManifoldsKokkos    per-pair aggregate
@@ -61,12 +61,16 @@ Gravity defaults to **zero** and there is no implicit floor — `set_gravity((0,
 
 ### Periodic ghosts — `src/periodicity.hpp` (`generateGhostsKokkos`)
 
-Real particles within `ghostBand = maxOwnedRadius(P)` (the largest **effective** radius, growth
-included — not `global_scale`) of a periodic face are copied, shifted by the box period, carrying
-the full state including the **predicted** position; `realIndices` maps each ghost back to its
-owner so impulses land on the real body. Ghosts are not integrated. Because the band is one radius,
-a wrap pair whose farther partner sits beyond it is detected one-sidedly — see `CLAUDE.md`. In the
-distributed step this layer is a cross-rank gather instead.
+Real particles within `ghostBand = 2 * maxOwnedRadius(P) + margin` (twice the largest **effective**
+radius, growth included — not `global_scale` — plus the narrow-phase margin) of a periodic face are
+copied, shifted by the box period, carrying the full state including the **predicted** position;
+`realIndices` maps each ghost back to its owner so impulses land on the real body. Ghosts are not
+integrated, and a ghost's position correction is discarded at commit — which is why the band must
+reach the FARTHER partner of every reported pair (`a + b < rA + rB + margin`): with both partners
+imaged a wrap pair is two twin manifolds and each body carries half the overlap, exactly like a
+pair inside the box. (Until 2026-09-10 the band was one radius: every wrap pair was still detected,
+but one with `max(a, b) > R_max` was resolved one-sidedly.) In the distributed step this layer is a
+cross-rank gather with the band `rcut + skin` instead.
 
 ---
 

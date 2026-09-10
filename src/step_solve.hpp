@@ -180,10 +180,15 @@ inline void demStep(Particles& P) {
         KOKKOS_LAMBDA(int i) { ri(i) = i; });
   }
   Kokkos::deep_copy(space, P.topGhost, P.numReal);
-  // periodic ghost band = max grain radius: the CLOSER particle of any cross-boundary contacting
-  // pair is within one radius of the face, so a band of maxRad ghosts it (sufficient for
-  // sphere-sphere).
-  const float ghostBand = maxRad;
+  // Periodic ghost band: every partner of every pair the narrow phase can report gets an image.
+  // A wrap pair with distances a, b to its two faces is reported iff a + b < rA + rB + margin,
+  // so the FARTHER partner sits within 2 R_max + margin of its face. Position corrections land on
+  // the RAW slot (a ghost's are discarded at commit), so a partner without an image never moves:
+  // a band of one R_max (the old choice -- enough to DETECT every pair from the near side) left
+  // every pair with max(a, b) > R_max resolved one-sidedly, the far partner absorbing only its own
+  // half of the overlap. With both imaged the wrap pair is two twin manifolds, exactly like a pair
+  // symmetric about the face always was, and the distributed step's halo band (rcut + skin).
+  const float ghostBand = 2.0f * maxRad + margin;
   // Size the SoA for the ghost boundary layer BEFORE emitting (CUDA did this in initialize() via
   // calculate_capacity). Without it a Simulation(numReal) leaves capacity==numReal, so every ghost
   // overflows P.capacity in generateGhostsKokkos and cross-boundary contacts are never detected.
@@ -271,7 +276,7 @@ inline float computeOverlapsKokkos(Particles& P) {
         KOKKOS_LAMBDA(int i) { ri(i) = i; });
   }
   Kokkos::deep_copy(space, P.topGhost, P.numReal);
-  const float ghostBand = maxRad;
+  const float ghostBand = 2.0f * maxRad + margin;  // the demStep band (see there)
   // Match demStep: ensure ghost-boundary-layer headroom so cross-boundary overlaps are counted (a
   // Simulation(numReal) otherwise has capacity==numReal and every ghost overflows). See demStep.
   P.ensureCapacity(calculateGhostCapacity(P.numReal, P.domain, ghostBand));

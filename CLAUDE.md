@@ -35,7 +35,7 @@ OMP_NUM_THREADS=2 OMP_PROC_BIND=false PYTHONPATH=<core-python-build> \
 | `tests/kokkos` | kernel unit tests vs serial references (contact preprocessing, narrow-phase, velocity/position/friction solves, integration, periodicity, thermostat) | 8 |
 | `tests/arborx` | ArborX broad-phase vs an O(N^2) oracle + the full single-rank pipeline | 2 |
 | `tests/kokkos_mpi` (needs `PECLET_DEM_MPI`) | distributed step (XPBD + Hertz engines, closed + periodic, mid-run rebalance) / migration / rebalance vs single-rank, np=1,2,4; label `mpi` | 24 |
-| `tests/python` | `python_tests` = `pytest tests/python` on the module in the build tree: Hertz + non-spherical Hertz, cone friction (Walton), pair materials, coloured GS (binary exactness, conservation, Enskog cooling, colouring invariant), statics battery, bounce, restitution, SDF particles, hollow-cylinder overlap, growth packing, rotating drum; label `python` | 1 |
+| `tests/python` | `python_tests` = `pytest tests/python` on the module in the build tree: Hertz + non-spherical Hertz, cone friction (Walton), pair materials, coloured GS (binary exactness, conservation, Enskog cooling, colouring invariant), statics battery, bounce, restitution, SDF particles, hollow-cylinder overlap, growth packing, rotating drum, periodic wrap symmetry; label `python` | 1 |
 | `tests/python/mpi` (needs `PECLET_DEM_MPI`) | `python_mpi_<name>_np{1,2,4}`: exact step vs serial, periodic wrap, cross-rank observables, MPI rotating drum — launched through `mpirun`, on core's `peclet.core.mpi` + mpi4py (put a built `core/python` tree on `PYTHONPATH`; exit 77 = ctest SKIP when that stack is missing); labels `python;mpi` | 12 |
 
 Each `tests/<suite>/CMakeLists.txt` still configures standalone (`cmake -S tests/kokkos -B build_kokkos
@@ -68,11 +68,14 @@ input implicitly. `max_overlap` is the position loop's last-iteration residual a
 `compute_overlaps()` re-measures the committed state. Shape and mode arguments are strings whose
 error message lists the accepted set. No environment variable changes what the module computes.
 
-**Single-rank periodic wrap contacts are asymmetric** (`step_solve.hpp` `demStep`, `ghostBand = maxRad`): only
-grains within one radius of a periodic face get an image, so a wrap pair whose farther partner sits
-beyond that band is detected from one side and the whole overlap correction lands on that partner
-(measured 2026-09-08). The distributed step resolves the same pair symmetrically; the Python MPI
-periodic test keeps its straddlers symmetric about the face for that reason.
+**Single-rank periodic wrap contacts are symmetric** (`step_solve.hpp` `demStep`, `ghostBand = 2 *
+maxRad + margin`, since 2026-09-10): every partner of every pair the narrow phase can report gets a
+periodic image, so a wrap pair is resolved exactly like a pair inside the box — each body carries
+half the overlap — and single-rank matches the distributed step (`tests/python/test_periodic_wrap_symmetry.py`,
+`tests/python/mpi/test_validate_periodic.py` with asymmetric straddlers). The old band of one radius
+still DETECTED every wrap pair (the nearer partner is always within one radius of the face) but a
+pair with `max(a, b) > R_max` moved only its far partner, by its own half. Results of any periodic
+single-rank run with such pairs changed at that commit; `coupling` sees it through `step()` only.
 
 ## The two API tiers (QUALITY_PLAN §3.F, D2 — landed 2026-09-08)
 

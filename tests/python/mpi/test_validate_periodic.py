@@ -180,20 +180,19 @@ def test_corner_wrap():
 
 def _straddler_pairs(axp):
     # 4 pairs that overlap ONLY through the periodic boundary on axis `axp` (0.75 apart through the
-    # wrap < diameter 0.8 => gentle overlap 0.05), SYMMETRIC about the face (both centres within one
-    # radius of it). Spread on the other axes so pairs don't collide with each other; if the
-    # distributed wrap is broken these disagree strongly with serial.
-    # NB the single-rank step ghosts only particles within ONE radius of a periodic face
-    # (sim.hpp demStep, `ghostBand = maxRad`): a wrap pair whose farther partner sits beyond that
-    # band is still detected, but the whole overlap correction lands on that partner alone
-    # (measured 2026-09-08: (0.30, L-0.45) -> serial moves only the L-0.45 body, by 0.05; the
-    # distributed step moves both by 0.025). Keep the straddlers symmetric so the reference is the
-    # symmetric answer; the asymmetry is a single-rank periodicity limitation, not an MPI one.
+    # wrap < diameter 0.8 => gentle overlap 0.05), ASYMMETRIC about the face: one partner sits
+    # beyond one radius (0.45 > 0.4) of it, alternating sides. The single-rank step images every
+    # partner within 2 R_max + margin of a face (step_solve.hpp demStep), so it resolves such a
+    # pair symmetrically, as the distributed halo always did -- until 2026-09-10 its band was one
+    # R_max and the far partner moved alone, which is why this test used to keep the straddlers
+    # symmetric. Spread on the other axes so pairs don't collide with each other; if either wrap
+    # is broken these disagree strongly with the other side.
     others = [a for a in range(3) if a != axp]
     out = []
     for i, g in enumerate(np.linspace(1.2, 6.8, 4)):
         lo = [0.0, 0.0, 0.0]; hi = [0.0, 0.0, 0.0]
-        lo[axp], hi[axp] = 0.375, L[axp] - 0.375
+        near, far = 0.30, 0.45
+        lo[axp], hi[axp] = (near, L[axp] - far) if i % 2 == 0 else (far, L[axp] - near)
         lo[others[0]] = hi[others[0]] = g
         lo[others[1]] = hi[others[1]] = 1.5 + (i % 3) * 2.2
         out += [lo, hi]
