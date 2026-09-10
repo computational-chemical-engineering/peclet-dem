@@ -15,7 +15,8 @@
 /// policy:
 ///   * SoloForceHooks — every hook a no-op/identity; `demStepHertz` compiles to the historical
 ///     single-GPU engine (validated bit-for-bit on the Serial backend).
-///   * MpiForceHooks (step_solve_mpi.hpp, PECLET_DEM_MPI) — domain-decomposed explicit DEM in the classical
+///   * MpiForceHooks (step_solve_mpi.hpp, PECLET_DEM_MPI) — domain-decomposed explicit DEM in the
+///   classical
 ///     MD mold: at every pair-list rebuild the halo re-gathers ghosts in a band of
 ///     (pair cutoff + skin); between rebuilds only the ghost STATE (pos/vel/angVel/quat) is
 ///     forwarded owner->ghost each step. Every pair touching an owned particle is present
@@ -199,16 +200,6 @@ inline void zeroForceScratchKokkos(V3 dv, V3 dw, int lo, int hi) {
   space.fence();
 }
 
-/// World radii rad(i) = scale(i) * globalScale * baseRadius over [0, n) (n = owned + ghosts after
-/// a halo gather; the driver's own preamble fills the owned span).
-inline void fillWorldRadiiKokkos(Vf scale, Vf rad, float gs, float bR, int n) {
-  CpExec space;
-  Kokkos::parallel_for(
-      "peclet::dem::force_rad", Kokkos::RangePolicy<CpExec>(space, 0, n),
-      KOKKOS_LAMBDA(int i) { rad(i) = scale(i) * gs * bR; });
-  space.fence();
-}
-
 /// Single-GPU hooks: no ghosts, reductions are already global. Everything inlines away.
 struct SoloForceHooks {
   static constexpr bool distributed = false;
@@ -225,16 +216,8 @@ template <class Law, class Hooks>
 inline void demStepForce(Particles& P, float dt, int nsteps, float skinFrac, const Law& law,
                          const Hooks& hooks) {
   law.validate(P);
-  {  // world radii (the impulse step fills these; the force path must too)
-    CpExec space;
-    auto sc = P.scale;
-    auto rad = P.rad;
-    float gs = P.globalScale, bR = P.baseRadius;
-    Kokkos::parallel_for(
-        "peclet::dem::hertz_rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numReal),
-        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
-    space.fence();
-  }
+  // world radii of the owned span (a halo gather re-fills owned + ghosts)
+  fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numReal);
   float minRad = 0.0f;
   {
     CpExec space;

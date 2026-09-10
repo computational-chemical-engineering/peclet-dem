@@ -7,7 +7,8 @@
 /// The two callers differ only through the `Hooks` policy:
 ///   * SoloSolveHooks (single-GPU): every hook is a no-op / identity — the driver compiles to
 ///     exactly the pre-extraction demStep sequence (validated bit-for-bit on the Serial backend).
-///   * MpiSolveHooks (step_solve_mpi.hpp, PECLET_DEM_MPI): processor-block Gauss–Seidel — the colouring and
+///   * MpiSolveHooks (step_solve_mpi.hpp, PECLET_DEM_MPI): processor-block Gauss–Seidel — the
+///   colouring and
 ///     the sweeps stay rank-local over owned + ghost bodies (ghost pairs are solved redundantly on
 ///     both owners; ghost deltas are discarded at the next refresh), `syncVelocities` /
 ///     `syncPositions` refresh the ghost copies owner->ghost every `syncEvery` iterations plus
@@ -73,6 +74,19 @@ inline float maxOwnedRadius(const Particles& P) {
       "peclet::dem::max_scale", Kokkos::RangePolicy<CpExec>(0, P.numReal),
       KOKKOS_LAMBDA(int i, float& m) { m = sc(i) > m ? sc(i) : m; }, Kokkos::Max<float>(mx));
   return mx * P.globalScale * P.baseRadius;
+}
+
+/// World radii rad(i) = scale(i) * globalScale * baseRadius over [0, n): the owned span before a
+/// step, owned + ghosts after periodic ghost generation or a halo gather. Every step driver (XPBD,
+/// overlap probe, force-based, their distributed forms) fills the radii through this one kernel.
+/// Fences the default instance: the callers' next launch on that instance is stream-ordered
+/// anyway, so the fence changes nothing about the result.
+inline void fillWorldRadiiKokkos(Vf scale, Vf rad, float gs, float bR, int n) {
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::world_radii", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int i) { rad(i) = scale(i) * gs * bR; });
+  space.fence();
 }
 
 /// Broad phase with an automatically-grown pair buffer.

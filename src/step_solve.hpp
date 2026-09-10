@@ -193,14 +193,7 @@ inline void demStep(Particles& P) {
                        P.shapeId, P.realIndices, P.topGhost, P.gid, P.materialId);
   P.numParticles = readInt(P.topGhost);
 
-  {
-    auto sc = P.scale;
-    auto rad = P.rad;
-    float gs = P.globalScale, bR = P.baseRadius;
-    Kokkos::parallel_for(
-        "rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
-        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
-  }
+  fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
   // Collision detection runs on the PREDICTED state (speculative positions/orientations), matching
   // the CUDA solver — the position solve then corrects posPred against these contacts.
   // findCollisionsGrow fences + reads the pair count back to host and guarantees np ≤ P.pairs
@@ -286,14 +279,7 @@ inline float computeOverlapsKokkos(Particles& P) {
                        P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
                        P.shapeId, P.realIndices, P.topGhost, P.gid, P.materialId);
   P.numParticles = readInt(P.topGhost);
-  {
-    auto sc = P.scale;
-    auto rad = P.rad;
-    float gs = P.globalScale, bR = P.baseRadius;
-    Kokkos::parallel_for(
-        "rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
-        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
-  }
+  fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
   const int np = findCollisionsGrow(P, margin);
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);

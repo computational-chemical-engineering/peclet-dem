@@ -92,14 +92,7 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   //    P.numParticles = numReal + numGhost and self-maps realIndices.
   halo.gather(P, rcut);
 
-  {
-    auto sc = P.scale;
-    auto rad = P.rad;
-    float gs = P.globalScale, bR = P.baseRadius;
-    Kokkos::parallel_for(
-        "rad", Kokkos::RangePolicy<CpExec>(space, 0, P.numParticles),
-        KOKKOS_LAMBDA(int i) { rad(i) = sc(i) * gs * bR; });
-  }
+  fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
 
   // 3. Broad/narrow phase + manifold reduction over owned + ghosts (contactSlot map included:
   // the PGS friction bound and the position-channel Coulomb carry read through it).
