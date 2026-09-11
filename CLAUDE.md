@@ -17,6 +17,28 @@ cmake --build build -j8                           # -> build/peclet/dem/_dem.*.s
 / `rebalance` (see `docs/mpi.md`). The version comes from `pyproject.toml` (single source; CMake reads it).
 The prefix picks the backend; never hard-code an arch. `pip install .` is the canonical install.
 
+## Settled decisions — do not reverse silently
+
+Chosen *against* the obvious or textbook alternative, on measured evidence. Full entries with
+verbatim quotes and provenance in [`../docs/decisions/dem.md`](../docs/decisions/dem.md); the index is
+[`../docs/DECISIONS.md`](../docs/DECISIONS.md). Reversing one takes a new recorded decision, not a
+judgement call in the moment.
+
+- **Contacts use the staged symmetric + one-sided solver** (Guendelman staging: Phase A all-symmetric,
+  Phase B stabilization only if the post-loop residual exceeds 2·g·dt). The naive per-pair ballistic
+  gate **failed** — any one-sided contact at the moving/static interface is a momentum sink.
+- **Wall SDF sign convention is `val − residual`** (container convention), never `val + residual`.
+- **Particle data layout is plain Kokkos SoA Views** with the backend-default layout — not `float4`,
+  not a CaSoA variant.
+- **The velocity solve uses the over-relaxed `min(1, 2/count)` average**, not a raw Jacobi sum.
+- **The PGS friction bound comes from the converged normal accumulator**, never from the live
+  approach value.
+- **Sleeping is an `invMassEff` swap around the solve call**, not a per-manifold mechanism.
+- **Radius and halo sizing derive from `baseRadius*scale*globalScale`** — all three factors.
+- **Never use `get_max_overlap()` as the sole packing-quality gate.**
+- Shipped constants that look arbitrary and are not: stabilization cap **K=64** (not 16), multilevel
+  slip gate at **8·g·dt** (not ungated, not 2·g·dt).
+
 ## Tests (one tree per backend: `-DPECLET_DEM_BUILD_TESTS=ON`)
 
 The C++ suites and the Python tests are registered by the ROOT CMake under one option (OFF by
