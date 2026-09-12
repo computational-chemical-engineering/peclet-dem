@@ -57,9 +57,9 @@ def verify_packing():
                 pos[:, 3] = 1.0
                 sim.set_positions(pos)
                 sigma = np.sqrt(T)
-                vel = rng.normal(0, sigma, (num_particles, 4)).astype(np.float32)
-                vel[:, 3] = 0.0
-                sim.set_velocities(vel) 
+                # set_velocities takes (N, 3): unlike positions, there is no inverse-mass column.
+                vel = rng.normal(0, sigma, (num_particles, 3)).astype(np.float32)
+                sim.set_velocities(vel)
                 
                 # Growth
                 max_phi_reached = 0.0

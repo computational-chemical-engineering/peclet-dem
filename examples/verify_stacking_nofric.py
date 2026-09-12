@@ -9,16 +9,19 @@ def verify_stacking_nofric():
     sim.initialize_shape('sphere', radius=0.5) 
     
     # Material: Restitution=0.5, Friction=0.0 (TESTING THIS)
-    sim.set_material_params(0.5, 0.0, 0.) 
+    sim.set_material_params(0.5, 0.0, 0.)
     sim.set_gravity((0, -9.8, 0))
-    
+    # velocityIterations defaults to 0 (no velocity solve / no restitution, see verify_stacking.py
+    # and dem/CLAUDE.md) -- match the friction script's solver settings so the two runs isolate
+    # friction as the only difference.
+    sim.set_solver_iterations(12, 8)
+
     sim.add_plane([0, -5.0, 0], [0, 1.0, 0])
     
     # Setup same as before
     initial_scale = 0.5
     scales = np.full(200, initial_scale, dtype=np.float32)
-    sim.set_scales(scales)
-    
+
     pos = []
     spacing = 1.2
     for y in range(8):
@@ -30,8 +33,11 @@ def verify_stacking_nofric():
                 pos.append([px, py, pz])
     
     sim.set_positions(np.array(pos, dtype=np.float32))
+    # set_scales (and every other per-particle setter) must follow set_positions, which is what
+    # sizes the particle set and resets each particle's scale to 1.
+    sim.set_scales(scales)
     sim.set_velocities(np.zeros((200, 3), dtype=np.float32))
-    
+
     dt = 0.005
     steps = 1000
     

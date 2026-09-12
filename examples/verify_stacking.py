@@ -10,17 +10,21 @@ def verify_stacking():
     sim.initialize_shape('sphere', radius=0.5) # Sphere
     
     # Material: Restitution=0.5, Friction=0.3
-    sim.set_material_params(0.5, 0.5, 0.) 
+    sim.set_material_params(0.5, 0.5, 0.)
     sim.set_gravity((0, -9.8, 0))
-    
+    # velocityIterations defaults to 0 (no velocity solve, so no restitution/contact impulse and
+    # velocities integrate under gravity unbounded even though positions are constraint-clamped) --
+    # dem/CLAUDE.md's documented legacy-script trap. Without this the friction and no-friction
+    # scripts both "fail" identically on unbounded velocity, which verifies nothing.
+    sim.set_solver_iterations(12, 8)
+
     # Add Floor Plane at y = -5.0
     sim.add_plane([0, -5.0, 0], [0, 1.0, 0])
     
     # Initial Setup
     initial_scale = 0.5
     scales = np.full(200, initial_scale, dtype=np.float32)
-    sim.set_scales(scales)
-    
+
     # Seed positions above floor
     # Grid: 5x5x8
     pos = []
@@ -36,8 +40,11 @@ def verify_stacking():
     # If not enough points, fill rest randomly?
     # 5*5*8 = 200. Perfect.
     sim.set_positions(np.array(pos, dtype=np.float32))
+    # set_scales (and every other per-particle setter) must follow set_positions, which is what
+    # sizes the particle set and resets each particle's scale to 1.
+    sim.set_scales(scales)
     sim.set_velocities(np.zeros((200, 3), dtype=np.float32))
-    
+
     dt = 0.005 # 5ms
     steps = 1000
     

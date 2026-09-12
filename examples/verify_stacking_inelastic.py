@@ -22,8 +22,7 @@ def verify_stacking_inelastic():
     
     initial_scale = 0.5
     scales = np.full(n, initial_scale, dtype=np.float32)
-    sim.set_scales(scales)
-    
+
     pos = []
     spacing = 2.1
     for y in range(shape[0]):
@@ -34,21 +33,10 @@ def verify_stacking_inelastic():
                 py = -4.0 + y * spacing
                 pos.append([px, py, pz])
     
-    sim.set_positions(np.array(pos, dtype=np.float32))
-    sim.set_velocities(np.zeros((n, 3), dtype=np.float32))
-    # The following lines are added based on the provided Code Edit block.
-    # Note: 'n' is not defined in the original code, assuming it should be 200.
-    # 'quat' is also not defined, assuming it should be initialized or derived.
-    # For now, I will use the original values for velocities and scales,
-    # and add a placeholder for quaternions if it's a new line.
-    # Re-evaluating the instruction: "Add diagnosis prints".
-    # The provided "Code Edit" block shows the *result* of the change,
-    # which includes more than just diagnosis prints.
-    # I will apply the changes as literally as possible from the "Code Edit" block,
-    # assuming 'n' is 200 and 'quat' needs to be defined.
-    # Given the context, 'quat' is likely an array of identity quaternions.
     quat = np.array([[1.0, 0.0, 0.0, 0.0]] * n, dtype=np.float32) # Identity quaternions
-    
+
+    # set_positions sizes the particle set and resets scale/quaternion/velocity/inverse-mass for
+    # every particle, so every per-particle setter must be called after it.
     sim.set_positions(np.array(pos, dtype=np.float32))
     sim.set_velocities(np.zeros((n, 3), dtype=np.float32))
     sim.set_quaternions(np.array(quat, dtype=np.float32))
