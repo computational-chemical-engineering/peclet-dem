@@ -16,6 +16,12 @@
 
 namespace peclet::dem {
 
+// M_PI is a POSIX extension, not standard C++: MSVC leaves it undefined unless _USE_MATH_DEFINES is
+// set before <cmath>, which a header cannot rely on (measured on the 2026-09-13 Windows wheel probe:
+// eight C2065s here, the only ones in the package). These are the digits glibc's M_PI carries, so
+// every value below is bit-identical to what the Linux build has always produced.
+inline constexpr double kPi = 3.14159265358979323846;
+
 // Surface point shell of a hollow cylinder (outer wall + inner wall if thick + top/bottom annulus
 // caps). Faithful copy of generate_cylinder_points.
 inline std::vector<F3> genCylinderShell(float radius, float height, float thickness,
@@ -27,12 +33,12 @@ inline std::vector<F3> genCylinderShell(float radius, float height, float thickn
   float h = height;
 
   // 1. Outer surface
-  float circumference = 2.0f * M_PI * r_outer;
+  float circumference = 2.0f * kPi * r_outer;
   int n_angular = std::ceil(circumference / spacing);
   int n_vertical = std::ceil(h / spacing);
 
   for (int i = 0; i < n_angular; ++i) {
-    float theta = 2.0f * M_PI * i / n_angular;
+    float theta = 2.0f * kPi * i / n_angular;
     for (int j = 0; j <= n_vertical; ++j) {
       float y = -0.5f * h + h * j / n_vertical;
       float x = r_outer * std::cos(theta);
@@ -43,10 +49,10 @@ inline std::vector<F3> genCylinderShell(float radius, float height, float thickn
 
   // 2. Inner surface (if thick)
   if (thickness > 0.0f) {
-    circumference = 2.0f * M_PI * r_inner;
+    circumference = 2.0f * kPi * r_inner;
     n_angular = std::ceil(circumference / spacing);
     for (int i = 0; i < n_angular; ++i) {
-      float theta = 2.0f * M_PI * i / n_angular;
+      float theta = 2.0f * kPi * i / n_angular;
       for (int j = 0; j <= n_vertical; ++j) {
         float y = -0.5f * h + h * j / n_vertical;
         float x = r_inner * std::cos(theta);
@@ -61,10 +67,10 @@ inline std::vector<F3> genCylinderShell(float radius, float height, float thickn
   int n_radial = std::ceil(thickness / dr);
   for (int i = 0; i <= n_radial; ++i) {
     float r = r_inner + (r_outer - r_inner) * i / n_radial;
-    circumference = 2.0f * M_PI * r;
+    circumference = 2.0f * kPi * r;
     n_angular = std::ceil(circumference / spacing);
     for (int j = 0; j < n_angular; ++j) {
-      float theta = 2.0f * M_PI * j / n_angular;
+      float theta = 2.0f * kPi * j / n_angular;
       float x = r * std::cos(theta);
       float z = r * std::sin(theta);
       points.push_back(F3{x, 0.5f * h, z});   // top
