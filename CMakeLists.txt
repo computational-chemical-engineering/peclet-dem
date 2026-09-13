@@ -29,6 +29,14 @@ if(NOT PECLET_DEM_VERSION MATCHES "^[0-9]+\.[0-9]+\.[0-9]+$")
 endif()
 project(dem VERSION ${PECLET_DEM_VERSION} LANGUAGES CXX)
 
+
+# MSVC: the templated Kokkos translation units blow past the COFF section limit -- measured on the
+# 2026-09-13 wheel probe, flow_solver_colocated.cpp raised "C1128: number of sections exceeded
+# object file format limit". /bigobj raises it; there is no downside and no other compiler needs it.
+if(MSVC)
+  add_compile_options(/bigobj)
+endif()
+
 # The `peclet.dem` module: the Kokkos + ArborX XPBD DEM engine (CUDA / HIP / OpenMP backends, selected
 # by the install prefix). Kokkos and ArborX are found via find_package against the bootstrapped install
 # prefix (../extern/install/<backend>, built once by ../tools/bootstrap_deps.sh -- a HARD build
