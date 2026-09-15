@@ -17,9 +17,9 @@
 namespace peclet::dem {
 
 // M_PI is a POSIX extension, not standard C++: MSVC leaves it undefined unless _USE_MATH_DEFINES is
-// set before <cmath>, which a header cannot rely on (measured on the 2026-09-13 Windows wheel probe:
-// eight C2065s here, the only ones in the package). These are the digits glibc's M_PI carries, so
-// every value below is bit-identical to what the Linux build has always produced.
+// set before <cmath>, which a header cannot rely on (measured on the 2026-09-13 Windows wheel
+// probe: eight C2065s here, the only ones in the package). These are the digits glibc's M_PI
+// carries, so every value below is bit-identical to what the Linux build has always produced.
 inline constexpr double kPi = 3.14159265358979323846;
 
 // Surface point shell of a hollow cylinder (outer wall + inner wall if thick + top/bottom annulus
