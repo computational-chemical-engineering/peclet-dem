@@ -177,9 +177,17 @@ def test_conservation_colored_gs():
     print(f"   Jacobi(avg):  |dP|/|P|={pd_j:.2e}   |dL|/|L|={ld_j:.2e}")
     assert spun > 0.1, "off-centre cylinder hits must impart spin"
     assert pd_gs < 1e-4, "colored GS must conserve linear momentum"
-    # measured 2026-09 (OpenMP, float32 state): |dL|/|L| ~ 4e-3 for BOTH solves -- the drift is the
-    # float32 quaternion/inertia bookkeeping, not the impulse law
-    assert ld_gs < 1e-2, "colored GS angular-momentum drift beyond the float32 bookkeeping floor"
+    # The drift is float32 quaternion/inertia bookkeeping, not the impulse law -- and above one
+    # thread it is NONDETERMINISTIC: the setup is seeded, but the reduction order is not, so the
+    # value scatters run to run. Distribution measured 2026-09-16 (OpenMP, float32 state):
+    #   1 thread   n=20   bit-identical 2.84e-3 every run
+    #   2 threads  n=80   min 1.92e-3   median 3.4e-3   max 1.10e-2      (CI runs 2 threads)
+    #   4 threads  n=20   min 2.15e-3   median 3.02e-3  max 7.72e-3
+    #   8 threads  n=20   min 1.95e-3   median 3.45e-3  max 9.55e-3
+    # A 1e-2 gate sat inside that tail and went red on ~1.3 % of CI runs for no code reason
+    # (observed 1.205e-2 on a commit whose only diff was a reflowed comment). 2e-2 is ~6x the
+    # median and clears the measured tail; the floor itself is what the numbers above pin down.
+    assert ld_gs < 2e-2, "colored GS angular-momentum drift beyond the float32 bookkeeping floor"
 
 
 def test_cooling_slope_vs_enskog():
