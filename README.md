@@ -6,6 +6,15 @@
 [![CI](https://github.com/computational-chemical-engineering/peclet-dem/actions/workflows/ci.yml/badge.svg)](https://github.com/computational-chemical-engineering/peclet-dem/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21132441.svg)](https://doi.org/10.5281/zenodo.21132441)
 
+```bash
+pip install peclet-dem          # CPU (OpenMP) wheels — or `pip install peclet` for the whole family
+pip install peclet-dem-cu13     # the CUDA 13 build of the same module, in its OWN venv
+```
+
+Both ship the discrete-element (XPBD + Hertz–Mindlin) solver as `peclet.dem`; they provide the **same import**, so they are mutually
+exclusive in one environment — one venv per backend. Multi-GPU/MPI and AMD/HIP are source or
+container builds: see [Install & run](https://computational-chemical-engineering.github.io/peclet/DEPLOYMENT/).
+
 Performance-portable Discrete Element Method (DEM) particle simulation: an XPBD solver with SDF-based point-shell collision detection. Built on **Kokkos + ArborX**, so the same source runs on **CUDA, HIP (AMD/LUMI), and OpenMP** backends (selected at build time by the install prefix). Optional MPI for domain partitioning, with **nanobind** Python bindings (zero-copy, via scikit-build-core) for scripting and visualization.
 
 > The CUDA implementation was retired (2026-06): the Kokkos `peclet.dem` module was validated against it before the CUDA sources were removed. Restore point: git tag `pre-cuda-retirement`.
