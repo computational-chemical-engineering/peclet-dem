@@ -128,7 +128,7 @@ See `CLAUDE.md` for the call-order requirements and `docs/solver_details.md` for
 stacking, precession, thermostat), the `pack.py` / `pack_meter.py` packing protocol + meter,
 `generate_particles.py` (Ovito shape mesh) and the packing generators, plus the distributed
 `driver_distributed.py` skeleton and `bench_step.py` (`mpirun -np N python examples/bench_step.py`,
-needs a built `peclet.core.mpi` on `PYTHONPATH`). All run from the build tree:
+needs a built `peclet.halo` on `PYTHONPATH`). All run from the build tree:
 
 ```bash
 export PYTHONPATH=$PYTHONPATH:$(pwd)/build        # import peclet.dem from the dev build
@@ -142,7 +142,7 @@ and run `ctest`: the kernel unit tests (`tests/kokkos`), the ArborX broad-phase 
 (`tests/arborx`), the distributed ctests (`tests/kokkos_mpi`, np=1,2,4) and the Python suite
 (`tests/python`, pytest: Hertz + non-spherical Hertz, cone friction, pair materials, coloured
 Gauss-Seidel, statics battery, restitution, SDF particles, rotating drum, ...; `tests/python/mpi` is
-launched through `mpirun` on top of `peclet.core.mpi`). See `CLAUDE.md` for the exact recipe; CI
+launched through `mpirun` on top of `peclet.halo`). See `CLAUDE.md` for the exact recipe; CI
 (`.github/workflows/ci.yml`) runs all of it on the host OpenMP backend.
 
 ## Output & Visualization
