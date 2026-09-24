@@ -22,6 +22,11 @@
 //     reused here -- soundly, as it happens: every slot stayed within the skin -- see
 //     ParticleHalo::unpackState).
 //
+//   skin_empty_rank — Verlet-skin reuse with ranks that own NO particles (every grain in the
+//     x, y, z < 8 octant; an overlapping pair on the x = 8 face ghosts into an empty rank). An
+//     empty rank has moved nothing and must not vote for a rebuild -- with the global vote, one
+//     such vote switched the skin reuse off for every rank.
+//
 // Every mode also checks the physics against the same step run on MPI_COMM_SELF over the global
 // particle set (rank 0, broadcast): overlapping pairs sit wholly inside one block and ghosts never
 // touch owned bodies, so the distributed result is the single-rank one.
@@ -99,6 +104,89 @@ enum class Mode { OneSidedXpbd, OneSidedHertz, SkinDivergent };
 // p and q are the LAST two global ids, hence the last owned slot on their ranks: migration keeps
 // the staying particles in order and appends the arrivals, so after step 1 q takes p's slot and p
 // takes q's, each 1.2 < skin 1.5 from that slot's build-time position.
+// skin_empty_rank (see the file comment): the pair (6.8, 4, 4)-(7.6, 4, 4) overlaps by 0.2 and
+// its right partner lies in the band of the x = 8 face; the grain at (3, 3, 3) slides along +y
+// at 10 (0.1 per step) past the 0.3 skin every third step. Everything else rests, so the halo
+// is rebuilt exactly as often as on one rank.
+static int runSkinEmpty(int rank, int size) {
+  const std::vector<float> gpos{6.8f, 4.0f, 4.0f, 7.6f, 4.0f, 4.0f, 3.0f, 3.0f, 3.0f};
+  const std::vector<float> gvel{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 10.0f, 0.0f};
+  const int n = 3, STEPS = 8;
+  const double RCUT = 1.5;
+  const float SKIN = 0.3f;
+  auto configure = [&](Simulation& sim) {
+    sim.setDomain(L, L, L, false, false, false);
+    sim.setGlobalScale(1.0f);
+    sim.setSphereShape(RAD);
+    sim.setDt(1e-2f);
+    sim.setGravity(0, 0, 0);
+    sim.setSolverIterations(20, 4);
+    sim.setMaterialParams(0.5f, 0.0f, 0.0f);
+  };
+  const std::tuple<double, double, double> origin{0, 0, 0}, dsize{L, L, L};
+  const std::tuple<long, long, long> gsize{GX, GX, GX};
+  const std::tuple<bool, bool, bool> per{false, false, false};
+
+  std::vector<float> ownedPos;
+  std::vector<int> ownedGid;
+  ownedOf(gpos, n, rank, size, ownedPos, ownedGid);
+  std::vector<float> ownedVel;
+  for (int g : ownedGid)
+    for (int c = 0; c < 3; ++c)
+      ownedVel.push_back(gvel[3 * g + c]);
+  const int nOwned = static_cast<int>(ownedGid.size());
+
+  Simulation dist(8 * n + 64);
+  configure(dist);
+  dist.setPositions(ownedPos);
+  dist.setVelocities(ownedVel);
+  dist.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);
+  dist.enableMpiStep(RCUT, 1, true, 0, SKIN);
+  dist.stepMpi(STEPS);
+  const std::vector<float> distPos = dist.getPositions();
+  const long rebuilds = dist.mpiRebuilds(), gathers = dist.mpiGathers();
+  int empty = nOwned == 0 ? 1 : 0, anyEmpty = 0;
+  MPI_Allreduce(&empty, &anyEmpty, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+
+  std::vector<float> refPos(static_cast<std::size_t>(n) * 3, 0.0f);
+  long refRebuilds = 0;
+  if (rank == 0) {
+    Simulation ref(8 * n + 64);
+    configure(ref);
+    ref.setPositions(gpos);
+    ref.setVelocities(gvel);
+    ref.initMpi(origin, dsize, gsize, per, MPI_COMM_SELF);
+    ref.enableMpiStep(RCUT, 1, true, 0, SKIN);
+    ref.stepMpi(STEPS);
+    refPos = ref.getPositions();
+    refRebuilds = ref.mpiRebuilds();
+  }
+  MPI_Bcast(refPos.data(), n * 3, MPI_FLOAT, 0, MPI_COMM_WORLD);
+  MPI_Bcast(&refRebuilds, 1, MPI_LONG, 0, MPI_COMM_WORLD);
+
+  double localMax = 0.0;
+  for (int i = 0; i < nOwned; ++i)
+    for (int c = 0; c < 3; ++c)
+      localMax = std::max(localMax, std::fabs(static_cast<double>(distPos[3 * i + c]) -
+                                              static_cast<double>(refPos[3 * ownedGid[i] + c])));
+  double posErr = 0.0;
+  MPI_Allreduce(&localMax, &posErr, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+  long maxRebuilds = 0;
+  MPI_Allreduce(&rebuilds, &maxRebuilds, 1, MPI_LONG, MPI_MAX, MPI_COMM_WORLD);
+  const double posTol = 1e-5;
+  if (rank == 0)
+    std::printf(
+        "  [skin_empty_rank] np=%d particles=%d empty-rank=%d halo rebuilds=%ld / "
+        "gathers=%ld (single-rank %ld) posErr=%.3e (tol %.0e)\n",
+        size, n, anyEmpty, maxRebuilds, gathers, refRebuilds, posErr, posTol);
+  int fail = !(posErr < posTol) ? 1 : 0;
+  if (size > 1 && !anyEmpty)
+    fail = 1;  // the scene must leave a rank empty
+  if (maxRebuilds != refRebuilds)
+    fail = 1;  // an empty rank must not add rebuilds
+  return fail;
+}
+
 static int runSkinMigrate(int rank, int size) {
   const float dt = 1e-2f, SKIN = 1.5f;
   const double RCUT = 1.5;
@@ -374,6 +462,8 @@ int main(int argc, char** argv) {
       fail = run(Mode::SkinDivergent, rank, size);
     else if (mode == "skin_migrate_reorder")
       fail = runSkinMigrate(rank, size);
+    else if (mode == "skin_empty_rank")
+      fail = runSkinEmpty(rank, size);
     else {
       if (rank == 0)
         std::fprintf(stderr, "unknown mode %s\n", mode.c_str());

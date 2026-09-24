@@ -64,9 +64,10 @@ foreach(np 1 2 4)
   _dem_mpi_test(rebalance_np${np} ${np} test_rebalance_mpi)
   # halo_schedule: scenes where a rank-local condition differs across ranks (a one-sided halo: a
   # rank that sends ghosts but receives none; Verlet-skin reuse with only some ranks moving; a
-  # same-count, slot-reordering migration under Verlet-skin reuse). A desynchronised exchange
-  # schedule DEADLOCKS, so the TIMEOUT is the failure signal (the passing runs take ~1 s).
-  foreach(mode one_sided_xpbd one_sided_hertz skin_divergent skin_migrate_reorder)
+  # same-count, slot-reordering migration under Verlet-skin reuse; skin reuse with empty ranks). A
+  # desynchronised exchange schedule DEADLOCKS, so the TIMEOUT is the failure signal (the passing
+  # runs take ~1 s).
+  foreach(mode one_sided_xpbd one_sided_hertz skin_divergent skin_migrate_reorder skin_empty_rank)
     _dem_mpi_test(halo_schedule_${mode}_np${np} ${np} test_halo_schedule_mpi ${mode})
     set_tests_properties(halo_schedule_${mode}_np${np} PROPERTIES TIMEOUT 120)
   endforeach()

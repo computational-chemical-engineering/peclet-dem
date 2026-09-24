@@ -867,7 +867,12 @@ class ParticleHalo {
   // method.
  public:
   float maxOwnedDisplacement(const V3& pos, int no) const {
-    if (no <= 0 || refPos_.extent(0) < static_cast<std::size_t>(no))
+    // A rank that owns nothing has moved nothing. (It used to report "moved", and under the
+    // global rebuild vote one empty rank then rebuilt every rank's halo at every gather.) An owned
+    // count change forces the rebuild on its own, before this is asked.
+    if (no <= 0)
+      return 0.0f;
+    if (refPos_.extent(0) < static_cast<std::size_t>(no))
       return 1e30f;
     float md = 0.0f;
     V3 p = pos, r = refPos_;
