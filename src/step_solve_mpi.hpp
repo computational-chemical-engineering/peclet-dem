@@ -91,7 +91,10 @@ inline double xpbdContactReach(float rMax) {
 inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEvery,
                        bool forwardRotation) {
   CpExec space;
-  const float margin = 0.1f * maxOwnedRadius(P);
+  // Broadphase / narrow-phase margin: 0.1 R_max over ALL ranks, so both owners of a cross-face
+  // pair report it at the same gap (a rank-local R_max dropped the pair on the rank whose own
+  // grains are small while the other kept it).
+  const float margin = 0.1f * globalMaxRadius(P, halo.comm());
 
   if (P.growthFactor != -1.0f && P.growthRate != 0.0f) {
     P.growthFactor *= std::exp(P.growthRate * P.dt);
