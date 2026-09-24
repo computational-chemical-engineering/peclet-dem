@@ -102,6 +102,14 @@ quaternion forward and is **exact for spheres**.
   predict-step stale and systematically dissipate energy at the boundary.
 - **A periodic axis only works distributed if it is split across ≥2 ranks** (a rank never ghosts to
   itself for the cross-rank wrap; undecomposed periodic axes use the local self-ghosts instead).
+- **The MPI call sequence must be identical on every rank — never gate an exchange on a rank-local
+  condition.** The halo is not symmetric: a rank can owe ghosts to a neighbour that owes it none.
+  Skipping the forwards on `numGhost == 0` deadlocked the step whenever such a rank existed
+  (coupling's moving suspension at np=4, 2026-09-24); a forward is now skipped only when the rank
+  neither sends nor receives. Likewise the Verlet-skin rebuild decision is Allreduce-OR'd (the
+  rebuild is an NBX collective and one rank's particles can cross the skin while its neighbours'
+  rest). `tests/kokkos_mpi/test_halo_schedule_mpi.cpp` (`one_sided_xpbd`, `one_sided_hertz`,
+  `skin_divergent`, ctest TIMEOUT 120 s) pins both.
 
 ### Load rebalancing
 With `rebalance_every=N` (or an explicit `sim.rebalance()`), the decomposition is recomputed by
