@@ -34,6 +34,8 @@ sim.enable_mpi_step(rcut=0.0, sync_every=1,              # band lower bound (0 =
                     rebalance_every=0)                   # >0 = re-decompose by particle count every N steps
 sim.step_mpi(n)                                          # advance n steps with halo exchange
 sim.rebalance()                                          # force a load rebalance now (returns new owned count)
+sim.migrate_to_weights(w, align=1)                       # co-rebalance onto the weighted ORB of per-cell weights
+                                                         # w (x-fastest over `cells`); align = flow's return value
 # diagnostics: sim.rank, sim.num_ghost (properties);
 #              sim.diagnostics.mpi_rebuilds / .mpi_gathers (ghost-reuse ratio)
 ```
@@ -126,6 +128,16 @@ With `rebalance_every=N` (or an explicit `sim.rebalance()`), the decomposition i
 particle count (weighted ORB) and SoA ownership is migrated — keeping per-rank work balanced as the
 packing evolves. See `core`'s `BlockDecomposer::init(..., weights)` /
 `DistributedOctree::rebalanceByParticleCount` and `../../core/CLAUDE.md`.
+
+**Co-rebalancing with the flow solver** (`peclet.coupling`'s `CfdDem.rebalance()`) goes through
+`migrate_to_weights(w, align)` instead: both codes build the partition from the same replicated
+weight field `w` (fluid work + gamma · particle count per ORB cell), so nothing but the split
+positions is shared. flow's `diagnostics.rebalance_by_weights(w)` picks an alignment `2^a` for its
+pressure multigrid — every split plane on a multiple of `2^a` cells, the largest `a` whose weight
+imbalance stays within 1.05 — and returns it; `align=` makes dem build exactly that partition
+(core's coarse-first aligned weighted ORB). The default `align=1` is the plain weighted ORB.
+`tests/kokkos_mpi/test_align_mpi.cpp` checks dem's partition against flow's call, cell for cell,
+at np = 1, 2, 4, 8.
 
 The original host-C++ bring-up harness (particle migration + the three ghost-exchange schemes A/B/C
 matched cell-for-cell to a serial reference) validated this machinery before it was wired into the

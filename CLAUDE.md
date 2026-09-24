@@ -14,7 +14,7 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH="$PWD/../extern/install/host-openmp"   #
 cmake --build build -j8                           # -> build/peclet/dem/_dem.*.so ; PYTHONPATH=build; import peclet.dem
 ```
 `-DPECLET_DEM_MPI=ON` links MPI and exposes `init_mpi` / `enable_mpi_step` / `step_mpi` / `step_hertz_mpi`
-/ `rebalance` (see `docs/mpi.md`). The version comes from `pyproject.toml` (single source; CMake reads it).
+/ `rebalance` / `migrate_to_weights` (see `docs/mpi.md`). The version comes from `pyproject.toml` (single source; CMake reads it).
 The prefix picks the backend; never hard-code an arch. `pip install .` is the canonical install.
 
 ## Settled decisions — do not reverse silently
@@ -49,14 +49,14 @@ cmake -S . -B build_dev -DCMAKE_PREFIX_PATH="$PWD/../extern/install/host-openmp"
       -DPECLET_DEM_BUILD_TESTS=ON -DPECLET_DEM_MPI=ON -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun
 cmake --build build_dev -j8
 OMP_NUM_THREADS=2 OMP_PROC_BIND=false PYTHONPATH=<core-python-build> \
-    ctest --test-dir build_dev --output-on-failure -j1        # 74 tests (11 without PECLET_DEM_MPI)
+    ctest --test-dir build_dev --output-on-failure -j1        # 78 tests (11 without PECLET_DEM_MPI)
 ```
 
 | suite | what | ctests |
 |---|---|---|
 | `tests/kokkos` | kernel unit tests vs serial references (contact preprocessing, narrow-phase, velocity/position/friction solves, integration, periodicity, thermostat) | 8 |
 | `tests/arborx` | ArborX broad-phase vs an O(N^2) oracle + the full single-rank pipeline | 2 |
-| `tests/kokkos_mpi` (needs `PECLET_DEM_MPI`) | distributed step (XPBD + Hertz engines, closed + periodic, mid-run rebalance) / migration / rebalance vs single-rank, and the collective schedule under rank-divergent layouts (`halo_schedule_*`: one-sided halo, divergent Verlet-skin rebuild, skin reuse across a reordering migration or with empty ranks; a hang = TIMEOUT 120 s) and the ghost band (`ghost_band_*`: a cross-face pair just inside the contact reach vs `MPI_COMM_SELF`), np=1,2,4; label `mpi` | 51 |
+| `tests/kokkos_mpi` (needs `PECLET_DEM_MPI`) | distributed step (XPBD + Hertz engines, closed + periodic, mid-run rebalance) / migration / rebalance vs single-rank, and the collective schedule under rank-divergent layouts (`halo_schedule_*`: one-sided halo, divergent Verlet-skin rebuild, skin reuse across a reordering migration or with empty ranks; a hang = TIMEOUT 120 s) and the ghost band (`ghost_band_*`: a cross-face pair just inside the contact reach vs `MPI_COMM_SELF`), np=1,2,4, and `migrate_to_weights(w, align)` vs flow's aligned partition (`align_*`, np=1,2,4,8); label `mpi` | 55 |
 | `tests/python` | `python_tests` = `pytest tests/python` on the module in the build tree: Hertz + non-spherical Hertz, cone friction (Walton), pair materials, coloured GS (binary exactness, conservation, Enskog cooling, colouring invariant), statics battery, bounce, restitution, SDF particles, hollow-cylinder overlap, growth packing, rotating drum, periodic wrap symmetry; label `python` | 1 |
 | `tests/python/mpi` (needs `PECLET_DEM_MPI`) | `python_mpi_<name>_np{1,2,4}`: exact step vs serial, periodic wrap, cross-rank observables, MPI rotating drum — launched through `mpirun`, on core's `peclet.core.mpi` + mpi4py (put a built `core/python` tree on `PYTHONPATH`; exit 77 = ctest SKIP when that stack is missing); labels `python;mpi` | 12 |
 
@@ -110,6 +110,22 @@ decision that gates a collective (the Verlet-skin topology rebuild, an NBX round
 ranks first; adaptive stops are Allreduce-MAXed for the same reason.
 `tests/kokkos_mpi/test_halo_schedule_mpi.cpp` holds the layouts that exposed both; add a mode there
 for any new one.
+
+**`migrate_to_weights(w, align=1)` must build the partition the coupled flow solver owns**
+(2026-09-24, S5 of `../amr/docs/amr_mg_core_boundary.md`). flow's `rebalance_by_weights(w)` builds
+the ALIGNED weighted ORB (split planes on multiples of `2^a`, `a` from its 1.05 imbalance budget, for
+its pressure multigrid) and returns `2^a`; coupling passes it here, and dem builds the same partition
+through core's coarse-first `init(n, G, w, {align, ...})`. `align=1` is the plain weighted ORB, bit
+for bit the pre-`align` call. dem's own `rebalance()` / `rebalance_every` stay UNALIGNED — alignment
+is a multigrid concern and dem alone has none; do not "harmonise" them. `align` is validated (power
+of two, divides the ORB grid, at least np aligned boxes, weights cover the grid → `ValueError`);
+`tests/kokkos_mpi/test_align_mpi.cpp` (np = 1, 2, 4, 8) pins dem's partition to flow's call cell for
+cell. The distributed step is **not reproducible run to run at np ≥ 4** (cause not established;
+the likely route is MPI arrival order into the local particle order, hence the Gauss–Seidel
+order): two runs of one build differ at np = 8 in
+6 of 8 fingerprint scenarios, and `ghost_band_margin_np4` fails intermittently (posErr 2.1e-02 vs
+tol 1e-04 in 5 of 8 runs on main `832b844`) — a byte gate there compares the owned SET after a
+migration, not a stepped state.
 
 **The distributed XPBD ghost band is `max(rcut, 2.1 R_max)` over the GLOBAL max radius** (2026-09-24;
 `step_solve_mpi.hpp` `demStepMpi`, `xpbdContactReach`). The narrow phase reports a pair while the
