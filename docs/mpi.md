@@ -29,7 +29,7 @@ sim = dem.Simulation()
 sim.initialize_shape(...); sim.set_positions(...)        # as usual
 sim.init_mpi(origin, extent, cells, periodic)            # ORB block decomposition + core particle halo
 sim.set_dt(dt)                                           # every stepper uses it; none takes dt
-sim.enable_mpi_step(rcut, sync_every=1,                  # ghost cutoff; owner->ghost refresh cadence
+sim.enable_mpi_step(rcut=0.0, sync_every=1,              # band lower bound (0 = the contact reach); refresh cadence
                     forward_rotation=True,               # False = spheres (skips quaternion forward)
                     rebalance_every=0)                   # >0 = re-decompose by particle count every N steps
 sim.step_mpi(n)                                          # advance n steps with halo exchange
@@ -110,6 +110,16 @@ quaternion forward and is **exact for spheres**.
   rebuild is an NBX collective and one rank's particles can cross the skin while its neighbours'
   rest). `tests/kokkos_mpi/test_halo_schedule_mpi.cpp` (`one_sided_xpbd`, `one_sided_hertz`,
   `skin_divergent`, ctest TIMEOUT 120 s) pins both.
+- **The ghost band must cover the contact reach, over the GLOBAL maximum radius** (2026-09-24).
+  The XPBD narrow phase reports a pair while the gap is below the margin 0.1 R_max, so a partner
+  across a block face can sit up to 2 R_max + 0.1 R_max from it. The step uses
+  `max(rcut, 2.1 R_max_global)` (Allreduce MAX, re-evaluated every step, growth included) and the
+  margin is 0.1 R_max_global on every rank; the ghost lists are rebuilt whenever the band changes.
+  Before, the default band was one rank-local radius, an explicit `rcut = 2r` missed the margin,
+  a polydisperse run's ranks disagreed on the margin, and a larger band or skin reused lists built
+  with the old one -- each resolved a cross-face pair on one side only.
+  `tests/kokkos_mpi/test_ghost_band_mpi.cpp` (`band_change`, `default_band`, `margin`,
+  `explicit_rcut`) pins all four against `MPI_COMM_SELF`.
 
 ### Load rebalancing
 With `rebalance_every=N` (or an explicit `sim.rebalance()`), the decomposition is recomputed by

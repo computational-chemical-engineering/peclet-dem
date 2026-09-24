@@ -49,14 +49,14 @@ cmake -S . -B build_dev -DCMAKE_PREFIX_PATH="$PWD/../extern/install/host-openmp"
       -DPECLET_DEM_BUILD_TESTS=ON -DPECLET_DEM_MPI=ON -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun
 cmake --build build_dev -j8
 OMP_NUM_THREADS=2 OMP_PROC_BIND=false PYTHONPATH=<core-python-build> \
-    ctest --test-dir build_dev --output-on-failure -j1        # 59 tests (11 without PECLET_DEM_MPI)
+    ctest --test-dir build_dev --output-on-failure -j1        # 71 tests (11 without PECLET_DEM_MPI)
 ```
 
 | suite | what | ctests |
 |---|---|---|
 | `tests/kokkos` | kernel unit tests vs serial references (contact preprocessing, narrow-phase, velocity/position/friction solves, integration, periodicity, thermostat) | 8 |
 | `tests/arborx` | ArborX broad-phase vs an O(N^2) oracle + the full single-rank pipeline | 2 |
-| `tests/kokkos_mpi` (needs `PECLET_DEM_MPI`) | distributed step (XPBD + Hertz engines, closed + periodic, mid-run rebalance) / migration / rebalance vs single-rank, and the collective schedule under rank-divergent layouts (`halo_schedule_*`: one-sided halo, divergent Verlet-skin rebuild, skin reuse across a reordering migration; a hang = TIMEOUT 120 s), np=1,2,4; label `mpi` | 36 |
+| `tests/kokkos_mpi` (needs `PECLET_DEM_MPI`) | distributed step (XPBD + Hertz engines, closed + periodic, mid-run rebalance) / migration / rebalance vs single-rank, and the collective schedule under rank-divergent layouts (`halo_schedule_*`: one-sided halo, divergent Verlet-skin rebuild, skin reuse across a reordering migration; a hang = TIMEOUT 120 s) and the ghost band (`ghost_band_*`: a cross-face pair just inside the contact reach vs `MPI_COMM_SELF`), np=1,2,4; label `mpi` | 48 |
 | `tests/python` | `python_tests` = `pytest tests/python` on the module in the build tree: Hertz + non-spherical Hertz, cone friction (Walton), pair materials, coloured GS (binary exactness, conservation, Enskog cooling, colouring invariant), statics battery, bounce, restitution, SDF particles, hollow-cylinder overlap, growth packing, rotating drum, periodic wrap symmetry; label `python` | 1 |
 | `tests/python/mpi` (needs `PECLET_DEM_MPI`) | `python_mpi_<name>_np{1,2,4}`: exact step vs serial, periodic wrap, cross-rank observables, MPI rotating drum — launched through `mpirun`, on core's `peclet.core.mpi` + mpi4py (put a built `core/python` tree on `PYTHONPATH`; exit 77 = ctest SKIP when that stack is missing); labels `python;mpi` | 12 |
 
@@ -110,6 +110,15 @@ decision that gates a collective (the Verlet-skin topology rebuild, an NBX round
 ranks first; adaptive stops are Allreduce-MAXed for the same reason.
 `tests/kokkos_mpi/test_halo_schedule_mpi.cpp` holds the layouts that exposed both; add a mode there
 for any new one.
+
+**The distributed XPBD ghost band is `max(rcut, 2.1 R_max)` over the GLOBAL max radius** (2026-09-24;
+`step_solve_mpi.hpp` `demStepMpi`, `xpbdContactReach`). The narrow phase reports a pair while the
+gap is below the margin 0.1 R_max, so a cross-face partner can sit 2 R_max + margin from the face;
+both owners must see it or the pair is resolved on one side. So `rcut` is only a LOWER bound
+(default 0 = exactly the reach; `rcut = 2r` used to miss the margin), the margin is global too (a
+rank-local one made polydisperse ranks disagree on a pair), and a band change rebuilds the ghost
+lists. Every XPBD distributed run whose rcut was below 2.1 R_max, or with polydisperse grains,
+changed at that commit; `tests/kokkos_mpi/test_ghost_band_mpi.cpp` holds the four layouts.
 
 ## The two API tiers (QUALITY_PLAN §3.F, D2 — landed 2026-09-08)
 
