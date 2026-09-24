@@ -49,14 +49,14 @@ cmake -S . -B build_dev -DCMAKE_PREFIX_PATH="$PWD/../extern/install/host-openmp"
       -DPECLET_DEM_BUILD_TESTS=ON -DPECLET_DEM_MPI=ON -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun
 cmake --build build_dev -j8
 OMP_NUM_THREADS=2 OMP_PROC_BIND=false PYTHONPATH=<core-python-build> \
-    ctest --test-dir build_dev --output-on-failure -j1        # 56 tests (11 without PECLET_DEM_MPI)
+    ctest --test-dir build_dev --output-on-failure -j1        # 59 tests (11 without PECLET_DEM_MPI)
 ```
 
 | suite | what | ctests |
 |---|---|---|
 | `tests/kokkos` | kernel unit tests vs serial references (contact preprocessing, narrow-phase, velocity/position/friction solves, integration, periodicity, thermostat) | 8 |
 | `tests/arborx` | ArborX broad-phase vs an O(N^2) oracle + the full single-rank pipeline | 2 |
-| `tests/kokkos_mpi` (needs `PECLET_DEM_MPI`) | distributed step (XPBD + Hertz engines, closed + periodic, mid-run rebalance) / migration / rebalance vs single-rank, and the collective schedule under rank-divergent layouts (`halo_schedule_*`: one-sided halo, divergent Verlet-skin rebuild; a hang = TIMEOUT 120 s), np=1,2,4; label `mpi` | 33 |
+| `tests/kokkos_mpi` (needs `PECLET_DEM_MPI`) | distributed step (XPBD + Hertz engines, closed + periodic, mid-run rebalance) / migration / rebalance vs single-rank, and the collective schedule under rank-divergent layouts (`halo_schedule_*`: one-sided halo, divergent Verlet-skin rebuild, skin reuse across a reordering migration; a hang = TIMEOUT 120 s), np=1,2,4; label `mpi` | 36 |
 | `tests/python` | `python_tests` = `pytest tests/python` on the module in the build tree: Hertz + non-spherical Hertz, cone friction (Walton), pair materials, coloured GS (binary exactness, conservation, Enskog cooling, colouring invariant), statics battery, bounce, restitution, SDF particles, hollow-cylinder overlap, growth packing, rotating drum, periodic wrap symmetry; label `python` | 1 |
 | `tests/python/mpi` (needs `PECLET_DEM_MPI`) | `python_mpi_<name>_np{1,2,4}`: exact step vs serial, periodic wrap, cross-rank observables, MPI rotating drum — launched through `mpirun`, on core's `peclet.core.mpi` + mpi4py (put a built `core/python` tree on `PYTHONPATH`; exit 77 = ctest SKIP when that stack is missing); labels `python;mpi` | 12 |
 

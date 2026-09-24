@@ -14,6 +14,12 @@
 //   skin_divergent — Verlet-skin ghost reuse with only SOME ranks' particles moving past the
 //     skin: the topology rebuild (an NBX collective) must be taken by all ranks or none.
 //
+//   skin_migrate_reorder — Verlet-skin ghost reuse across an ownership migration that leaves every
+//     rank's owned COUNT unchanged but REORDERS its slots: two particles swap owners across the
+//     x = 8 face and each lands in the slot the other left, within the skin of that slot's
+//     build-time position. The cached topology is slot-indexed, so the result must match the
+//     single-rank one whether the step after the migration reuses it or rebuilds it.
+//
 // Every mode also checks the physics against the same step run on MPI_COMM_SELF over the global
 // particle set (rank 0, broadcast): overlapping pairs sit wholly inside one block and ghosts never
 // touch owned bodies, so the distributed result is the single-rank one.
@@ -84,6 +90,136 @@ static void ownedOf(const std::vector<float>& gpos, int n, int rank, int size,
 }
 
 enum class Mode { OneSidedXpbd, OneSidedHertz, SkinDivergent };
+
+// skin_migrate_reorder (see the file comment). Cross-face overlapping pairs at y = 4 and y = 12
+// (ghosts both ways at every split), plus the swap pair p = (7.8, 4, 10) moving +x and
+// q = (8.2, 4, 11.2) moving -x at 40 (0.4 per step; they pass 1.2 apart in z, never touching).
+// p and q are the LAST two global ids, hence the last owned slot on their ranks: migration keeps
+// the staying particles in order and appends the arrivals, so after step 1 q takes p's slot and p
+// takes q's, each 1.2 < skin 1.5 from that slot's build-time position.
+static int runSkinMigrate(int rank, int size) {
+  const float dt = 1e-2f, SKIN = 1.5f;
+  const double RCUT = 1.5;
+  const int STEPS = 4;
+  std::vector<float> gpos, gvel;
+  auto add = [&](float x, float y, float z, float vx) {
+    gpos.insert(gpos.end(), {x, y, z});
+    gvel.insert(gvel.end(), {vx, 0.0f, 0.0f});
+  };
+  for (float y : {4.0f, 12.0f})
+    for (float z : {4.0f, 13.0f}) {
+      add(7.6f, y, z, 0.0f);  // overlapping pair (0.8 apart) straddling x = 8
+      add(8.4f, y, z, 0.0f);
+    }
+  add(7.8f, 4.0f, 10.0f, 40.0f);   // p
+  add(8.2f, 4.0f, 11.2f, -40.0f);  // q
+  const int n = static_cast<int>(gpos.size() / 3);
+
+  auto configure = [&](Simulation& sim) {
+    sim.setDomain(L, L, L, false, false, false);
+    sim.setGlobalScale(1.0f);
+    sim.setSphereShape(RAD);
+    sim.setDt(dt);
+    sim.setGravity(0, 0, 0);
+    sim.setSolverIterations(20, 4);
+    sim.setMaterialParams(0.5f, 0.0f, 0.0f);
+  };
+  const std::tuple<double, double, double> origin{0, 0, 0}, dsize{L, L, L};
+  const std::tuple<long, long, long> gsize{GX, GX, GX};
+  const std::tuple<bool, bool, bool> per{false, false, false};
+  const std::vector<peclet::core::Real> uniform(static_cast<std::size_t>(GX) * GX * GX, 1.0);
+
+  std::vector<float> ownedPos;
+  std::vector<int> ownedGid;
+  ownedOf(gpos, n, rank, size, ownedPos, ownedGid);
+  std::vector<float> ownedVel;
+  for (int g : ownedGid)
+    for (int c = 0; c < 3; ++c)
+      ownedVel.push_back(gvel[3 * g + c]);
+  const int cap = 8 * n + 64;
+
+  Simulation dist(cap);
+  configure(dist);
+  dist.setPositions(ownedPos);
+  dist.setVelocities(ownedVel);
+  dist.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);
+  dist.enableMpiStep(RCUT, 1, true, /*rebalance_every=*/0, /*verlet_skin=*/SKIN);
+  int reordered = 0, countChanged = 0;
+  long rebuildsAfterMigrateStep = -1;
+  for (int s = 0; s < STEPS; ++s) {
+    dist.stepMpi(1);
+    const std::vector<float> before = dist.getPositions();
+    dist.migrateToWeights(uniform);  // the SAME equal-cell ORB: a pure ownership move
+    const std::vector<float> after = dist.getPositions();
+    if (s == 0) {
+      countChanged = before.size() != after.size() ? 1 : 0;
+      for (std::size_t i = 0; !countChanged && i < after.size(); ++i)
+        if (after[i] != before[i])
+          reordered = 1;
+      const long r0 = dist.mpiRebuilds();
+      dist.stepMpi(1);  // the step that re-gathers right after the reordering migration
+      ++s;
+      rebuildsAfterMigrateStep = dist.mpiRebuilds() - r0;
+    }
+  }
+  const std::vector<float> distPos = dist.getPositions();
+
+  std::vector<float> refPos(static_cast<std::size_t>(n) * 3, 0.0f);
+  if (rank == 0) {
+    Simulation ref(cap);
+    configure(ref);
+    ref.setPositions(gpos);
+    ref.setVelocities(gvel);
+    ref.initMpi(origin, dsize, gsize, per, MPI_COMM_SELF);
+    ref.enableMpiStep(RCUT, 1, true, 0, SKIN);
+    for (int s = 0; s < STEPS; ++s) {
+      ref.stepMpi(1);
+      ref.migrateToWeights(uniform);
+    }
+    refPos = ref.getPositions();
+  }
+  MPI_Bcast(refPos.data(), n * 3, MPI_FLOAT, 0, MPI_COMM_WORLD);
+
+  // Ownership moved, so match each owned particle to its nearest reference particle (the scene's
+  // particles stay >= 0.8 apart; a lost cross-rank contact moves one by ~0.1).
+  double localMax = 0.0;
+  const int nOwned = static_cast<int>(distPos.size() / 3);
+  for (int i = 0; i < nOwned; ++i) {
+    double best = 1e30;
+    for (int g = 0; g < n; ++g) {
+      double d2 = 0.0;
+      for (int c = 0; c < 3; ++c) {
+        const double d = static_cast<double>(distPos[3 * i + c]) - refPos[3 * g + c];
+        d2 += d * d;
+      }
+      best = std::min(best, d2);
+    }
+    localMax = std::max(localMax, std::sqrt(best));
+  }
+  double posErr = 0.0;
+  MPI_Allreduce(&localMax, &posErr, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+  long lc = nOwned, gc = 0;
+  MPI_Allreduce(&lc, &gc, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
+  int anyReorder = 0, anyCountChange = 0;
+  MPI_Allreduce(&reordered, &anyReorder, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  MPI_Allreduce(&countChanged, &anyCountChange, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  const double posTol = 1e-5;
+  if (rank == 0)
+    std::printf(
+        "  [skin_migrate_reorder] np=%d particles=%ld/%d reordered=%d count-changed=%d "
+        "rebuilds in the post-migration step=%ld posErr=%.3e (tol %.0e)\n",
+        size, gc, n, anyReorder, anyCountChange, rebuildsAfterMigrateStep, posErr, posTol);
+  int fail = 0;
+  if (gc != n || !(posErr < posTol))
+    fail = 1;
+  // At np >= 2 the scene must do what it is for: a same-count migration that reorders slots.
+  if (size > 1 && (!anyReorder || anyCountChange))
+    fail = 1;
+  for (float v : distPos)
+    if (!std::isfinite(v))
+      fail = 1;
+  return fail;
+}
 
 static int run(Mode mode, int rank, int size) {
   const char* name = mode == Mode::OneSidedXpbd    ? "one_sided_xpbd"
@@ -230,6 +366,8 @@ int main(int argc, char** argv) {
       fail = run(Mode::OneSidedHertz, rank, size);
     else if (mode == "skin_divergent")
       fail = run(Mode::SkinDivergent, rank, size);
+    else if (mode == "skin_migrate_reorder")
+      fail = runSkinMigrate(rank, size);
     else {
       if (rank == 0)
         std::fprintf(stderr, "unknown mode %s\n", mode.c_str());
