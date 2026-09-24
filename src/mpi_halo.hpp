@@ -307,10 +307,13 @@ class ParticleHalo {
 
     // Decide whether to rebuild the owner↔ghost topology or reuse the cached one (Verlet skin, D2).
     // A rebuild is forced when reuse is off (skin==0), on the first gather, when the owned count
-    // changed (a migration happened ⇒ topology invalid), or when an owned particle has displaced ≥
-    // skin since the last build (a particle could have entered the rcut band without being in the
-    // rcut+skin list).
-    bool rebuild = (verletSkin_ <= 0.0f) || !haveTopo_ || (no != lastNumReal_);
+    // changed (a migration happened ⇒ topology invalid), when the band differs from the one the
+    // cached lists were built with (enable_mpi_step again with another rcut or skin, or the
+    // default band following the particle size -- a list built with a narrower band lacks the
+    // ghosts the new one needs), or when an owned particle has displaced ≥ skin since the last
+    // build (a particle could have entered the rcut band without being in the rcut+skin list).
+    const double band = rcut + static_cast<double>(verletSkin_);
+    bool rebuild = (verletSkin_ <= 0.0f) || !haveTopo_ || (no != lastNumReal_) || band != lastBand_;
     if (!rebuild && maxOwnedDisplacement(P.pos, no) >= verletSkin_)
       rebuild = true;
     // The build is collective (an NBX round) and the forwards run over the topology it fixes, but
@@ -327,7 +330,6 @@ class ParticleHalo {
 
     if (rebuild) {
       ++nRebuild_;
-      const double band = rcut + static_cast<double>(verletSkin_);
       // (1) download owned positions, (re)build the host halo topology, capture it on device.
       auto hpos = Kokkos::create_mirror_view(P.pos);
       Kokkos::deep_copy(hpos, P.pos);
@@ -366,6 +368,7 @@ class ParticleHalo {
       }
       haveTopo_ = true;
       lastNumReal_ = no;
+      lastBand_ = band;
     }
 
     const int ng = numGhost_;
@@ -897,6 +900,7 @@ class ParticleHalo {
   float verletSkin_ = 0.0f;
   bool haveTopo_ = false;
   int lastNumReal_ = -1;
+  double lastBand_ = -1.0;  // rcut + skin of the cached topology
   long nRebuild_ = 0, nGather_ = 0;
   V3 refPos_;
   MPI_Comm comm_ = MPI_COMM_NULL;
