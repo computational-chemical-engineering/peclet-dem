@@ -9,6 +9,7 @@
 
 #ifdef PECLET_DEM_MPI
 
+#include <algorithm>
 #include <cmath>
 #include <Kokkos_Core.hpp>
 
@@ -85,9 +86,10 @@ inline double xpbdContactReach(float rMax) {
 /// capacity for the worst-case ghost band; gather() throws on overflow rather than corrupting the
 /// SoA.
 ///
-/// BAND: `rcut > 0` is the caller's ghost-band width; `rcut <= 0` takes the contact reach over the
-/// GLOBAL maximum radius after this substep's growth (xpbdContactReach) -- a band of one rank-local
-/// radius left a particle 1-2 radii from the face out of its neighbour's view.
+/// BAND: the contact reach over the GLOBAL maximum radius after this substep's growth
+/// (xpbdContactReach), or the caller's `rcut` when that is wider. A narrower band cannot be
+/// right: it drops a partner of a cross-face pair from its neighbour's view (a band of one
+/// rank-local radius did; so does rcut = 2r, which misses the margin).
 inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEvery,
                        bool forwardRotation) {
   CpExec space;
@@ -103,7 +105,7 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   }
   if (P.growthFactor > 0.0f)
     updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
-  const double band = rcut > 0.0 ? rcut : xpbdContactReach(globalMaxRadius(P, halo.comm()));
+  const double band = std::max(rcut, xpbdContactReach(globalMaxRadius(P, halo.comm())));
 
   // 1. Predict velocity on the owned set (no ghosts yet -> numParticles == numReal).
   P.numParticles = P.numReal;

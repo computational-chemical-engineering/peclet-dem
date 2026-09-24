@@ -781,13 +781,15 @@ NB_MODULE(_dem, m) {
           "Set up the ORB block decomposition + core particle halo for the distributed step on "
           "the global domain (`origin` lower corner, `extent` SIZE, `cells` per axis for the ORB "
           "grid, `periodic` per axis -- the suite's domain quartet).")
-      .def("enable_mpi_step", &Simulation::enableMpiStep, nb::arg("rcut"),
-           nb::arg("sync_every") = 1, nb::arg("forward_rotation") = true,
-           nb::arg("rebalance_every") = 0, nb::arg("verlet_skin") = 0.0,
-           "Enable the distributed step: ghost cutoff rcut, sync cadence, rotation forwarding, the "
-           "load-rebalance interval in steps (0 = fixed decomposition), and the Verlet ghost-reuse "
-           "skin (0 = rebuild the halo topology every substep; >0 = reuse it until a particle "
-           "moves > skin).")
+      .def(
+          "enable_mpi_step", &Simulation::enableMpiStep, nb::arg("rcut") = 0.0,
+          nb::arg("sync_every") = 1, nb::arg("forward_rotation") = true,
+          nb::arg("rebalance_every") = 0, nb::arg("verlet_skin") = 0.0,
+          "Enable the distributed step: ghost-band width rcut (a lower bound -- step_mpi widens it "
+          "to the contact reach 2.1 x the global maximum radius, so the default 0 means exactly "
+          "that), sync cadence, rotation forwarding, the load-rebalance interval in steps (0 = "
+          "fixed decomposition), and the Verlet ghost-reuse skin (0 = rebuild the halo topology "
+          "every substep; >0 = reuse it until a particle moves > skin).")
       .def("step_mpi", &Simulation::stepMpi, nb::arg("n") = 1,
            "Advance the distributed (MPI) simulation by `n` steps of the time step set by set_dt, "
            "with halo exchange.")
