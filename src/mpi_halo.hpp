@@ -806,6 +806,13 @@ class ParticleHalo {
 
     P.numReal = (int)newN;
     P.numParticles = (int)newN;
+    // The cached owner<->ghost topology (sendIdx, selfIdx, refPos_) is slot-indexed over the
+    // PRE-migration owned set. Reusing it is still sound when every slot's new occupant lies within
+    // the skin of that slot's build position (the displacement check is per slot, and every forward
+    // re-packs the occupant's full state, gid included), but that is an accident of where the
+    // arrivals land, not an invariant of the migration -- so drop it and let the next gather()
+    // rebuild. A migration already pays a host round trip; the rebuild adds one NBX round.
+    haveTopo_ = false;
   }
 
  public:

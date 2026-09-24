@@ -17,8 +17,10 @@
 //   skin_migrate_reorder — Verlet-skin ghost reuse across an ownership migration that leaves every
 //     rank's owned COUNT unchanged but REORDERS its slots: two particles swap owners across the
 //     x = 8 face and each lands in the slot the other left, within the skin of that slot's
-//     build-time position. The cached topology is slot-indexed, so the result must match the
-//     single-rank one whether the step after the migration reuses it or rebuilds it.
+//     build-time position. The cached topology is slot-indexed over the pre-migration owned set;
+//     a migration drops it, so the step after the migration rebuilds (before 2026-09-24 it was
+//     reused here -- soundly, as it happens: every slot stayed within the skin -- see
+//     ParticleHalo::unpackState).
 //
 // Every mode also checks the physics against the same step run on MPI_COMM_SELF over the global
 // particle set (rank 0, broadcast): overlapping pairs sit wholly inside one block and ghosts never
@@ -214,6 +216,10 @@ static int runSkinMigrate(int rank, int size) {
     fail = 1;
   // At np >= 2 the scene must do what it is for: a same-count migration that reorders slots.
   if (size > 1 && (!anyReorder || anyCountChange))
+    fail = 1;
+  // A migration drops the cached topology, so the step after it rebuilds (every rank: the skin
+  // decision is global).
+  if (rebuildsAfterMigrateStep != 1)
     fail = 1;
   for (float v : distPos)
     if (!std::isfinite(v))
