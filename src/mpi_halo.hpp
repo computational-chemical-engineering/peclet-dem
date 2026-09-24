@@ -11,6 +11,16 @@
 /// realIndices).
 ///
 /// Faithful Kokkos port of Simulation::mpi_gather_ghosts / mpi_forward_positions / mpi_forward4.
+///
+/// Local order is canonical, not MPI arrival order. core's NBX rounds hand over messages in the
+/// order they ARRIVE (ParticleMigrator::migrate appends migrants per message; the halo topology
+/// numbers its ghost blocks per message), and at np >= 4 a rank hears from several neighbours in a
+/// run-dependent order. The local slot order decides the manifold order (sorted by slot-pair key),
+/// hence the colouring and the Gauss-Seidel sweep order, so an arrival-ordered layout made two
+/// runs of one build diverge. Migrants are therefore stably re-ordered by source rank
+/// (MigratePack::srcRank) and ghost blocks are placed in ascending source rank (ghostSlot_):
+/// within a block the order is the sender's, which is canonical by induction. With one source per
+/// rank (np <= 2) both maps are the identity, so those layouts are unchanged bit for bit.
 /// Gated behind PECLET_DEM_MPI (mirrors cfd's CFD_MPI): the default dem module never includes this,
 /// so it stays byte-identical when the macro is off.
 #ifndef PECLET_DEM_MPI_HALO_HPP
@@ -22,6 +32,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <Kokkos_Core.hpp>
 #include <stdexcept>
@@ -100,6 +111,7 @@ struct MigratePack {
   int shapeId;
   float planeFric0, planeFric1;
   int gid;
+  int srcRank;  // the sending rank: arrivals are re-ordered by it (see the file note)
   unsigned char materialId, groundedLevel, numWarm, numHertz;
   float orphan, orphanVPeak;  // Poisson orphan account rides with its body across ownership
   WarmPairEntry warm[kWarmCarryMax];
@@ -123,9 +135,11 @@ inline void haloPackF4(V4 field, peclet::core::View<F4> owned, int n) {
       "peclet::dem::halo::packF4", Kokkos::RangePolicy<CpExec>(0, n),
       KOKKOS_LAMBDA(int i) { owned(i) = F4{field(i, 0), field(i, 1), field(i, 2), field(i, 3)}; });
 }
-// ghost[g] -> field(no+g,:), optionally adding the per-ghost periodic image shift (positions only).
+// ghost[g] -> field(no+slot(g),:), optionally adding the per-ghost periodic image shift (positions
+// only). `slot` maps the topology's ghost index (message-arrival block order) to the canonical
+// slot (ascending source rank); shift stays indexed by the topology's g.
 inline void haloUnpackF3(V3 field, peclet::core::View<F3> ghost, peclet::core::View<F3> shift,
-                         int no, int ng, bool doShift) {
+                         Vi slot, int no, int ng, bool doShift) {
   Kokkos::parallel_for(
       "peclet::dem::halo::unpackF3", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
         F3 v = ghost(g);
@@ -134,18 +148,20 @@ inline void haloUnpackF3(V3 field, peclet::core::View<F3> ghost, peclet::core::V
           v.y += shift(g).y;
           v.z += shift(g).z;
         }
-        field(no + g, 0) = v.x;
-        field(no + g, 1) = v.y;
-        field(no + g, 2) = v.z;
+        const int s = no + slot(g);
+        field(s, 0) = v.x;
+        field(s, 1) = v.y;
+        field(s, 2) = v.z;
       });
 }
-inline void haloUnpackF4(V4 field, peclet::core::View<F4> ghost, int no, int ng) {
+inline void haloUnpackF4(V4 field, peclet::core::View<F4> ghost, Vi slot, int no, int ng) {
   Kokkos::parallel_for(
       "peclet::dem::halo::unpackF4", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
-        field(no + g, 0) = ghost(g).x;
-        field(no + g, 1) = ghost(g).y;
-        field(no + g, 2) = ghost(g).z;
-        field(no + g, 3) = ghost(g).w;
+        const int s = no + slot(g);
+        field(s, 0) = ghost(g).x;
+        field(s, 1) = ghost(g).y;
+        field(s, 2) = ghost(g).z;
+        field(s, 3) = ghost(g).w;
       });
 }
 
@@ -175,19 +191,19 @@ inline void haloPackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invI
         owned(i) = g;
       });
 }
-// Unpack the gathered owner state into the ghost slots [no, no+ng) and self-map realIndices (the
-// owner is remote, so velocity/position deltas landing on the ghost slot are discarded next
-// forward).
+// Unpack the gathered owner state into the ghost slots [no, no+ng) (ghost g -> slot no+slot(g), as
+// in haloUnpackF3) and self-map realIndices (the owner is remote, so velocity/position deltas
+// landing on the ghost slot are discarded next forward).
 inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invInertia, V4 quat,
                              V4 quatPred, Vf scale, Vf invMass, Vi shapeId, Vi realIndices, Vi gid,
                              Kokkos::View<unsigned char*, CpMem> materialId,
                              Kokkos::View<unsigned char*, CpMem> grounded, Vf orphan,
-                             Vf orphanVPeak, peclet::core::View<MpiGatherPack> ghost, int no,
-                             int ng) {
+                             Vf orphanVPeak, peclet::core::View<MpiGatherPack> ghost, Vi slot,
+                             int no, int ng) {
   Kokkos::parallel_for(
       "peclet::dem::halo::unpackGather", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
         const MpiGatherPack p = ghost(g);
-        const int s = no + g;
+        const int s = no + slot(g);
         vel(s, 0) = p.vel.x;
         vel(s, 1) = p.vel.y;
         vel(s, 2) = p.vel.z;
@@ -359,6 +375,7 @@ class ParticleHalo {
       numSend_ = static_cast<int>(topo.sendIdx.size());
       allocBuffers(no, ng);
       uploadShift(topo);
+      uploadGhostSlots(topo, ng);
       // Snapshot the owned positions at build time — the reference for the displacement check.
       if (verletSkin_ > 0.0f) {
         if (refPos_.extent(0) < static_cast<std::size_t>(no))
@@ -393,7 +410,8 @@ class ParticleHalo {
     dev_.forward(ownedPack_, ghostPack_);
     haloUnpackGather(P.vel, P.velPred, P.angVel, P.angVelPred, P.invInertia, P.quat, P.quatPred,
                      P.scale, P.invMass, P.shapeId, P.realIndices, P.gid, P.materialId,
-                     P.groundedLevel, P.bodyOrphan, P.bodyOrphanVPeak, ghostPack_, no, ng);
+                     P.groundedLevel, P.bodyOrphan, P.bodyOrphanVPeak, ghostPack_, ghostSlot_, no,
+                     ng);
     return no + ng;
   }
 
@@ -417,6 +435,7 @@ class ParticleHalo {
     packState(P, pos, payload);
     const std::size_t newN = peclet::core::halo::rebalanceByParticleCount(
         dec_, mig_, pos, payload, sizeof(MigratePack), comm_);
+    orderArrivalsBySource(pos, payload, newN);
     if ((int)newN > P.capacity)
       throw std::runtime_error("ParticleHalo::rebalance: owned overflow -- rank received " +
                                std::to_string(newN) + " particles, capacity " +
@@ -434,6 +453,7 @@ class ParticleHalo {
     dec_ =
         newDec;  // in place: mig_ still points at dec_; mig_.migrate() sends to dec_.ownerOf(...)
     const std::size_t newN = mig_.migrate(pos, payload, sizeof(MigratePack));
+    orderArrivalsBySource(pos, payload, newN);
     if ((int)newN > P.capacity)
       throw std::runtime_error("ParticleHalo::migrateTo: owned overflow -- rank received " +
                                std::to_string(newN) + " particles, capacity " +
@@ -516,6 +536,7 @@ class ParticleHalo {
       m.planeFric0 = h_pf(i, 0);
       m.planeFric1 = h_pf(i, 1);
       m.gid = h_gid(i);
+      m.srcRank = rank_;
       m.materialId = h_mat(i);
       m.groundedLevel = h_grd(i);
       m.orphan = h_orp(i);
@@ -835,7 +856,7 @@ class ParticleHalo {
       return;
     haloPackF3(field, ownedF3_, numReal_);
     dev_.forward(ownedF3_, ghostF3_);
-    haloUnpackF3(field, ghostF3_, shiftDev_, numReal_, numGhost_, /*doShift=*/false);
+    haloUnpackF3(field, ghostF3_, shiftDev_, ghostSlot_, numReal_, numGhost_, /*doShift=*/false);
   }
   // owner slice -> ghost slots with the periodic image shift added (positions).
   void forwardPositions(V3 field) {
@@ -843,7 +864,7 @@ class ParticleHalo {
       return;
     haloPackF3(field, ownedF3_, numReal_);
     dev_.forward(ownedF3_, ghostF3_);
-    haloUnpackF3(field, ghostF3_, shiftDev_, numReal_, numGhost_, /*doShift=*/true);
+    haloUnpackF3(field, ghostF3_, shiftDev_, ghostSlot_, numReal_, numGhost_, /*doShift=*/true);
   }
   // owner slice -> ghost slots, verbatim (quaternions).
   void forward4(V4 field) {
@@ -851,7 +872,7 @@ class ParticleHalo {
       return;
     haloPackF4(field, ownedF4_, numReal_);
     dev_.forward(ownedF4_, ghostF4_);
-    haloUnpackF4(field, ghostF4_, numReal_, numGhost_);
+    haloUnpackF4(field, ghostF4_, ghostSlot_, numReal_, numGhost_);
   }
 
   void selfMapReals(Vi realIndices, int no) {
@@ -899,6 +920,58 @@ class ParticleHalo {
   }
 
  private:
+  // Canonical ghost placement: topology ghost g -> slot offset in [0, ng). The received blocks go
+  // in ascending source rank (core numbers them in message-arrival order); the local periodic
+  // self-ghosts [numReceived, ng) keep their place after them.
+  void uploadGhostSlots(const peclet::core::halo::ParticleHaloTopology<3>::FlatTopo& t, int ng) {
+    std::vector<std::size_t> blocks(t.recvRanks.size());
+    for (std::size_t k = 0; k < blocks.size(); ++k)
+      blocks[k] = k;
+    std::sort(blocks.begin(), blocks.end(),
+              [&](std::size_t a, std::size_t b) { return t.recvRanks[a] < t.recvRanks[b]; });
+    if (ghostSlot_.extent(0) < static_cast<std::size_t>(std::max(ng, 1)))
+      ghostSlot_ = Vi("peclet::dem::halo::ghostSlot", static_cast<std::size_t>(std::max(ng, 1)));
+    auto h = Kokkos::create_mirror_view(ghostSlot_);
+    int next = 0;
+    for (std::size_t k : blocks)
+      for (int j = 0; j < t.recvCounts[k]; ++j)
+        h(static_cast<int>(t.recvOffsets[k]) + j) = next++;
+    for (int g = next; g < ng; ++g)
+      h(g) = g;
+    Kokkos::deep_copy(ghostSlot_, h);
+  }
+  // Canonical owned order after a migration: core keeps this rank's stayers first (in their old
+  // order) and appends the lastReceived() arrivals message by message, in arrival order. Stably
+  // re-order the arrivals by their sending rank; within one sender the order is the sender's.
+  void orderArrivalsBySource(std::vector<peclet::core::Vec<3>>& pos, std::vector<char>& payload,
+                             std::size_t newN) {
+    const std::size_t nArr = mig_.lastReceived();
+    if (nArr < 2 || nArr > newN)
+      return;
+    const std::size_t first = newN - nArr;
+    std::vector<int> src(nArr);
+    for (std::size_t k = 0; k < nArr; ++k)
+      std::memcpy(&src[k],
+                  &payload[(first + k) * sizeof(MigratePack) + offsetof(MigratePack, srcRank)],
+                  sizeof(int));
+    if (std::is_sorted(src.begin(), src.end()))
+      return;
+    std::vector<std::size_t> perm(nArr);
+    for (std::size_t k = 0; k < nArr; ++k)
+      perm[k] = k;
+    std::stable_sort(perm.begin(), perm.end(),
+                     [&](std::size_t a, std::size_t b) { return src[a] < src[b]; });
+    std::vector<peclet::core::Vec<3>> p2(nArr);
+    std::vector<char> b2(nArr * sizeof(MigratePack));
+    for (std::size_t k = 0; k < nArr; ++k) {
+      p2[k] = pos[first + perm[k]];
+      std::memcpy(&b2[k * sizeof(MigratePack)], &payload[(first + perm[k]) * sizeof(MigratePack)],
+                  sizeof(MigratePack));
+    }
+    std::copy(p2.begin(), p2.end(), pos.begin() + static_cast<std::ptrdiff_t>(first));
+    std::memcpy(&payload[first * sizeof(MigratePack)], b2.data(), b2.size());
+  }
+
   void uploadShift(const peclet::core::halo::ParticleHaloTopology<3>::FlatTopo& t) {
     std::vector<F3> hs(t.shift.size());
     for (std::size_t i = 0; i < t.shift.size(); ++i)
@@ -925,6 +998,7 @@ class ParticleHalo {
   peclet::core::halo::ParticleHaloTopology<3> halo_;
   peclet::core::halo::ParticleHalo<3> dev_;
   peclet::core::View<F3> ownedF3_, ghostF3_, shiftDev_;
+  Vi ghostSlot_;  // topology ghost index -> canonical ghost slot offset (see uploadGhostSlots)
   peclet::core::View<F4> ownedF4_, ghostF4_;
   peclet::core::View<MpiGatherPack> ownedPack_, ghostPack_;
 };
