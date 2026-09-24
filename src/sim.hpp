@@ -804,10 +804,11 @@ class Simulation : public ShapeRegistry {
                    {std::get<0>(gsize), std::get<1>(gsize), std::get<2>(gsize)},
                    {std::get<0>(periodic), std::get<1>(periodic), std::get<2>(periodic)}, comm);
   }
-  // Enable the distributed step. rcut is the ghost-band width (default = 1.0*globalScale, the
-  // periodic skin used by the single-GPU path); sync_every is the owner->ghost refresh interval (1
-  // = EXACT). rebalance_every: re-decompose by particle count + migrate ownership every N
-  // distributed steps to keep the per-rank load even as a packing densifies (0 = never; the
+  // Enable the distributed step. rcut is the ghost-band width; rcut <= 0 takes the XPBD contact
+  // reach 2.1 R_max over the GLOBAL maximum radius, re-evaluated every step (growth included --
+  // the same band as the single-rank periodic ghosts); sync_every is the owner->ghost refresh
+  // interval (1 = EXACT). rebalance_every: re-decompose by particle count + migrate ownership every
+  // N distributed steps to keep the per-rank load even as a packing densifies (0 = never; the
   // partition is then fixed at the initial decomposition, as before). A pure redistribution — the
   // physics result is unchanged.
   void enableMpiStep(double rcut, int sync_every = 1, bool forward_rotation = true,
@@ -852,7 +853,7 @@ class Simulation : public ShapeRegistry {
   }
   void stepMpi(int nsteps) {
     requireDt("step_mpi");
-    const double rcut = (mpiRcut_ > 0.0) ? mpiRcut_ : maxOwnedRadius(P_);
+    const double rcut = mpiRcut_;  // <= 0: demStepMpi takes the global contact reach
     ensureGlobalGids();
     for (int s = 0; s < nsteps; ++s) {
       if (mpiRebalanceEvery_ > 0 && mpiStepCount_ % mpiRebalanceEvery_ == 0)

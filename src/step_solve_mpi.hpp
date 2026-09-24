@@ -51,6 +51,23 @@ struct MpiSolveHooks {
   }
 };
 
+/// Largest particle radius over ALL ranks (growth included) -- the halo band and the contact
+/// reach must not depend on which grains a rank happens to own. An empty rank contributes nothing
+/// (maxOwnedRadius's scale-1 fallback would inflate the maximum of a run of smaller grains).
+inline float globalMaxRadius(const Particles& P, MPI_Comm comm) {
+  float r = P.numReal > 0 ? maxOwnedRadius(P) : 0.0f, g = r;
+  MPI_Allreduce(&r, &g, 1, MPI_FLOAT, MPI_MAX, comm);
+  return g > 0.0f ? g : maxOwnedRadius(P);
+}
+
+/// The XPBD narrow phase's reach: it reports a pair while the gap is below the broadphase margin
+/// (0.1 R_max), i.e. at centre distance < r_i + r_j + margin, so a partner of a body across a
+/// block face can sit up to 2 R_max + 0.1 R_max from it. The single-rank periodic ghost band
+/// (demStep) is the same number.
+inline double xpbdContactReach(float rMax) {
+  return 2.1 * static_cast<double>(rMax);
+}
+
 /// One distributed XPBD DEM substep. The periodic ghost generation of the single-rank step is
 /// replaced by a cross-rank gather (halo.gather, ghosts carrying REAL mass + the owner's gid /
 /// material / grounded level), then the FULL modern solve sequence runs through demSolveContacts
@@ -67,6 +84,10 @@ struct MpiSolveHooks {
 /// periodic. CAPACITY: a periodic box needs a thick ghost boundary layer -- size the Simulation
 /// capacity for the worst-case ghost band; gather() throws on overflow rather than corrupting the
 /// SoA.
+///
+/// BAND: `rcut > 0` is the caller's ghost-band width; `rcut <= 0` takes the contact reach over the
+/// GLOBAL maximum radius after this substep's growth (xpbdContactReach) -- a band of one rank-local
+/// radius left a particle 1-2 radii from the face out of its neighbour's view.
 inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEvery,
                        bool forwardRotation) {
   CpExec space;
@@ -79,6 +100,7 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   }
   if (P.growthFactor > 0.0f)
     updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
+  const double band = rcut > 0.0 ? rcut : xpbdContactReach(globalMaxRadius(P, halo.comm()));
 
   // 1. Predict velocity on the owned set (no ghosts yet -> numParticles == numReal).
   P.numParticles = P.numReal;
@@ -90,7 +112,7 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   // 2. Gather ghosts (real mass) from owners over the halo: full state -- including gid,
   //    materialId and the warm grounded level -- into the ghost slots; sets
   //    P.numParticles = numReal + numGhost and self-maps realIndices.
-  halo.gather(P, rcut);
+  halo.gather(P, band);
 
   fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
 

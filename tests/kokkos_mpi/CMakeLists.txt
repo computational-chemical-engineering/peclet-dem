@@ -72,7 +72,7 @@ foreach(np 1 2 4)
   endforeach()
   # ghost_band: a cross-face pair just inside the contact reach, vs the step on MPI_COMM_SELF --
   # the band must cover every pair the narrow phase can make, and be rebuilt when it changes.
-  foreach(mode band_change)
+  foreach(mode band_change default_band)
     _dem_mpi_test(ghost_band_${mode}_np${np} ${np} test_ghost_band_mpi ${mode})
   endforeach()
 endforeach()
