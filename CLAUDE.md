@@ -120,12 +120,22 @@ for bit the pre-`align` call. dem's own `rebalance()` / `rebalance_every` stay U
 is a multigrid concern and dem alone has none; do not "harmonise" them. `align` is validated (power
 of two, divides the ORB grid, at least np aligned boxes, weights cover the grid → `ValueError`);
 `tests/kokkos_mpi/test_align_mpi.cpp` (np = 1, 2, 4, 8) pins dem's partition to flow's call cell for
-cell. The distributed step is **not reproducible run to run at np ≥ 4** (cause not established;
-the likely route is MPI arrival order into the local particle order, hence the Gauss–Seidel
-order): two runs of one build differ at np = 8 in
-6 of 8 fingerprint scenarios, and `ghost_band_margin_np4` fails intermittently (posErr 2.1e-02 vs
-tol 1e-04 in 5 of 8 runs on main `832b844`) — a byte gate there compares the owned SET after a
-migration, not a stepped state.
+cell.
+
+**Reproducibility trap — local order must never be MPI arrival order** (2026-09-25). core's NBX
+rounds deliver messages in ARRIVAL order: `ParticleMigrator::migrate` appends migrants per message
+and `ParticleHaloTopology::build` numbers the ghost blocks per message. The local slot order feeds
+the manifold order (sorted by slot-pair key) → `colorKey` → colouring → Gauss–Seidel order, so an
+arrival-ordered layout made two runs of one build diverge at np ≥ 4 (np = 8: 6 of 8 fingerprint
+scenarios; the first divergent quantity was always the ghost order, positions follow 1–2 substeps
+later). `mpi_halo.hpp` therefore unpacks ghost block g into `no + ghostSlot_(g)` (ascending source
+rank) and stably re-orders migrants by `MigratePack::srcRank`; np ≤ 2 are bit-identical to before,
+np 4/8 bitwise stable over 5 runs (OMP_NUM_THREADS=1). Any new receive path into the SoA must keep
+this. **Threads are a second, separate source:** the narrow phase appends contacts in thread order,
+and the processor-block Gauss–Seidel is order-sensitive at rank faces (a shared contact swept at
+different states by its two owners is not momentum-conserving: `ghost_band_margin` shifts a jammed
+3-body chain rigidly by 2.1e-2, every pair still resolved). So runs are reproducible only at
+`OMP_NUM_THREADS=1` (or Serial), and the `ghost_band_*` ctests pin it via `ENVIRONMENT`.
 
 **The distributed XPBD ghost band is `max(rcut, 2.1 R_max)` over the GLOBAL max radius** (2026-09-24;
 `step_solve_mpi.hpp` `demStepMpi`, `xpbdContactReach`). The narrow phase reports a pair while the
