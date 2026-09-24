@@ -444,11 +444,21 @@ class ParticleHalo {
   // Migrate onto the weighted ORB of per-cell weights `w` (global x-fastest, matching the ORB
   // grid). The Lagrangian half of the co-rebalance: dem builds the SAME deterministic partition
   // flow does from the same weight field, so no BlockDecomposer object crosses the language
-  // boundary.
-  int migrateToWeights(Particles& P, const std::vector<peclet::core::Real>& w) {
+  // boundary. `align` > 1 builds core's ALIGNED weighted ORB (every split plane on a multiple of
+  // `align` cells, coarse-first: amr/docs/amr_mg_core_boundary.md §11.4) -- the partition flow's
+  // rebalanceByWeights chose for its pressure multigrid, which dem must reproduce to stay
+  // co-located. `align` == 1 is the plain weighted ORB, exactly the pre-`align` call. The caller
+  // (Simulation::migrateToWeights) has validated `w` and `align` against the ORB grid.
+  int migrateToWeights(Particles& P, const std::vector<peclet::core::Real>& w, int align = 1) {
     int size = 1;
     MPI_Comm_size(comm_, &size);
-    peclet::core::decomp::BlockDecomposer<3> newDec((std::size_t)size, dec_.globalSize(), w);
+    if (align == 1) {
+      peclet::core::decomp::BlockDecomposer<3> newDec((std::size_t)size, dec_.globalSize(), w);
+      return migrateTo(P, newDec);
+    }
+    peclet::core::decomp::BlockDecomposer<3> newDec;
+    newDec.init((std::size_t)size, dec_.globalSize(), w,
+                peclet::core::IVec<3>{align, align, align});
     return migrateTo(P, newDec);
   }
 

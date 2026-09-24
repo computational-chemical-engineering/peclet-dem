@@ -829,11 +829,40 @@ class Simulation : public ShapeRegistry {
   // boundary; returns this rank's new owned count. Exposed for manual / adaptive balancing.
   int rebalance() { return halo_->rebalance(P_); }
   // Co-rebalance: migrate ownership onto the weighted ORB of per-cell weights `w` (the SAME
-  // partition the coupled flow solver redistributes onto from the same weight field). Returns new
-  // owned count.
-  int migrateToWeights(const std::vector<peclet::core::Real>& w) {
-    return halo_->migrateToWeights(P_, w);
+  // partition the coupled flow solver redistributes onto from the same weight field), its split
+  // planes on multiples of `align` cells (1 = unaligned, the pre-`align` behaviour bit for bit;
+  // a coupled run passes what flow's rebalance_by_weights returned). Returns new owned count.
+  // Validated here because core's aligned weighted init checks its contract by assert only.
+  int migrateToWeights(const std::vector<peclet::core::Real>& w, int align = 1) {
+    if (!halo_->inited())
+      throw std::runtime_error("migrate_to_weights: call init_mpi first");
+    const auto& G = halo_->decomposer().globalSize();
+    int size = 1;
+    MPI_Comm_size(halo_->comm(), &size);
+    if (align < 1 || (align & (align - 1)) != 0)
+      throw std::invalid_argument("migrate_to_weights: align must be a power of two >= 1, got " +
+                                  std::to_string(align));
+    double coarseCells = 1.0;
+    std::size_t cells = 1;
+    for (int k = 0; k < 3; ++k) {
+      if (G[k] % align != 0)
+        throw std::invalid_argument("migrate_to_weights: align " + std::to_string(align) +
+                                    " does not divide the ORB grid (" + std::to_string(G[0]) +
+                                    ", " + std::to_string(G[1]) + ", " + std::to_string(G[2]) +
+                                    ")");
+      coarseCells *= static_cast<double>(G[k] / align);
+      cells *= static_cast<std::size_t>(G[k]);
+    }
+    if (coarseCells < static_cast<double>(size))
+      throw std::invalid_argument("migrate_to_weights: align " + std::to_string(align) +
+                                  " leaves fewer aligned boxes than ranks");
+    if (w.size() != cells)
+      throw std::invalid_argument("migrate_to_weights: weights has " + std::to_string(w.size()) +
+                                  " entries, the ORB grid has " + std::to_string(cells) + " cells");
+    return halo_->migrateToWeights(P_, w, align);
   }
+  // The current block decomposition (C++ only: tests compare it with the partition flow builds).
+  const peclet::core::decomp::BlockDecomposer<3>& decomposer() const { return halo_->decomposer(); }
   // Globally-unique particle ids (persistent-pair and Mindlin-history keys are gid-based):
   // re-base each rank's identity ids by an exclusive scan of the owned counts, once per particle
   // set. Migration and rebalance carry gids, so the ids stay stable afterwards; set_positions

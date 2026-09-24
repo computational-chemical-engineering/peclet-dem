@@ -803,9 +803,16 @@ NB_MODULE(_dem, m) {
            "Re-decompose by particle count and migrate ownership now; returns this rank's new "
            "owned count.")
       .def("migrate_to_weights", &Simulation::migrateToWeights, nb::arg("weights"),
-           "Co-rebalance: migrate ownership onto the weighted ORB of per-cell weights (global "
-           "x-fastest, matching the ORB grid) -- the SAME partition the coupled flow solver "
-           "redistributes onto from the same weight field. Returns this rank's new owned count.")
+           nb::arg("align") = 1,
+           "Co-rebalance: migrate particle ownership onto the weighted ORB of per-cell weights "
+           "(global x-fastest over the init_mpi cell grid), so each rank owns the particles in a "
+           "block of near-equal total weight -- the SAME partition the coupled flow solver "
+           "redistributes onto from the same weight field. `align` (a power of two, default 1) "
+           "puts every block boundary on a multiple of `align` cells; 1 is the plain weighted "
+           "ORB. A coupled run passes the alignment flow's rebalance_by_weights returned, "
+           "which it chose for its pressure multigrid; dem alone has no reason to align. Raises "
+           "ValueError when `align` is not a power of two, does not divide the cell grid, or "
+           "`weights` does not cover it. Returns this rank's new owned count.")
       .def_prop_ro("rank", &Simulation::rank, "This rank's MPI index.")
       .def_prop_ro("num_ghost", &Simulation::numGhost,
                    "The number of ghost particles on this rank.")

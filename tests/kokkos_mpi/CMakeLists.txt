@@ -33,7 +33,7 @@ endif()
 separate_arguments(_mpi_preflags NATIVE_COMMAND "${MPIEXEC_PREFLAGS}")
 
 set(_dem_src "${CMAKE_CURRENT_SOURCE_DIR}/../../src")
-foreach(t migrate_mpi demstep_mpi rebalance_mpi halo_schedule_mpi ghost_band_mpi)
+foreach(t migrate_mpi demstep_mpi rebalance_mpi halo_schedule_mpi ghost_band_mpi align_mpi)
   add_executable(test_${t} test_${t}.cpp)
   target_include_directories(test_${t} PRIVATE ${_dem_src} ${PECLET_CORE_INCLUDE})
   target_compile_definitions(test_${t} PRIVATE PECLET_DEM_MPI)
@@ -76,4 +76,8 @@ foreach(np 1 2 4)
   foreach(mode band_change default_band margin explicit_rcut)
     _dem_mpi_test(ghost_band_${mode}_np${np} ${np} test_ghost_band_mpi ${mode})
   endforeach()
+  _dem_mpi_test(align_np${np} ${np} test_align_mpi)
 endforeach()
+# migrate_to_weights(w, align) == flow's aligned partition: also at np = 8, where the budget's
+# alignment and the "fewer aligned boxes than ranks" rejection both differ from np <= 4.
+_dem_mpi_test(align_np8 8 test_align_mpi)
