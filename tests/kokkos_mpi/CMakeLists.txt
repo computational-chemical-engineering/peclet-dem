@@ -1,7 +1,8 @@
 # Distributed (MPI) dem tests: migration onto a shared decomposition, the distributed step (both the
 # XPBD and the force-based engine, closed + periodic, with mid-run rebalancing) vs the single-rank
-# step, and ownership rebalancing -- each at np = 1, 2, 4. Kokkos + ArborX + MPI + the header-only
-# core + the dem headers (src/), compiled with PECLET_DEM_MPI (the default module never defines it).
+# step, ownership rebalancing, and the collective schedule under rank-divergent layouts -- each at
+# np = 1, 2, 4. Kokkos + ArborX + MPI + the header-only core + the dem headers (src/), compiled with
+# PECLET_DEM_MPI (the default module never defines it).
 # Normally built by the root CMake under -DPECLET_DEM_BUILD_TESTS=ON -DPECLET_DEM_MPI=ON; the
 # standalone form is kept:
 #   cmake -S tests/kokkos_mpi -B build_kmpi -DCMAKE_PREFIX_PATH="<suite>/extern/install/<backend>" \
@@ -32,7 +33,7 @@ endif()
 separate_arguments(_mpi_preflags NATIVE_COMMAND "${MPIEXEC_PREFLAGS}")
 
 set(_dem_src "${CMAKE_CURRENT_SOURCE_DIR}/../../src")
-foreach(t migrate_mpi demstep_mpi rebalance_mpi)
+foreach(t migrate_mpi demstep_mpi rebalance_mpi halo_schedule_mpi)
   add_executable(test_${t} test_${t}.cpp)
   target_include_directories(test_${t} PRIVATE ${_dem_src} ${PECLET_CORE_INCLUDE})
   target_compile_definitions(test_${t} PRIVATE PECLET_DEM_MPI)
@@ -61,4 +62,11 @@ foreach(np 1 2 4)
     _dem_mpi_test(demstep_${mode}_np${np} ${np} test_demstep_mpi ${mode})
   endforeach()
   _dem_mpi_test(rebalance_np${np} ${np} test_rebalance_mpi)
+  # halo_schedule: scenes where a rank-local condition differs across ranks (a one-sided halo: a
+  # rank that sends ghosts but receives none). A desynchronised exchange schedule DEADLOCKS, so the
+  # TIMEOUT is the failure signal (the passing runs take ~1 s).
+  foreach(mode one_sided_xpbd one_sided_hertz)
+    _dem_mpi_test(halo_schedule_${mode}_np${np} ${np} test_halo_schedule_mpi ${mode})
+    set_tests_properties(halo_schedule_${mode}_np${np} PROPERTIES TIMEOUT 120)
+  endforeach()
 endforeach()

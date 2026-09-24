@@ -225,6 +225,13 @@ inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 in
 
 /// Owner<->ghost halo driver for the distributed Kokkos demStep. Set up once (initMpi), then each
 /// substep: gather() (rebuild + populate ghost slots) and per-iteration forward/forwardPositions.
+///
+/// COLLECTIVE SCHEDULE: every exchange here is point-to-point over a topology that need not be
+/// symmetric -- a rank can owe ghosts to a neighbour while receiving none from it (its own
+/// particles sit near the shared face, the neighbour's do not). An exchange may therefore be
+/// skipped only when this rank has nothing to send AND nothing to receive (`exchanges()`); gating
+/// on the ghost count alone skips the sends a neighbour is blocked on (coupling
+/// test_mpi_moving_suspension at np=4 deadlocked on exactly that).
 class ParticleHalo {
  public:
   // Block decomposition over the GLOBAL domain (the per-block solver stays non-periodic; the halo
@@ -335,9 +342,11 @@ class ParticleHalo {
             "ParticleHalo::gather: ghost overflow -- need capacity >= " + std::to_string(no + ng) +
             " (numReal=" + std::to_string(no) + " + numGhost=" + std::to_string(ng) + "), have " +
             std::to_string(P.capacity) + "; increase the Simulation capacity.");
+      const auto topo = halo_.flatten();
       numGhost_ = ng;
+      numSend_ = static_cast<int>(topo.sendIdx.size());
       allocBuffers(no, ng);
-      uploadShift();
+      uploadShift(topo);
       // Snapshot the owned positions at build time — the reference for the displacement check.
       if (verletSkin_ > 0.0f) {
         if (refPos_.extent(0) < static_cast<std::size_t>(no))
@@ -354,7 +363,7 @@ class ParticleHalo {
     // self-map realIndices for the reals (owner deltas land on themselves); done every step like
     // demStep.
     selfMapReals(P.realIndices, no);
-    if (ng == 0)
+    if (!exchanges())
       return no;
 
     // (2) positions (committed + predicted) with the periodic image shift. d_pos_pred was already
@@ -376,6 +385,10 @@ class ParticleHalo {
   }
 
   MPI_Comm comm() const { return comm_; }
+  /// Whether this rank takes part in the owner->ghost exchange at all: it receives ghosts or owes
+  /// owned copies to a neighbour. Only a rank with neither may skip a forward -- see the class
+  /// note.
+  bool exchanges() const { return numGhost_ > 0 || numSend_ > 0; }
 
   // Dynamic load re-balance: re-decompose the ORB by per-block particle COUNT (weighted ORB) and
   // migrate each owned particle, with its committed state, to its new owner. A pure redistribution
@@ -788,7 +801,7 @@ class ParticleHalo {
  public:
   // owner slice [0,numReal) -> ghost slots [numReal,..), verbatim (velocity / angular velocity).
   void forward(V3 field) {
-    if (numGhost_ == 0)
+    if (!exchanges())
       return;
     haloPackF3(field, ownedF3_, numReal_);
     dev_.forward(ownedF3_, ghostF3_);
@@ -796,7 +809,7 @@ class ParticleHalo {
   }
   // owner slice -> ghost slots with the periodic image shift added (positions).
   void forwardPositions(V3 field) {
-    if (numGhost_ == 0)
+    if (!exchanges())
       return;
     haloPackF3(field, ownedF3_, numReal_);
     dev_.forward(ownedF3_, ghostF3_);
@@ -804,7 +817,7 @@ class ParticleHalo {
   }
   // owner slice -> ghost slots, verbatim (quaternions).
   void forward4(V4 field) {
-    if (numGhost_ == 0)
+    if (!exchanges())
       return;
     haloPackF4(field, ownedF4_, numReal_);
     dev_.forward(ownedF4_, ghostF4_);
@@ -851,8 +864,7 @@ class ParticleHalo {
   }
 
  private:
-  void uploadShift() {
-    auto t = halo_.flatten();
+  void uploadShift(const peclet::core::halo::ParticleHaloTopology<3>::FlatTopo& t) {
     std::vector<F3> hs(t.shift.size());
     for (std::size_t i = 0; i < t.shift.size(); ++i)
       hs[i] = F3{static_cast<float>(t.shift[i][0]), static_cast<float>(t.shift[i][1]),
@@ -862,6 +874,7 @@ class ParticleHalo {
 
   bool inited_ = false;
   int rank_ = 0, numReal_ = 0, numGhost_ = 0;
+  int numSend_ = 0;  // owned copies this rank sends per forward (cross-rank; set at each rebuild)
   // Verlet-skin reuse state (D2): skin width, the build-time owned positions, and the cache-valid
   // flags.
   float verletSkin_ = 0.0f;
