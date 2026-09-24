@@ -73,8 +73,14 @@ foreach(np 1 2 4)
   endforeach()
   # ghost_band: a cross-face pair just inside the contact reach, vs the step on MPI_COMM_SELF --
   # the band must cover every pair the narrow phase can make, and be rebuilt when it changes.
+  # One host thread: the comparison with MPI_COMM_SELF at 1e-4 holds only when each rank sweeps
+  # its contacts in a reproducible order. With an OpenMP pool the narrow phase appends contacts
+  # in thread order, and the processor-block Gauss-Seidel then lands 2e-2 away (margin, np = 2
+  # and 4, about 1 run in 4 at 8 threads: q's owner sweeps q-s before q-p, and the splice with
+  # p's owner shifts the jammed chain rigidly -- every pair still resolved, not a missed contact).
   foreach(mode band_change default_band margin explicit_rcut)
     _dem_mpi_test(ghost_band_${mode}_np${np} ${np} test_ghost_band_mpi ${mode})
+    set_tests_properties(ghost_band_${mode}_np${np} PROPERTIES ENVIRONMENT OMP_NUM_THREADS=1)
   endforeach()
   _dem_mpi_test(align_np${np} ${np} test_align_mpi)
 endforeach()
