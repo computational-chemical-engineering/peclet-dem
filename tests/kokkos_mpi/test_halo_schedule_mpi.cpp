@@ -11,6 +11,9 @@
 //     per-step state refresh) must still send. This is the layout that deadlocked the coupling's
 //     test_mpi_moving_suspension at np=4 (a particle row exactly on the y = 16 block face).
 //
+//   skin_divergent — Verlet-skin ghost reuse with only SOME ranks' particles moving past the
+//     skin: the topology rebuild (an NBX collective) must be taken by all ranks or none.
+//
 // Every mode also checks the physics against the same step run on MPI_COMM_SELF over the global
 // particle set (rank 0, broadcast): overlapping pairs sit wholly inside one block and ghosts never
 // touch owned bodies, so the distributed result is the single-rank one.
@@ -80,18 +83,29 @@ static void ownedOf(const std::vector<float>& gpos, int n, int rank, int size,
   }
 }
 
-enum class Mode { OneSidedXpbd, OneSidedHertz };
+enum class Mode { OneSidedXpbd, OneSidedHertz, SkinDivergent };
 
 static int run(Mode mode, int rank, int size) {
-  const char* name = mode == Mode::OneSidedXpbd ? "one_sided_xpbd" : "one_sided_hertz";
+  const char* name = mode == Mode::OneSidedXpbd    ? "one_sided_xpbd"
+                     : mode == Mode::OneSidedHertz ? "one_sided_hertz"
+                                                   : "skin_divergent";
   const bool hertz = mode == Mode::OneSidedHertz;
+  const bool skin = mode == Mode::SkinDivergent;
   const float dt = hertz ? 1e-4f : 1e-2f;
   const int STEPS = 8, SUB = 50;
-  const double RCUT = 1.5;        // XPBD ghost band (>= contact diameter 1.0 + margin)
-  const float HERTZ_SKIN = 0.3f;  // force-path pair-list skin fraction (band 2.3 * RAD)
+  const double RCUT = 1.5;         // XPBD ghost band (>= contact diameter 1.0 + margin)
+  const float VERLET_SKIN = 0.3f;  // skin_divergent only
+  const float HERTZ_SKIN = 0.3f;   // force-path pair-list skin fraction (band 2.3 * RAD)
 
   int n = 0;
   const std::vector<float> gpos = scene(n);
+  // skin_divergent: the x = 13 column (only upper-x ranks own it) slides along +y at 10 per unit
+  // time -- 0.1 per step, past the 0.3 skin after the third step -- while everything else rests.
+  std::vector<float> gvel(static_cast<std::size_t>(n) * 3, 0.0f);
+  if (skin)
+    for (int g = 0; g < n; ++g)
+      if (gpos[3 * g] > 12.0f)
+        gvel[3 * g + 1] = 10.0f;
 
   auto configure = [&](Simulation& sim) {
     sim.setDomain(L, L, L, false, false, false);
@@ -112,16 +126,22 @@ static int run(Mode mode, int rank, int size) {
   std::vector<int> ownedGid;
   ownedOf(gpos, n, rank, size, ownedPos, ownedGid);
   const int nOwned = static_cast<int>(ownedGid.size());
+  std::vector<float> ownedVel;
+  for (int g : ownedGid)
+    for (int c = 0; c < 3; ++c)
+      ownedVel.push_back(gvel[3 * g + c]);
   const int cap = 4 * n + 64;
 
   // --- distributed (MPI_COMM_WORLD) ---
   Simulation dist(cap);
   configure(dist);
   dist.setPositions(ownedPos);
+  dist.setVelocities(ownedVel);
   dist.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);
-  dist.enableMpiStep(RCUT, /*sync_every=*/1, /*forward_rotation=*/true);
-  // The first step's ghost count is the layout the test is about (later steps re-gather on the
-  // same, essentially static, layout).
+  dist.enableMpiStep(RCUT, /*sync_every=*/1, /*forward_rotation=*/true, /*rebalance_every=*/0,
+                     /*verlet_skin=*/skin ? VERLET_SKIN : 0.0);
+  // The first step's ghost count is the layout the test is about (the force path's later calls
+  // re-gather on the same static layout; the skin mode's column stays inside its blocks).
   if (hertz)
     dist.stepHertzMpi(SUB, HERTZ_SKIN);
   else
@@ -136,6 +156,10 @@ static int run(Mode mode, int rank, int size) {
       dist.stepMpi(1);
   }
   const std::vector<float> distPos = dist.getPositions();
+  long myRebuilds = dist.mpiRebuilds(), minRebuilds = 0, maxRebuilds = 0;
+  MPI_Allreduce(&myRebuilds, &minRebuilds, 1, MPI_LONG, MPI_MIN, MPI_COMM_WORLD);
+  MPI_Allreduce(&myRebuilds, &maxRebuilds, 1, MPI_LONG, MPI_MAX, MPI_COMM_WORLD);
+  const long gathers = dist.mpiGathers();
 
   // --- single-rank reference (rank 0, MPI_COMM_SELF, all particles, the same step code) ---
   std::vector<float> refPos(static_cast<std::size_t>(n) * 3, 0.0f);
@@ -143,8 +167,9 @@ static int run(Mode mode, int rank, int size) {
     Simulation ref(cap);
     configure(ref);
     ref.setPositions(gpos);
+    ref.setVelocities(gvel);
     ref.initMpi(origin, dsize, gsize, per, MPI_COMM_SELF);
-    ref.enableMpiStep(RCUT, 1, true);
+    ref.enableMpiStep(RCUT, 1, true, 0, skin ? VERLET_SKIN : 0.0);
     for (int s = 0; s < STEPS; ++s) {
       if (hertz)
         ref.stepHertzMpi(SUB, HERTZ_SKIN);
@@ -171,14 +196,20 @@ static int run(Mode mode, int rank, int size) {
   if (rank == 0)
     std::printf(
         "  [%-15s] np=%d particles=%d ghosts(total)=%d min-ghosts/rank=%d posErr=%.3e "
-        "(tol %.0e)\n",
-        name, size, n, totGhost, minGhost, posErr, posTol);
+        "(tol %.0e) halo rebuilds=%ld..%ld / gathers=%ld\n",
+        name, size, n, totGhost, minGhost, posErr, posTol, minRebuilds, maxRebuilds, gathers);
   if (!(posErr < posTol))
     fail = 1;
   // The scene must actually exercise the one-sided layout: some rank holds no ghosts while the
   // others do (at np=1 there is no cross-rank halo; closed box, so no self-ghosts either).
   if (size > 1 && !(minGhost == 0 && totGhost > 0))
     fail = 1;
+  if (skin) {
+    // One schedule for all ranks, and the skin path truly exercised: some gathers reused the
+    // topology, and the moving column forced at least one rebuild after the first.
+    if (minRebuilds != maxRebuilds || !(maxRebuilds > 1 && maxRebuilds < gathers))
+      fail = 1;
+  }
   for (float v : distPos)
     if (!std::isfinite(v))
       fail = 1;
@@ -197,6 +228,8 @@ int main(int argc, char** argv) {
       fail = run(Mode::OneSidedXpbd, rank, size);
     else if (mode == "one_sided_hertz")
       fail = run(Mode::OneSidedHertz, rank, size);
+    else if (mode == "skin_divergent")
+      fail = run(Mode::SkinDivergent, rank, size);
     else {
       if (rank == 0)
         std::fprintf(stderr, "unknown mode %s\n", mode.c_str());

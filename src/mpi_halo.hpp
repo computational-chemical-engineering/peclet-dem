@@ -313,6 +313,16 @@ class ParticleHalo {
     bool rebuild = (verletSkin_ <= 0.0f) || !haveTopo_ || (no != lastNumReal_);
     if (!rebuild && maxOwnedDisplacement(P.pos, no) >= verletSkin_)
       rebuild = true;
+    // The build is collective (an NBX round) and the forwards run over the topology it fixes, but
+    // every test above except `skin <= 0` is rank-local: one rank's particles can cross the skin
+    // while its neighbours' rest. So the decision is global -- any rank rebuilding makes all ranks
+    // rebuild (a rank-local rebuild deadlocks its NBX against the neighbours' forwards). With
+    // reuse off every rank rebuilds unconditionally, and no reduction is needed.
+    if (verletSkin_ > 0.0f) {
+      int mine = rebuild ? 1 : 0, any = 0;
+      MPI_Allreduce(&mine, &any, 1, MPI_INT, MPI_LOR, comm_);
+      rebuild = any != 0;
+    }
     numReal_ = no;
 
     if (rebuild) {
