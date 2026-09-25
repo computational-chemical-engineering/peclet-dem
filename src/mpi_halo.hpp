@@ -5,10 +5,13 @@
 /// peclet::core::halo::ParticleHaloTopology<3> (host topology, periodic image shift) +
 /// ParticleHalo<3> (on-device gather/scatter + host-staged MPI). Rebuilt each substep from the
 /// owned positions; it gathers ghost copies of the owners' FULL state into the Particles SoA ghost
-/// slots and refreshes them owner->ghost during the velocity/position solves -- the EXACT
-/// distributed scheme (ghosts carry REAL mass; every owned particle sees all its neighbours so it
-/// computes its full serial XPBD delta locally; ghost deltas are discarded via a self-mapped
-/// realIndices).
+/// slots (ghosts carry REAL mass; realIndices self-mapped, so a ghost evolves in place) and, during
+/// the velocity/position solves, RECONCILES them with their owners (docs/mpi_momentum_conservation
+/// .md): every contact is solved by exactly one rank (ContactOwnership), which writes the
+/// partner's half of each impulse into the partner's ghost slot; at every sync each ghost's change
+/// since its baseline is reverse-accumulated onto its owner (core ParticleHalo<3>::reverse) and the
+/// owners then republish (forward). Each impulse and correction is applied once, equal and
+/// opposite: linear momentum and the centre of mass are conserved to round-off.
 ///
 /// Faithful Kokkos port of Simulation::mpi_gather_ghosts / mpi_forward_positions / mpi_forward4.
 ///
@@ -69,9 +72,8 @@ struct MpiGatherPack {
   // support chain crossing a rank boundary stays grounded).
   int gid;
   unsigned char material, grounded;
-  // Poisson-restitution orphan account (owner-authoritative; the ghost copy's rank-local
-  // drawdowns are overwritten by the next mirror — the redundant ghost-pair solve computes
-  // the identical drawdown on the owner).
+  // Poisson-restitution orphan account (owner-authoritative; a ghost copy's rank-local credits and
+  // drawdowns are delivered to the owner by the velocity reverse, then the next mirror).
   float orphan, orphanVPeak;
 };
 
@@ -102,8 +104,11 @@ struct HertzPairEntry {
 // position (which drives ownership and travels as the migrator's coordinate) and the predicted /
 // delta / ghost scratch the step rebuilds. This is the payload moved when a particle changes owner
 // during a load re-balance. POD => MPI_BYTE-copyable. Carries the particle's slice of the
-// persistent-contact ledger (each pair rides on BOTH endpoints; the unpack dedupes by key) plus
-// its grounded level, so a rebalance does not cold-restart the statics force network.
+// persistent-contact ledger (each pair rides on BOTH locally owned endpoints; the unpack dedupes
+// by key) plus its grounded level, so a rebalance does not cold-restart the statics force
+// network. After the move the pair's owner under the new topology (ContactOwnership) uses its
+// copy; a non-owner's copy is gathered but never applied or committed, and vanishes after one
+// substep.
 struct MigratePack {
   F4 quat;
   F3 vel, angVel, invInertia;
@@ -267,8 +272,8 @@ inline void haloPackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invI
       });
 }
 // Unpack the gathered owner state into the ghost slots [no, no+ng) (ghost g -> slot no+slot(g), as
-// in haloUnpackF3) and self-map realIndices (the owner is remote, so velocity/position deltas
-// landing on the ghost slot are discarded next forward).
+// in haloUnpackF3) and self-map realIndices (the owner is remote: velocity/position changes
+// landing on the ghost slot are delivered to it by the next reconciliation's reverse).
 inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 invInertia, V4 quat,
                              V4 quatPred, Vf scale, Vf invMass, Vi shapeId, Vi realIndices, Vi gid,
                              Kokkos::View<unsigned char*, CpMem> materialId,
@@ -730,8 +735,8 @@ class ParticleHalo {
       gidToLocal.emplace(static_cast<unsigned>(h_gid(i)), i);
     }
     // Distribute the previous-substep converged ledger onto its endpoint particles: each pair
-    // rides on BOTH locally-owned endpoints (the redundant ghost-pair pattern means either owner
-    // may need it; the unpack dedupes by key). Beyond kWarmCarryMax the lowest-|impulse| entry is
+    // rides on BOTH locally-owned endpoints (after the move either endpoint's new rank may own the
+    // pair; the unpack dedupes by key). Beyond kWarmCarryMax the lowest-|impulse| entry is
     // evicted — a dropped pair merely warm-starts cold on the receiving rank.
     if (P.prevPairCount > 0) {
       const int pc = P.prevPairCount;

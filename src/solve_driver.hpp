@@ -7,14 +7,19 @@
 /// The two callers differ only through the `Hooks` policy:
 ///   * SoloSolveHooks (single-GPU): every hook is a no-op / identity — the driver compiles to
 ///     exactly the pre-extraction demStep sequence (validated bit-for-bit on the Serial backend).
-///   * MpiSolveHooks (step_solve_mpi.hpp, PECLET_DEM_MPI): processor-block Gauss–Seidel — the
-///   colouring and
-///     the sweeps stay rank-local over owned + ghost bodies (ghost pairs are solved redundantly on
-///     both owners; ghost deltas are discarded at the next refresh), `syncVelocities` /
-///     `syncPositions` refresh the ghost copies owner->ghost every `syncEvery` iterations plus
-///     once after every solve phase, and `allMax` turns each adaptive-stop residual into a global
-///     MPI_Allreduce(MAX) so all ranks take the same break (a rank-local break would desynchronise
-///     the collective ghost refreshes and deadlock).
+///   * MpiSolveHooks (step_solve_mpi.hpp, PECLET_DEM_MPI): processor-block Gauss–Seidel with a
+///     SINGLE owner per contact (docs/mpi_momentum_conservation.md) — `nc` / `nm` are the counts
+///     of the contacts / manifolds this rank owns, and only they are swept, over owned + ghost
+///     body slots; the partner half of every impulse lands in the ghost slot. `beginSolve` marks
+///     the ghosts' velocity baselines; `syncVelocities` / `syncPositions` reverse-accumulate each
+///     ghost's change since its baseline onto its owner, then refresh owner->ghost (reverse, then
+///     forward), every `syncEvery` iterations plus once after every solve phase;
+///     `publishPositions` opens the position phase with a forward only (the integration of a
+///     ghost is not an interaction); `syncFrictionCounts` makes the legacy-friction counts the
+///     serial ones. `visibleManifolds(nm)` is the whole visible range, read only by the label
+///     passes (warm-ledger match, grounded / height levels). `allMax` turns each adaptive-stop
+///     residual into a global MPI_Allreduce(MAX) so all ranks take the same break (a rank-local
+///     break would desynchronise the collective syncs and deadlock).
 ///
 /// `nBodies` is the body-slot span of the solve graph: numReal on the single-GPU path (ghost slots
 /// are realIndices-mapped onto their owners), numReal + numGhost under MPI (ghosts are self-mapped
@@ -228,8 +233,12 @@ struct SoloSolveHooks {
   static constexpr bool distributed = false;
   float allMax(float v) const { return v; }
   bool syncPoint(int) const { return false; }
+  int visibleManifolds(int nm) const { return nm; }
+  void beginSolve(Particles&) const {}
   void syncVelocities(Particles&) const {}
+  void publishPositions(Particles&) const {}
   void syncPositions(Particles&) const {}
+  void syncFrictionCounts(Particles&) const {}
 };
 
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
@@ -239,6 +248,8 @@ template <class Hooks>
 inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                              Kokkos::View<const int*, CpMem> keyIdx, const Hooks& hooks) {
   CpExec space;
+  hooks.beginSolve(P);
+  const int nmVisible = hooks.visibleManifolds(nm);
 
   // A frictional wall drives friction even when the body-body material is frictionless.
   const bool friction = (P.frictionDynamic > 0.0f || P.wallFrictionMax > 0.0f);
@@ -349,7 +360,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       auto mt = Kokkos::subview(P.prevMatched, Kokkos::pair<int, int>(0, P.prevPairCount));
       Kokkos::deep_copy(mt, static_cast<unsigned char>(0));
     }
-    gatherWarmLambdaKokkos(P.manifolds, nm, P.realIndices, keyIdx, P.prevPairKeys, P.prevLambda,
+    gatherWarmLambdaKokkos(P.manifolds, nmVisible, P.realIndices, keyIdx, P.prevPairKeys, P.prevLambda,
                            P.prevLambdaT, P.prevPosImpulse, P.prevRestBank, P.prevRestVPeak,
                            P.prevPairCount, P.pairKeys, P.lambdaAcc, P.lambdaT, P.posImpulse,
                            P.restBank, P.restVPeak,
@@ -395,7 +406,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     }
     markPersistentManifoldsKokkos(P.manifolds, nm, P.realIndices, keyIdx, P.prevPairKeys,
                                   P.prevPairCount, P.pairKeys, P.manifoldPersistent);
-    updateGroundedLevelsKokkos(P.manifolds, nm, P.realIndices, P.posPred, gHat, P.groundedLevel,
+    updateGroundedLevelsKokkos(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat, P.groundedLevel,
                                nBodies, /*sweeps*/ 8, /*decay*/ 8);
     // STAGED SOLVE (Guendelman): the main sweeps are fully momentum-conserving (side flags all
     // zero) -- ballistic impact, discharge and shear see correct physics. One-sided grounding is
@@ -689,7 +700,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         // inelastic impulse only EQUALIZES velocities, so a deep column still cools one halving
         // per cycle -- measured insufficient on the statics battery (kept for A/B comparison
         // against the multilevel pass).
-        computeHeightLevelsKokkos(P.manifolds, nm, P.realIndices, P.posPred, gHat, P.heightLevel,
+        computeHeightLevelsKokkos(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat, P.heightLevel,
                                   nBodies);
         std::vector<std::pair<int, int>> buckets;
         buildLevelColorBucketsKokkos(
@@ -779,6 +790,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   }
   if (legacyFriction) {
     countFrictionContactsKokkos(P.contacts, nc, P.realIndices, P.planeFriction);
+    hooks.syncFrictionCounts(P);
     solveContactFrictionKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
                                P.realIndices, P.planeFriction, P.frictionDynamic, P.deltaVel,
                                P.deltaAngVel);
@@ -790,7 +802,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   applyVelocityAndPredictPositionKokkos(P.numParticles, P.pos, P.invMass, P.vel, P.quat, P.velPred,
                                         P.angVelPred, P.posPred, P.quatPred, P.angVel, P.dt);
   if constexpr (Hooks::distributed)
-    hooks.syncPositions(P);
+    hooks.publishPositions(P);
 
   // Colour the contact graph ONCE (topology-only; reused across the position sweeps), then remove
   // overlap with colored Gauss–Seidel (true sequential projection, no count-averaging softening).

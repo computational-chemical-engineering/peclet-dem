@@ -22,34 +22,36 @@
 namespace peclet::dem {
 
 /// MPI hooks for the shared contact-solve driver (demSolveContacts): the distributed step is the
-/// processor-block Gauss-Seidel form of the SAME modern sequence the single-GPU step runs. The
-/// colouring and the sweeps stay rank-local over owned + ghost bodies (ghost pairs are solved
-/// redundantly on both owners -- each rank keeps only its owned bodies' updates, the ghost copies
-/// are overwritten at the next refresh), the owners re-publish their ghost state every `syncEvery`
-/// solver iterations plus once after every solve phase, and each adaptive-stop residual is
-/// Allreduce-MAXed so all ranks take the same break (the refreshes are collective -- a rank-local
-/// break would deadlock them).
+/// processor-block Gauss-Seidel form of the SAME modern sequence the single-GPU step runs
+/// (docs/mpi_momentum_conservation.md). Every contact is solved by EXACTLY ONE rank
+/// (ContactOwnership: the only owner that sees it, else the lower-gid body's owner); each rank
+/// sweeps only the contacts and manifolds it owns, over owned + ghost body slots, and writes the
+/// partner's half of every impulse into the partner's ghost slot. At every sync the ghosts'
+/// accumulated changes are reverse-accumulated onto their owners, then the owners republish
+/// (reverse, then forward), so each impulse and each position correction is applied once, equal
+/// and opposite -- no redundant two-owner solve. Syncs run every `syncEvery` solver iterations
+/// plus once after every solve phase; each adaptive-stop residual is Allreduce-MAXed so all ranks
+/// take the same break (the syncs are collective -- a rank-local break would deadlock them).
+/// `numManifoldsVisible` is the whole visible manifold range, read only by the label passes
+/// (warm-ledger match, grounded / height levels).
 struct MpiSolveHooks {
   static constexpr bool distributed = true;
   ParticleHalo& halo;
   int syncEvery;
   bool forwardRotation;
+  int numManifoldsVisible;
   float allMax(float v) const {
     float g = v;
     MPI_Allreduce(&v, &g, 1, MPI_FLOAT, MPI_MAX, halo.comm());
     return g;
   }
   bool syncPoint(int it) const { return (it + 1) % syncEvery == 0; }
-  void syncVelocities(Particles& P) const {
-    halo.forward(P.velPred);
-    if (forwardRotation)
-      halo.forward(P.angVelPred);
-  }
-  void syncPositions(Particles& P) const {
-    halo.forwardPositions(P.posPred);
-    if (forwardRotation)
-      halo.forward4(P.quatPred);
-  }
+  int visibleManifolds(int) const { return numManifoldsVisible; }
+  void beginSolve(Particles& P) const { halo.markVelocityBaseline(P); }
+  void syncVelocities(Particles& P) const { halo.syncVelocities(P, forwardRotation); }
+  void publishPositions(Particles& P) const { halo.publishPositions(P, forwardRotation); }
+  void syncPositions(Particles& P) const { halo.syncPositions(P, forwardRotation); }
+  void syncFrictionCounts(Particles& P) const { halo.syncFrictionCounts(P); }
 };
 
 /// Largest particle radius over ALL ranks (growth included) -- the halo band and the contact
@@ -75,8 +77,13 @@ inline double xpbdContactReach(float rMax) {
 /// with MpiSolveHooks -- graph-colored Gauss-Seidel restitution, warm-started PGS with
 /// persistent contacts (pair keys built from GLOBAL ids, so they survive halo rebuilds and
 /// ownership migration), gravity statics (grounded shock propagation / stabilization passes),
-/// friction cone, colored-GS overlap projection and the adaptive stops -- identical physics to
-/// the single-GPU demStep, same fixed point, not bit-exact (rank-local sweep order differs).
+/// friction cone, colored-GS overlap projection and the adaptive stops -- over the contacts this
+/// rank OWNS (docs/mpi_momentum_conservation.md). Linear momentum and the centre of mass are
+/// conserved to round-off at any np, thread count and sync_every. Interior contacts keep the
+/// serial Gauss-Seidel order; a contact across a rank face sees its far body as of the last
+/// reconciliation, so trajectories agree with single-rank statistically, not bit for bit.
+/// np = 1 on a closed domain is the single-rank sequence bit for bit; np = 1 on a periodic
+/// domain solves each wrap pair once (the twin single-rank keeps), not twice.
 /// `forwardRotation`=false (spheres) skips the angular/quaternion forwards.
 ///
 /// PERIODICITY: cross-rank ghosts supply the wrap on DECOMPOSED axes; LOCAL periodic self-ghosts
@@ -131,14 +138,21 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   const int nc = narrowPhaseGrow(P, np, margin);
 
-  reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot);
-  const int nm = readInt(P.manifoldCount);
+  // Contact ownership (docs/mpi_momentum_conservation.md §2.1-2.2): owned contacts first, then
+  // the manifolds reduced owned-first. The solve runs on [0, ncOwned) / [0, nmOwned); the
+  // visible counts stay in P.contactCount / P.manifoldCount for the getters.
+  const int ncOwned = partitionContactsKokkos(P.contacts, nc, halo.contactOwnership(P));
+  int nmOwned = 0;
+  reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot,
+                                  ncOwned, &nmOwned);
+  const int nmVisible = readInt(P.manifoldCount);
 
   // 4-6. The shared modern velocity + position solve, distributed: rank-local colouring over the
   // owned + ghost body slots (nBodies = numParticles; realIndices are self-mapped, so ghost
-  // copies evolve in place between refreshes), persistent-pair keys from the global ids.
-  demSolveContacts(P, nc, nm, P.numParticles, P.gid,
-                   MpiSolveHooks{halo, syncEvery < 1 ? 1 : syncEvery, forwardRotation});
+  // copies evolve in place between reconciliations), persistent-pair keys from the global ids.
+  demSolveContacts(
+      P, ncOwned, nmOwned, P.numParticles, P.gid,
+      MpiSolveHooks{halo, syncEvery < 1 ? 1 : syncEvery, forwardRotation, nmVisible});
 
   // 7. Commit (owned results kept; ghosts discarded, re-gathered next substep).
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
