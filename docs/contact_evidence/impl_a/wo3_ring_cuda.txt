@@ -1,0 +1,12 @@
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=2.352e-08 dX=1.484e-06 dXpos=1.484e-06 dL=3.398e-02 dLcm=3.398e-02 dLvel=2.026e-03 ghosts=0 ovl=2.212e-01
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=2.393e-08 dX=2.846e-06 dXpos=2.849e-06 dL=5.350e-02 dLcm=5.350e-02 dLvel=1.784e-03 ghosts=0 ovl=2.242e-01
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=1.108e-08 dX=3.523e-06 dXpos=3.523e-06 dL=6.129e-02 dLcm=6.129e-02 dLvel=2.069e-03 ghosts=0 ovl=2.421e-01
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=2.151e-08 dX=2.734e-06 dXpos=2.729e-06 dL=4.636e-02 dLcm=4.636e-02 dLvel=2.232e-03 ghosts=0 ovl=2.113e-01
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=1.482e-08 dX=3.970e-06 dXpos=3.966e-06 dL=2.975e-02 dLcm=2.975e-02 dLvel=1.717e-03 ghosts=0 ovl=2.282e-01
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=2.116e-08 dX=2.910e-06 dXpos=2.907e-06 dL=5.288e-02 dLcm=5.288e-02 dLvel=1.805e-03 ghosts=0 ovl=2.343e-01

@@ -186,3 +186,51 @@ Consequence for each reading (none is fixed by the note):
   would lean on WO-4 hub copies).
 - (c) add a wall id to `ContactC` (narrow phase) and key units by (body, wall): matches the
   definition, spheres bitwise, but changes a data structure in a file the WO-3 list does not name.
+Resolved by §12 S6 (7d88a64): option (c).
+
+## WO-3 (13158a6 on branch `contacts-wo3-parked`, NOT on `contacts`): implemented, two stops
+
+Position units per §4.3 with the S6 wall id (`bodyB = -1 - wallIndex`; planes first, SDF walls from
+`numPlanes`). Every wall test in `src` was already `bodyB < 0`; no other negative `bodyB` existed.
+`pairKey` and the manifold segments are unchanged. Units come from their own two key sorts (by
+`unitKey`, then by (leader, contact index)). Both position colourings take the units (empty views =
+the old per-contact code, which `test_coloring_overflow` still calls), and both colourings now run
+at the top of `demSolveContacts`. Raw: `impl_a/wo3_*.txt`. Host load 60-75, OMP 1 unless stated.
+
+| check | gate | result |
+|---|---|---|
+| sphere dumps np 1 OMP 1 (+ np 4 `cluster`, `cluster_pgs`) vs WO-2 | identical | 27 / 27 identical; only `ring_mini`(`_solo`) change |
+| S6 wall scenes, np 1 OMP 1 (`impl_a/s6_wall_dumps.py`: box corner at g != 0 incr/full colouring and g = 0; rotating SDF drum + 2 cap planes, incr/full) | identical | 5 / 5 identical. Control: `unitKey = pairKey` (option a) changes all 5 |
+| `ring_mini` np 1, CONFLICTS pos (host OMP 1, OMP 8, CUDA x 3, `--solo` too) | 0 | 0 everywhere |
+| `ring_mini` np 1 dXpos | <= 1e-5 | 2.8e-6 (OMP 1), 4.7e-6 (OMP 8), 1.5e-6..4.0e-6 (CUDA, step_mpi and `--solo`). Before: 7.7e-2 (WO-1/2), 3.5e-2 (WO-0), CUDA 3.5e-2..6.7e-2 |
+| `ring_mini` position colours / unit degree / per-point degree | report | 19 / 19 / 1427 (was 24 capped + 24052 uncoloured contacts) |
+| `tests/kokkos`, `tests/arborx`, `python_mpi` | pass | pass (battery 194 / 195) |
+| `tests/python` | pass, "a failure is a stop" | **1 FAIL**: `test_hollow_cylinder_overlap` (below) |
+| §12 S3: round cap not exhausted on `ring_mini` and the survey scenes | leftover 0 | **ring_mini np 1 OMP 8: leftPos 2-6 units in 4 of 6 runs** (step_mpi); 1 of 3 (`--solo`); OMP 1 and CUDA: 0. Survey (`impl_a/survey_leftovers.py`, OMP 8): bi4 (0, 0), bi6 (0, 0), ring N = 80 1500 steps (0, 0) |
+
+**Stop 1, `test_hollow_cylinder_overlap`.** It asserts `max_overlap > 0` after step 0 as proof that
+the solver saw the penetration. `max_overlap` is the position loop's last-iteration residual; the 30
+contact points of the one pair are now one unit swept in order, so the loop resolves the overlap
+inside the substep and reads 0.0. The bodies still separate (dx 0.202 after step 0, 0.544 after 99;
+the test's own separation assert would pass). Changing the assertion is the note author's call.
+
+**Stop 2, §12 S3.** `ring_mini` has 27 bodies, so the cap is `numBodies + 2 = 29` rounds against a
+unit degree of 19. Thread-order contact numbering changes the leaders and so the arbitration keys;
+at OMP 8 some substeps need more than 29 rounds. The survey scenes have caps of 82 (ring) and
+2002 / 4002 (bi4, bi6) and never exhaust them. Per S3, WO-4 is not started.
+
+**Finding, not a gate: `ring_mini` at np 4 and 8 now diverges.** OMP 1: np 4 dXpos 2.7e-3,
+ovl 6.9e4; np 8 dXpos 0.14, ovl 3.6e6 (np 2: 1.9e-6, fine). Before WO-3: np 4 ovl 0.22, np 8 ovl 0.26
+(OMP 8 18.4). My reading: full pair-sequential projections on each rank are raw-summed across ranks
+by c771e07's reverse (Jacobi across ranks, effective omega ~ (k+1)/2 > 2 for corner bodies, §1.3 P5).
+The capped per-point colouring's count-averaged fallback used to damp this. WO-5's M-consensus is
+the designed fix. Sphere modes are unaffected (bitwise). No ctest gates `ring_mini` at np >= 2
+(report-only modes).
+
+**Also seen:** bi6 (OMP 8) had velocity conflicts max 1 over the run (the forced colour 62 at
+degree 115; baseline survey 0). The velocity colouring code is unchanged, so this is order-dependent
+and WO-4's.
+
+**Additions not named by the note** (instrumentation, results unchanged): `diagnostics.coloring_leftovers()`
+(tier 2; the S3 measurement), the test's CONFLICTS line counts units (`degPos`, `leftPos`) and
+prints `degPosPt` (the per-point degree), and `debugColoringConflicts` counts units.

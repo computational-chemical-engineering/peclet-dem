@@ -1,0 +1,31 @@
+CONFLICTS mode=ring_mini np=1 thr=1 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=1 N=27 steps=10 dP=2.105e-08 dX=2.811e-06 dXpos=2.817e-06 dL=4.201e-02 dLcm=4.201e-02 dLvel=1.183e-03 ghosts=0 ovl=2.499e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=2 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=2.552e-08 dX=4.715e-06 dXpos=4.721e-06 dL=4.855e-02 dLcm=4.855e-02 dLvel=1.664e-03 ghosts=0 ovl=2.585e-01
+CONFLICTS mode=ring_mini np=2 thr=1 vel=0 pos=0 degVel=11 degPos=14 colVel=12 colPos=14 leftVel=0 leftPos=0 degPosPt=1148
+MOMENTUM mode=ring_mini np=2 thr=1 N=27 steps=10 dP=2.979e-08 dX=1.915e-06 dXpos=1.914e-06 dL=3.147e-02 dLcm=3.147e-02 dLvel=8.021e-04 ghosts=17 ovl=2.140e-01
+CONFLICTS mode=ring_mini np=2 thr=8 vel=0 pos=0 degVel=11 degPos=14 colVel=12 colPos=14 leftVel=0 leftPos=0 degPosPt=1148
+MOMENTUM mode=ring_mini np=2 thr=8 N=27 steps=10 dP=1.807e-08 dX=6.396e-06 dXpos=6.391e-06 dL=5.751e-02 dLcm=5.751e-02 dLvel=1.520e-03 ghosts=16 ovl=2.315e-01
+CONFLICTS mode=ring_mini np=4 thr=1 vel=0 pos=0 degVel=11 degPos=14 colVel=11 colPos=14 leftVel=0 leftPos=0 degPosPt=1143
+MOMENTUM mode=ring_mini np=4 thr=1 N=27 steps=10 dP=7.710e-09 dX=2.744e-03 dXpos=2.744e-03 dL=4.961e+03 dLcm=4.961e+03 dLvel=1.483e-03 ghosts=0 ovl=6.945e+04
+CONFLICTS mode=ring_mini np=4 thr=8 vel=0 pos=0 degVel=11 degPos=14 colVel=11 colPos=14 leftVel=0 leftPos=0 degPosPt=1143
+MOMENTUM mode=ring_mini np=4 thr=8 N=27 steps=10 dP=1.449e-08 dX=2.116e-04 dXpos=2.116e-04 dL=4.138e+02 dLcm=4.138e+02 dLvel=1.483e-03 ghosts=0 ovl=5.806e+03
+CONFLICTS mode=ring_mini np=8 thr=1 vel=0 pos=0 degVel=9 degPos=10 colVel=9 colPos=10 leftVel=0 leftPos=0 degPosPt=1043
+MOMENTUM mode=ring_mini np=8 thr=1 N=27 steps=10 dP=8.849e-09 dX=1.357e-01 dXpos=1.357e-01 dL=1.565e+05 dLcm=1.565e+05 dLvel=2.169e-03 ghosts=0 ovl=3.572e+06
+CONFLICTS mode=ring_mini np=8 thr=8 vel=0 pos=0 degVel=9 degPos=10 colVel=9 colPos=10 leftVel=0 leftPos=0 degPosPt=1043
+MOMENTUM mode=ring_mini np=8 thr=8 N=27 steps=10 dP=1.505e-08 dX=5.669e-01 dXpos=5.669e-01 dL=1.493e+06 dLcm=1.493e+06 dLvel=2.169e-03 ghosts=0 ovl=1.797e+07
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=8.590e-09 dX=3.698e-06 dXpos=3.696e-06 dL=1.950e-02 dLcm=1.950e-02 dLvel=1.487e-03 ghosts=0 ovl=2.282e-01
+CONFLICTS mode=hub np=1 thr=8 vel=179 pos=237 degVel=242 degPos=300 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=300
+CONFLICTS mode=hub np=2 thr=8 vel=64 pos=94 degVel=127 degPos=157 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=157
+CONFLICTS mode=hub np=4 thr=8 vel=64 pos=94 degVel=127 degPos=157 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=157
+CONFLICTS mode=hub np=8 thr=8 vel=34 pos=54 degVel=97 degPos=117 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=117
+CONFLICTS mode=hub_pgs np=1 thr=8 vel=179 pos=237 degVel=242 degPos=300 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=300
+CONFLICTS mode=hub_pgs np=2 thr=8 vel=64 pos=94 degVel=127 degPos=157 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=157
+CONFLICTS mode=hub_pgs np=4 thr=8 vel=64 pos=94 degVel=127 degPos=157 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=157
+CONFLICTS mode=hub_pgs np=8 thr=8 vel=34 pos=54 degVel=97 degPos=117 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=117
+CONFLICTS mode=hub_posonly np=1 thr=8 vel=237 pos=237 degVel=300 degPos=300 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=300
+CONFLICTS mode=hub_posonly np=2 thr=8 vel=94 pos=94 degVel=157 degPos=157 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=157
+CONFLICTS mode=hub_posonly np=4 thr=8 vel=94 pos=94 degVel=157 degPos=157 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=157
+CONFLICTS mode=hub_posonly np=8 thr=8 vel=54 pos=54 degVel=117 degPos=117 colVel=63 colPos=63 leftVel=0 leftPos=0 degPosPt=117
+== leftPos over repeated runs, np 1 OMP 8: step_mpi 6 runs: 2 4 0 6 0 4; --solo 3 runs: 0 0 2

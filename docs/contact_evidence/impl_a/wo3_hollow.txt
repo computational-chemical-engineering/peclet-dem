@@ -1,0 +1,6 @@
+tests/python/test_hollow_cylinder_overlap.py::test_static_overlap at WO-3 (build_ct, OMP 2):
+  step 0: contacts 30, max_overlap 0.0 (asserted > 0 -> FAIL), coloring_leftovers (0, 0), conflicts (0, 0)
+  bodies separate: dx 0.202 after step 0, 0.544 after step 99 (asserted > 0.2 -> would pass)
+  max_overlap is the position loop's last-iteration residual: the 30 points of the one pair are now
+  one unit swept sequentially, so the loop reaches zero residual inside the substep. At WO-2 the
+  per-point colouring (two bodies, 30 edges on one vertex pair) left a positive residual.

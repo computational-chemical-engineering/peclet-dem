@@ -1,0 +1,6 @@
+SURVEY case=bi6 N=4000 phi=0.620 size_ratio=6.00 contacts/particle=10.73 manifolds/particle=10.73 maxDeg=115 meanDeg=9.70 maxDeg(largest grains)=115 conflicts_last(vel,pos)=(0, 664) conflicts_max_over_run(vel,pos)=(1, 954)
+LEFTOVERS case=bi6 max_over_run(vel,pos)=(0, 0)
+SURVEY case=bi4 N=2000 phi=0.620 size_ratio=4.00 contacts/particle=9.32 manifolds/particle=9.32 maxDeg=55 meanDeg=8.32 maxDeg(largest grains)=55 conflicts_last(vel,pos)=(0, 0) conflicts_max_over_run(vel,pos)=(0, 0)
+LEFTOVERS case=bi4 max_over_run(vel,pos)=(0, 0)
+SURVEY case=ring N=80 phi=0.346 contacts/particle=689.8 manifolds/particle=8.70 conflicts_last(vel,pos)=(0, 0) conflicts_max_over_run(vel,pos)=(0, 0)
+LEFTOVERS case=ring:1500 max_over_run(vel,pos)=(0, 0)

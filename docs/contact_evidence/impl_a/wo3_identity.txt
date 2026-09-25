@@ -1,0 +1,44 @@
+== np1 OMP1 dumps (build_ct, WO-3) vs WO-2 build
+IDENT cluster_e09.np1.omp1.dump
+IDENT cluster_e10.np1.omp1.dump
+IDENT cluster_escalate.np1.omp1.dump
+IDENT cluster_friction.np1.omp1.dump
+IDENT cluster_jacobi.np1.omp1.dump
+IDENT cluster_multilevel.np1.omp1.dump
+IDENT cluster_norot.np1.omp1.dump
+IDENT cluster.np1.omp1.dump
+IDENT cluster.np4.omp1.dump
+IDENT cluster_onesided.np1.omp1.dump
+IDENT cluster_ordered.np1.omp1.dump
+IDENT cluster_periodic.np1.omp1.dump
+IDENT cluster_periodic_solo.np1.omp1.dump
+IDENT cluster_pgs.np1.omp1.dump
+IDENT cluster_pgs.np4.omp1.dump
+IDENT cluster_poisson.np1.omp1.dump
+IDENT cluster_posonly.np1.omp1.dump
+IDENT cluster_sync3.np1.omp1.dump
+IDENT hertz.np1.omp1.dump
+IDENT hub.np1.omp1.dump
+IDENT hub_pgs.np1.omp1.dump
+IDENT hub_pgs_solo.np1.omp1.dump
+IDENT hub_posonly.np1.omp1.dump
+IDENT hub_posonly_solo.np1.omp1.dump
+IDENT hub_solo.np1.omp1.dump
+DIFF ring_mini.np1.omp1.dump
+DIFF ring_mini_solo.np1.omp1.dump
+IDENT tri.np1.omp1.dump
+IDENT tri_pgs.np1.omp1.dump
+== S6 wall scenes (s6_wall_dumps.py, OMP 1) WO-3 vs WO-2
+IDENT corner_pgs
+IDENT corner_pgs_full
+IDENT corner_g0
+IDENT drum
+IDENT drum_full
+== the same scenes with unitKey = pairKey (option (a) mutant) vs WO-2
+DIFF corner_pgs / corner_pgs_full / corner_g0 / drum / drum_full (all 5)
+== WO-2 scene lines
+corner_pgs: N=64 max contacts=183 conflicts=(0, 0)
+corner_pgs_full: N=64 max contacts=183 conflicts=(0, 0)
+corner_g0: N=64 max contacts=186 conflicts=(0, 0)
+drum: N=96 max contacts=249 conflicts=(0, 0)
+drum_full: N=96 max contacts=248 conflicts=(0, 0)
