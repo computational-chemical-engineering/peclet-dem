@@ -1,0 +1,70 @@
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.0010 dist/R=-8.9991e-04 |Jn|=1.4249e-01 |Jt|=3.7997e-02 |dL|=2.2331e-08 |pred|=1.7097e-05 dL.pred/|pred|^2=-0.0013
+rc=0
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.0010 dist/R=-8.9991e-04 |Jn|=9.4993e-02 |Jt|=3.7997e-02 |dL|=8.6389e-09 |pred|=1.7097e-05 dL.pred/|pred|^2=-0.0005
+rc=0
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.0100 dist/R=-9.8995e-03 |Jn|=1.4246e-01 |Jt|=3.7988e-02 |dL|=1.9537e-08 |pred|=1.8803e-04 dL.pred/|pred|^2=0.0001
+rc=0
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.0100 dist/R=-9.8995e-03 |Jn|=9.4970e-02 |Jt|=3.7988e-02 |dL|=3.7059e-08 |pred|=1.8803e-04 dL.pred/|pred|^2=0.0002
+rc=0
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.0500 dist/R=-4.9897e-02 |Jn|=1.4230e-01 |Jt|=3.7947e-02 |dL|=7.3653e-09 |pred|=9.4672e-04 dL.pred/|pred|^2=0.0000
+rc=0
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.0500 dist/R=-4.9897e-02 |Jn|=9.4867e-02 |Jt|=3.7947e-02 |dL|=2.3182e-08 |pred|=9.4672e-04 dL.pred/|pred|^2=-0.0000
+rc=0
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.1000 dist/R=-9.9895e-02 |Jn|=1.4210e-01 |Jt|=3.7893e-02 |dL|=2.9563e-08 |pred|=1.8926e-03 dL.pred/|pred|^2=-0.0000
+rc=0
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.1000 dist/R=-9.9895e-02 |Jn|=9.4732e-02 |Jt|=3.7893e-02 |dL|=7.3031e-09 |pred|=1.8926e-03 dL.pred/|pred|^2=-0.0000
+rc=0
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.2000 dist/R=-1.9989e-01 |Jn|=1.4166e-01 |Jt|=3.7775e-02 |dL|=2.8904e-08 |pred|=3.7754e-03 dL.pred/|pred|^2=-0.0000
+rc=0
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.2000 dist/R=-1.9989e-01 |Jn|=9.4439e-02 |Jt|=3.7775e-02 |dL|=3.8000e-08 |pred|=3.7754e-03 dL.pred/|pred|^2=0.0000
+rc=0
+FRICPAIR mode=friction_pair dt=0.02 delta/R=0.0500 dist/R=-4.9590e-02 |Jn|=1.3459e-01 |Jt|=3.5890e-02 |dL|=1.8843e-08 |pred|=8.8989e-04 dL.pred/|pred|^2=-0.0000
+FRICPAIR mode=friction_pair dt=0.005 delta/R=0.0500 dist/R=-4.9974e-02 |Jn|=1.4615e-01 |Jt|=3.8974e-02 |dL|=1.1784e-08 |pred|=9.7385e-04 dL.pred/|pred|^2=-0.0000
+FRICPAIR mode=friction_pair dt=0.0025 delta/R=0.0500 dist/R=-4.9994e-02 |Jn|=1.4808e-01 |Jt|=3.9487e-02 |dL|=8.5489e-09 |pred|=9.8705e-04 dL.pred/|pred|^2=0.0000
+MOMENTUM mode=cluster_friction np=1 thr=1 N=925 steps=50 dP=2.996e-09 dX=2.007e-07 dXpos=2.020e-07 dL=3.091e-04 dLcm=3.091e-04 dLvel=5.156e-09 ghosts=0 ovl=2.060e-02
+OK (np=1)
+MOMENTUM mode=cluster_friction np=1 thr=8 N=925 steps=50 dP=5.738e-09 dX=1.924e-07 dXpos=1.855e-07 dL=3.027e-04 dLcm=3.027e-04 dLvel=4.192e-09 ghosts=0 ovl=2.058e-02
+OK (np=1)
+MOMENTUM mode=cluster_friction np=2 thr=1 N=925 steps=50 dP=7.711e-09 dX=2.663e-07 dXpos=2.632e-07 dL=3.240e-04 dLcm=3.240e-04 dLvel=4.859e-09 ghosts=231 ovl=2.422e-02
+OK (np=2)
+MOMENTUM mode=cluster_friction np=2 thr=8 N=925 steps=50 dP=5.332e-09 dX=1.440e-07 dXpos=1.455e-07 dL=3.129e-04 dLcm=3.129e-04 dLvel=4.966e-09 ghosts=233 ovl=2.489e-02
+OK (np=2)
+MOMENTUM mode=cluster_friction np=4 thr=1 N=925 steps=50 dP=5.080e-09 dX=2.886e-07 dXpos=2.860e-07 dL=3.095e-04 dLcm=3.095e-04 dLvel=4.735e-09 ghosts=510 ovl=2.487e-02
+OK (np=4)
+MOMENTUM mode=cluster_friction np=4 thr=8 N=925 steps=50 dP=3.445e-09 dX=1.381e-07 dXpos=1.383e-07 dL=3.093e-04 dLcm=3.093e-04 dLvel=6.934e-09 ghosts=512 ovl=2.494e-02
+OK (np=4)
+MOMENTUM mode=cluster_friction np=8 thr=1 N=925 steps=50 dP=3.038e-09 dX=2.907e-07 dXpos=2.926e-07 dL=2.887e-04 dLcm=2.887e-04 dLvel=6.220e-09 ghosts=854 ovl=2.471e-02
+OK (np=8)
+MOMENTUM mode=cluster_friction np=8 thr=8 N=925 steps=50 dP=6.971e-09 dX=1.504e-07 dXpos=1.500e-07 dL=2.905e-04 dLcm=2.905e-04 dLvel=3.848e-09 ghosts=849 ovl=2.369e-02
+OK (np=8)
+EXIT
+== np1 OMP1 dumps vs baseline (build_base)
+IDENT cluster_e09.np1.omp1.dump
+IDENT cluster_e10.np1.omp1.dump
+IDENT cluster_escalate.np1.omp1.dump
+DIFF cluster_friction.np1.omp1.dump
+IDENT cluster_jacobi.np1.omp1.dump
+IDENT cluster_multilevel.np1.omp1.dump
+NOREF cluster_norot.np1.omp1.dump
+IDENT cluster.np1.omp1.dump
+NOREF cluster.np4.omp1.dump
+IDENT cluster_onesided.np1.omp1.dump
+IDENT cluster_ordered.np1.omp1.dump
+IDENT cluster_periodic.np1.omp1.dump
+IDENT cluster_periodic_solo.np1.omp1.dump
+IDENT cluster_pgs.np1.omp1.dump
+NOREF cluster_pgs.np4.omp1.dump
+IDENT cluster_poisson.np1.omp1.dump
+IDENT cluster_posonly.np1.omp1.dump
+NOREF cluster_sync3.np1.omp1.dump
+IDENT hertz.np1.omp1.dump
+IDENT hub.np1.omp1.dump
+IDENT hub_pgs.np1.omp1.dump
+IDENT hub_pgs_solo.np1.omp1.dump
+IDENT hub_posonly.np1.omp1.dump
+IDENT hub_posonly_solo.np1.omp1.dump
+IDENT hub_solo.np1.omp1.dump
+DIFF ring_mini.np1.omp1.dump
+DIFF ring_mini_solo.np1.omp1.dump
+IDENT tri.np1.omp1.dump
+IDENT tri_pgs.np1.omp1.dump

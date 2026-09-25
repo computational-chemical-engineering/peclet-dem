@@ -1,0 +1,28 @@
+== build_base
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.0010 dist/R=-8.9991e-04 |Jt|=3.7997e-02 |dL|=1.7077e-05 |pred|=1.7097e-05 dL.pred/|pred|^2=0.9988
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.0100 dist/R=-9.8995e-03 |Jt|=3.7988e-02 |dL|=1.8805e-04 |pred|=1.8803e-04 dL.pred/|pred|^2=1.0001
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.0500 dist/R=-4.9897e-02 |Jt|=3.7947e-02 |dL|=9.4673e-04 |pred|=9.4672e-04 dL.pred/|pred|^2=1.0000
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.1000 dist/R=-9.9895e-02 |Jt|=3.7893e-02 |dL|=1.8926e-03 |pred|=1.8926e-03 dL.pred/|pred|^2=1.0000
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.2000 dist/R=-1.9989e-01 |Jt|=3.7775e-02 |dL|=3.7754e-03 |pred|=3.7754e-03 dL.pred/|pred|^2=1.0000
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.0010 dist/R=-8.9991e-04 |Jt|=3.7997e-02 |dL|=8.6389e-09 |pred|=1.7097e-05 dL.pred/|pred|^2=-0.0005
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.0100 dist/R=-9.8995e-03 |Jt|=3.7988e-02 |dL|=3.7059e-08 |pred|=1.8803e-04 dL.pred/|pred|^2=0.0002
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.0500 dist/R=-4.9897e-02 |Jt|=3.7947e-02 |dL|=2.3182e-08 |pred|=9.4672e-04 dL.pred/|pred|^2=-0.0000
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.1000 dist/R=-9.9895e-02 |Jt|=3.7893e-02 |dL|=7.3031e-09 |pred|=1.8926e-03 dL.pred/|pred|^2=-0.0000
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.2000 dist/R=-1.9989e-01 |Jt|=3.7775e-02 |dL|=3.8000e-08 |pred|=3.7754e-03 dL.pred/|pred|^2=0.0000
+FRICPAIR mode=friction_pair dt=0.02 delta/R=0.0500 dist/R=-4.9590e-02 |Jt|=3.5890e-02 |dL|=8.8987e-04 |pred|=8.8989e-04 dL.pred/|pred|^2=1.0000
+FRICPAIR mode=friction_pair dt=0.005 delta/R=0.0500 dist/R=-4.9974e-02 |Jt|=3.8974e-02 |dL|=9.7383e-04 |pred|=9.7385e-04 dL.pred/|pred|^2=1.0000
+FRICPAIR mode=friction_pair dt=0.0025 delta/R=0.0500 dist/R=-4.9994e-02 |Jt|=3.9487e-02 |dL|=9.8706e-04 |pred|=9.8705e-04 dL.pred/|pred|^2=1.0000
+== build_ct
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.0010 dist/R=-8.9991e-04 |Jt|=3.7997e-02 |dL|=2.2331e-08 |pred|=1.7097e-05 dL.pred/|pred|^2=-0.0013
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.0100 dist/R=-9.8995e-03 |Jt|=3.7988e-02 |dL|=1.9537e-08 |pred|=1.8803e-04 dL.pred/|pred|^2=0.0001
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.0500 dist/R=-4.9897e-02 |Jt|=3.7947e-02 |dL|=7.3653e-09 |pred|=9.4672e-04 dL.pred/|pred|^2=0.0000
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.1000 dist/R=-9.9895e-02 |Jt|=3.7893e-02 |dL|=2.9563e-08 |pred|=1.8926e-03 dL.pred/|pred|^2=-0.0000
+FRICPAIR mode=friction_pair dt=0.01 delta/R=0.2000 dist/R=-1.9989e-01 |Jt|=3.7775e-02 |dL|=2.8904e-08 |pred|=3.7754e-03 dL.pred/|pred|^2=-0.0000
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.0010 dist/R=-8.9991e-04 |Jt|=3.7997e-02 |dL|=8.6389e-09 |pred|=1.7097e-05 dL.pred/|pred|^2=-0.0005
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.0100 dist/R=-9.8995e-03 |Jt|=3.7988e-02 |dL|=3.7059e-08 |pred|=1.8803e-04 dL.pred/|pred|^2=0.0002
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.0500 dist/R=-4.9897e-02 |Jt|=3.7947e-02 |dL|=2.3182e-08 |pred|=9.4672e-04 dL.pred/|pred|^2=-0.0000
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.1000 dist/R=-9.9895e-02 |Jt|=3.7893e-02 |dL|=7.3031e-09 |pred|=1.8926e-03 dL.pred/|pred|^2=-0.0000
+FRICPAIR mode=friction_pair_pgs dt=0.01 delta/R=0.2000 dist/R=-1.9989e-01 |Jt|=3.7775e-02 |dL|=3.8000e-08 |pred|=3.7754e-03 dL.pred/|pred|^2=0.0000
+FRICPAIR mode=friction_pair dt=0.02 delta/R=0.0500 dist/R=-4.9590e-02 |Jt|=3.5890e-02 |dL|=1.8843e-08 |pred|=8.8989e-04 dL.pred/|pred|^2=-0.0000
+FRICPAIR mode=friction_pair dt=0.005 delta/R=0.0500 dist/R=-4.9974e-02 |Jt|=3.8974e-02 |dL|=1.1784e-08 |pred|=9.7385e-04 dL.pred/|pred|^2=-0.0000
+FRICPAIR mode=friction_pair dt=0.0025 delta/R=0.0500 dist/R=-4.9994e-02 |Jt|=3.9487e-02 |dL|=8.5489e-09 |pred|=9.8705e-04 dL.pred/|pred|^2=0.0000

@@ -163,11 +163,14 @@ struct ProbeSim : Simulation {
 
 // ---- the conservation gate (G1) ----
 static constexpr bool kGate = true;
-// ---- the FOLLOWUPS report-only modes (hub*, friction_pair*): never fail today. When the colour
-// overflow is fixed, the gate is velConf == posConf == 0 for hub / hub_posonly at every np and
-// thread count; when the friction couple is fixed, |dLz_meas| <= 1e-6 |dLz_pred| for
-// friction_pair. ----
+// ---- the FOLLOWUPS report-only modes (hub*): never fail today. When the colour overflow is
+// fixed, the gate is velConf == posConf == 0 for hub / hub_posonly at every np and thread count.
+// ----
 static constexpr bool kFollowupGate = false;
+// ---- friction_pair (FOLLOWUPS defect 2, fixed by the single application point, WO-1): the couple
+// ratio |dL| / |dist n x J_t| <= 1e-2 (docs/contact_solve_framework.md §12 S1: the float floor;
+// before the fix 1.000, after <= 1.3e-3). friction_pair_pgs stays a report-only reference. ----
+static constexpr bool kFrictionPairGate = true;
 // Per-mode thresholds (max over runs; < 0 = not gated). dLvel for the XPBD modes, dL for hertz.
 struct Tol {
   double dP, dX, dXpos, dL, dLvel;
@@ -175,8 +178,10 @@ struct Tol {
 static Tol tolOf(const std::string& mode) {
   if (mode == "cluster")  // np 1: 2.8e-9 / 3e-7 / 3e-9; broken >= 3.3e-3
     return {1e-6, 1e-5, 1e-5, -1, 1e-6};
-  if (mode == "cluster_friction" || mode == "cluster_sync3" || mode == "cluster_norot")
-    return {1e-6, 1e-5, 1e-5, -1, 1e-4};  // the serial legacy-friction floor dLvel is 1.9e-5
+  if (mode == "cluster_friction")  // midpoint arms (WO-1): dLvel <= 6.4e-9 at np 1..8 (was 1.9e-5)
+    return {1e-6, 1e-5, 1e-5, -1, 1e-7};
+  if (mode == "cluster_sync3" || mode == "cluster_norot")
+    return {1e-6, 1e-5, 1e-5, -1, 1e-4};  // the serial legacy-friction floor dLvel was 1.9e-5
   if (mode == "cluster_pgs")              // free-fall float accumulation floor dP 7.9e-7 at np 1
     return {5e-6, 1e-5, 1e-5, -1, 1e-6};
   if (mode == "cluster_posonly")  // the velocity increments are exact zeros
@@ -994,8 +999,11 @@ static int runFrictionPair(const Mode& md, int rank, int size) {
       "|pred|=%.4e dL.pred/|pred|^2=%.4f\n",
       md.name.c_str(), dt, md.delta, dist / RAD, std::fabs(jn), norm(Jt), norm(dL), std::sqrt(pp),
       ratio);
-  if (kFollowupGate && norm(dL) > 1e-6 * std::sqrt(pp))
+  if (kFrictionPairGate && md.name == "friction_pair" && !(norm(dL) <= 1e-2 * std::sqrt(pp))) {
+    std::fprintf(stderr, "GATE: friction_pair couple ratio |dL|/|pred| = %.3e > 1e-2\n",
+                 pp > 0 ? norm(dL) / std::sqrt(pp) : 0.0);
     return 1;
+  }
   return 0;
 }
 

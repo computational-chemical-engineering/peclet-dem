@@ -113,7 +113,8 @@ endforeach()
 # that turns the report into a gate once the defect is fixed). hub / hub_posonly: a grain of 10 R
 # touching ~300 unit grains, far above the colourings' 63-colour cap (same-colour pairs at the hub).
 # friction_pair(_pgs): the legacy friction pass's couple -delta n x J_t on one sliding pair (and its
-# absence on the PGS cone). missed_drift_pair / missed_drift_lattice: pairs no rank sees once both
+# absence on the PGS cone); friction_pair is GATED since the midpoint-arm fix (WO-1, kFrictionPairGate:
+# couple ratio <= 1e-2, the float floor). missed_drift_pair / missed_drift_lattice: pairs no rank sees once both
 # bodies drifted out of their owners' blocks (rebalance_every = 0). missed_periodic: pairs that wrap
 # an undecomposed periodic axis while crossing a rank face (one image per particle and rank).
 foreach(np 1 2 4)

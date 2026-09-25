@@ -24,6 +24,18 @@ namespace peclet::dem {
 
 using FrManifoldCounts = Kokkos::View<float* [2], CpMem>;  // per body: .x = plane load, .y = count
 
+/// The single application point of a body-body contact: both lever arms moved to the contact
+/// midpoint, rA - dist n / 2 and rB + dist n / 2, so x_A + rA = x_B + rB (the shift of
+/// transformContact, contact_preprocessing.hpp). The narrow phase's two surface arms differ by
+/// dist n, which made every legacy friction impulse also apply the couple dist n x J_t
+/// (docs/contact_solve_framework.md §1.7, D2). Wall contacts keep their own arm.
+KOKKOS_INLINE_FUNCTION void contactArmsMid(const ContactC& c, F3& rA, F3& rB) {
+  const F4 shift{c.normal.x * c.dist * 0.5f, c.normal.y * c.dist * 0.5f, c.normal.z * c.dist * 0.5f,
+                 0.0f};
+  rA = F3{c.rA.x - shift.x, c.rA.y - shift.y, c.rA.z - shift.z};
+  rB = F3{c.rB.x + shift.x, c.rB.y + shift.y, c.rB.z + shift.z};
+}
+
 /// Force-chain normal load, accumulated over the velocity iterations:
 /// contacts(idx).friction_lambda_n += approach / w_n. Body-body AND wall (boundary) contacts —
 /// a grain buried under the bed thus gets the WEIGHT TRANSMITTED FROM ABOVE pressing it into the
@@ -67,7 +79,8 @@ inline void accumulateNormalImpulseKokkos(Kokkos::View<ContactC*, CpMem> contact
           return;
         const float invMA = invMass(realA), invMB = invMass(realB);
         const F3 invIA = ldF3(invInertia, realA), invIB = ldF3(invInertia, realB);
-        const F3 rA{c.rA.x, c.rA.y, c.rA.z}, rB{c.rB.x, c.rB.y, c.rB.z};
+        F3 rA, rB;
+        contactArmsMid(c, rA, rB);  // single application point
         const F3 n{c.normal.x, c.normal.y, c.normal.z};
         const F3 vAc = add3(ldF3(velPred, realA), cross3v(ldF3(angVelPred, realA), rA));
         const F3 vBc = add3(ldF3(velPred, realB), cross3v(ldF3(angVelPred, realB), rB));
@@ -162,7 +175,9 @@ inline void solveContactFrictionKokkos(
         const float invMB = (idB >= 0) ? invMass(realB) : 0.0f;
         const F3 invIA = ldF3(invInertia, realA);
         const F3 invIB = (idB >= 0) ? ldF3(invInertia, realB) : F3{0, 0, 0};
-        const F3 rA{c.rA.x, c.rA.y, c.rA.z}, rB{c.rB.x, c.rB.y, c.rB.z};
+        F3 rA{c.rA.x, c.rA.y, c.rA.z}, rB{c.rB.x, c.rB.y, c.rB.z};
+        if (idB >= 0)
+          contactArmsMid(c, rA, rB);  // single application point; a wall keeps its arm
         const F3 n{c.normal.x, c.normal.y, c.normal.z};
 
         const F3 vAc = add3(ldF3(velPred, realA), cross3v(ldF3(angVelPred, realA), rA));
