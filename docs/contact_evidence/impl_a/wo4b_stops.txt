@@ -1,0 +1,20 @@
+== Discrimination: ca32026 src + WO-4b instrumentation (proved inert: 29/29 dumps, 5/5 S6, 4/4 pile
+== identical to ca32026) + the new test; np 1, OMP 1, step_mpi and --solo identical
+HUBGAP mode=hub_static maxGap/delta=5.8374e-01 residual/R=0.0000e+00   (>= 0.3 delta: discriminates)
+MLCTRL mode=hub_ml velCopies=3 mlLevels=0 mlHubAggregated=0            (positive controls FAIL)
+MOMENTUM mode=hub_ml N=151 steps=10 dP=2.915e-07                         (B not reproduced: no level)
+== Diagnosis (temporary stderr print in the smode-2 branch, reverted): the multilevel pass RUNS in
+== all 10 steps (post-loop residual 0.41-0.55 > vRestS 0.2) but builds 0 levels every time. The
+== leaves do not touch each other, so the eligible graph is a star: the matching pairs the hub with
+== one leaf per level, ngNew = 150 > 0.9 ngPrev (151), and the stall rule rejects the level.
+DBG res=0.546312 vRestS=0.2 smode=2 / DBG levels=0   (x10 steps)
+== Experiment (test-only, reverted): the same scene with a denser shell, ns = F (rs/R)^2 instead of
+== makeHub's 2.5 (leaves touching). ca32026:
+F=3.0  N=181 MLCTRL velCopies=3 mlLevels=1 mlHubAggregated=1  dP=1.501e-02
+F=3.6  N=217 MLCTRL velCopies=4 mlLevels=2 mlHubAggregated=1  dP=1.808e-02
+== WO-4b fix, F=3.0 (np 1): step_mpi / --solo, OMP 1 / OMP 8
+dP=2.059e-07 / 1.897e-07 (OMP 1), 1.720e-07 / 1.790e-07 (OMP 8); controls 3/1/1 in every run
+== hub_static after the fix (np 1, gate maxGap <= 0.05 delta): see wo4b_hub_host.txt / _cuda.txt
+host OMP 1 0.0340 (step_mpi, --solo); OMP 8 x3: 0.0466 0.0612 0.0594 (step_mpi), 0.0505 0.0522 0.0586 (--solo)
+CUDA x3: 0.0415 0.0510 0.0528 (step_mpi), 0.0381 0.0393 0.0429 (--solo)
+battery OMP 2: np1/np2/np4 pass

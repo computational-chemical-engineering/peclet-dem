@@ -1,0 +1,146 @@
+== hub_static  run 1
+CONFLICTS mode=hub_static np=1 thr=1 vel=0 pos=0 degVel=30 degPos=30 colVel=30 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=5.2842e-02 residual/R=4.6132e-06
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=5.616e-08 dXpos=5.616e-08 dLvel=0.000e+00 ghosts=0 ovl=4.114e-05
+GATE: hub_static leaf gap / residual overlap
+FAILED (np=1)
+== hub_static  run 2
+CONFLICTS mode=hub_static np=1 thr=1 vel=0 pos=0 degVel=30 degPos=30 colVel=30 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=5.1036e-02 residual/R=2.1672e-06
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=4.433e-08 dXpos=4.433e-08 dLvel=0.000e+00 ghosts=0 ovl=2.762e-06
+GATE: hub_static leaf gap / residual overlap
+FAILED (np=1)
+== hub_static  run 3
+CONFLICTS mode=hub_static np=1 thr=1 vel=0 pos=0 degVel=30 degPos=30 colVel=30 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=4.1452e-02 residual/R=3.6535e-06
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=4.616e-08 dXpos=4.616e-08 dLvel=0.000e+00 ghosts=0 ovl=4.013e-05
+OK (np=1)
+== hub_static --solo run 1
+CONFLICTS mode=hub_static np=1 thr=1 vel=0 pos=0 degVel=30 degPos=30 colVel=30 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=4.2881e-02 residual/R=2.9712e-06
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=2.380e-08 dXpos=2.380e-08 dLvel=0.000e+00 ghosts=0 ovl=3.312e-05
+OK (np=1)
+== hub_static --solo run 2
+CONFLICTS mode=hub_static np=1 thr=1 vel=0 pos=0 degVel=30 degPos=30 colVel=30 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=3.8070e-02 residual/R=3.8947e-06
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=5.008e-08 dXpos=5.008e-08 dLvel=0.000e+00 ghosts=0 ovl=4.449e-05
+OK (np=1)
+== hub_static --solo run 3
+CONFLICTS mode=hub_static np=1 thr=1 vel=0 pos=0 degVel=30 degPos=30 colVel=30 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=3.9262e-02 residual/R=2.8300e-06
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=5.252e-08 dXpos=5.252e-08 dLvel=0.000e+00 ghosts=0 ovl=3.193e-05
+OK (np=1)
+== hub_ml  run 1
+GATE: hub_ml positive control failed
+FAILED (np=1)
+CONFLICTS mode=hub_ml np=1 thr=1 vel=0 pos=0 degVel=28 degPos=30 colVel=28 colPos=30 leftVel=0 leftPos=0 degPosPt=150 ml=0 copiesVel=3 copiesPos=4
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=0 mlHubAggregated=0
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=8.9567e-01 residual/R=0.0000e+00
+MOMENTUM mode=hub_ml np=1 thr=1 N=151 steps=10 dP=1.155e-07 dX=5.066e-08 dXpos=5.058e-08 dLvel=9.508e-08 ghosts=0 ovl=1.349e-05
+== hub_ml  run 2
+CONFLICTS mode=hub_ml np=1 thr=1 vel=0 pos=0 degVel=28 degPos=30 colVel=28 colPos=30 leftVel=0 leftPos=0 degPosPt=150 ml=0 copiesVel=3 copiesPos=4
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=0 mlHubAggregated=0
+GATE: hub_ml positive control failed
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=8.6900e-01 residual/R=0.0000e+00
+MOMENTUM mode=hub_ml np=1 thr=1 N=151 steps=10 dP=1.146e-07 dX=1.084e-07 dXpos=1.095e-07 dLvel=9.390e-08 ghosts=0 ovl=7.556e-06
+FAILED (np=1)
+== hub_ml  run 3
+CONFLICTS mode=hub_ml np=1 thr=1 vel=0 pos=0 degVel=28 degPos=30 colVel=28 colPos=30 leftVel=0 leftPos=0 degPosPt=150 ml=0 copiesVel=3 copiesPos=4
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=0 mlHubAggregated=0
+GATE: hub_ml positive control failed
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=8.8547e-01 residual/R=0.0000e+00
+MOMENTUM mode=hub_ml np=1 thr=1 N=151 steps=10 dP=1.126e-07 dX=7.248e-08 dXpos=7.341e-08 dLvel=1.036e-07 ghosts=0 ovl=7.684e-06
+FAILED (np=1)
+== hub_ml --solo run 1
+CONFLICTS mode=hub_ml np=1 thr=1 vel=0 pos=0 degVel=28 degPos=30 colVel=28 colPos=30 leftVel=0 leftPos=0 degPosPt=150 ml=0 copiesVel=3 copiesPos=4
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=0 mlHubAggregated=0
+GATE: hub_ml positive control failed
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=8.5892e-01 residual/R=0.0000e+00
+MOMENTUM mode=hub_ml np=1 thr=1 N=151 steps=10 dP=1.086e-07 dX=1.180e-07 dXpos=1.190e-07 dLvel=1.050e-07 ghosts=0 ovl=1.594e-05
+FAILED (np=1)
+== hub_ml --solo run 2
+CONFLICTS mode=hub_ml np=1 thr=1 vel=0 pos=0 degVel=28 degPos=30 colVel=28 colPos=30 leftVel=0 leftPos=0 degPosPt=150 ml=0 copiesVel=3 copiesPos=4
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=0 mlHubAggregated=0
+GATE: hub_ml positive control failed
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=8.8308e-01 residual/R=0.0000e+00
+MOMENTUM mode=hub_ml np=1 thr=1 N=151 steps=10 dP=1.150e-07 dX=6.042e-08 dXpos=6.030e-08 dLvel=9.841e-08 ghosts=0 ovl=1.714e-05
+FAILED (np=1)
+== hub_ml --solo run 3
+GATE: hub_ml positive control failed
+CONFLICTS mode=hub_ml np=1 thr=1 vel=0 pos=0 degVel=28 degPos=30 colVel=28 colPos=30 leftVel=0 leftPos=0 degPosPt=150 ml=0 copiesVel=3 copiesPos=4
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=0 mlHubAggregated=0
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=9.0663e-01 residual/R=0.0000e+00
+MOMENTUM mode=hub_ml np=1 thr=1 N=151 steps=10 dP=1.101e-07 dX=1.072e-07 dXpos=1.081e-07 dLvel=9.589e-08 ghosts=0 ovl=6.894e-06
+FAILED (np=1)
+== hub  run 1
+CONFLICTS mode=hub np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=2.269e-07 dX=1.990e-07 dXpos=2.390e-07 dLvel=4.644e-09 ghosts=0 ovl=2.683e-05
+OK (np=1)
+== hub  run 2
+CONFLICTS mode=hub np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=2.282e-07 dX=1.986e-07 dXpos=2.569e-07 dLvel=4.107e-09 ghosts=0 ovl=4.931e-05
+OK (np=1)
+== hub  run 3
+CONFLICTS mode=hub np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=1.957e-07 dX=1.942e-07 dXpos=2.465e-07 dLvel=3.910e-09 ghosts=0 ovl=4.621e-05
+OK (np=1)
+== hub --solo run 1
+CONFLICTS mode=hub np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=1.922e-07 dX=2.337e-07 dXpos=2.891e-07 dLvel=3.920e-09 ghosts=0 ovl=4.585e-05
+OK (np=1)
+== hub --solo run 2
+CONFLICTS mode=hub np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=2.393e-07 dX=2.064e-07 dXpos=2.594e-07 dLvel=3.845e-09 ghosts=0 ovl=4.778e-05
+OK (np=1)
+== hub --solo run 3
+CONFLICTS mode=hub np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=2.001e-07 dX=2.350e-07 dXpos=2.935e-07 dLvel=4.732e-09 ghosts=0 ovl=4.805e-05
+OK (np=1)
+== hub_posonly  run 1
+CONFLICTS mode=hub_posonly np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=2.382e-07 dXpos=2.382e-07 dLvel=0.000e+00 ghosts=0 ovl=4.988e-05
+OK (np=1)
+== hub_posonly  run 2
+CONFLICTS mode=hub_posonly np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=2.907e-07 dXpos=2.907e-07 dLvel=0.000e+00 ghosts=0 ovl=2.514e-05
+OK (np=1)
+== hub_posonly  run 3
+CONFLICTS mode=hub_posonly np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=2.342e-07 dXpos=2.342e-07 dLvel=0.000e+00 ghosts=0 ovl=2.784e-05
+OK (np=1)
+== hub_posonly --solo run 1
+CONFLICTS mode=hub_posonly np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=2.491e-07 dXpos=2.491e-07 dLvel=0.000e+00 ghosts=0 ovl=2.191e-05
+OK (np=1)
+== hub_posonly --solo run 2
+CONFLICTS mode=hub_posonly np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=2.230e-07 dXpos=2.230e-07 dLvel=0.000e+00 ghosts=0 ovl=4.447e-05
+OK (np=1)
+== hub_posonly --solo run 3
+CONFLICTS mode=hub_posonly np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=2.801e-07 dXpos=2.801e-07 dLvel=0.000e+00 ghosts=0 ovl=4.225e-05
+OK (np=1)
+== hub_pgs  run 1
+CONFLICTS mode=hub_pgs np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=3.605e-07 dX=1.130e-07 dXpos=9.391e-08 dLvel=4.211e-09 ghosts=0 ovl=4.869e-05
+OK (np=1)
+== hub_pgs  run 2
+CONFLICTS mode=hub_pgs np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=3.732e-07 dX=1.676e-07 dXpos=1.631e-07 dLvel=2.590e-09 ghosts=0 ovl=2.542e-05
+OK (np=1)
+== hub_pgs  run 3
+CONFLICTS mode=hub_pgs np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=3.879e-07 dX=2.593e-07 dXpos=2.512e-07 dLvel=2.236e-09 ghosts=0 ovl=4.997e-05
+OK (np=1)
+== hub_pgs --solo run 1
+CONFLICTS mode=hub_pgs np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=3.137e-07 dX=1.462e-07 dXpos=1.388e-07 dLvel=2.843e-09 ghosts=0 ovl=2.574e-05
+OK (np=1)
+== hub_pgs --solo run 2
+CONFLICTS mode=hub_pgs np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=2.928e-07 dX=2.179e-07 dXpos=2.054e-07 dLvel=2.863e-09 ghosts=0 ovl=4.964e-05
+OK (np=1)
+== hub_pgs --solo run 3
+CONFLICTS mode=hub_pgs np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=3.083e-07 dX=1.195e-07 dXpos=1.158e-07 dLvel=3.230e-09 ghosts=0 ovl=2.449e-05
+OK (np=1)

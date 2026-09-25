@@ -303,3 +303,50 @@ measured.
    by s, the single-rank rule); the phase-end owner balance is seed + a(own)(share - seed / k).
 4. a_vel / a_pos need the per-slot degree every substep under MPI (WO-4 computes it only on a
    failed colouring), and the solve views need the per-slot global k (WO-4 uses the group's k).
+
+## WO-4b (9cbd29f on branch `contacts-wo4b-parked`, NOT on `contacts`): implemented, two stops
+
+§13.1 A (`kSplitOmegaPosition` and the position relaxation branch deleted, the position
+`SlotOverride` carries only its overrides) and §13.2 B (hierarchy build and coarse cycle take
+`invMassCoarse = P.invMass`) as written; `split_stats` gains `mlHubAggregated` (split velocity
+vertices, `splitSlot`, in a level-1 group of >= 2 members; max over the step call's substeps),
+`velItersUsed`, `posItersUsed`; `test_momentum_mpi` gains `hub_static`, `hub_ml` (hub last,
+`makeHubLast`; hub_ml's speed uses each leaf's own makeHub gauss draw), `--pos-iters`, the ITERS /
+HUBGAP / MLCTRL lines; 6 ctests. Raw: `impl_a/wo4b_*.txt`; scripts `wo4b_refdumps.sh`,
+`wo4b_hub.sh`. Instrumentation proved inert first (ca32026 src + counters + new test vs ca32026:
+29 / 29 dumps, 5 / 5 S6, 4 / 4 pile identical). Host load ~60.
+
+| check | gate | result |
+|---|---|---|
+| 1. Stop-A tests | pass | `test_wrap_pair_matches_in_box_pair` pass; `validate_periodic` np 2 / np 4: 0.8000 / 0.8000, straddlers 4.8e-7 |
+| 2. `hub_static` np 1, gap | <= 0.05 delta | **FAIL (stop 2)**: OMP 1 0.034; OMP 8 x 3 0.047 / 0.061 / 0.059 (step_mpi), 0.051 / 0.052 / 0.059 (`--solo`); CUDA x 3 0.041 / 0.051 / 0.053, 0.038 / 0.039 / 0.043. ctest (OMP 2) passes |
+| 2. `hub_static` residual, dXpos, \|P\| | 1e-4 R, 3e-5 R, 0 | <= 4.6e-6 R, <= 5.6e-8, 0 exactly (host, CUDA) |
+| 2. discrimination on ca32026 | gap >= 0.3 delta | 0.584 delta |
+| 3. `hub_ml` np 1 | dP <= 5e-6, controls | dP <= 6.9e-8 (host), <= 1.2e-7 (CUDA); **controls FAIL (stop 1)**: velCopies 3, mlLevels 0, mlHubAggregated 0 in every run |
+| 3. discrimination on ca32026 | dP > 1e-4 | 2.9e-7 (no level ever built) |
+| 4. `hub`, `hub_posonly`, `hub_pgs` np 1 (host OMP 1, 8 x 3; CUDA x 3; step_mpi and `--solo`) | dP <= 1e-6, dXpos <= 3e-5, CONFLICTS 0 | dP <= 3.9e-7, dXpos <= 9.4e-7, CONFLICTS 0 |
+| 5. `cluster_periodic --solo` CoM drift | <= 1e-5 R | 1.9e-6 R (OMP 1, 8) |
+| 6. np 1 OMP 1 dumps vs ca32026 | identical except named | 22 / 29 identical; DIFF exactly `hub*` (6) and `cluster_periodic_solo`; `ring_mini`(`_solo`), np 4 `cluster` / `cluster_pgs` identical; S6 5 / 5, pile 4 / 4 identical |
+| 7. battery (`build_ct`, OMP 2, `-j1`, core Python on PYTHONPATH) | all pass | **200 / 201**: only `momentum_hub_ml_np1` (stop 1); the 12 `python_mpi_*` RUN and pass |
+
+**Stop 1 (a stated fact is false): `hub_ml` as specified never builds a multilevel level.** The pass
+runs in all 10 steps (post-loop residual 0.41-0.55 > vRestS 0.2), but the shell leaves
+(makeHub's `ns = 2.5 (rs/R)^2`, spacing ~1.2 D) do not touch each other, so the eligible contact graph
+is a star: the pairwise matching merges the hub with one leaf, `ngNew = 150 > 0.9 ngPrev = 151`, and
+the stall rule rejects the level. So the positive controls fail and B cannot be reproduced (2.9e-7 on
+ca32026). R-F8's retries (speed 0.5, hub density 1/8) do not change the graph topology. Evidence for
+the note's author (test-only experiment, not committed): a denser shell `ns = 3.0 (rs/R)^2` (N = 181,
+leaves touching) builds 1 level, aggregates the hub, and gives **dP 1.5e-2 on ca32026 -> 1.7e-7 to
+2.1e-7 after WO-4b** (np 1, OMP 1 and 8, step_mpi and `--solo`); `3.6` gives 2 levels, dP 1.8e-2 on
+ca32026. Needed: the scene (shell density or another way to give the hub aggregable neighbours).
+
+**Stop 2 (a stated estimate is false): the `hub_static` gap bound 0.05 delta does not hold at OMP 8
+or on CUDA.** §13.6 estimates the coupling gaps at ~ k m_leaf/m_hub delta <= 0.02 delta. Measured
+0.034 delta (OMP 1) to 0.061 delta (OMP 8), thread-order dependent (the colouring order). My reading:
+the estimate omits the Gauss-Seidel partial sums inside one copy -- a copy of mass m/k takes ~32
+sequential pushes of delta m_leaf/(m/k) = 0.01 delta each before the fold, a random walk of
+~sqrt(32) x 0.01 = 0.06 delta, which the non-retractable projection keeps as gap. omega 1.5 on
+ca32026 gives 0.584 delta, so a bound of about 0.1-0.2 delta would still discriminate by 3-6x.
+Needed: the bound (or the scene).
+
+WO-5 not started (it depends on WO-4b, and its acceptance reuses both modes).
