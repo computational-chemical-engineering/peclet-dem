@@ -1,0 +1,10 @@
+MOMENTUM mode=cluster np=1 thr=2 N=925 steps=50 dP=3.054e-09 dX=2.804e-07 dXpos=2.770e-07 dL=8.007e-04 dLcm=8.007e-04 dLvel=2.981e-09 ghosts=0 ovl=2.529e-02
+MOMENTUM mode=cluster_posonly np=1 thr=2 N=925 steps=50 dP=0.000e+00 dX=4.773e-07 dXpos=4.773e-07 dL=2.904e-03 dLcm=2.904e-03 dLvel=0.000e+00 ghosts=0 ovl=2.691e-02
+HUB mode=hub np=1 thr=2 solo=0 hubScale=3.0 N=40 maxDegContacts=39 maxDegManifolds=32 posConf=0 velConf=0
+MOMENTUM mode=hub np=1 thr=2 N=40 steps=20 dP=9.298e-08 dX=1.352e-07 dXpos=1.686e-07 dL=3.354e-04 dLcm=3.354e-04 dLvel=1.423e-08 ghosts=0 ovl=4.595e-05
+HUB mode=hub np=1 thr=2 solo=0 hubScale=4.0 N=62 maxDegContacts=61 maxDegManifolds=50 posConf=0 velConf=0
+MOMENTUM mode=hub np=1 thr=2 N=62 steps=20 dP=9.486e-08 dX=1.877e-07 dXpos=1.641e-07 dL=1.600e-04 dLcm=1.600e-04 dLvel=5.117e-09 ghosts=0 ovl=2.282e-05
+HUB mode=hub np=1 thr=2 solo=0 hubScale=5.0 N=89 maxDegContacts=88 maxDegManifolds=74 posConf=25 velConf=11
+MOMENTUM mode=hub np=1 thr=2 N=89 steps=20 dP=1.770e-02 dX=6.293e-03 dXpos=1.590e-03 dL=1.006e-03 dLcm=3.887e-04 dLvel=3.127e-04 ghosts=0 ovl=2.731e-05
+HUB mode=hub np=1 thr=2 solo=0 hubScale=6.0 N=122 maxDegContacts=121 maxDegManifolds=103 posConf=58 velConf=40
+MOMENTUM mode=hub np=1 thr=2 N=122 steps=20 dP=2.583e-02 dX=1.163e-02 dXpos=1.702e-03 dL=3.152e-03 dLcm=3.765e-04 dLvel=3.500e-04 ghosts=0 ovl=3.164e-05

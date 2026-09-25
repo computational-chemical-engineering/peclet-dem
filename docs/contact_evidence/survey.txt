@@ -1,0 +1,6 @@
+SURVEY case=mono N=2000 phi=0.620 size_ratio=1.00 contacts/particle=8.45 manifolds/particle=8.45 maxDeg=11 meanDeg=7.56 maxDeg(largest grains)=11 conflicts_last(vel,pos)=(0, 0) conflicts_max_over_run(vel,pos)=(0, 0)
+SURVEY case=poly10 N=2000 phi=0.620 size_ratio=1.22 contacts/particle=8.60 manifolds/particle=8.60 maxDeg=12 meanDeg=7.69 maxDeg(largest grains)=11 conflicts_last(vel,pos)=(0, 0) conflicts_max_over_run(vel,pos)=(0, 0)
+SURVEY case=bi2 N=2000 phi=0.620 size_ratio=2.00 contacts/particle=8.24 manifolds/particle=8.24 maxDeg=20 meanDeg=7.36 maxDeg(largest grains)=20 conflicts_last(vel,pos)=(0, 0) conflicts_max_over_run(vel,pos)=(0, 0)
+SURVEY case=bi3 N=2000 phi=0.620 size_ratio=3.00 contacts/particle=8.67 manifolds/particle=8.67 maxDeg=34 meanDeg=7.72 maxDeg(largest grains)=34 conflicts_last(vel,pos)=(0, 0) conflicts_max_over_run(vel,pos)=(0, 0)
+SURVEY case=bi4 N=2000 phi=0.620 size_ratio=4.00 contacts/particle=9.31 manifolds/particle=9.31 maxDeg=62 meanDeg=8.33 maxDeg(largest grains)=62 conflicts_last(vel,pos)=(0, 0) conflicts_max_over_run(vel,pos)=(0, 0)
+SURVEY case=bi6 N=4000 phi=0.620 size_ratio=6.00 contacts/particle=10.69 manifolds/particle=10.69 maxDeg=114 meanDeg=9.67 maxDeg(largest grains)=114 conflicts_last(vel,pos)=(0, 690) conflicts_max_over_run(vel,pos)=(0, 952)

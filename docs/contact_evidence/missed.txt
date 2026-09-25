@@ -1,0 +1,142 @@
+### missed_drift_pair np=1
+  missed_drift_pair np=1 layout:
+  block 0: [0,16) x [0,16) x [0,16)
+  missed_drift_pair np=1: no two face-adjacent blocks end below the domain on a second axis -- a drifted pair is always within the band of one owner here (closed box)
+OK (np=1)
+### missed_drift_pair np=2
+  missed_drift_pair np=2 layout:
+  block 0: [0,8) x [0,16) x [0,16)
+  block 1: [8,16) x [0,16) x [0,16)
+  missed_drift_pair np=2: no two face-adjacent blocks end below the domain on a second axis -- a drifted pair is always within the band of one owner here (closed box)
+OK (np=2)
+### missed_drift_pair np=4
+  missed_drift_pair np=4 layout:
+  block 0: [0,8) x [0,8) x [0,16)
+  block 1: [0,8) x [8,16) x [0,16)
+  block 2: [8,16) x [0,8) x [0,16)
+  block 3: [8,16) x [8,16) x [0,16)
+  missed_drift_pair np=4: A owner 0, B owner 1, face axis 1 at 8.0, drift axis 0 past 8.0; R = 0.50, band = 1.0500, |AB| = 0.980, predicted loss for y > 0.9287 (= 1.857 R)
+  MISSED mode=drift_pair np=4 y/R=0.00 serial=1 missed=0 dist(A,block s)=0.4900 dist(B,block r)=0.4900
+  MISSED mode=drift_pair np=4 y/R=0.50 serial=1 missed=0 dist(A,block s)=0.5501 dist(B,block r)=0.5501
+  MISSED mode=drift_pair np=4 y/R=1.00 serial=1 missed=0 dist(A,block s)=0.7001 dist(B,block r)=0.7001
+  MISSED mode=drift_pair np=4 y/R=1.50 serial=1 missed=0 dist(A,block s)=0.8959 dist(B,block r)=0.8959
+  MISSED mode=drift_pair np=4 y/R=1.80 serial=1 missed=0 dist(A,block s)=1.0247 dist(B,block r)=1.0247
+  MISSED mode=drift_pair np=4 y/R=1.85 serial=1 missed=0 dist(A,block s)=1.0468 dist(B,block r)=1.0468
+  MISSED mode=drift_pair np=4 y/R=1.86 serial=1 missed=1 dist(A,block s)=1.0512 dist(B,block r)=1.0512
+  MISSED mode=drift_pair np=4 y/R=1.90 serial=1 missed=1 dist(A,block s)=1.0689 dist(B,block r)=1.0689
+  MISSED mode=drift_pair np=4 y/R=2.00 serial=1 missed=1 dist(A,block s)=1.1136 dist(B,block r)=1.1136
+  MISSED mode=drift_pair np=4 y/R=3.00 serial=1 missed=1 dist(A,block s)=1.5780 dist(B,block r)=1.5780
+OK (np=4)
+### missed_drift_pair np=8
+  missed_drift_pair np=8 layout:
+  block 0: [0,8) x [0,8) x [0,8)
+  block 1: [0,8) x [0,8) x [8,16)
+  block 2: [0,8) x [8,16) x [0,8)
+  block 3: [0,8) x [8,16) x [8,16)
+  block 4: [8,16) x [0,8) x [0,8)
+  block 5: [8,16) x [0,8) x [8,16)
+  block 6: [8,16) x [8,16) x [0,8)
+  block 7: [8,16) x [8,16) x [8,16)
+  missed_drift_pair np=8: A owner 0, B owner 1, face axis 2 at 8.0, drift axis 0 past 8.0; R = 0.50, band = 1.0500, |AB| = 0.980, predicted loss for y > 0.9287 (= 1.857 R)
+  MISSED mode=drift_pair np=8 y/R=0.00 serial=1 missed=0 dist(A,block s)=0.4900 dist(B,block r)=0.4900
+  MISSED mode=drift_pair np=8 y/R=0.50 serial=1 missed=0 dist(A,block s)=0.5501 dist(B,block r)=0.5501
+  MISSED mode=drift_pair np=8 y/R=1.00 serial=1 missed=0 dist(A,block s)=0.7001 dist(B,block r)=0.7001
+  MISSED mode=drift_pair np=8 y/R=1.50 serial=1 missed=0 dist(A,block s)=0.8959 dist(B,block r)=0.8959
+  MISSED mode=drift_pair np=8 y/R=1.80 serial=1 missed=0 dist(A,block s)=1.0247 dist(B,block r)=1.0247
+  MISSED mode=drift_pair np=8 y/R=1.85 serial=1 missed=0 dist(A,block s)=1.0468 dist(B,block r)=1.0468
+  MISSED mode=drift_pair np=8 y/R=1.86 serial=1 missed=1 dist(A,block s)=1.0512 dist(B,block r)=1.0512
+  MISSED mode=drift_pair np=8 y/R=1.90 serial=1 missed=1 dist(A,block s)=1.0689 dist(B,block r)=1.0689
+  MISSED mode=drift_pair np=8 y/R=2.00 serial=1 missed=1 dist(A,block s)=1.1136 dist(B,block r)=1.1136
+  MISSED mode=drift_pair np=8 y/R=3.00 serial=1 missed=1 dist(A,block s)=1.5780 dist(B,block r)=1.5780
+OK (np=8)
+### missed_drift_lattice np=1
+  MISSED mode=drift_lattice np=1 D/R=0.5 N=4096 serial=5571 missed=0
+  MISSED mode=drift_lattice np=1 D/R=1.0 N=3963 serial=5334 missed=0
+  MISSED mode=drift_lattice np=1 D/R=1.5 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=1 D/R=2.0 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=1 D/R=2.5 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=1 D/R=3.0 N=3719 serial=5019 missed=0
+  MISSED mode=drift_lattice np=1 D/R=4.0 N=3584 serial=4874 missed=0
+  MISSED mode=drift_lattice np=1 D/R=6.0 N=3328 serial=4548 missed=0
+OK (np=1)
+### missed_drift_lattice np=2
+  MISSED mode=drift_lattice np=2 D/R=0.5 N=4096 serial=5571 missed=0
+  MISSED mode=drift_lattice np=2 D/R=1.0 N=3963 serial=5334 missed=0
+  MISSED mode=drift_lattice np=2 D/R=1.5 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=2 D/R=2.0 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=2 D/R=2.5 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=2 D/R=3.0 N=3719 serial=5019 missed=0
+  MISSED mode=drift_lattice np=2 D/R=4.0 N=3584 serial=4874 missed=0
+  MISSED mode=drift_lattice np=2 D/R=6.0 N=3328 serial=4548 missed=0
+OK (np=2)
+### missed_drift_lattice np=4
+  MISSED mode=drift_lattice np=4 D/R=0.5 N=4096 serial=5571 missed=0
+  MISSED mode=drift_lattice np=4 D/R=1.0 N=3963 serial=5334 missed=0
+  MISSED mode=drift_lattice np=4 D/R=1.5 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=4 D/R=2.0 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=4 D/R=2.5 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=4 D/R=3.0 N=3719 serial=5019 missed=0
+  MISSED mode=drift_lattice np=4 D/R=4.0 N=3584 serial=4874 missed=10
+    e.g. gid 105 (owner 0) at (9.518, 7.492, 0.511) and gid 119 (owner 1) at (9.494, 8.495, 0.466): dist(a, block 1) = 1.600, dist(b, block 0) = 1.574, band 1.155
+  MISSED mode=drift_lattice np=4 D/R=6.0 N=3328 serial=4548 missed=13
+    e.g. gid 98 (owner 0) at (10.518, 7.492, 0.511) and gid 111 (owner 1) at (10.494, 8.495, 0.466): dist(a, block 1) = 2.568, dist(b, block 0) = 2.543, band 1.155
+OK (np=4)
+### missed_drift_lattice np=8
+  MISSED mode=drift_lattice np=8 D/R=0.5 N=4096 serial=5571 missed=0
+  MISSED mode=drift_lattice np=8 D/R=1.0 N=3963 serial=5334 missed=0
+  MISSED mode=drift_lattice np=8 D/R=1.5 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=8 D/R=2.0 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=8 D/R=2.5 N=3840 serial=5217 missed=0
+  MISSED mode=drift_lattice np=8 D/R=3.0 N=3719 serial=5019 missed=0
+  MISSED mode=drift_lattice np=8 D/R=4.0 N=3584 serial=4874 missed=21
+    e.g. gid 105 (owner 0) at (9.518, 7.492, 0.511) and gid 119 (owner 2) at (9.494, 8.495, 0.466): dist(a, block 2) = 1.600, dist(b, block 0) = 1.574, band 1.155
+  MISSED mode=drift_lattice np=8 D/R=6.0 N=3328 serial=4548 missed=33
+    e.g. gid 98 (owner 0) at (10.518, 7.492, 0.511) and gid 111 (owner 2) at (10.494, 8.495, 0.466): dist(a, block 2) = 2.568, dist(b, block 0) = 2.543, band 1.155
+OK (np=8)
+### missed_periodic np=1
+  missed_periodic np=1 layout:
+  block 0: [0,16) x [0,16) x [0,16)
+  MISSED mode=periodic np=1 serial=5754 missed=0
+OK (np=1)
+### missed_periodic np=2
+  missed_periodic np=2 layout:
+  block 0: [0,8) x [0,16) x [0,16)
+  block 1: [8,16) x [0,16) x [0,16)
+  MISSED mode=periodic np=2 serial=5754 missed=2
+    pair gid 151 (owner 0) (7.568, 9.757, 0.206) -- gid 3992 (owner 1) (8.406, 9.739, 15.701): |sep| = 0.978, wrap of b per axis (+0, +0, -1) x GX
+      rank 0 receives gid 3992: sent, image (+0, +0, +0); needs (+0, +0, -1), which is INSIDE the band (2 images qualify)
+      rank 1 receives gid 151: sent, image (+0, +0, +0); needs (+0, +0, +1), which is INSIDE the band (2 images qualify)
+    pair gid 3592 (owner 1) (8.220, 0.385, 14.733) -- gid 3831 (owner 0) (7.601, 15.764, 14.603): |sep| = 0.886, wrap of b per axis (+0, -1, +0) x GX
+      rank 1 receives gid 3831: sent, image (+0, +0, +0); needs (+0, -1, +0), which is INSIDE the band (2 images qualify)
+      rank 0 receives gid 3592: sent, image (+0, +0, +0); needs (+0, +1, +0), which is INSIDE the band (2 images qualify)
+OK (np=2)
+### missed_periodic np=4
+  missed_periodic np=4 layout:
+  block 0: [0,8) x [0,8) x [0,16)
+  block 1: [0,8) x [8,16) x [0,16)
+  block 2: [8,16) x [0,8) x [0,16)
+  block 3: [8,16) x [8,16) x [0,16)
+  MISSED mode=periodic np=4 serial=5754 missed=3
+    pair gid 136 (owner 3) (8.241, 8.242, 0.215) -- gid 3960 (owner 2) (8.270, 7.721, 15.735): |sep| = 0.709, wrap of b per axis (+0, +0, -1) x GX
+      rank 3 receives gid 3960: sent, image (+0, +0, +0); needs (+0, +0, -1), which is INSIDE the band (2 images qualify)
+      rank 2 receives gid 136: sent, image (+0, +0, +0); needs (+0, +0, +1), which is INSIDE the band (2 images qualify)
+    pair gid 151 (owner 1) (7.568, 9.757, 0.206) -- gid 3992 (owner 3) (8.406, 9.739, 15.701): |sep| = 0.978, wrap of b per axis (+0, +0, -1) x GX
+      rank 1 receives gid 3992: sent, image (+0, +0, +0); needs (+0, +0, -1), which is INSIDE the band (2 images qualify)
+      rank 3 receives gid 151: sent, image (+0, +0, +0); needs (+0, +0, +1), which is INSIDE the band (2 images qualify)
+    pair gid 240 (owner 1) (0.262, 15.666, 0.474) -- gid 3840 (owner 0) (0.303, 0.261, 15.605): |sep| = 1.054, wrap of b per axis (+0, +1, -1) x GX
+      rank 1 receives gid 3840: sent, image (+0, +1, +0); needs (+0, +1, -1), which is INSIDE the band (2 images qualify)
+      rank 0 receives gid 240: sent, image (+0, -1, +0); needs (+0, -1, +1), which is INSIDE the band (2 images qualify)
+OK (np=4)
+### missed_periodic np=8
+  missed_periodic np=8 layout:
+  block 0: [0,8) x [0,8) x [0,8)
+  block 1: [0,8) x [0,8) x [8,16)
+  block 2: [0,8) x [8,16) x [0,8)
+  block 3: [0,8) x [8,16) x [8,16)
+  block 4: [8,16) x [0,8) x [0,8)
+  block 5: [8,16) x [0,8) x [8,16)
+  block 6: [8,16) x [8,16) x [0,8)
+  block 7: [8,16) x [8,16) x [8,16)
+  MISSED mode=periodic np=8 serial=5754 missed=0
+OK (np=8)
+EXIT missed

@@ -1,0 +1,7 @@
+RING step=0 t=0s phi=0.000 contacts=0 per_particle=0.0 manifolds=0 conflicts(vel,pos)=(0, 0) worst=(0, 0)
+RING step=250 t=1s phi=0.001 contacts=0 per_particle=0.0 manifolds=0 conflicts(vel,pos)=(0, 0) worst=(0, 0)
+RING step=500 t=3s phi=0.004 contacts=60 per_particle=1.5 manifolds=4 conflicts(vel,pos)=(0, 0) worst=(0, 0)
+RING step=750 t=5s phi=0.030 contacts=49 per_particle=1.2 manifolds=6 conflicts(vel,pos)=(0, 0) worst=(0, 0)
+RING step=1000 t=16s phi=0.228 contacts=3145 per_particle=78.6 manifolds=214 conflicts(vel,pos)=(0, 1240) worst=(0, 1240)
+RING step=1250 t=223s phi=0.355 contacts=6508 per_particle=162.7 manifolds=368 conflicts(vel,pos)=(0, 3869) worst=(0, 4670)
+RING step=1500 t=550s phi=0.368 contacts=24520 per_particle=613.0 manifolds=390 conflicts(vel,pos)=(0, 3190) worst=(0, 6439)

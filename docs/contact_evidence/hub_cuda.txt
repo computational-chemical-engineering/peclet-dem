@@ -1,0 +1,97 @@
+HUB mode=hub np=1 thr=1 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=1
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=1.318e-02 dX=4.867e-03 dXpos=5.642e-04 dL=2.333e-03 dLcm=9.740e-05 dLvel=9.580e-05 ghosts=0 ovl=4.711e-05 rep=1
+HUB mode=hub np=1 thr=1 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=2
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=1.618e-02 dX=6.091e-03 dXpos=6.039e-04 dL=3.549e-03 dLcm=1.175e-04 dLvel=1.143e-04 ghosts=0 ovl=4.846e-05 rep=2
+HUB mode=hub np=1 thr=1 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=3
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=1.027e-02 dX=4.352e-03 dXpos=7.478e-04 dL=1.942e-03 dLcm=7.367e-05 dLvel=7.396e-05 ghosts=0 ovl=4.628e-05 rep=3
+HUB mode=hub np=1 thr=8 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=1
+MOMENTUM mode=hub np=1 thr=8 N=301 steps=20 dP=1.318e-02 dX=4.723e-03 dXpos=4.707e-04 dL=2.412e-03 dLcm=9.769e-05 dLvel=9.580e-05 ghosts=0 ovl=4.734e-05 rep=1
+HUB mode=hub np=1 thr=8 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=2
+MOMENTUM mode=hub np=1 thr=8 N=301 steps=20 dP=1.352e-02 dX=4.939e-03 dXpos=3.458e-04 dL=2.760e-03 dLcm=9.978e-05 dLvel=9.745e-05 ghosts=0 ovl=4.668e-05 rep=2
+HUB mode=hub np=1 thr=8 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=3
+MOMENTUM mode=hub np=1 thr=8 N=301 steps=20 dP=1.125e-02 dX=3.918e-03 dXpos=5.754e-04 dL=1.962e-03 dLcm=8.361e-05 dLvel=8.180e-05 ghosts=0 ovl=4.683e-05 rep=3
+HUB mode=hub np=1 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=1
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=1.309e-02 dX=4.659e-03 dXpos=5.875e-04 dL=2.855e-03 dLcm=9.522e-05 dLvel=9.310e-05 ghosts=0 ovl=4.680e-05 rep=1
+HUB mode=hub np=1 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=2
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=1.475e-02 dX=5.353e-03 dXpos=6.875e-04 dL=2.919e-03 dLcm=1.097e-04 dLvel=1.063e-04 ghosts=0 ovl=4.665e-05 rep=2
+HUB mode=hub np=1 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=3
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=1.113e-02 dX=4.306e-03 dXpos=2.372e-04 dL=2.416e-03 dLcm=7.911e-05 dLvel=7.897e-05 ghosts=0 ovl=4.523e-05 rep=3
+HUB mode=hub np=1 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=1
+MOMENTUM mode=hub np=1 thr=8 N=301 steps=20 dP=1.343e-02 dX=4.809e-03 dXpos=4.508e-04 dL=2.776e-03 dLcm=9.888e-05 dLvel=9.688e-05 ghosts=0 ovl=4.706e-05 rep=1
+HUB mode=hub np=1 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=2
+MOMENTUM mode=hub np=1 thr=8 N=301 steps=20 dP=1.224e-02 dX=4.497e-03 dXpos=6.395e-04 dL=2.484e-03 dLcm=8.940e-05 dLvel=8.817e-05 ghosts=0 ovl=4.808e-05 rep=2
+HUB mode=hub np=1 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=242 posConf=237 velConf=179 rep=3
+MOMENTUM mode=hub np=1 thr=8 N=301 steps=20 dP=1.343e-02 dX=4.553e-03 dXpos=1.035e-03 dL=2.655e-03 dLcm=1.014e-04 dLvel=9.687e-05 ghosts=0 ovl=4.718e-05 rep=3
+HUB mode=hub np=2 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=174 velConf=116 rep=1
+MOMENTUM mode=hub np=2 thr=1 N=301 steps=20 dP=6.096e-03 dX=2.883e-03 dXpos=8.181e-04 dL=1.296e-03 dLcm=3.811e-05 dLvel=4.092e-05 ghosts=301 ovl=3.321e-05 rep=1
+HUB mode=hub np=2 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=174 velConf=116 rep=2
+MOMENTUM mode=hub np=2 thr=1 N=301 steps=20 dP=6.096e-03 dX=2.250e-03 dXpos=1.924e-04 dL=1.494e-03 dLcm=4.079e-05 dLvel=4.092e-05 ghosts=301 ovl=3.317e-05 rep=2
+HUB mode=hub np=2 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=174 velConf=116 rep=3
+MOMENTUM mode=hub np=2 thr=1 N=301 steps=20 dP=7.172e-03 dX=2.155e-03 dXpos=5.371e-04 dL=1.722e-03 dLcm=4.835e-05 dLvel=4.764e-05 ghosts=301 ovl=3.313e-05 rep=3
+HUB mode=hub np=2 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=174 velConf=116 rep=1
+MOMENTUM mode=hub np=2 thr=8 N=301 steps=20 dP=6.742e-03 dX=2.229e-03 dXpos=4.798e-04 dL=1.735e-03 dLcm=4.597e-05 dLvel=4.510e-05 ghosts=301 ovl=3.121e-05 rep=1
+HUB mode=hub np=2 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=174 velConf=116 rep=2
+MOMENTUM mode=hub np=2 thr=8 N=301 steps=20 dP=6.742e-03 dX=2.700e-03 dXpos=2.078e-04 dL=1.601e-03 dLcm=4.428e-05 dLvel=4.510e-05 ghosts=301 ovl=3.335e-05 rep=2
+HUB mode=hub np=2 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=174 velConf=116 rep=3
+MOMENTUM mode=hub np=2 thr=8 N=301 steps=20 dP=6.096e-03 dX=2.826e-03 dXpos=6.322e-04 dL=1.251e-03 dLcm=3.890e-05 dLvel=4.092e-05 ghosts=301 ovl=3.334e-05 rep=3
+HUB mode=hub np=4 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=111 velConf=64 rep=1
+MOMENTUM mode=hub np=4 thr=1 N=301 steps=20 dP=4.005e-02 dX=1.654e-02 dXpos=1.694e-03 dL=7.266e-03 dLcm=2.936e-04 dLvel=2.879e-04 ghosts=903 ovl=3.378e-05 rep=1
+HUB mode=hub np=4 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=111 velConf=64 rep=2
+MOMENTUM mode=hub np=4 thr=1 N=301 steps=20 dP=4.005e-02 dX=1.691e-02 dXpos=2.017e-03 dL=6.965e-03 dLcm=2.905e-04 dLvel=2.879e-04 ghosts=903 ovl=3.180e-05 rep=2
+HUB mode=hub np=4 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=111 velConf=64 rep=3
+MOMENTUM mode=hub np=4 thr=1 N=301 steps=20 dP=4.005e-02 dX=1.663e-02 dXpos=1.753e-03 dL=7.188e-03 dLcm=2.924e-04 dLvel=2.879e-04 ghosts=903 ovl=3.165e-05 rep=3
+HUB mode=hub np=4 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=111 velConf=64 rep=1
+MOMENTUM mode=hub np=4 thr=8 N=301 steps=20 dP=4.113e-02 dX=1.702e-02 dXpos=1.751e-03 dL=7.341e-03 dLcm=2.996e-04 dLvel=2.950e-04 ghosts=903 ovl=3.395e-05 rep=1
+HUB mode=hub np=4 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=111 velConf=64 rep=2
+MOMENTUM mode=hub np=4 thr=8 N=301 steps=20 dP=4.086e-02 dX=1.737e-02 dXpos=2.181e-03 dL=7.434e-03 dLcm=2.973e-04 dLvel=2.928e-04 ghosts=903 ovl=3.371e-05 rep=2
+HUB mode=hub np=4 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=127 posConf=111 velConf=64 rep=3
+MOMENTUM mode=hub np=4 thr=8 N=301 steps=20 dP=4.113e-02 dX=1.738e-02 dXpos=2.069e-03 dL=7.298e-03 dLcm=2.979e-04 dLvel=2.950e-04 ghosts=903 ovl=3.166e-05 rep=3
+HUB mode=hub_posonly np=1 thr=1 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=1
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.719e-03 dXpos=1.719e-03 dL=4.643e-04 dLcm=1.555e-05 dLvel=0.000e+00 ghosts=0 ovl=4.563e-05 rep=1
+HUB mode=hub_posonly np=1 thr=1 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=2
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.363e-03 dXpos=1.363e-03 dL=3.972e-04 dLcm=1.617e-05 dLvel=0.000e+00 ghosts=0 ovl=4.981e-05 rep=2
+HUB mode=hub_posonly np=1 thr=1 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=3
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.275e-03 dXpos=1.275e-03 dL=4.351e-04 dLcm=1.598e-05 dLvel=0.000e+00 ghosts=0 ovl=4.194e-05 rep=3
+HUB mode=hub_posonly np=1 thr=8 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=1
+MOMENTUM mode=hub_posonly np=1 thr=8 N=301 steps=20 dP=0.000e+00 dX=1.321e-03 dXpos=1.321e-03 dL=4.399e-04 dLcm=1.533e-05 dLvel=0.000e+00 ghosts=0 ovl=4.482e-05 rep=1
+HUB mode=hub_posonly np=1 thr=8 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=2
+MOMENTUM mode=hub_posonly np=1 thr=8 N=301 steps=20 dP=0.000e+00 dX=9.403e-04 dXpos=9.403e-04 dL=2.863e-04 dLcm=1.560e-05 dLvel=0.000e+00 ghosts=0 ovl=4.621e-05 rep=2
+HUB mode=hub_posonly np=1 thr=8 solo=1 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=3
+MOMENTUM mode=hub_posonly np=1 thr=8 N=301 steps=20 dP=0.000e+00 dX=2.137e-03 dXpos=2.137e-03 dL=6.856e-04 dLcm=1.500e-05 dLvel=0.000e+00 ghosts=0 ovl=4.325e-05 rep=3
+HUB mode=hub_posonly np=1 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=1
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=2.131e-03 dXpos=2.131e-03 dL=6.659e-04 dLcm=1.468e-05 dLvel=0.000e+00 ghosts=0 ovl=4.957e-05 rep=1
+HUB mode=hub_posonly np=1 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=2
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.670e-03 dXpos=1.670e-03 dL=5.130e-04 dLcm=1.579e-05 dLvel=0.000e+00 ghosts=0 ovl=4.178e-05 rep=2
+HUB mode=hub_posonly np=1 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=3
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.670e-03 dXpos=1.670e-03 dL=5.656e-04 dLcm=1.526e-05 dLvel=0.000e+00 ghosts=0 ovl=4.972e-05 rep=3
+HUB mode=hub_posonly np=1 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=1
+MOMENTUM mode=hub_posonly np=1 thr=8 N=301 steps=20 dP=0.000e+00 dX=1.772e-03 dXpos=1.772e-03 dL=6.027e-04 dLcm=1.651e-05 dLvel=0.000e+00 ghosts=0 ovl=4.987e-05 rep=1
+HUB mode=hub_posonly np=1 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=2
+MOMENTUM mode=hub_posonly np=1 thr=8 N=301 steps=20 dP=0.000e+00 dX=1.033e-03 dXpos=1.033e-03 dL=2.974e-04 dLcm=1.625e-05 dLvel=0.000e+00 ghosts=0 ovl=4.994e-05 rep=2
+HUB mode=hub_posonly np=1 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=300 maxDegManifolds=300 posConf=237 velConf=237 rep=3
+MOMENTUM mode=hub_posonly np=1 thr=8 N=301 steps=20 dP=0.000e+00 dX=1.295e-03 dXpos=1.295e-03 dL=4.294e-04 dLcm=1.607e-05 dLvel=0.000e+00 ghosts=0 ovl=4.707e-05 rep=3
+HUB mode=hub_posonly np=2 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=174 velConf=174 rep=1
+MOMENTUM mode=hub_posonly np=2 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.924e-03 dXpos=1.924e-03 dL=4.242e-04 dLcm=1.376e-05 dLvel=0.000e+00 ghosts=301 ovl=3.092e-05 rep=1
+HUB mode=hub_posonly np=2 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=174 velConf=174 rep=2
+MOMENTUM mode=hub_posonly np=2 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.875e-03 dXpos=1.875e-03 dL=5.379e-04 dLcm=1.616e-05 dLvel=0.000e+00 ghosts=301 ovl=3.634e-05 rep=2
+HUB mode=hub_posonly np=2 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=174 velConf=174 rep=3
+MOMENTUM mode=hub_posonly np=2 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.654e-03 dXpos=1.654e-03 dL=3.986e-04 dLcm=1.622e-05 dLvel=0.000e+00 ghosts=301 ovl=2.918e-05 rep=3
+HUB mode=hub_posonly np=2 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=174 velConf=174 rep=1
+MOMENTUM mode=hub_posonly np=2 thr=8 N=301 steps=20 dP=0.000e+00 dX=2.238e-03 dXpos=2.238e-03 dL=4.631e-04 dLcm=1.549e-05 dLvel=0.000e+00 ghosts=301 ovl=3.116e-05 rep=1
+HUB mode=hub_posonly np=2 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=174 velConf=174 rep=2
+MOMENTUM mode=hub_posonly np=2 thr=8 N=301 steps=20 dP=0.000e+00 dX=1.292e-03 dXpos=1.292e-03 dL=1.974e-04 dLcm=1.557e-05 dLvel=0.000e+00 ghosts=301 ovl=2.922e-05 rep=2
+HUB mode=hub_posonly np=2 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=174 velConf=174 rep=3
+MOMENTUM mode=hub_posonly np=2 thr=8 N=301 steps=20 dP=0.000e+00 dX=1.768e-03 dXpos=1.768e-03 dL=3.736e-04 dLcm=1.679e-05 dLvel=0.000e+00 ghosts=301 ovl=2.932e-05 rep=3
+HUB mode=hub_posonly np=4 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=111 velConf=111 rep=1
+MOMENTUM mode=hub_posonly np=4 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.307e-02 dXpos=1.307e-02 dL=2.813e-03 dLcm=2.780e-05 dLvel=0.000e+00 ghosts=903 ovl=3.107e-05 rep=1
+HUB mode=hub_posonly np=4 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=111 velConf=111 rep=2
+MOMENTUM mode=hub_posonly np=4 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.353e-02 dXpos=1.353e-02 dL=2.911e-03 dLcm=2.916e-05 dLvel=0.000e+00 ghosts=903 ovl=2.922e-05 rep=2
+HUB mode=hub_posonly np=4 thr=1 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=111 velConf=111 rep=3
+MOMENTUM mode=hub_posonly np=4 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.381e-02 dXpos=1.381e-02 dL=2.935e-03 dLcm=2.861e-05 dLvel=0.000e+00 ghosts=903 ovl=3.545e-05 rep=3
+HUB mode=hub_posonly np=4 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=111 velConf=111 rep=1
+MOMENTUM mode=hub_posonly np=4 thr=8 N=301 steps=20 dP=0.000e+00 dX=1.341e-02 dXpos=1.341e-02 dL=2.848e-03 dLcm=2.778e-05 dLvel=0.000e+00 ghosts=903 ovl=3.137e-05 rep=1
+HUB mode=hub_posonly np=4 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=111 velConf=111 rep=2
+MOMENTUM mode=hub_posonly np=4 thr=8 N=301 steps=20 dP=0.000e+00 dX=1.381e-02 dXpos=1.381e-02 dL=2.817e-03 dLcm=2.824e-05 dLvel=0.000e+00 ghosts=903 ovl=2.913e-05 rep=2
+HUB mode=hub_posonly np=4 thr=8 solo=0 hubScale=10.0 N=301 maxDegContacts=157 maxDegManifolds=157 posConf=111 velConf=111 rep=3
+MOMENTUM mode=hub_posonly np=4 thr=8 N=301 steps=20 dP=0.000e+00 dX=1.303e-02 dXpos=1.303e-02 dL=2.839e-03 dLcm=2.792e-05 dLvel=0.000e+00 ghosts=903 ovl=3.100e-05 rep=3
+EXIT hub
