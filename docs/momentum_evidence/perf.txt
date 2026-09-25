@@ -1,0 +1,61 @@
+LOAD before 30.47, 42.35, 37.00
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=48.026 rep=1
+LOAD after  30.47, 42.35, 37.00
+LOAD before 30.47, 42.35, 37.00
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=15.230 rep=2
+LOAD after  28.67, 41.77, 36.84
+LOAD before 28.67, 41.77, 36.84
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=27.174 rep=3
+LOAD after  27.02, 41.21, 36.69
+LOAD before 27.02, 41.21, 36.69
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=15.561 rep=4
+LOAD after  27.02, 41.21, 36.69
+LOAD before 27.02, 41.21, 36.69
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=15.599 rep=5
+LOAD after  27.02, 41.21, 36.69
+LOAD before 27.02, 41.21, 36.69
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=7.915 rep=1
+LOAD after  26.22, 40.81, 36.58
+LOAD before 26.22, 40.81, 36.58
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=16.424 rep=2
+LOAD after  26.22, 40.81, 36.58
+LOAD before 26.22, 40.81, 36.58
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=8.051 rep=3
+LOAD after  26.22, 40.81, 36.58
+LOAD before 26.22, 40.81, 36.58
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=9.302 rep=4
+LOAD after  24.92, 40.30, 36.44
+LOAD before 24.92, 40.30, 36.44
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=8.111 rep=5
+LOAD after  24.92, 40.30, 36.44
+LOAD before 24.92, 40.30, 36.44
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=15.534 rep=1
+LOAD after  24.92, 40.30, 36.44
+LOAD before 24.92, 40.30, 36.44
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=119.803 rep=2
+LOAD after  21.87, 39.14, 36.10
+LOAD before 21.87, 39.14, 36.10
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=26.163 rep=3
+LOAD after  21.87, 39.14, 36.10
+LOAD before 21.87, 39.14, 36.10
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=15.899 rep=4
+LOAD after  20.46, 38.26, 35.85
+LOAD before 20.46, 38.26, 35.85
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=15.624 rep=5
+LOAD after  20.46, 38.26, 35.85
+LOAD before 20.46, 38.26, 35.85
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=98.757 rep=1
+LOAD after  20.18, 37.91, 35.75
+LOAD before 20.18, 37.91, 35.75
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=8.217 rep=2
+LOAD after  19.34, 37.14, 35.52
+LOAD before 19.34, 37.14, 35.52
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=8.296 rep=3
+LOAD after  19.34, 37.14, 35.52
+LOAD before 19.34, 37.14, 35.52
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=10.161 rep=4
+LOAD after  19.34, 37.14, 35.52
+LOAD before 19.34, 37.14, 35.52
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=9.267 rep=5
+LOAD after  19.34, 37.14, 35.52
+EXIT perf

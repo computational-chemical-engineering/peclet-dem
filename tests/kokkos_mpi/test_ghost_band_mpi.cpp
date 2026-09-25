@@ -129,9 +129,21 @@ static int runCase(const char* name, const std::vector<Body>& bodies,
   long maxRebuilds = 0;
   MPI_Allreduce(&rebuilds, &maxRebuilds, 1, MPI_LONG, MPI_MAX, MPI_COMM_WORLD);
   const double posTol = 1e-4;
+  // Centre-of-mass x shift over the run (every body has unit mass, no body moves initially
+  // except band_change's q): a conserving solve leaves it where the initial velocities carry it.
+  double lcom = 0.0, gcom = 0.0, com0 = 0.0, comRef = 0.0;
+  for (std::size_t i = 0; i < gids.size(); ++i)
+    lcom += distPos[3 * i];
+  MPI_Allreduce(&lcom, &gcom, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  for (int g = 0; g < n; ++g) {
+    com0 += bodies[g].x / n;
+    comRef += refPos[3 * g] / n;
+  }
   if (rank == 0)
-    std::printf("  [%-14s] np=%d particles=%d posErr=%.3e (tol %.0e) halo rebuilds=%ld\n", name,
-                size, n, posErr, posTol, maxRebuilds);
+    std::printf(
+        "  [%-14s] np=%d particles=%d posErr=%.3e (tol %.0e) halo rebuilds=%ld "
+        "comShift dist=%.3e ref=%.3e\n",
+        name, size, n, posErr, posTol, maxRebuilds, gcom / n - com0, comRef - com0);
   int fail = !(posErr < posTol) ? 1 : 0;
   for (float v : distPos)
     if (!std::isfinite(v))

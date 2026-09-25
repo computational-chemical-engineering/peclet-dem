@@ -33,7 +33,8 @@ endif()
 separate_arguments(_mpi_preflags NATIVE_COMMAND "${MPIEXEC_PREFLAGS}")
 
 set(_dem_src "${CMAKE_CURRENT_SOURCE_DIR}/../../src")
-foreach(t migrate_mpi demstep_mpi rebalance_mpi halo_schedule_mpi ghost_band_mpi align_mpi)
+foreach(t migrate_mpi demstep_mpi rebalance_mpi halo_schedule_mpi ghost_band_mpi align_mpi
+          momentum_mpi)
   add_executable(test_${t} test_${t}.cpp)
   target_include_directories(test_${t} PRIVATE ${_dem_src} ${PECLET_CORE_INCLUDE})
   target_compile_definitions(test_${t} PRIVATE PECLET_DEM_MPI)
@@ -83,6 +84,16 @@ foreach(np 1 2 4)
     set_tests_properties(ghost_band_${mode}_np${np} PROPERTIES ENVIRONMENT OMP_NUM_THREADS=1)
   endforeach()
   _dem_mpi_test(align_np${np} ${np} test_align_mpi)
+endforeach()
+# momentum: a closed, force-free random cluster straddling every rank face and corner; reports the
+# drift of the global linear momentum, centre of mass and angular momentum per step, split into the
+# velocity and the position phase (XPBD engine, frictionless / friction / free-fall PGS / position
+# phase alone) and for the force-based Hertz engine. REPORT-ONLY for now (kGate in the source):
+# the future conservation gate. np = 8 puts the cluster on the common corner of all eight blocks.
+foreach(np 1 2 4 8)
+  foreach(mode cluster cluster_friction cluster_pgs cluster_posonly hertz)
+    _dem_mpi_test(momentum_${mode}_np${np} ${np} test_momentum_mpi ${mode})
+  endforeach()
 endforeach()
 # migrate_to_weights(w, align) == flow's aligned partition: also at np = 8, where the budget's
 # alignment and the "fewer aligned boxes than ranks" rejection both differ from np <= 4.
