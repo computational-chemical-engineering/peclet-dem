@@ -67,8 +67,10 @@
 // same at every np), as raw records {int32 gid; float32 pos[3], vel[3], angVel[3], quat[4]} --
 // the committed state (for hertz: the committed state of the force engine). Used for the bitwise
 // comparisons of the conservation work (docs/mpi_momentum_conservation.md, G3/G4).
-// Report-only for now: the thresholds below are the future gate (kGate = false: never fails on
-// drift; a non-finite state still fails).
+// The conservation GATE (docs/mpi_momentum_conservation.md §7 G1): every contact is owned by
+// exactly one rank and ghost increments are reverse-accumulated, so the drifts are round-off at
+// every np and thread count; the per-mode thresholds are in tolOf() below (a non-finite state
+// always fails).
 #include <mpi.h>
 
 #include <algorithm>
@@ -92,11 +94,30 @@
 using peclet::core::IVec;
 using peclet::dem::Simulation;
 
-// ---- the future conservation gate (switch kGate on once the distributed solve conserves) ----
-static constexpr bool kGate = false;
-static constexpr double kTolP = 1e-6;  // relative linear momentum
-static constexpr double kTolX = 1e-5;  // CoM drift / radius
-static constexpr double kTolL = 1e-5;  // relative velocity-phase angular momentum (dLvel)
+// ---- the conservation gate (G1) ----
+static constexpr bool kGate = true;
+// Per-mode thresholds (max over runs; < 0 = not gated). dLvel for the XPBD modes, dL for hertz.
+struct Tol {
+  double dP, dX, dXpos, dL, dLvel;
+};
+static Tol tolOf(const std::string& mode) {
+  if (mode == "cluster")  // np 1: 2.8e-9 / 3e-7 / 3e-9; broken >= 3.3e-3
+    return {1e-6, 1e-5, 1e-5, -1, 1e-6};
+  if (mode == "cluster_friction" || mode == "cluster_sync3" || mode == "cluster_norot")
+    return {1e-6, 1e-5, 1e-5, -1, 1e-4};  // the serial legacy-friction floor dLvel is 1.9e-5
+  if (mode == "cluster_pgs")  // free-fall float accumulation floor dP 7.9e-7 at np 1
+    return {5e-6, 1e-5, 1e-5, -1, 1e-6};
+  if (mode == "cluster_posonly")  // the velocity increments are exact zeros
+    return {1e-12, 1e-5, 1e-5, -1, 1e-12};
+  if (mode == "cluster_periodic")  // dP only
+    return {1e-6, -1, -1, -1, -1};
+  if (mode == "hertz")  // regression guard; today 2.8e-8 / 8.8e-7 / 4.4e-7
+    return {1e-6, 1e-5, -1, 1e-5, -1};
+  return {-1, -1, -1, -1, -1};
+}
+static bool within(double v, double tol) {
+  return tol < 0 || v <= tol;  // NaN fails
+}
 
 static constexpr double L = 32.0;  // closed box [-16, 16]^3; the ORB splits every axis at 0
 static constexpr double LO = -16.0;
@@ -478,8 +499,13 @@ static int runCluster(const Mode& md, int rank, int size) {
   }
   if (!md.dump.empty())
     dumpState(sim, gids, md.dump, rank, size);
-  if (kGate && (!(dP < kTolP) || !(dX < kTolX) || (!md.hertz && !(dLvel < kTolL))))
+  const Tol tol = tolOf(md.name);
+  if (kGate && !(within(dP, tol.dP) && within(dX, tol.dX) && within(dXpos, tol.dXpos) &&
+                 within(dL, tol.dL) && within(dLvel, tol.dLvel))) {
     fail = 1;
+    if (rank == 0)
+      std::fprintf(stderr, "GATE: %s exceeds its conservation thresholds\n", md.name.c_str());
+  }
   return fail;
 }
 
