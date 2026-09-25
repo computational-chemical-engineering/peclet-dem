@@ -204,6 +204,9 @@ Two bookkeeping facts make both policies exact:
 - Projected block SOR on a convex quadratic dual with a PSD Hessian converges for every block
   relaxation `ω ∈ (0, 2)`. The consensus block uses `ω = 1`; the contact blocks use `ω_phase`
   (§4.5).
+- **Scope superseded by §13.1:** this argument holds only for accumulated multipliers with a
+  retractable clamp (the PGS family). The overlap projection is non-accumulated POCS: it converges
+  to a feasible point, but only `ω = 1` avoids a permanent overshoot.
 - c771e07's raw sum has no such guarantee. It is Jacobi across copies with an effective
   `ω ≈ (k+1)/2`, which exceeds 2 for k ≥ 4 (edges and corners).
 
@@ -361,9 +364,9 @@ place of `reach` (§5.5).
 | One-shot restitution, `g = 0` GS (`solveVelocityColoredGSKokkos`) | event | **X** (gate, true masses, raw reverse) | M with `k_local = s` (§4.1) | only where today's colouring fails |
 | PGS normal + cone + Poisson release, `g ≠ 0` (`PGSManifoldSweep::solveOne`) | projection | **M**, `ω_vel = 1` (normal only) | M | only where the colouring fails |
 | Stabilization: one-sided (smode 1), escalate (3), ordered (4) | projection (side flags hold one side: a sink by design, unchanged) | M | M | same |
-| Multilevel (smode 2): fine sweep + coarse cycle | projection + coarse accelerator | M (ghost copies enter aggregates with solve masses via `effMass(invMassSolve)`) | fold before the coarse cycle, re-seed after | coarse colouring: skip instead of forcing colour 62 |
+| Multilevel (smode 2): fine sweep + coarse cycle | projection + coarse accelerator | M (ghost copies enter aggregates with solve masses via `effMass(invMassSolve)`; **superseded by §13.2**: a coarse vertex has mass `a·m/k`) | fold before the coarse cycle, re-seed after (coarse vertex mass: §13.2) | coarse colouring: skip instead of forcing colour 62 |
 | Legacy friction, `g = 0` (count-averaged Jacobi, `src/solve_driver.hpp:806-815`) | explicit Jacobi pass | raw (unchanged: `syncFrictionCounts`, then the pass, then `syncVelocities`) | runs after the final fold | **D2**: midpoint arms |
-| Overlap projection, all runs (`PositionContactSweep`) | projection (POCS) | **M**, `ω_pos = 1.5` | M | **D1**: pair units for multi-point pairs, bitwise for single-point |
+| Overlap projection, all runs (`PositionContactSweep`) | projection (POCS) | **M**, `ω_pos = 1` (**superseded by §13.1**; was 1.5) | M | **D1**: pair units for multi-point pairs, bitwise for single-point |
 | Poisson bank update, orphan scatter | bookkeeping | true masses; credit only by the pair's owner (§6.3) | after the final fold | none |
 | Jacobi diagnostic, velocity + position (`velocityUseGS = false`) | projection / event, Jacobi | "every contact its own copy": `k = global contact count`, raw reverse (§3.1) | no colouring, no hubs | **D3** |
 | Hertz–Mindlin (`demStepHertzMpi`) | explicit, redundant on both owners | unchanged; needs symmetric visibility (§5.5) | none | none |
@@ -532,6 +535,9 @@ Changes:
   with `k = s`.
 - Orphan account (Poisson, velocity M phases): each active copy starts with `B/k` (§4.6). The local
   fold sums, sets every local copy to `(Σ local)/s`, and takes the max for `orphanVPeak`.
+  **Superseded by §13.3:** the local fold divides by the local active count `a` (= `s`); shares and
+  solve masses use the global `k`; the pack multiplies by `a`. The multilevel re-seed stays, with
+  coarse vertex masses `a·m/k` (§13.2).
 
 **Fast paths.**
 - The single-rank fused device loops (`velLoopDone`, `osLoopDone`, `mlLoopDone`, `posLoopDone` in
@@ -575,9 +581,10 @@ The `allMaxAny` vote stays and carries that flag.
   - PGS normal: `pNew = max(0, pOld + ω dp)`. The cone and Poisson release are never
     over-relaxed.
   - Position: `dLambda *= ω`, **and** `posLambdaContact` accumulates the relaxed value.
+    **Superseded by §13.1:** the position phase is never relaxed; the branch is deleted.
 - **Constants** (`src/solve_driver.hpp`, documented at definition):
   - `kSplitOmegaVelocity = 1.0f`;
-  - `kSplitOmegaPosition = 1.5f`;
+  - `kSplitOmegaPosition = 1.5f` (**superseded by §13.1**: deleted, `ω_pos = 1`);
   - `kHubEdgeBudget = 32`.
 - With `ω = 1` the velocity kernels need no relaxation code. Implement the hook anyway, because it
   is the pre-designed lever of R-F2.
@@ -602,6 +609,12 @@ Sequence:
    activity. When `!exchanges()`, the method stops here, so np 1 closed and isolated ranks still get
    correct local `k` for hub copies. Local periodic images of `demStep` are handled by §WO-4 item 2,
    not here.
+**Superseded by §13.3** in three respects:
+- the payloads: no `velMask` before WO-6; `B` and the peak are forwarded; the `g = 0` path gets a
+  counts-only exchange;
+- step 5's balance source;
+- the orphan baseline.
+
 1. **Reverse**, payload
    `OpeningIncrement {float v[3], w[3], orphan, orphanPeak; uint64_t velMask; int velCount, posCount;}`.
    - `operator+` sums v, w, orphan and the counts, takes the max of `orphanPeak`, and ORs the mask.
@@ -619,6 +632,8 @@ Sequence:
    `ownerSeedAngVel_`, `ownerSeedOrphan_`, `ownerSeedPos_`, grow-only, `[no]`).
 5. **Seed the orphan shares** (M velocity phase with Poisson only). Every *active* copy slot of a
    body with `k_vel > 1`, owned or ghost, sets `orphan := B/k_vel`, with `B` the forwarded balance.
+   (**Superseded by §13.3**: `B` and the peak ride the opening forward and, under Poisson, every
+   later velocity forward.)
    The baselines and seeds record `B/k` for ghosts and `B` for the owner seed.
 
 **Rank-level reconciliation** (every `syncVelocities` / `syncPositions` after the opening). Local
@@ -628,7 +643,9 @@ hubs are folded first (§4.4).
     local copies are all equal after the fold.
   - X phase: `f_g = 1`.
   - Orphan under M: `inc = f × (orphan_g − baseline_g)`. The baseline is the share the slot was
-    seeded with: `B/k` if active, `B` if not.
+    seeded with: `B/k` if active, `B` if not. (**Superseded by §13.3**: every slot of a `k > 1`
+    body holds and records `B/k`; an inactive slot packs 0 through `f = 0`. Phase-end owner
+    restore: §13.3.)
   - WO-5 adds a debug-build check that every slot with `a(g) = 0` has a zero increment. Nothing may
     write an inactive copy; a non-zero increment there is a bug and would be dropped silently.
 - **Apply** on owned rows with `k > 1` in an M phase:
@@ -815,6 +832,8 @@ written copies. That breaks X and makes the np 1 periodic twin Jacobi-lagged.
 - about 1.5k ghosts per rank at np 8.
 
 ### 7.1 Messages per substep (neighbourhood rounds; maximum, no early stop)
+**Superseded by §13.4.** The `g = 0` opening's +2 rounds move to WO-5; the payloads are those of
+§13.3.
 
 | | c771e07 | after | Δ |
 |---|---|---|---|
@@ -873,6 +892,7 @@ At N = 20k / np 8 this is < 1 MB per rank.
 - Cost of one host migrate ≈ 0.5–1 ms (fact to measure, R-F1), so ≤ 0.05 ms/substep amortized.
 
 ### 7.5 Expected ms/step against c771e07
+**Superseded by §13.4:** +3–8 % in total, with the interface iteration risk R-F6.
 - `perf_pgs` 8 × 2: +2–4 % (ghosts).
 - `perf_gas` 8 × 2: +3–6 % (ghosts, +2 rounds ≈ 40–80 µs, gate ≈ 4 × 10 µs).
 - np 4 × 4: about half of that.
@@ -1000,7 +1020,8 @@ grow-with-contacts: follow the "every maxContacts-sized view grown together" reg
 Files: `src/solver_velocity.hpp`, `src/solver_position.hpp`, `src/solver_multilevel.hpp`,
 `src/solve_driver.hpp`, `src/particles.hpp`, `src/sim.hpp` (diagnostic), `src/step_solve.hpp`
 (images).
-1. Implement §4.2 items 1, 2 and 4, §4.4 and §4.5 (with `ω_vel = 1`, `ω_pos = 1.5`), and the
+1. Implement §4.2 items 1, 2 and 4, §4.4 and §4.5 (with `ω_vel = 1`, `ω_pos = 1.5`; `ω_pos` is
+   **superseded by §13.1** and fixed in WO-4b), and the
    multilevel skip. Delete the fallbacks.
 2. **Single-rank periodic images in the position phase** (`demStep`). Treat each image slot
    (`numReal ≤ q < numParticles`, `realIndices(q) = i`) as a local copy of `i`:
@@ -1029,6 +1050,7 @@ Files: `src/solver_velocity.hpp`, `src/solver_position.hpp`, `src/solver_multile
 - `cluster_periodic --solo` (`demStep`): CoM drift ≤ 1e-5 R (report the before value).
 
 ### WO-5: Rank-level M (projection phases)
+**Superseded by §13.5.** WO-4b comes first.
 Files: `src/mpi_halo.hpp`, `src/step_solve_mpi.hpp`, `src/solve_driver.hpp`.
 - Implement §4.6 except the X gate:
   - `openVelocityPhase`;
@@ -1050,6 +1072,7 @@ Files: `src/mpi_halo.hpp`, `src/step_solve_mpi.hpp`, `src/solve_driver.hpp`.
 - Report the `cluster_periodic` np 1 before and after.
 
 ### WO-6: Rank-level X (the `g = 0` one-shot)
+**Superseded by §13.5.**
 Files: `src/mpi_halo.hpp` (rank colouring from the decomposer's blocks, recomputed on
 decomposition or band change; `C ≤ 64` else throw), `src/solver_velocity.hpp` (gate argument in the
 one-shot lambda), `src/solve_driver.hpp` (gate kernel, `solveEpoch`, interval index),
@@ -1063,6 +1086,7 @@ one-shot lambda), `src/solve_driver.hpp` (gate kernel, `solveEpoch`, interval in
 - Report `unfiredSplitContacts` per substep in `perf_gas`.
 
 ### WO-7: Drift vote, `migrateToBlocks` and the band (D4a), XPBD and Hertz
+**Superseded by §13.5**, which keeps this text and adds to it.
 Files: `src/step_solve_mpi.hpp`, `src/mpi_halo.hpp` (`migrateToBlocks`, `MigratePack` ext
 force/torque, the gather rebuild predicate), `src/solve_driver_force.hpp` / `MpiForceHooks`,
 `src/sim.hpp` (stepMpi loop unchanged except the counter), and `scatterOrphanBanksKokkos` +
@@ -1107,7 +1131,8 @@ Deliver `docs/contact_evidence/AFTER.md`: every gate table with the load, perf A
 the migration frequency, `split_stats`, and the before/after of every named np 1 change.
 
 **Dependency graph.** WO-0 → {WO-1, WO-2} → WO-3 → WO-4 → WO-5 → WO-6 → WO-7 → WO-9 → WO-10 →
-WO-11. WO-8 runs in parallel after WO-0.
+WO-11. WO-8 runs in parallel after WO-0. **Superseded by §13.5:** WO-4b goes between WO-4 and
+WO-5, and the conditional WO-12 between WO-7 and WO-10.
 
 ---
 
@@ -1182,7 +1207,7 @@ np 4 and 8, OMP 1, 5 runs, `--dump`. Modes: `cluster`, `cluster_friction`, `clus
   - the envelope is the min and max over `--relabel` seeds 1..3 and 0 (identity), widened by
     ±0.1 %.
 - (e) `ovl` (max over steps, np 2, 4, 8, `cluster`, `cluster_pgs`, `cluster_friction`): ≤ 1.5 × np 1
-  and ≤ 2 × the c771e07 value.
+  and ≤ 2 × the c771e07 value. **Superseded by §13.6** (restated G7e; new G7f).
 
 ### G8: D4
 `missed_drift_pair`, `missed_drift_lattice` (up to 6 R), `missed_periodic` (np 2, 4, 8): 0 missed.
@@ -1214,6 +1239,7 @@ np 4 and 8, OMP 1, 5 runs, `--dump`. Modes: `cluster`, `cluster_friction`, `clus
 **Also reported:** migrations per 100 substeps and the time of one migrate.
 
 ### G13: Mutation negative controls
+§13.6 adds mutants 6 and 7.
 Each must be **detected**. The test binary passes iff the gate fails.
 
 | mutant `n` | what it changes | must trip |
@@ -1378,7 +1404,7 @@ Every item has a default, so work proceeds unattended.
 | **R-U2** | WO-8 needs a core minor release (tag + PyPI publish), which is outward-facing | **User go-ahead** under the standing "core first" directive | Implement and test in core and tag locally. The orchestrator confirms the publish step with the user per `docs/RELEASE.md`. dem WO-9 waits; every other WO proceeds. |
 | **R-U3** | The np 1 changes beyond the brief's D1/D2/D3 list: periodic `demStep` and `step_mpi` position consensus (§WO-4 item 2) and the velocity slot map (§6.2) | **User preference** (the scope of "np 1 unchanged"; the c771e07 precedent: user accepted a periodic np 1 change for conservation) | Proceed (conservation is a directive). Report before/after in AFTER.md. |
 | R-F1 | Migration cost and frequency at `S = 0.25 R_max`; the ghost overhead of the slack | **Fact** (G12) | `S = 0.25`. If migrations exceed 1 per 5 substeps in `perf_*`, or G12 fails on ghost volume, report. The lever is `S = 0.5` (fewer migrations, +24 % ghosts), a recorded decision. |
-| R-F2 | Interface convergence of M with `ω_vel = 1` | **Fact** (G7c/e) | `ω_vel = 1`. If G7c or G7e fails, set `kSplitOmegaVelocity = 1.5` (pre-analysed: convergent for ω < 2, near-serial iterations; first-iterate KE overshoot like serial PGS), re-run G1/G7, record the decision. If it still fails, stop. |
+| R-F2 | Interface convergence of M with `ω_vel = 1` | **Fact** (G7c/e) | `ω_vel = 1`. If G7c or G7e fails, set `kSplitOmegaVelocity = 1.5` (pre-analysed: convergent for ω < 2, near-serial iterations; first-iterate KE overshoot like serial PGS), re-run G1/G7, record the decision. If it still fails, stop. **Superseded by §13.1 / §13.8:** this lever applies to the velocity phase only and is triggered by G7c only. The overlap projection is never relaxed; its lever is R-U4. |
 | R-F3 | X starvation within a substep at small velocity caps: corner bodies (`popcount(mask)` up to 8) may not fire in a 4-iteration `g = 0` substep | **Fact** (`unfiredSplitContacts` in WO-6) | Accept; `solveEpoch` rotates the phase. If more than 1 % of split contacts are unfired per substep in `perf_gas`, report. A mitigation (X-split contacts fire first in the interval they hold) is not designed here. |
 | R-F4 | CUDA and host cost of Kokkos's lock-based `atomic_add` on the 48 B `OpeningIncrement` (c771e07 R1, never timed) | **Fact** | Use it. If a reverse costs more than 5 % of a substep on CUDA, the fallback is c771e07's recorded lever (a core `reverse` returning the send-shaped buffer, dem scatters by component). That is another core release, so stop and report. |
 | R-F5 | Ring-bed convergence and speed with pair units | **Fact** (G12) | Proceed. A slower ring bed than today's racy baseline is reported, not a stop. |
@@ -1456,7 +1482,7 @@ max overlap < 1e-4 R:
 | time-slice s = 4 | 9 | 49 |
 | mass-split copies s = 2 | 3 | 98 |
 | mass-split copies s = 4 | 3 | 49 |
-| mass-split copies s = 4, ω = 1.5 | 2 | 49 |
+| mass-split copies s = 4, ω = 1.5 | 2 (over-separation, not convergence: superseded by §13.1) | 49 |
 
 ## 12. Session decisions during implementation (2026-09-25, binding on the work orders)
 
@@ -1532,3 +1558,635 @@ max overlap < 1e-4 R:
   damps the raw cross-rank sum. WO-5, the rank-level mass split, is the designed fix. `contacts`
   must NOT be pushed between WO-3 and WO-5, and WO-5's acceptance must include `ring_mini` at
   np 4 and 8.
+
+## 13. Amendment after WO-4 (2026-09-25, binding; brief `docs/contact_evidence/ARCHITECT_BRIEF_2.md`)
+
+WO-0 to WO-4 are on `contacts` (ca32026). Implementation falsified one premise (A: over-relaxing
+the overlap projection), exposed one conservation hole (B: the multilevel coarse cycle at a folded
+hub), and found WO-5 under-specified in four places (C). This section resolves them, restates the
+interface convergence and the cost model (D), and replaces the texts of WO-5, WO-6 and WO-7. Where
+it conflicts with §0–§12 it wins; the superseded places are marked in place. Evidence:
+`docs/contact_evidence/IMPL_A.md` (WO-4, Stop A, finding B, open points 1–4) and the model of §13.4.
+
+### 13.0 Decisions at a glance
+
+| # | Decision | Lands in |
+|---|---|---|
+| A | The overlap projection is never over-relaxed: `ω_pos = 1` on every slot. `kSplitOmegaPosition` and the position relaxation branch are deleted. The PGS normal keeps its hook (`ω_vel = 1`; the 1.5 lever stays legitimate there because that multiplier is accumulated). | WO-4b |
+| B | A multilevel coarse vertex carries the mass of the rank's folded copy set, `μ(q) = a(q)·m/k(q)`: the true mass at np 1. "Fold before the coarse cycle, re-seed after" is kept. | WO-4b (np 1), WO-5 (MPI) |
+| C1 | The holder mask exists only for X. WO-5 carries no mask; WO-6 adds it with the rank colouring. No reordering. | WO-5, WO-6 |
+| C2 | Under Poisson, every velocity-phase forward carries the owner's balance `B` and peak; every copy re-seeds the share `B/k`. No new message. | WO-5 |
+| C3 | IMPL_A's phase-end formula is verified. The local fold divides by the local active count `a`; solve masses and orphan shares use the global `k`; the pack multiplies by `a`. | WO-5 |
+| C4 | `a` comes from a per-substep activity pass (MPI only). `k` comes from one opening exchange per substep: on the PGS path it rides the existing post-warm-start sync; on the `g = 0` path it is a new counts-only exchange (2 rounds), the one WO-6 needed anyway. | WO-5 |
+| D | Interface convergence and cost restated for `ω_pos = 1`; G7e restated; G7f, `hub_static` and `hub_ml` added. | §13.4, §13.6 |
+| new | Accumulated (retractable) position PSOR is sound, has a unique fixed point, needs about 3× fewer iterations at np 1, and makes `ω_pos = 1.5` legitimate. It also changes every np 1 run: **user decision R-U4**. WO-12 is specified but conditional. | – |
+
+### 13.1 A: the overlap projection is not over-relaxed
+
+**What was wrong.** §1.3 P5 proves convergence as block coordinate descent on the dual and allows
+any relaxation ω ∈ (0, 2). That proof needs an **accumulated multiplier with a retractable
+projection**, `λ ← max(0, λ + ω r/w̃)`, so that an overshoot is taken back by a later negative
+increment. The PGS normal has that form. The overlap projection does not:
+- `PositionContactSweep::solveContact` (`src/solver_position.hpp`) applies `Δλ = −ω C/w̃` only while
+  `C < 0`, and never applies a negative increment.
+- `posLambdaContact` only records the increments for the friction bound; the update never reads it.
+
+For that form the applicable theory is relaxed POCS (Agmon–Motzkin–Schoenberg, Gubin–Polyak–Raik).
+For ω ∈ (0, 2) it converges to *some* feasible point, and for ω > 1 that point lies strictly
+inside the feasible set. **The overshoot is permanent.**
+
+**The quantity that decides it.** Take one update of contact `c` and hold every other update
+fixed. After reconciliation, its own constraint moves by `ω_eff·(−C_c)`, where
+
+    ω_eff = ω · w_c / w̃_c,   w_c = Σ_ends J M⁻¹ Jᵀ with true masses,   w̃_c = the same with k × the inverse masses.
+
+- **ω = 1.** Since `k ≥ 1`, `ω_eff = w_c/w̃_c ∈ (0, 1]`. A contact's own update moves it toward
+  its boundary, never past it. Gaps come only from other contacts' pushes (the coupling), exactly
+  as in serial POCS.
+  - demStep's periodic twins (`i–j′` and `j–i′`, `k = 2` at every end) are two copies of one
+    constraint. Each contributes 1/2, together exactly 1.
+- **ω = 1.5.** `ω_eff > 1` whenever `w̃_c < 1.5 w_c`:
+  - **The twins:** 2 × 0.75 = 1.5, so an isolated wrap pair ends 1.5 δ apart (Stop A: 0.150
+    against 0.100).
+  - **A light unsplit body against a heavy split one** (`w̃ ≈ w`): every leaf of a hub is pushed
+    1.5 δ and left 0.5 δ clear. The "s = 4, ω = 1.5: 2 iterations" row of A.4 was this
+    over-separation, not faster convergence.
+  - **At rank faces:** any mix of the two.
+- **Physical harm.** Position corrections do not feed velocities in dem (`finalCommitKokkos`
+  commits `posPred`), so the over-separation is a pure displacement.
+  - Under gravity it lifts grains, which is potential energy from nothing.
+  - It makes np 1 and np N disagree (`validate_periodic`).
+
+**Decision.**
+- `ω_pos = 1` on every slot.
+  - Delete `kSplitOmegaPosition` (`src/solve_copies.hpp`) and the `ov.relax(...)` / `ov.omega`
+    branch in `PositionContactSweep::solveContact`.
+  - The position phase's `SlotOverride` carries only its slot overrides.
+- The velocity hook stays: `kSplitOmegaVelocity = 1`.
+  - R-F2's lever (1.5 on split PGS-normal edges) remains legitimate, because that multiplier is
+    accumulated and clamped.
+  - The cone and the Poisson release are never relaxed.
+- **P5 restated for the overlap projection.** The M iteration is cyclic projection in the split
+  metric `M̃`, onto two kinds of set:
+  - the half-spaces `{C_c ≥ 0}`: each update is an exact `M̃`-projection at ω = 1. Copies on
+    different ranks are disjoint variables, so concurrent updates are sequential ones;
+  - the consensus subspaces: the local fold and the rank reconciliation are exact
+    `M̃`-projections, because equal copy masses give the arithmetic mean.
+
+  Cyclic projection onto finitely many half-spaces and subspaces with a non-empty intersection
+  converges to a point of the intersection. It is Fejér-monotone with respect to every feasible
+  point. Its fixed-point set is the feasible set, and which point it reaches depends on the order,
+  as for serial POCS. §1.3 P5 as written remains valid for the accumulated forms: the PGS family,
+  and position PSOR if R-U4 adopts it.
+
+**Rejected.**
+
+| Alternative | Why rejected |
+|---|---|
+| ω = 1.5 only at hubs | The hub is exactly the light-against-heavy case, the worst place for it. |
+| Keep 1.5 and change the three tests | The in-box pair's answer (exact contact) is not a tolerance question. |
+| Retractable PSOR on split contacts only, ω = 1.5 there, POCS elsewhere (np 1 stays bitwise) | Converges in the model with the ω = 1.5 counts, but it has three flaws. It mixes a projection-finding and a feasibility-finding method, with no convergence proof for the mix. Its fixed point is mixed: split contacts are complementary, the rest only feasible. It needs a second stop metric, because retractions are invisible to `maxOverlap`: the wrap pair would stop at iteration 2 with its gap open. |
+| Copy masses weighted by the edge count at each copy (`θ_q ∝ d_q`, `Σθ = 1`; conservative for any θ) | 1.2–1.5× more iterations at np 2 and no better at np 8 (§13.4). This answers "should `k` be exact per unit or contact": `k` is already exact per body (active copies), and a finer weighting does not help. |
+| Accumulated PSOR on every contact, ω = 1.5 | The principled form, and faster (§13.4), but it changes every np 1 run. R-U4. |
+
+**Cost.**
+- At rank faces the overlap projection needs 1.0–2.4× the serial iterations at np 2 and 1.6–3.2×
+  at np 8 (43 to 729 bodies per rank; §13.4). The withdrawn estimate of 1.04–1.2× was bought with
+  over-separation.
+- At hubs, ω = 1 costs nothing measurable: A.4's split hubs converge in 3 iterations, as serial
+  does.
+
+### 13.2 B: the coarse vertex mass
+
+**The hole.** WO-4 passes the solve view (`k × invMass`) to `buildContactHierarchyKokkos` and
+`multilevelCoarseCycleKokkos`. Take a hub with `s` local copies at np 1 (`k = s`). It is folded
+before the coarse cycle, so its base stands for all `s` copies.
+- The base enters its group with mass `m/s`, and a coarse impulse moves the group by `dV`.
+- Prolongation adds `dV` to the base; the re-seed copies it to the other `s − 1` copies; the next
+  fold (÷ `s` over `s` copies, each `+dV`) keeps `dV`.
+- The body's momentum therefore changes by `m dV`, against the `(m/s) dV` the coarse problem
+  accounted for. The error is `(1 − 1/s) m dV` per cycle.
+
+**The rule.** After the fold that precedes the coarse cycle, the `a(q)` active local copies at
+vertex `q` are equal and move together until the next fold. They are **one** coarse vertex, with
+the mass they carry together:
+
+    μ(q) = a(q) · m_q / k(q),     invMassCoarse(q) = invMass(q) · ( float(k(q)) / float(max(1, a(q))) )
+
+- Compute the ratio first. It is then exactly 1.0f when `k = a`, and `invMassCoarse` equals
+  `invMass` bit for bit.
+- `invMassCoarse` replaces `invMassVel` in the hierarchy build (group masses) and in the coarse
+  cycle (restriction weights and group inverse masses), on both the Kokkos path and the fused CUDA
+  path.
+- The sequence is unchanged: fine sweep → fold → coarse cycle → re-seed.
+
+What the rule gives in each case:
+- **np 1:** `a = k = s` at a hub base and 1 elsewhere, so `μ = m`. The coarse cycle uses
+  `P.invMass`.
+- **np ≥ 2, a rank-split vertex without hub copies:** `a = 1`, so `μ = m/k`. §3's statement holds
+  for exactly this case.
+- **`a(q) = 0`** (a non-canonical ghost image, §6.2): such a vertex never joins a group with a
+  coarse edge. An eligible manifold is coloured, so the copies at its ends are active. `max(1, a)`
+  only keeps a singleton's restriction finite. A debug build asserts that no multi-member group
+  holds a vertex with `a = 0`.
+
+**Proof (linear momentum).**
+1. Vertex `(i, r)` has `a` local copies, each carrying `m_i/k_i` in the split system. Its
+   split-system mass is therefore `μ`.
+2. The coarse cycle restricts with weights `μ`, applies equal and opposite impulses between groups
+   (walls are external), and prolongs `dV_g` to every member vertex.
+3. The re-seed writes `dV_g` into all `a` local copies. The split-system momentum change of vertex
+   `(i, r)` is then `a (m_i/k_i) dV_g = μ dV_g`, and summed over `g` it is `M_g dV_g`: exactly the
+   coarse impulses on `g`.
+4. The fold and the rank reconciliation map split-system momentum to true momentum exactly
+   (§1.3 P1: `m_i Δv_i = Σ_q (m_i/k_i) Δṽ_q`).
+5. Hence `Σ_i m_i Δv_i` equals the coarse wall impulses. ∎
+
+The shared accumulator `lambdaAcc` receives the coarse impulse, which is the true impulse because
+the vertex masses are the split-system masses. The ledger therefore stays the true λ (§6.3).
+
+**Rejected: fold after the coarse cycle instead of re-seeding** (IMPL_A's first option).
+- It is also conservative: vertex mass `m/k`, prolongation to the base only, then the fold dilutes
+  by `a`.
+- But the coarse problem then sees a fully local heavy hub at `1/s` of its mass. The coarse
+  transport exists to use a supported column's true inertia, so this is wrong by a factor of `s`
+  at np 1.
+
+**Gate scene `hub_ml`** (new mode in `tests/kokkos_mpi/test_momentum_mpi.cpp`):
+- **The hub** is `makeHub(10)`'s hub, placed as the **last** body (highest gid). At np ≥ 2 every
+  leaf–hub contact is then owned by the leaf's owner, and the hub is mass-split across ranks. Its
+  mass is set explicitly to `scale³` × a leaf's (equal density).
+- **The leaves** are only those with `dir.z < 0`, about 150, which gives `s = 5` velocity copies
+  at np 1. They carry `makeHub`'s common drift and a radial approach speed
+  `0.3 (1 + 0.1 N(0, 1))`.
+  - This speed lies between `vRestS = 2 g dt = 0.2` and `qsThr = 8 g dt = 0.8` at `g = 10`,
+    `dt = 1e-2`.
+  - The leaves are therefore quasi-static and eligible, yet the residual still triggers the pass.
+- **Settings:** `g = (0, 0, −10)`, frictionless, stabilization `multilevel`, velocity iterations
+  1, default position iterations, 10 steps.
+- **Positive controls**, asserted by the mode (it fails otherwise, because it would not test what
+  it claims), each in at least one substep:
+  - velocity hub copies > 0 (np 1);
+  - the multilevel pass built ≥ 1 level;
+  - `mlHubAggregated ≥ 1`, a new `split_stats` counter (max over the step's substeps): the hub's
+    base at np 1, or the hub's slot at np ≥ 2, sits in a level-1 group with ≥ 2 members.
+- **Discrimination:** on ca32026 plus the new test, np 1 must give `dP > 1e-4`. Otherwise apply
+  R-F8.
+
+### 13.3 C: rank-level M, complete
+
+**Per-slot quantities.** Phase `p` is vel or pos. Both quantities are recomputed every substep, and
+nothing crosses substeps.
+- `a_p(q)`: the number of local copy slots of vertex `q` that are an endpoint, through the
+  overrides, of an owned edge with colour ≥ 0 in phase `p`'s final colouring.
+  - A non-hub vertex has `a ∈ {0, 1}`.
+  - A hub base has `a = s`, because every copy carries at least ⌊d/s⌋ ≥ 16 edges. This is WO-4's
+    `groupK`.
+  - Velocity vertices are canonical slots (§6.2), so a non-canonical ghost image has `a = 0`.
+    Position vertices are raw slots, so every image slot is its own copy.
+- `k_p(q) = max(1, a_p(owner row) + Σ a_p over every ghost slot of the body on every rank)`. It is
+  identical on every slot of the body (it is forwarded) and on its hub copies.
+
+| | solve multiplier κ (`invMassSolve = κ·invMass`) | local-fold divisor | pack factor `f` | owner apply |
+|---|---|---|---|---|
+| M phases (PGS family, stabilization sweeps, overlap projection) | `k` | `a` | `a` | `k ≤ 1`: `x += Σ inc` (c771e07, bitwise); `k > 1`: `x = seed + (a_own (x − seed) + Σ inc)/k` |
+| X phase (`g = 0` one-shot, WO-6) | `a` (local hub copies only) | `a` | 1 | `x += Σ inc` |
+| raw syncs (legacy friction, Jacobi) | 1 | – | 1 | `x += Σ inc` |
+| multilevel coarse vertex | `invMassCoarse = invMass·k/a` (§13.2) | – | – | – |
+
+The local fold divides by `a`, not by `k`:
+- It is the exact `M̃`-projection onto "the `a` local copies are equal". The remote copies'
+  increments are unknown until the sync, and treating them as zero would not be a projection.
+- The pack `a·(x − baseline)` then hands the rank's summed increment `T` to the owner.
+- This is WO-4's fold unchanged (`groupK = a`). Under MPI only the solve multiplier and the orphan
+  share change: both use the global `k`.
+
+**Orphan accounts** (Poisson, M velocity phase). This verifies IMPL_A open point 3.
+- **Shares.** Every copy slot of a body with `k_vel > 1` holds `orphan = B/k`; with `k = 1` it
+  holds `B`. `B` is the owner's balance, forwarded. The baseline and the seed record the share,
+  and the owner keeps `B` in `ownerSeedOrphan_`.
+- **Local fold.** The mean of the accounts over the active local copies (÷ `a`), which preserves
+  the local total. WO-4 already does this with `groupK`.
+- **Pack.** `inc = a(g)·(orphan_g − share_g)`.
+- **Apply.** `B_new = max(0, B + a_own (orphan_own − B/k) + Σ inc)`; the peak takes the max.
+- **Forward.** `B_new` and the peak. Every copy re-seeds its share `B_new/k` and its baseline.
+- **Phase end.** Owner row `:= B_seed + a_own (orphan_own − B_seed/k)` (IMPL_A's formula).
+  - Every distributed M velocity phase ends with a sync, after which the formula returns `B_seed`
+    exactly.
+  - At np 1 there is no sync and `a = k = s`, so it returns `s × share`, which is
+    `unfoldOrphanKokkos`'s sum. One formula serves both.
+  - `unfoldOrphanKokkos` is therefore no longer called before a rank sync.
+  - Ghost accounts are dead after the phase: the next `gather` forwards `B` again.
+- **No overdraw, by construction.** The accessible total is `Σ_copies share = k·B/k = B`. This
+  closes c771e07's R5.
+  - A debug build asserts that the pre-clamp `B_new ≥ −1e-6·max(B, 1e-30)`.
+  - `split_stats.orphanClamps` counts clamp hits and must stay 0.
+
+**The substep under MPI, in order** (PGS path):
+1. `gather`. `beginSolve` marks the velocity baselines, orphan included (unchanged).
+2. Both colourings at the top of `demSolveContacts`, with hub copies on failure (WO-3/WO-4). Then
+   the **activity pass**: `a_vel` and `a_pos` per slot (MPI only).
+3. Orphan decay and scatter (unchanged; they write owned and ghost slots).
+4. `computeVn0`, and the warm start on true masses (unchanged).
+5. **Opening** (`openVelocityPhase`, replacing the post-warm-start `syncVelocities`):
+   1. Reverse `OpeningIncrement`: the warm-start `v`, `w` and the orphan increments, raw (they are
+      known impulses), plus `aVel` and `aPos`.
+   2. Owner apply: the raw add, then `k_vel = max(1, a_vel(own) + Σ aVel)`, and `k_pos` likewise.
+   3. Forward `OpeningState`: `v`, `w`, `B`, the peak, `kVel`, `kPos`. Ghosts store them.
+   4. Mark the ghost baselines and the owner seeds (`v`, `w`, `B`), and set the orphan shares.
+   5. Build the velocity solve views with `k_vel`, and `invMassCoarse`.
+   6. Seed the local hub copies: state, shares `B/k`, and `σ` = the base's value.
+6. **Velocity loop.** Each iteration: sweep, then the local fold (÷ `a`). At every sync point:
+   1. pack `a·(x − baseline)` for `v`, `w` and the orphan;
+   2. weighted apply;
+   3. forward `VelocityState`, plus `B` and the peak iff Poisson;
+   4. re-mark the baselines, owner seeds and shares;
+   5. re-mark the local groups' `σ`, and re-seed their copies from the bases.
+
+   The final `syncVel` follows as before.
+7. Stabilization passes (same sync rule); the multilevel pass takes `invMassCoarse`.
+8. Phase end: restore the owner's orphan balance (Poisson).
+9. Integrate and predict, then `publishPositions` (forward only).
+   - Mark the position baselines and the owner position seeds.
+   - Seed the position hub copies.
+   - Build the position solve views with `k_pos`.
+10. **Position loop.** Each iteration: sweep (ω = 1), then the local fold (÷ `a_pos`). At every
+    sync: `syncPositions` with the weighted apply, then re-mark. The final sync follows as before.
+
+**The `g = 0` path** has no warm start and no Poisson (the orphan machinery is PGS-only).
+- Its opening is a **new counts-only exchange** at the same place, before the first one-shot
+  sweep: reverse `aPos`, forward `kPos`.
+- In WO-5 its velocity phase stays as WO-4 left it: c771e07 raw across ranks, with local hubs at
+  κ = `a`. WO-6 turns it into X and adds the mask to this exchange.
+- Under Jacobi (`velocityUseGS = false`) no opening runs (unchanged).
+
+**np 1 closed, and any rank with `!exchanges()`,** stop after step 0 of §4.6
+(`k = max(1, a(own))`). That reproduces WO-4's `groupK`, so they are byte-identical.
+
+**Payloads.** All are POD and sent as `MPI_BYTE`. `operator+` sums floats and ints, takes the max
+of the peak, and ORs the mask.
+
+| exchange | payload | B per ghost: c771e07 → WO-5 (→ WO-6) |
+|---|---|---|
+| PGS opening, reverse | `OpeningIncrement {float v[3], w[3], orphan, orphanPeak; int aVel, aPos;}` | 32 → 40 |
+| PGS opening, forward | `OpeningState {float v[3], w[3], B, peak; int kVel, kPos;}`; without rotation, drop `w` | 24 → 40 (no rotation: 12 → 28) |
+| `g = 0` opening, reverse | `{int aPos;}`; WO-6: `{uint64 velMask; int aPos; int pad;}` | 0 → 4 (→ 16) |
+| `g = 0` opening, forward | `{int kPos;}`; WO-6: `{uint64 velMask; int kPos; int pad;}` | 0 → 4 (→ 16) |
+| later velocity forwards | `VelocityState`, plus `{float B, peak}` **iff Poisson** | 24 → 24 (32 with Poisson) |
+| every reverse after the opening; position exchanges | unchanged | – |
+
+**Messages.**
+- The PGS path gets no new round.
+- The `g = 0` path gets +2 rounds for the counts exchange. WO-6 needs this exchange anyway, and
+  §7.1 already charged it there; it now appears at WO-5.
+- The orphan balance rides existing forwards.
+
+**Activity and `k`: computation and cost** (C4).
+- **Activity pass** (per phase):
+  - a memset of a per-slot byte `hit` over `[0, numParticles + nCopies)`;
+  - one kernel over the owned edges with colour ≥ 0 of the final colouring. It resolves both ends
+    through the overrides and stores `hit(slot) = 1` (a same-value store; use
+    `Kokkos::atomic_store`).
+  - Then `a(q) = hit(q)` for a vertex outside any group, and `groupK` for a hub group. `groupK` is
+    computed from `groupActive`, which this pass also fills.
+- `k` needs no kernel of its own: the owner computes it in the opening apply, and the ghosts
+  receive it in the forward.
+- **Cost under MPI.** Two launches and O(edges + slots) work per phase per substep. The solve-view
+  build (one launch per phase) already exists; `invMassCoarse` is one launch, and only when the
+  multilevel pass runs.
+- **Single rank.** The pass runs only where WO-4 already builds groups, so it is unchanged and
+  costs nothing.
+- **Memory.** `aVel`, `aPos`, `kVel`, `kPos` (`int32` per slot, grow-only: 16 B per slot), plus
+  `hit` (1 B) and `invMassCoarse` (4 B).
+
+**C1.** `m_vel` and `col(rank)` exist only for X. WO-5 computes `a_vel` on both paths (the mask
+will need it) but carries no mask. WO-6 adds the rank colouring and the mask field.
+
+### 13.4 D: interface convergence and cost, restated
+
+**Model.** A throwaway model, not committed, with Appendix A's conventions:
+- **Scene:** `PositionContactSweep`'s translation-only projection on spheres, jittered cubic
+  lattices, radii ±10 %.
+  - "Loose": spacing 1.04 D, jitter ±0.10 D.
+  - "Compressed": spacing 1.00 D, jitter ±0.05 D. This is a jammed crystal, the worst case.
+  - Initial max overlap 0.16–0.24 R; two seeds per size.
+- **Colouring:** greedy per rank, in a random key order.
+- **Ownership:** each contact belongs to the lower-gid body's rank, with random gids.
+- **Ranks:** np 2 = x-slab, np 8 = octants.
+- **Iteration:** one consensus (sync) per iteration.
+- **Stop:** max overlap < 1e-4 R, measured on the reconciled state.
+
+| scene | N (per rank at np 8) | POCS ω 1: np 1 / np 2 / np 8 | np 8 ÷ np 1 | POCS ω 1.5, np 8 (unsound) | PSOR ω 1.5: np 1 / np 8 |
+|---|---|---|---|---|---|
+| loose | 343 (43) | 24–27 / 39–43 / 52–53 | 1.9–2.2 | – | 13 / 27–31 |
+| loose | 1728 (216) | 40–62 / 67–71 / 71–124 | 1.8–2.0 | – | 14–18 / 42–69 |
+| loose | 5832 (729) | 50–63 / 63–71 / 80–128 | 1.6–2.0 | – | 14–18 / 40–70 |
+| compressed | 343 (43) | 40–43 / 73–103 / 118–127 | 2.7–3.2 | 73–79 | 14 / 69–80 |
+| compressed | 1728 (216) | 118–125 / 189–197 / 291–301 | 2.4–2.5 | 151–168 | 38–42 / 152–164 |
+| compressed | 5832 (729) | 248–249 / 335–>400 / >400 | > 1.6 | 276–279 | 88 / 244–267 |
+
+- **np 2 ÷ np 1** (POCS, ω 1): loose 1.0–1.8, compressed 1.35–2.4.
+- **Correction norm `Σ m|Δx|²` against the QP optimum** (the least-displacement feasible point):
+  POCS 1.002–1.013 at every np and ω; PSOR 1.000.
+- **Fixed budget of 8 iterations** (the perf scenes' position budget), loose scene, residual as a
+  fraction of the initial max overlap: np 1 0.02–0.12; np 8 0.11–0.23 (1.5–9× np 1); ω 1.5
+  (unsound) 0.06–0.13.
+- **Edge-count-weighted copy masses**, compressed: np 2 111–131 against 73–103 uniform; np 8
+  137–161 against 118–144.
+- **Velocity phase** (A.3, unchanged, `ω_vel = 1`): np 8 needs 54 / 93 / 108 iterations against
+  serial 25 / 49 / 93, at 43 / 216 / 729 bodies per rank.
+
+Readings:
+1. **Rank faces at ω = 1.** A face costs the position phase about what it costs the PGS velocity
+   phase: about 2× at np 8, up to 3× in a jammed crystal. At a small fixed budget this shows as
+   larger residual overlaps at interfaces. G7e's 1.5 × np 1 bound was derived from the withdrawn
+   estimate and is restated (§13.6).
+2. **PSOR.** Accumulated PSOR at ω 1.5 needs 2.8–3.5× fewer iterations than today's POCS at np 1,
+   and at np 8 about today's np 1 count. It also lands on the least-displacement point at every np.
+   This is the evidence behind R-U4.
+
+**Messages per substep** (maximum, no early stop; perf scenes: 4 velocity and 8 position
+iterations, `sync_every = 1`):
+
+| | c771e07 | WO-5 | WO-6 | WO-7 |
+|---|---|---|---|---|
+| gather | 3 | 3 | 3 | 3 |
+| opening, PGS / gas | 2 / 0 | 2 / 2 | 2 / 2 | 2 / 2 |
+| velocity iterations + final | 10 | 10 | 10 | 10 |
+| legacy friction (gas) | 4 | 4 | 4 | 4 |
+| position publish, iterations + final | 19 | 19 | 19 | 19 |
+| **total, pgs / gas** | 34 / 36 | 34 / 38 | 34 / 38 | 34 / 38 |
+| Allreduce | §7.1 | same | same | fused vote (§5.1) |
+
+**Expected ms/step against c771e07** (np 8 × 2):
+- **`perf_pgs` at WO-5:** +1–3 %. This covers about 6 activity and solve-view launches, 8–16 B
+  more per ghost on the opening, and the weighted apply, which replaces the apply kernel.
+- **`perf_gas` at WO-5:** +2–5 %, the above plus the 2 rounds (≈ 40–80 µs).
+- **Both:** if the early stop fires later at interfaces under ω = 1, up to +3 position iterations
+  (≈ 60 µs each) until the budget of 8 caps it (R-F6).
+- **WO-7:** adds the ghosts of the drift slack, +2–3 %.
+- **Total:** +3–8 %, inside G12's 10 % with less margin than §7.5 claimed.
+- **CUDA single-GPU spheres:** unchanged, since none of this runs without hubs.
+- **CUDA hub and ring runs:** ω 1 against 1.5 is within noise (A.4: 3 against 2 iterations, and
+  the 2 was over-separation).
+
+### 13.5 Work orders (replacing §8 WO-5, WO-6, WO-7; adding WO-4b and the conditional WO-12)
+
+**Dependency.** WO-4 → **WO-4b** → WO-5 → WO-6 → WO-7 → WO-9 → WO-10 → WO-11.
+- WO-8 is unchanged.
+- WO-12 runs only if R-U4 = yes, after WO-7 and before WO-10.
+- S9 stands: no push before WO-5 lands.
+
+#### WO-4b: fix A and B on the committed code (np 1)
+A new commit on top of ca32026; do not amend it.
+
+Files:
+- `src/solve_copies.hpp`: delete `kSplitOmegaPosition`, and correct the comment's convergence
+  claim to §13.1.
+- `src/solver_position.hpp`: remove the relaxation branch of `solveContact`.
+- `src/solve_driver.hpp`:
+  - The position `SlotOverride` loses its omega.
+  - Both multilevel calls (hierarchy build and coarse cycle) take `P.invMass`. On a single rank
+    `a = k`, so `invMassCoarse ≡ invMass`. This is also right for WO-4's interim np ≥ 2 local hubs.
+- `src/particles.hpp`, `src/sim.hpp`, bindings: `split_stats` gains `mlHubAggregated`,
+  `velItersUsed` and `posItersUsed` (last substep; tier 2).
+- `tests/kokkos_mpi/test_momentum_mpi.cpp`:
+  - the modes `hub_static` and `hub_ml` (§13.2, §13.6);
+  - a `--pos-iters=N` flag;
+  - an `ITERS vel= pos=` line;
+  - the leaf-gap metric.
+- `tests/kokkos_mpi/CMakeLists.txt`: ctests for `hub_static` and `hub_ml`, gated at np 1 and
+  report-only at np 2 and 4 until WO-5.
+
+Acceptance:
+1. **The three Stop-A tests pass:** `test_wrap_pair_matches_in_box_pair`, and
+   `python_mpi_validate_periodic_np2` / `_np4` (0.800 / 0.800, straddlers ≤ 1e-5).
+2. **`hub_static` at np 1** (`step_mpi` and `--solo`; OMP 1, OMP 8 × 3; CUDA × 3):
+   - max leaf gap ≤ 0.05 δ;
+   - residual overlap ≤ 1e-4 R;
+   - dXpos ≤ 3e-5 R;
+   - velocities unchanged (absolute `|P| = 0`).
+
+   Discrimination, run once: the same mode on ca32026 must give a max gap ≥ 0.3 δ (record it).
+   Otherwise stop: the mode is too weak.
+3. **`hub_ml` at np 1** (`step_mpi` and `--solo`; OMP 1, OMP 8 × 3; CUDA × 3): dP ≤ 5e-6, and
+   every positive control holds. Discrimination, run once: ca32026 plus the test gives
+   dP > 1e-4 (R-F8 otherwise).
+4. **WO-4's gates re-run** for `hub`, `hub_posonly`, `hub_pgs`: dP ≤ 1e-6, dXpos ≤ 3e-5 R,
+   CONFLICTS 0, on host and CUDA.
+5. **`cluster_periodic --solo`:** CoM drift ≤ 1e-5 R.
+6. **Byte-identical to ca32026** at np 1, OMP 1: every non-hub closed dump (plus np 4 `cluster`
+   and `cluster_pgs`), the 5 S6 wall scenes, and `ring_mini`. Named changes: `hub*`,
+   `cluster_periodic --solo`, and multilevel runs with velocity hub copies.
+7. **Battery:** all pass (195 plus the new ctests).
+
+#### WO-5: rank-level M (projection phases)
+Files: `src/mpi_halo.hpp`, `src/step_solve_mpi.hpp`, `src/solve_driver.hpp`,
+`src/solve_copies.hpp`, `src/particles.hpp`, `src/sim.hpp` (`orphanClamps`).
+1. **Implement §13.3:**
+   - the activity pass;
+   - `openVelocityPhase` on both paths, with §13.3's payloads;
+   - the `k` views and the owner seeds;
+   - the weighted apply for `k > 1`, with the raw form kept for `k ≤ 1`;
+   - the `a`-weighted pack;
+   - the orphan shares, forwards and phase-end restore;
+   - `invMassCoarse`;
+   - solve views with a per-slot `k` (hub copies take their base's `k`).
+2. **Implement §6.2:** `ghostCanon_` and the velocity slot map, set in `demStepMpi` and not in
+   `gather`. Add the MPI twin-dedup switch (§4.2 item 2).
+3. **Hooks:** `openVelocityPhase(P)` (on Solo it does step 0 only) and `rankK(…)`, which exposes
+   `kVel` / `kPos` / `aVel` / `aPos` to the solve-view builder.
+4. **Debug-build checks:**
+   - every slot with `a = 0` packs a zero increment;
+   - no multi-member coarse group holds a vertex with `a = 0`;
+   - the orphan clamp never binds.
+
+Acceptance. The np set is np 1, 2, 4, 8 × OMP 1, 8 × 3; CUDA is np 1 `step_mpi` and `--solo` × 3.
+1. **Conservation matrix (G1)** on the np set plus CUDA, with the rows of §9 and §13.6:
+   `cluster_pgs`, `cluster_poisson`, `cluster_{multilevel,escalate,ordered}`, `cluster_posonly`,
+   `hub_pgs`, `hub_posonly`, `hub_static`, `hub_ml`, `ring_mini`.
+2. **`ring_mini` at np 2, 4, 8** (closes S9):
+   - dP ≤ 1e-6;
+   - dXpos ≤ 1e-5 R;
+   - CONFLICTS 0;
+   - ovl (max over steps) ≤ max(10 × ovl_np1, 1e-3 R), and ≤ 0.1 R at every step.
+
+   Report `ovl_npN / ovl_np1`.
+3. **Hub modes at np 2, 4, 8:**
+   - `hub_static`: max leaf gap ≤ 0.05 δ and residual ≤ 1e-4 R;
+   - `hub_ml`: the positive controls (`mlHubAggregated ≥ 1`) and dP ≤ 5e-6.
+4. **G3:** every np 1 closed dump byte-identical to WO-4b (`step_mpi` and `--solo`). Named change,
+   reported before and after: `cluster_periodic` at np 1 under `step_mpi` (§6.2 and the
+   self-image position consensus).
+5. **G4:** at np 4 and 8, OMP 1, 5 runs byte-identical for `cluster_pgs`, `cluster_poisson`,
+   `cluster_posonly`, `hub_pgs`, `hub_ml`, `ring_mini`.
+6. **G7a** (`tri_pgs`), **G7c**, **G7e** (restated) and **G7f** (new): §13.6.
+7. **Orphan accounts:** `orphanClamps = 0` in `cluster_poisson` at every np.
+8. **Periodic regressions:** the Stop-A tests and `validate_periodic` at np 2 and 4 still pass
+   under rank-level M.
+9. **Performance:** `perf_pgs` and `perf_gas` at 8 × 2 and 4 × 4, 5 interleaved repeats against
+   `build_base`, with the load recorded. Report the medians. Stop if a median ratio exceeds 1.10,
+   because later work orders only add cost.
+
+#### WO-6: rank-level X (the `g = 0` one-shot)
+Files: as §8 WO-6.
+1. **Rank colouring** `col(r)` per §1.4, recomputed on a decomposition or band change. `C ≤ 64`,
+   else throw.
+2. **Mask.** `m_vel(q) = a_vel(q) > 0 ? 1ull << col(rank) : 0` at canonical velocity slots.
+   - The `g = 0` opening becomes `{uint64 velMask; int aPos; int pad;}` in both directions: the
+     reverse ORs the masks and sums the counts; the forward carries the owner's OR and `kPos`.
+   - Ghosts store `velMask` per slot.
+   - No new round.
+3. **Gate.** The gate kernel, `solveEpoch` and the interval index per §4.6 "X gate". The one-shot
+   lambda takes `gate`.
+4. **Local hub copies under X** keep κ = `a`, fold ÷ `a` and `f = 1` (§13.3 table). That is WO-4's
+   behaviour, now stated in code comments; the numerics are unchanged.
+
+Acceptance:
+1. §8 WO-6's list.
+2. **Inertness:** at np 1, 2, 4, 8, OMP 1, every `g ≠ 0` mode and every position-only mode
+   (`cluster_posonly`, `hub_posonly`, `hub_static`) is byte-identical to WO-5. Only the `g = 0`
+   velocity phase changes.
+3. **G4** for `cluster`, `tri` and `hub` at np 4 and 8.
+4. **Report:** the bytes per ghost on the `g = 0` opening (16 B each way), and
+   `unfiredSplitContacts` per substep in `perf_gas`.
+
+#### WO-7: drift vote, `migrateToBlocks` and the band (D4a), XPBD and Hertz
+Files and items as §8 WO-7, with two additions:
+- A vote-triggered migration or a band change alters the ghost sets, and with them `a` and `k`.
+  Both are recomputed every substep, and nothing of §13.3 crosses substeps. `MigratePack`
+  therefore carries no new state beyond `extForce` / `extTorque` (§5.2) and the orphan balance it
+  already carries.
+- The migration runs at the top of `demStepMpi`, before `gather`. It can never fall between an
+  opening and its phase.
+
+Acceptance:
+1. §8 WO-7's list.
+2. The WO-5 conservation matrix and G4, re-run once on the final band. The band change alters the
+   ghosts and therefore `k`: a changed number is expected, a failed gate is not.
+3. The G5 oracle on its three scenes.
+4. **Report:** migrations per 100 substeps and the time of one migrate (R-F1).
+
+#### WO-12 (conditional on R-U4 = yes): accumulated position PSOR
+Files: `src/solver_position.hpp`, `src/solve_driver.hpp` (stop metric), tests.
+- **Update.** Per contact of a unit, in order:
+  - `Λ = posLambdaContact(c)` (already zeroed per substep);
+  - `Λ′ = max(0, Λ − ω_pos C / w̃)`, and `d = Λ′ − Λ`;
+  - apply `d`, which may be negative, then store `Λ′`. A plain read-modify-write is safe: the
+    unit's work item owns the contact.
+  - `ω_pos = kPositionOmega = 1.5` on every contact, np 1 included.
+- **Stop.** The loop stops on `r_pos = max |d|·w̃` at `posTol`. This is the position change,
+  retractions included, Allreduce-MAXed as today. `max_overlap` keeps its meaning: the largest
+  violation seen.
+- **Ledger.** `posLambdaContact` becomes the net position impulse. The friction bound reads it
+  unchanged.
+- **Named change.** Every run with coupled contacts at np 1. Re-baseline the G3 references once,
+  with before/after statistics.
+- **Acceptance:**
+  1. `cluster_posonly --steps=1` with a large cap converges at every np.
+  2. np agreement: `‖x_npN − x_np1‖∞ ≤ 1e-4 R`. This is a new, strong G7 gate, possible because the
+     fixed point is unique.
+  3. KKT residual ≤ 1e-4 R.
+  4. `tests/python` (packing, drum, statics) passes within its bands.
+  5. G1 for every mode.
+  6. Iteration counts at ω 1.3 / 1.5 / 1.7 reported, and the constant chosen from them.
+  7. Performance not worse than WO-7.
+
+### 13.6 Gates, revised
+
+**G1 additions.**
+
+| mode | dP | dX | dXpos | dLvel |
+|---|---|---|---|---|
+| `hub_ml` | 5e-6 | 3e-5 | 3e-5 | report (the coarse cycle is translation-only by design) |
+| `hub_static` | velocities unchanged (absolute \|P\| = 0; Σ m\|v\| = 0, so no normalized dP) | – | 3e-5 | – |
+
+**`hub_static`** (new mode).
+- **Scene:** `makeHub(10)`'s geometry, with the hub **last** (highest gid) and its mass set to
+  `scale³` leaf masses. Leaf scale 1. Shell radius `r_h + R − 0.04 R`, so every leaf overlaps the
+  hub by δ = 0.04 R.
+- **Settings:** zero velocities, `g = 0`, velocity iterations 0, position iterations 64, 1 step.
+- **Gate:** after the step, the max leaf–hub gap ≤ 0.05 δ and the max residual overlap
+  ≤ 1e-4 R.
+- **Why the bound discriminates:** coupling gaps are ≈ `k·m_leaf/m_hub·δ` ≤ 0.02 δ for `k ≤ 16`,
+  while ω 1.5 gives ≈ 0.5 δ.
+
+**G7e, restated.** ovl (max over steps) at np 2, 4, 8 for `cluster`, `cluster_pgs` and
+`cluster_friction`.
+- **Hard** (a divergence and bug guard): ≤ max(10 × np 1, 1e-3 R), and ≤ 0.1 R.
+- **Report** the ratio. A ratio above 1.5 is evidence for R-U4, not a stop.
+
+**G7f, new: the interface iteration ratio.**
+- **Runs:** `cluster_posonly --steps=1 --pos-iters=400` and `cluster_pgs --steps=1
+  --vel-iters=400`, at np 2, 4, 8 against np 1, OMP 1.
+- **Metric:** the iterations the loop ran (`ITERS`).
+- **Hard:** np 2 ≤ 3.5×; np 4 and 8 ≤ 5×. The model gives ≤ 2.4 and ≤ 3.2. A wrong `k` ("ranks
+  holding") gives about 7.
+- **Report** anything above 2.5×.
+
+**G12.** Unchanged (≤ 1.10); §13.4 restates the expectation.
+
+**G13 additions** (compiled per WO-10):
+
+| mutant `n` | what it changes | must trip |
+|---|---|---|
+| 6 | the multilevel takes `invMassSolve` (WO-4's behaviour) | `hub_ml` np 1: dP > 1e-4 |
+| 7 | `ω_pos = 1.5` on split slots (WO-4's behaviour) | `hub_static` np 1 and np 2: max gap > 0.3 δ; `test_wrap_pair_matches_in_box_pair` fails |
+
+### 13.7 Register entries (the caller commits them) and superseded places
+
+```
+### The overlap projection is never over-relaxed: omega_pos = 1
+- area: dem
+- source: dem/docs/contact_solve_framework.md §13.1; evidence dem/docs/contact_evidence/IMPL_A.md (WO-4 Stop A)
+- decided: 2026-09-25
+- status: settled
+- quote: |
+    The overlap projection applies -C/w only while C < 0 and never retracts (non-accumulated
+    POCS). Over-relaxing it leaves a permanent gap (omega w/w~ - 1)|C|: omega_pos = 1.5 on
+    mass-split slots put an isolated periodic wrap pair 1.5 x its overlap apart and every leaf of a
+    split hub 0.5 x its overlap clear. Over-relaxation is legitimate only on an accumulated
+    multiplier with a retractable clamp (the PGS normal).
+- rejected: omega_pos = 1.5 on split slots (3 periodic tests failed; the faster hub convergence of
+  A.4 was over-separation); PSOR on split contacts only (no convergence proof for the mix, a second
+  stop metric); edge-count-weighted copy masses (1.2-1.5x more iterations at np 2)
+- why: a projection that cannot retract must not overshoot
+
+### A multilevel coarse vertex carries the mass of its folded copies, a*m/k
+- area: dem
+- source: dem/docs/contact_solve_framework.md §13.2
+- decided: 2026-09-25
+- status: settled
+- quote: After the fold, the a active local copies at a vertex move together; the coarse cycle
+    treats them as one vertex of mass a*m/k (the true mass at np 1). Solve-view masses (m/k) at a
+    folded hub gained (1 - 1/s) m dV per coarse cycle.
+- rejected: solve-view masses (non-conservative at a folded hub); fold after the coarse cycle
+  (conservative, but the coarse problem sees a local hub at 1/s of its mass)
+```
+
+Open issue for the register (R-U4): "the overlap projection is non-accumulated POCS. Accumulated
+PSOR would have a unique least-displacement fixed point and legitimate over-relaxation (model:
+2.8–3.5× fewer iterations at np 1). Unchanged pending the user's decision."
+
+**Superseded in place** (each marked "superseded by §13.x"):
+- §1.3 P5 (the scope of ω ∈ (0, 2));
+- §3, the table rows "Multilevel" and "Overlap projection";
+- §4.4, the local fold's orphan text and the multilevel note;
+- §4.5, the position relaxation and `kSplitOmegaPosition`;
+- §4.6, the opening payloads, step 5, and the reconciliation's orphan baseline;
+- §7.1 and §7.5;
+- §8 WO-5, WO-6, WO-7 and the dependency graph;
+- §9 G7e and G13;
+- §11 R-F2 (the position part);
+- Appendix A.4, the ω 1.5 row.
+
+### 13.8 Risks and open questions (additions to §11)
+
+| # | Item | Needs | Default |
+|---|---|---|---|
+| **R-U4** | Adopt accumulated position PSOR (WO-12). Gains: a unique fixed point (the least-displacement correction, np-independent); `ω_pos = 1.5` becomes legitimate; the model needs 2.8–3.5× fewer position iterations at np 1, and at np 8 about today's np 1 count (§13.4). Cost: it changes every np 1 run with coupled contacts, and the position stop metric. | **User preference** (the scope of the np 1 change; solver semantics) | Not in this package: WO-4b → WO-7 proceed with `ω_pos = 1`. **The architect recommends yes** as the next package. WO-12 is specified so it can run unattended once approved. |
+| R-F6 | Interface convergence of the position phase at ω = 1 in real scenes. The model gives 1.6–3.2× the iterations at np 8, and 1.5–9× np 1's residual overlap at a fixed budget. | Fact (G7e report, G7f, G12) | Proceed and report. If G7e's ratio exceeds 1.5 or the WO-5 perf median exceeds 1.07, put the numbers to the user together with R-U4. |
+| R-F7 | `ring_mini` at np 8 has 3–4 rings per rank, so nearly every ring is split several ways. At ω = 1 it converges, but slowly. | Fact | The WO-5 gate is a divergence guard (≤ 10 × np 1, ≤ 0.1 R); report the ratio. |
+| R-F8 | `hub_ml` may not reproduce B on ca32026 (dP ≤ 1e-4) if the fine sweep leaves the coarse cycle too little to do. | Fact | Retry in this order: approach speed 0.5 (still below `qsThr`); hub density 1/8 (mass `scale³/8`). If neither reproduces B, land the fix on the proof, keep `hub_ml` as a conservation gate (its positive controls still assert aggregation), drop mutant 6 from G13, and record why. |
+| R-F9 | Cost of the per-substep activity pass and of the larger opening payload on CUDA under MPI. | Fact | Expected ≤ 1 % of a substep; report in G12. |
+| R-P6 | A coloured edge that never writes (e.g. `num_points = 0`) still counts its copies as active: `k` one larger, slightly more under-relaxation, conservation intact. | Fact | Accept (the same class as R-P2). |
