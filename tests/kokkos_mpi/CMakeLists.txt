@@ -51,7 +51,7 @@ endfunction()
 foreach(np 1 2 4)
   # migrateTo onto a shared decomposition (co-rebalance; PECLET_DEM_MPI guards mpi_halo.hpp).
   _dem_mpi_test(migrate_np${np} ${np} test_migrate_mpi)
-  # jacobi_* : legacy count-averaged Jacobi solves (velocityUseGS off) vs the SAME stepMpi on
+  # jacobi_* : the mass-split Jacobi solves (velocityUseGS off) vs the SAME stepMpi on
   #            MPI_COMM_SELF — the order-independent baseline (tight tolerances). The periodic case
   #            exercises the local periodic self-ghosts on undecomposed axes.
   # modern   : the full modern solver stack (gravity + per-pair materials + friction + warm-started
@@ -88,8 +88,9 @@ endforeach()
 # docs/mpi_momentum_conservation.md). np = 8 puts the cluster on the common corner of all blocks.
 # cluster_sync3 / cluster_norot: the friction cluster at sync_every = 3 / forward_rotation = false;
 # cluster_periodic: the cluster on the corner of a fully periodic box (wrap pairs on every axis).
-# cluster_jacobi: the legacy count-averaged Jacobi solves (velocityUseGS off), gated at the serial
-# drift of per-body averaging (the per-body counts must be the global ones).
+# cluster_jacobi: the mass-split Jacobi solves (velocityUseGS off; docs/contact_solve_framework.md
+# §3.1), conservative at every iterate, gated at round-off (the per-body counts must be the global
+# ones).
 foreach(np 1 2 4 8)
   foreach(mode cluster cluster_friction cluster_pgs cluster_posonly hertz cluster_sync3
                cluster_norot cluster_periodic cluster_jacobi)

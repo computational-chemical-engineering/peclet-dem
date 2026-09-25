@@ -186,10 +186,11 @@ static Tol tolOf(const std::string& mode) {
     return {5e-6, 1e-5, 1e-5, -1, 1e-6};
   if (mode == "cluster_posonly")  // the velocity increments are exact zeros
     return {1e-12, 1e-5, 1e-5, -1, 1e-12};
-  // cluster_jacobi: NOT round-off -- serial per-body averaging drifts (np 1: dP 9.0e-3, dX 2.1e-2,
-  // dXpos 8.2e-4, dLvel 3.2e-3; np 2..8 the same). Rank-local counts gave dXpos 2.4e-2+.
+  // cluster_jacobi: mass-split Jacobi (WO-2) is conservative at every iterate: dP <= 7.6e-9,
+  // dXpos <= 2.6e-7 at np 1..8. The count-averaged apply it replaced drifted (np 1: dP 9.0e-3,
+  // dXpos 8.2e-4); rank-local counts gave dXpos 2.4e-2+.
   if (mode == "cluster_jacobi")
-    return {1.5e-2, 3e-2, 2e-3, -1, 5e-3};
+    return {1e-6, 1e-5, 1e-5, -1, 1e-6};
   if (mode == "cluster_periodic")  // dP only
     return {1e-6, -1, -1, -1, -1};
   if (mode == "hertz")  // regression guard; today 2.8e-8 / 8.8e-7 / 4.4e-7

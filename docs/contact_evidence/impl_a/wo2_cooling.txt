@@ -1,0 +1,9 @@
+   colored GS :  measured/Enskog = 1.806    (phi=0.35, N=5348)
+   Jacobi(avg):  measured/Enskog = 2.140
+        """Dense granular gas (phi ~ 0.35): the GS cooling slope is of the Haff/Enskog order and
+        OpenMP host: GS 1.72 x Enskog, Jacobi 1.69 x -- the two solves agree at this density; the
+        factor above Enskog is the collision-frequency estimate, not under-dissipation.)"""
+        print(f"   colored GS :  measured/Enskog = {r_gs:.3f}    (phi={phi:.2f}, N={N})")
+        print(f"   Jacobi(avg):  measured/Enskog = {r_j:.3f}")
+        assert 0.5 < r_gs < 2.5, "GS cooling slope must be of the Enskog order"
+1 failed, 6 deselected in 10.46s

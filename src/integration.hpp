@@ -172,15 +172,18 @@ inline void computeContactCountsKokkos(Kokkos::View<const ContactC*, CpMem> cont
 }
 
 /// Jacobi count-averaged apply of position/velocity deltas, then clear deltas + counts.
+/// averaged = false (the mass-split 'jacobi' diagnostic, docs/contact_solve_framework.md §3.1):
+/// the deltas are already true-mass corrections against copies of mass m / count, so the apply is
+/// a plain add (factor 1).
 inline void applyUpdatesKokkos(int n, V3 posPred, V3 velPred, V3 deltaPos, V3 deltaVel,
-                               Vi constraintCounts) {
+                               Vi constraintCounts, bool averaged = true) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::apply_updates", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
         const int count = constraintCounts(i);
         if (count <= 0)
           return;
-        const float f = 1.0f / static_cast<float>(count);
+        const float f = averaged ? 1.0f / static_cast<float>(count) : 1.0f;
         detail::st3(posPred, i, add3(ldF3(posPred, i), scale3(ldF3(deltaPos, i), f)));
         detail::st3(velPred, i, add3(ldF3(velPred, i), scale3(ldF3(deltaVel, i), f)));
         detail::st3(deltaPos, i, F3{0, 0, 0});

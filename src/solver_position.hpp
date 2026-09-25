@@ -32,7 +32,30 @@ KOKKOS_INLINE_FUNCTION F4 deltaQuat(F3 dTheta, F4 q) {
 }
 }  // namespace detail
 
+/// Mass-split Jacobi count pass (docs/contact_solve_framework.md §3.1, D3): per body slot, the
+/// number of contacts the Jacobi position solve visits (every contact; a wall side counts
+/// nothing). Accumulates into `counts`, handed over zeroed (the apply clears it). Under MPI the
+/// caller then makes the counts global (syncContactCounts).
+inline void countPositionJacobiKokkos(Kokkos::View<const ContactC*, CpMem> contacts,
+                                      int numContacts, Kokkos::View<int*, CpMem> counts) {
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::count_position_jacobi", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
+      KOKKOS_LAMBDA(int idx) {
+        const ContactC c = contacts(idx);
+        Kokkos::atomic_add(&counts(c.bodyA), 1);
+        if (c.bodyB >= 0)
+          Kokkos::atomic_add(&counts(c.bodyB), 1);
+      });
+  space.fence();
+}
+
 /// Accumulate XPBD position corrections for `numContacts` contacts.
+/// massSplit (the 'jacobi' diagnostic, §3.1): `constraintCounts` holds the global per-body counts
+/// n of countPositionJacobiKokkos and is only read; each contact's correction is solved against
+/// copies of mass m / n (w~ = n_A w_A + n_B w_B, a wall side 0) and the TRUE-mass deltas are
+/// accumulated, to be applied with factor 1. Off (the default, the GS colour-saturation fallback):
+/// the solve bumps the counts and the caller averages the sum by 1/count.
 inline void solvePositionKokkos(
     Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> posPred,
@@ -41,7 +64,7 @@ inline void solvePositionKokkos(
     Kokkos::View<const float* [3], CpMem> invInertia, Kokkos::View<float* [3], CpMem> deltaPos,
     Kokkos::View<float* [4], CpMem> deltaQuat, Kokkos::View<int*, CpMem> constraintCounts,
     Kokkos::View<float, CpMem> maxOverlap, Kokkos::View<const int*, CpMem> onlyColor = {},
-    int colorFilter = 0) {
+    int colorFilter = 0, bool massSplit = false) {
   using detail::computeW;
   CpExec space;
   const bool filt = onlyColor.extent(0) > 0;
@@ -90,11 +113,18 @@ inline void solvePositionKokkos(
 
         const F3 invIA = ldF3(invInertia, idA);
         const F3 invIB = (idB >= 0) ? ldF3(invInertia, idB) : F3{0, 0, 0};
-        const float wTotal = computeW(rA, n, invMassA, invIA) + computeW(rB, n, invMassB, invIB);
+        const float wA = computeW(rA, n, invMassA, invIA);
+        const float wB = computeW(rB, n, invMassB, invIB);
+        const float wTotal = wA + wB;
         if (wTotal < 1e-6f)
           return;
+        // Mass-split Jacobi: the same numerator against copies of mass m / n.
+        const float wSolve =
+            massSplit ? static_cast<float>(constraintCounts(idA)) * wA +
+                            ((idB >= 0) ? static_cast<float>(constraintCounts(idB)) * wB : 0.0f)
+                      : wTotal;
 
-        const float dLambda = -C / wTotal;
+        const float dLambda = -C / wSolve;
 
         // Linear + angular correction on A.
         Kokkos::atomic_add(&deltaPos(idA, 0), n.x * dLambda * invMassA);
@@ -122,9 +152,11 @@ inline void solvePositionKokkos(
           Kokkos::atomic_add(&deltaQuat(idB, 1), dq.y);
           Kokkos::atomic_add(&deltaQuat(idB, 2), dq.z);
           Kokkos::atomic_add(&deltaQuat(idB, 3), dq.w);
-          Kokkos::atomic_add(&constraintCounts(idB), 1);
+          if (!massSplit)
+            Kokkos::atomic_add(&constraintCounts(idB), 1);
         }
-        Kokkos::atomic_add(&constraintCounts(idA), 1);
+        if (!massSplit)
+          Kokkos::atomic_add(&constraintCounts(idA), 1);
 
         if (C < 0.0f)
           Kokkos::atomic_max(&maxOverlap(), -C);

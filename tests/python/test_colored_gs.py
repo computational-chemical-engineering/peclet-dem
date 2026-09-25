@@ -191,16 +191,17 @@ def test_conservation_colored_gs():
 
 
 def test_cooling_slope_vs_enskog():
-    """Dense granular gas (phi ~ 0.35): the GS cooling slope is of the Haff/Enskog order and
-    dissipates at least as much as the count-averaged Jacobi solve. (Measured 2026-09 on the
-    OpenMP host: GS 1.72 x Enskog, Jacobi 1.69 x -- the two solves agree at this density; the
-    factor above Enskog is the collision-frequency estimate, not under-dissipation.)"""
+    """Dense granular gas (phi ~ 0.35): the GS cooling slope is of the Haff/Enskog order. The
+    'jacobi' diagnostic is printed for information only: since 2026-09-25 it is mass-split Jacobi
+    (docs/contact_solve_framework.md §3.1, §12 S2), conservative and, at a fixed iteration count,
+    more dissipative than GS (measured 2.14 x Enskog against GS 1.81 x), so it is no reference for
+    GS. It replaced the count-averaged Jacobi this test used to compare against. (The factor above
+    Enskog is the collision-frequency estimate, not under-dissipation.)"""
     r_gs, phi, N = run_cooling(use_gs=True)
     r_j, _, _ = run_cooling(use_gs=False)
     print(f"   colored GS :  measured/Enskog = {r_gs:.3f}    (phi={phi:.2f}, N={N})")
-    print(f"   Jacobi(avg):  measured/Enskog = {r_j:.3f}")
+    print(f"   Jacobi(mass-split, info only):  measured/Enskog = {r_j:.3f}")
     assert 0.5 < r_gs < 2.5, "GS cooling slope must be of the Enskog order"
-    assert r_gs >= 0.9 * r_j, "GS must not under-dissipate relative to the averaged Jacobi"
 
 
 def test_incremental_coloring_invariant():

@@ -515,14 +515,18 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       if (velRes <= (usePGS ? 0.02f * vRest : vRest))
         break;
     } else {
-      // Legacy Jacobi (velocityUseGS off, a global setting): each body's summed impulse is scaled
-      // by its OWN contact count, so every copy of it must divide by the global count.
+      // Mass-split Jacobi (velocityUseGS off, a global setting; docs/contact_solve_framework.md
+      // §3.1): every manifold is its own copy. Count first, make the counts global (every copy of
+      // a body must see the serial count), solve each manifold against copies of mass m / n with
+      // true-mass deltas, and add them with factor 1 -- conservative at every iterate.
+      countVelocityJacobiKokkos(P.manifolds, nm, P.realIndices, P.constraintCounts);
+      hooks.syncContactCounts(P);
       solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
                           P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
-                          P.deltaAngVel, P.constraintCounts);
-      hooks.syncContactCounts(P);
+                          P.deltaAngVel, P.constraintCounts, {}, 0, {}, {}, {}, {},
+                          /*massSplit=*/true);
       applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
-                                        P.deltaAngVel, P.constraintCounts);
+                                        P.deltaAngVel, P.constraintCounts, /*averaged=*/false);
     }
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))
@@ -930,11 +934,14 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       if (posRes < posTol)
         break;
     } else {
+      // Mass-split Jacobi (see the velocity branch): count, global counts, solve, add.
+      countPositionJacobiKokkos(P.contacts, nc, P.constraintCounts);
+      hooks.syncContactCounts(P);
       solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
-                          P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
-      hooks.syncContactCounts(P);  // global per-body counts (see the velocity Jacobi branch)
+                          P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap, {}, 0,
+                          /*massSplit=*/true);
       applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
-                         P.constraintCounts);
+                         P.constraintCounts, /*averaged=*/false);
     }
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))

@@ -35,7 +35,39 @@ KOKKOS_INLINE_FUNCTION float genInvMass(F3 tau, F3 invIlocal, F4 q) {
 }
 }  // namespace detail
 
+/// Mass-split Jacobi count pass (docs/contact_solve_framework.md §3.1, D3): per body (REAL index),
+/// the number of manifolds the Jacobi velocity solve visits -- num_points > 0, one manifold per
+/// periodic pair (the solve's realA > realB dedup); a wall side counts nothing. Accumulates into
+/// `counts`, which the caller hands over zeroed (the apply clears it), exactly as the solve's own
+/// count did. Under MPI the caller then makes the counts global (syncContactCounts).
+inline void countVelocityJacobiKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                      int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
+                                      Kokkos::View<int*, CpMem> counts) {
+  CpExec space;
+  Kokkos::parallel_for(
+      "peclet::dem::count_velocity_jacobi", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        const ManifoldC m = manifolds(idx);
+        if (m.num_points <= 0)
+          return;
+        const int realA = realIdx(m.bodyA);
+        if (m.bodyB >= 0) {
+          const int realB = realIdx(m.bodyB);
+          if (realA > realB)
+            return;  // periodic dedup, as in solveVelocityKokkos
+          Kokkos::atomic_add(&counts(realB), 1);
+        }
+        Kokkos::atomic_add(&counts(realA), 1);
+      });
+  space.fence();
+}
+
 /// Accumulate normal-restitution velocity deltas for `numManifolds` manifolds.
+/// massSplit (the 'jacobi' diagnostic, §3.1): `velCounts` holds the global per-body counts n of
+/// countVelocityJacobiKokkos and is only read; each manifold is solved against copies of mass
+/// m / n (w~ = n_A w_A + n_B w_B, a wall side 0) and the TRUE-mass deltas are accumulated, to be
+/// applied with factor 1. Off (the default, the GS colour-saturation fallback): the solve bumps
+/// `velCounts` and the caller count-averages the sum.
 inline void solveVelocityKokkos(
     Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
@@ -46,7 +78,7 @@ inline void solveVelocityKokkos(
     Kokkos::View<int*, CpMem> velCounts, Kokkos::View<const int*, CpMem> onlyColor = {},
     int colorFilter = 0, Kokkos::View<const unsigned char*, CpMem> persistent = {},
     Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {},
-    Kokkos::View<const unsigned char*, CpMem> grounded = {}) {
+    Kokkos::View<const unsigned char*, CpMem> grounded = {}, bool massSplit = false) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -174,6 +206,11 @@ inline void solveVelocityKokkos(
         const float wTotal = wA_n + wB_n;
         if (wTotal <= 0.0f)
           return;
+        // Mass-split Jacobi: the same numerator against copies of mass m / n.
+        const float wSolve =
+            massSplit ? static_cast<float>(velCounts(realA)) * wA_n +
+                            ((idB >= 0) ? static_cast<float>(velCounts(realB)) * wB_n : 0.0f)
+                      : wTotal;
 
         // Resting-contact regularization (the standard PBD/XPBD restitution threshold): bounce only
         // when the physical approach speed |vn|/|Nsum| exceeds ~2 g dt (what one substep of free
@@ -185,7 +222,7 @@ inline void solveVelocityKokkos(
         if (Kokkos::fabs(vn) < restVelThreshold * lenN)
           restitution = 0.0f;
 
-        const float lambda = (-restitution * vn - vn) / wTotal;
+        const float lambda = (-restitution * vn - vn) / wSolve;
 
         const F3 Jlin = scale3(Nsum, lambda);
         const F3 JangA = scale3(TauA, lambda);
@@ -216,9 +253,10 @@ inline void solveVelocityKokkos(
           Kokkos::atomic_add(&deltaAngVel(realB, 0), dww.x);
           Kokkos::atomic_add(&deltaAngVel(realB, 1), dww.y);
           Kokkos::atomic_add(&deltaAngVel(realB, 2), dww.z);
-          Kokkos::atomic_add(&velCounts(realB), 1);
+          if (!massSplit)
+            Kokkos::atomic_add(&velCounts(realB), 1);
         }
-        if (applyA)
+        if (applyA && !massSplit)
           Kokkos::atomic_add(&velCounts(realA), 1);
       });
   space.fence();
@@ -229,9 +267,11 @@ inline void solveVelocityKokkos(
 /// dense pile receives one full-strength impulse per touching manifold; the raw Jacobi SUM
 /// overshoots by ~the contact count and diverges hard for e ≳ 0.5 (a settled 180k glass-bead bed
 /// switched to e=0.8 grew |v| by ~5x per substep). A lone binary collision (count 1) is unchanged.
+/// averaged = false (the mass-split 'jacobi' diagnostic, §3.1): the deltas are already true-mass
+/// impulses against copies of mass m / count, so the apply is a plain add (factor 1).
 template <class V3, class Vi>
 inline void applyVelocityDeltasAveragedKokkos(int n, V3 velPred, V3 angVelPred, V3 deltaVel,
-                                              V3 deltaAngVel, Vi velCounts) {
+                                              V3 deltaAngVel, Vi velCounts, bool averaged = true) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::apply_vel_avg", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
@@ -241,7 +281,7 @@ inline void applyVelocityDeltasAveragedKokkos(int n, V3 velPred, V3 angVelPred, 
         // Over-relaxed average: omega=2 halves the convergence loss of plain 1/count averaging
         // (the crush-dissipation rate) while staying far below the raw-sum overshoot (omega=count)
         // that detonates a resting pile at e=0.8. count==1 (binary collision) stays exact.
-        const float f = Kokkos::fmin(1.0f, 2.0f / static_cast<float>(count));
+        const float f = averaged ? Kokkos::fmin(1.0f, 2.0f / static_cast<float>(count)) : 1.0f;
         for (int c = 0; c < 3; ++c) {
           velPred(i, c) += deltaVel(i, c) * f;
           angVelPred(i, c) += deltaAngVel(i, c) * f;

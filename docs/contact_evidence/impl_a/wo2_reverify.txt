@@ -1,0 +1,58 @@
+== cluster_jacobi np x OMP (build_ct, WO-2)
+MOMENTUM mode=cluster_jacobi np=1 thr=1 N=925 steps=50 dP=7.609e-09 dX=1.092e-07 dXpos=1.216e-07 dL=5.544e-04 dLcm=5.544e-04 dLvel=6.047e-09 ghosts=0 ovl=2.023e-01 OK (np=1) 
+MOMENTUM mode=cluster_jacobi np=1 thr=8 N=925 steps=50 dP=5.421e-09 dX=1.646e-07 dXpos=1.735e-07 dL=5.544e-04 dLcm=5.544e-04 dLvel=6.912e-09 ghosts=0 ovl=2.023e-01 OK (np=1) 
+MOMENTUM mode=cluster_jacobi np=2 thr=1 N=925 steps=50 dP=4.755e-09 dX=1.731e-07 dXpos=1.683e-07 dL=5.544e-04 dLcm=5.544e-04 dLvel=6.194e-09 ghosts=239 ovl=2.023e-01 OK (np=2) 
+MOMENTUM mode=cluster_jacobi np=2 thr=8 N=925 steps=50 dP=4.676e-09 dX=1.964e-07 dXpos=1.932e-07 dL=5.544e-04 dLcm=5.544e-04 dLvel=6.711e-09 ghosts=239 ovl=2.023e-01 OK (np=2) 
+MOMENTUM mode=cluster_jacobi np=4 thr=1 N=925 steps=50 dP=4.593e-09 dX=1.640e-07 dXpos=1.584e-07 dL=5.544e-04 dLcm=5.544e-04 dLvel=4.352e-09 ghosts=534 ovl=2.023e-01 OK (np=4) 
+MOMENTUM mode=cluster_jacobi np=4 thr=8 N=925 steps=50 dP=5.995e-09 dX=1.679e-07 dXpos=1.584e-07 dL=5.544e-04 dLcm=5.544e-04 dLvel=4.647e-09 ghosts=534 ovl=2.023e-01 OK (np=4) 
+MOMENTUM mode=cluster_jacobi np=8 thr=1 N=925 steps=50 dP=6.567e-09 dX=2.575e-07 dXpos=2.561e-07 dL=5.544e-04 dLcm=5.544e-04 dLvel=3.030e-09 ghosts=890 ovl=2.023e-01 OK (np=8) 
+MOMENTUM mode=cluster_jacobi np=8 thr=8 N=925 steps=50 dP=1.072e-08 dX=2.303e-07 dXpos=2.179e-07 dL=5.544e-04 dLcm=5.544e-04 dLvel=7.320e-09 ghosts=890 ovl=2.023e-01 OK (np=8) 
+== np1 OMP1 dumps vs WO-1
+IDENT cluster_e09.np1.omp1.dump
+IDENT cluster_e10.np1.omp1.dump
+IDENT cluster_escalate.np1.omp1.dump
+IDENT cluster_friction.np1.omp1.dump
+DIFF cluster_jacobi.np1.omp1.dump
+IDENT cluster_multilevel.np1.omp1.dump
+IDENT cluster_norot.np1.omp1.dump
+IDENT cluster.np1.omp1.dump
+IDENT cluster.np4.omp1.dump
+IDENT cluster_onesided.np1.omp1.dump
+IDENT cluster_ordered.np1.omp1.dump
+IDENT cluster_periodic.np1.omp1.dump
+IDENT cluster_periodic_solo.np1.omp1.dump
+IDENT cluster_pgs.np1.omp1.dump
+IDENT cluster_pgs.np4.omp1.dump
+IDENT cluster_poisson.np1.omp1.dump
+IDENT cluster_posonly.np1.omp1.dump
+IDENT cluster_sync3.np1.omp1.dump
+IDENT hertz.np1.omp1.dump
+IDENT hub.np1.omp1.dump
+IDENT hub_pgs.np1.omp1.dump
+IDENT hub_pgs_solo.np1.omp1.dump
+IDENT hub_posonly.np1.omp1.dump
+IDENT hub_posonly_solo.np1.omp1.dump
+IDENT hub_solo.np1.omp1.dump
+IDENT ring_mini.np1.omp1.dump
+IDENT ring_mini_solo.np1.omp1.dump
+IDENT tri.np1.omp1.dump
+IDENT tri_pgs.np1.omp1.dump
+== ctest -R 'jacobi|python_tests|friction_pair' (OMP 2)
+ 1/13 Test  #87: momentum_cluster_jacobi_np1 ......   Passed    1.02 sec
+ 2/13 Test  #96: momentum_cluster_jacobi_np2 ......   Passed    1.25 sec
+ 3/13 Test  #27: demstep_jacobi_periodic_np1 ......   Passed    0.61 sec
+ 4/13 Test  #45: demstep_jacobi_periodic_np2 ......   Passed    0.54 sec
+ 5/13 Test  #26: demstep_jacobi_closed_np1 ........   Passed    0.58 sec
+ 6/13 Test  #44: demstep_jacobi_closed_np2 ........   Passed    0.68 sec
+ 7/13 Test #142: followup_friction_pair_pgs_np1 ...   Passed    0.47 sec
+ 8/13 Test #141: followup_friction_pair_np1 .......   Passed    0.49 sec
+ 9/13 Test   #1: python_tests .....................   Passed  261.41 sec
+10/13 Test #114: momentum_cluster_jacobi_np8 ......   Passed    2.30 sec
+11/13 Test #105: momentum_cluster_jacobi_np4 ......   Passed    1.73 sec
+12/13 Test  #63: demstep_jacobi_periodic_np4 ......   Passed    0.60 sec
+13/13 Test  #62: demstep_jacobi_closed_np4 ........   Passed    0.75 sec
+100% tests passed, 0 tests failed out of 13
+== test_cooling_slope_vs_enskog
+   colored GS :  measured/Enskog = 1.804    (phi=0.35, N=5348)
+   Jacobi(mass-split, info only):  measured/Enskog = 2.141
+1 passed, 6 deselected in 11.25s
