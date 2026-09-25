@@ -57,6 +57,9 @@ inline void growContactBuffers(Particles& P, long nBodies, long floorWant = 0) {
     P.prevPairKeys = Kokkos::View<unsigned long long*, CpMem>("prevPairKeys", want);
     P.manifoldPersistent = Kokkos::View<unsigned char*, CpMem>("manifoldPersistent", want);
     P.contactColor = Kokkos::View<int*, CpMem>("contactColor", want);
+    P.unitStart = Kokkos::View<int*, CpMem>("unitStart", want + 1);
+    P.unitContacts = Kokkos::View<int*, CpMem>("unitContacts", want);
+    P.unitColor = Kokkos::View<int*, CpMem>("unitColor", want);
     P.lambdaAcc = Kokkos::View<float*, CpMem>("lambdaAcc", want);
     P.lambdaT = Kokkos::View<float* [3], CpMem>("lambdaT", want);
     P.posLambdaContact = Kokkos::View<float*, CpMem>("posLambdaContact", want);
@@ -124,7 +127,8 @@ inline int narrowPhaseGrow(Particles& P, int np, float margin) {
     if (P.numWalls > 0)
       detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId,
                           P.shapes, P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
-                          P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials);
+                          P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials,
+                          /*wallIdBase=*/P.numPlanes);
     return readInt(P.contactCount);
   };
   int nc = detect();

@@ -199,6 +199,11 @@ NB_MODULE(_dem, m) {
           "(velocity, position) graph-coloring-invariant violations in the last substep; a valid "
           "coloring returns (0, 0). Test hook for the incremental warm-start path.")
       .def(
+          "coloring_leftovers", [](Diagnostics& d) { return d.s->debugColoringLeftovers(); },
+          "(velocity, position) edges -- manifolds, position units -- the last substep's "
+          "colourings left uncoloured (single-rank). Non-zero means a colouring exhausted its "
+          "arbitration rounds or palette.")
+      .def(
           "rest_orphan_stats", [](Diagnostics& d) { return d.s->restOrphanStats(); },
           "Poisson-restitution instrument: (sum, max, n_bodies>0) of the per-body orphaned event "
           "budget (physical impulse units).")

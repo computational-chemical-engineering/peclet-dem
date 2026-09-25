@@ -306,15 +306,16 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
 /// gradient is the contact normal, and every emitted contact carries the wall's rigid-body surface
 /// velocity at the contact point plus the wall's binary (particle–wall) restitution/friction — so
 /// the moving-wall terms flow through the manifold velocity solve and the per-contact friction
-/// sweep. bodyB = -1 (a boundary, like a plane); the wall surface point is stored in rB for the
-/// position solve's plane-linearised non-penetration constraint.
+/// sweep. bodyB = wallContactId(wallIdBase + wallIndex), wallIdBase = numPlanes (a boundary, like a
+/// plane); the wall surface point is stored in rB for the position solve's plane-linearised
+/// non-penetration constraint.
 inline void detectWallSdfKokkos(
     int numReal, int numWalls, PosView pos, QuatView quat, ScalarF scale, ScalarI shapeId,
     Kokkos::View<const ShapeDesc*, CpMem> shapes, ShellView shell,
     Kokkos::View<const WallSdf*, CpMem> walls, GridView wallGrid, float globalScale, float margin,
     Kokkos::View<ContactC*, CpMem> outContacts, Kokkos::View<int, CpMem> outCount,
     Kokkos::View<float, CpMem> maxOverlap, MatIdView matId = MatIdView{},
-    PairTableView pairTable = PairTableView{}) {
+    PairTableView pairTable = PairTableView{}, int wallIdBase = 0) {
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
@@ -390,7 +391,7 @@ inline void detectWallSdfKokkos(
 
             ContactC c{};
             c.bodyA = i;
-            c.bodyB = -1;
+            c.bodyB = wallContactId(wallIdBase + wi);  // SDF walls follow the planes
             c.normal = F4{n.x, n.y, n.z, 0.0f};
             c.rA = F4{rAeff.x, rAeff.y, rAeff.z, 0.0f};
             c.rB = F4{pWall.x, pWall.y, pWall.z, 0.0f};
@@ -414,7 +415,8 @@ inline void detectWallSdfKokkos(
 }
 
 /// Per-real-particle contacts against explicit planes (point-shell shapes test each surface point;
-/// analytic spheres use centre-minus-radius). bodyB = -1; plane anchor stored in rB.
+/// analytic spheres use centre-minus-radius). bodyB = wallContactId(planeIndex); plane anchor in
+/// rB.
 inline void detectBoundaryKokkos(int numReal, int numPlanes, PosView pos, QuatView quat,
                                  ScalarF scale, ScalarI shapeId,
                                  Kokkos::View<const ShapeDesc*, CpMem> shapes, ShellView shell,
@@ -458,7 +460,7 @@ inline void detectBoundaryKokkos(int numReal, int numPlanes, PosView pos, QuatVi
               }
               ContactC c{};
               c.bodyA = i;
-              c.bodyB = -1;
+              c.bodyB = wallContactId(pi);
               c.normal = F4{pl.normal.x, pl.normal.y, pl.normal.z, 0.0f};
               c.rA = F4{rA.x, rA.y, rA.z, 0.0f};
               c.rB = F4{pl.point.x, pl.point.y, pl.point.z, 0.0f};
@@ -481,7 +483,7 @@ inline void detectBoundaryKokkos(int numReal, int numPlanes, PosView pos, QuatVi
             const F3 rA = scale3(pl.normal, -radius);
             ContactC c{};
             c.bodyA = i;
-            c.bodyB = -1;
+            c.bodyB = wallContactId(pi);
             c.normal = F4{pl.normal.x, pl.normal.y, pl.normal.z, 0.0f};
             c.rA = F4{rA.x, rA.y, rA.z, 0.0f};
             c.rB = F4{pl.point.x, pl.point.y, pl.point.z, 0.0f};

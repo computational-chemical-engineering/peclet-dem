@@ -421,11 +421,13 @@ static std::vector<Body> makeRingMini() {
 // largest per-body degree and the same-colour pairs, sum over (body, colour) of (count - 1).
 struct ColorDiag {
   int degC = 0, degM = 0, confC = 0, confM = 0;
+  int degPt = 0;             // largest per-body degree of the per-POINT contact graph
   int colC = 0, colM = 0;    // colours used (largest colour + 1)
   int leftC = 0, leftM = 0;  // items the step left uncoloured (-1): the count-averaged fallback
 };
 static void markColors(ProbeSim& sim) {
   Kokkos::deep_copy(sim.parts().contactColor, -3);
+  Kokkos::deep_copy(sim.parts().unitColor, -3);
   Kokkos::deep_copy(sim.parts().manifoldColor, -3);
 }
 static ColorDiag colorDiag(const ProbeSim& sim) {
@@ -457,14 +459,29 @@ static ColorDiag colorDiag(const ProbeSim& sim) {
     for (int x : d)
       deg = std::max(deg, x);
   };
-  std::vector<std::pair<int, int>> ec, em;  // (body slot, colour)
+  std::vector<std::pair<int, int>> ec, em, ep;  // (body slot, colour)
+  // Position graph = the position units (docs/contact_solve_framework.md §4.3): one edge per unit,
+  // the leader contact's bodies; ep keeps the per-point graph for its degree only.
+  const int nu = P.numPosUnits;
+  auto hus = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.unitStart);
+  auto hul = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.unitContacts);
+  auto huc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.unitColor);
+  for (int u = 0; u < nu; ++u) {
+    const int col = huc(u);
+    if (col < -1)
+      continue;
+    const int i = hul(hus(u));
+    ec.push_back({hc(i).bodyA, col});
+    if (hc(i).bodyB >= 0)
+      ec.push_back({hc(i).bodyB, col});
+  }
   for (int i = 0; i < nc; ++i) {
     const int col = hcc(i);
     if (col < -1)
       continue;
-    ec.push_back({hc(i).bodyA, col});
+    ep.push_back({hc(i).bodyA, col});
     if (hc(i).bodyB >= 0)
-      ec.push_back({hc(i).bodyB, col});
+      ep.push_back({hc(i).bodyB, col});
   }
   for (int i = 0; i < nm; ++i) {
     const int col = hmc(i);
@@ -475,6 +492,10 @@ static ColorDiag colorDiag(const ProbeSim& sim) {
       em.push_back({hr(hm(i).bodyB), col});
   }
   tally(ec, g.degC, g.confC, g.colC, g.leftC);
+  {
+    int c0 = 0, c1 = 0, l0 = 0;
+    tally(ep, g.degPt, c0, c1, l0);
+  }
   tally(em, g.degM, g.confM, g.colM, g.leftM);
   return g;
 }
@@ -780,6 +801,7 @@ static int runCluster(const Mode& md, int rank, int size) {
       cd.colM = std::max(cd.colM, c.colM);
       cd.leftC = std::max(cd.leftC, c.leftC);
       cd.leftM = std::max(cd.leftM, c.leftM);
+      cd.degPt = std::max(cd.degPt, c.degPt);
     }
     if (md.friction &&
         !md.hertz) {  // friction-active body-body contacts (their |dist| = lever gap)
@@ -866,14 +888,18 @@ static int runCluster(const Mode& md, int rank, int size) {
       fail = 1;
   }
   if (!md.hertz) {  // max over steps (above) and ranks
-    const int loc[8] = {cd.confM, cd.confC, cd.degM, cd.degC, cd.colM, cd.colC, cd.leftM, cd.leftC};
-    int mx[8];
-    MPI_Allreduce(loc, mx, 8, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    // Position columns count UNITS (degPos = units per body, leftPos = uncoloured units);
+    // degPosPt is the per-point contact degree (the pre-unit degPos).
+    const int loc[9] = {cd.confM, cd.confC, cd.degM,  cd.degC, cd.colM,
+                        cd.colC,  cd.leftM, cd.leftC, cd.degPt};
+    int mx[9];
+    MPI_Allreduce(loc, mx, 9, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
     if (rank == 0)
       std::printf(
           "CONFLICTS mode=%s np=%d thr=%d vel=%d pos=%d degVel=%d degPos=%d colVel=%d "
-          "colPos=%d leftVel=%d leftPos=%d\n",
-          md.name.c_str(), size, thr, mx[0], mx[1], mx[2], mx[3], mx[4], mx[5], mx[6], mx[7]);
+          "colPos=%d leftVel=%d leftPos=%d degPosPt=%d\n",
+          md.name.c_str(), size, thr, mx[0], mx[1], mx[2], mx[3], mx[4], mx[5], mx[6], mx[7],
+          mx[8]);
   }
   if (rank == 0) {
     std::printf("KE mode=%s np=%d thr=%d", md.name.c_str(), size, thr);

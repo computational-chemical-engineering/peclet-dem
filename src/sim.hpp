@@ -964,17 +964,21 @@ class Simulation : public ShapeRegistry {
           },
           velConf);
     }
-    if (nc > 0) {
+    // Position graph: its edges are the position units (docs/contact_solve_framework.md §4.3),
+    // each the leader contact's (bodyA, bodyB) -- a unit's contacts share one colour by design.
+    const int nu = P_.numPosUnits;
+    if (nc > 0 && nu > 0) {
       Kokkos::deep_copy(space, seen, std::uint64_t(0));
       auto contacts = P_.contacts;
-      auto cColor = P_.contactColor;
+      auto uColor = P_.unitColor;
+      const peclet::dem::PosUnits units{P_.unitStart, P_.unitContacts};
       Kokkos::parallel_reduce(
-          "peclet::dem::dbg_pos_color", Kokkos::RangePolicy<CpExec>(space, 0, nc),
+          "peclet::dem::dbg_pos_color", Kokkos::RangePolicy<CpExec>(space, 0, nu),
           KOKKOS_LAMBDA(int idx, int& acc) {
-            const int c = cColor(idx);
+            const int c = uColor(idx);
             if (c < 0)
               return;
-            const auto ct = contacts(idx);
+            const auto ct = contacts(units.leader(idx));
             const std::uint64_t bit = std::uint64_t(1) << c;
             if ((Kokkos::atomic_fetch_or(&seen(ct.bodyA), bit) >> c) & 1)
               acc += 1;
@@ -985,6 +989,30 @@ class Simulation : public ShapeRegistry {
     }
     space.fence();
     return {velConf, posConf};
+  }
+  // TEST-ONLY: (velocity, position) edges the LAST substep's colourings left uncoloured (-1):
+  // manifolds and position units. Non-zero means a colouring ran out of arbitration rounds
+  // (numBodies + 2) or palette; such edges take the count-averaged fallback
+  // (docs/contact_solve_framework.md §12 S3). Single-rank: under MPI the non-owned tail of the
+  // manifold list keeps stale colours.
+  std::pair<int, int> debugColoringLeftovers() {
+    using peclet::dem::CpExec;
+    CpExec space;
+    const int nm = readInt(P_.manifoldCount);
+    const int nu = P_.numPosUnits;
+    int velLeft = 0, posLeft = 0;
+    auto mColor = P_.manifoldColor;
+    auto uColor = P_.unitColor;
+    if (nm > 0 && P_.velocityUseGS)
+      Kokkos::parallel_reduce(
+          "peclet::dem::dbg_vel_left", Kokkos::RangePolicy<CpExec>(space, 0, nm),
+          KOKKOS_LAMBDA(int i, int& acc) { acc += mColor(i) == -1 ? 1 : 0; }, velLeft);
+    if (nu > 0)
+      Kokkos::parallel_reduce(
+          "peclet::dem::dbg_pos_left", Kokkos::RangePolicy<CpExec>(space, 0, nu),
+          KOKKOS_LAMBDA(int u, int& acc) { acc += uColor(u) == -1 ? 1 : 0; }, posLeft);
+    space.fence();
+    return {velLeft, posLeft};
   }
   float maxOverlap() {
     float h;

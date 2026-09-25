@@ -198,7 +198,15 @@ struct Particles {
   Kokkos::View<unsigned char*, CpMem> materialId;
   Kokkos::View<float*, CpMem> pairMaterials;
   Kokkos::View<int*, CpMem> contactSlot;   // contact -> manifold slot (PGS friction bound)
-  Kokkos::View<int*, CpMem> contactColor;  // per-contact colour (position solve)
+  Kokkos::View<int*, CpMem> contactColor;  // per-contact colour (position solve; = its unit's)
+  // Position units (docs/contact_solve_framework.md §4.3): the contacts of one body pair, or of one
+  // body and one wall, swept sequentially in one work item. CSR over the solved contacts
+  // [0, nc): unitStart (numPosUnits + 1), unitContacts (nc; ascending inside a unit), and the
+  // per-unit colour. Rebuilt every substep on the Gauss-Seidel path; numPosUnits = 0 otherwise.
+  Kokkos::View<int*, CpMem> unitStart;
+  Kokkos::View<int*, CpMem> unitContacts;
+  Kokkos::View<int*, CpMem> unitColor;
+  int numPosUnits = 0;
   // Incremental (warm-started) position colouring (single-GPU PGS path): this substep's per-contact
   // pair keys + the previous substep's (sorted keys, colour) ledger, so a surviving contact keeps
   // its colour and only NEW contacts re-arbitrate. Unlike the manifold graph a pair CAN own several
@@ -390,6 +398,9 @@ struct Particles {
     manifoldPersistent = Kokkos::View<unsigned char*, CpMem>("manifoldPersistent", maxContacts);
     prevPairCount = 0;
     contactColor = Kokkos::View<int*, CpMem>("contactColor", maxContacts);
+    unitStart = Kokkos::View<int*, CpMem>("unitStart", maxContacts + 1);
+    unitContacts = Kokkos::View<int*, CpMem>("unitContacts", maxContacts);
+    unitColor = Kokkos::View<int*, CpMem>("unitColor", maxContacts);
     contactKeys = Kokkos::View<unsigned long long*, CpMem>("contactKeys", maxContacts);
     prevContactKeys = Kokkos::View<unsigned long long*, CpMem>("prevContactKeys", maxContacts);
     prevContactColor = Kokkos::View<int*, CpMem>("prevContactColor", maxContacts);

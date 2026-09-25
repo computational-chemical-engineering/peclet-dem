@@ -221,13 +221,14 @@ int main(int argc, char** argv) {
       if (baseR == 0.0f)
         baseR = 1.0f;
       float radius = baseR * s;
-      for (const auto& pl : planes) {
+      for (std::size_t pi = 0; pi < planes.size(); ++pi) {
+        const auto& pl = planes[pi];
         float dist = dot3(sub3(posA, pl.point), pl.normal) - radius;  // sphere branch
         if (dist >= margin)
           continue;
         F3 rA = scale3(pl.normal, -radius);
         ref.push_back(CC{i,
-                         -1,
+                         -1 - static_cast<int>(pi),  // wallContactId(planeIndex)
                          {pl.normal.x, pl.normal.y, pl.normal.z},
                          {rA.x, rA.y, rA.z},
                          {pl.point.x, pl.point.y, pl.point.z},

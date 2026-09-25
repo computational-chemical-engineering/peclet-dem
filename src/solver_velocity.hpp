@@ -345,7 +345,11 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
       });
 
   int remaining = 1, prevRemaining = -1;
-  const int maxRounds = numReal + 2;  // safety bound; converges in ~max-degree rounds in practice
+  // Round cap (docs/contact_solve_framework.md §12 S7): the vertices coloured are MANIFOLDS, so
+  // the bound is their count + 2. Every round commits at least the globally highest-key
+  // uncoloured manifold (keys are unique: colorKey carries the index in its low word), so the
+  // loop terminates within numManifolds rounds; O(log n) in practice.
+  const int maxRounds = numManifolds + 2;
   for (int round = 0; round < maxRounds && remaining > 0; ++round) {
     Kokkos::parallel_for(
         "peclet::dem::color_reset_winner", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
@@ -498,7 +502,7 @@ inline int colorManifoldsIncrementalKokkos(
   // Jones-Plassmann arbitration over the uncoloured (-1) set only — identical body of work to
   // colorManifoldsKokkos, but the frozen carried colours restrict it to the few new manifolds.
   int remaining = 1, prevRemaining = -1;
-  const int maxRounds = numReal + 2;
+  const int maxRounds = numManifolds + 2;  // §12 S7: bounded by the vertices coloured
   for (int round = 0; round < maxRounds && remaining > 0; ++round) {
     Kokkos::parallel_for(
         "peclet::dem::icolor_reset_winner", Kokkos::RangePolicy<CpExec>(space, 0, numReal),

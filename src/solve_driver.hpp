@@ -331,6 +331,79 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                      ? demMakeFusedCtx(space, velOffs, P.velOffsDev, P.fusedBar)
                                      : FusedSweepCtx{};
   const FusedSweepCtx* velFusedP = velFused.maxBucket > 0 ? &velFused : nullptr;
+  // Position colouring, moved here from after the velocity phase (docs/contact_solve_framework.md
+  // §4.2 item 3): both phases are coloured at the top of the solve. Its inputs (contacts, sleep
+  // masks, the previous substep's ledger) do not change in between, so the move is byte-identical.
+  // The overlap projection is coloured and swept per position UNIT (§4.3): all contacts of one
+  // body pair (or of one body and one wall, §12 S6) in one work item, in ascending contact order.
+  // A one-point unit is exactly the old per-contact edge, key and arithmetic.
+  int posLeftover = 0;
+  int numPosColors = 0;
+  int numPosUnits = 0;
+  PosUnits posUnits;
+  P.numPosUnits = 0;
+  // Incremental position colouring, same single-GPU PGS gate + creep policy as the velocity path.
+  const bool incrPosColor =
+      usePersistPre && P.velocityUseGS && !Hooks::distributed && !incrColorOff;
+  bool posDidFull = false;
+  if (P.velocityUseGS) {
+    numPosUnits = buildPositionUnitsKokkos(P.contacts, nc, P.unitStart, P.unitContacts);
+    P.numPosUnits = numPosUnits;
+    posUnits = PosUnits{Kokkos::subview(Kokkos::View<const int*, CpMem>(P.unitStart),
+                                        Kokkos::pair<int, int>(0, numPosUnits + 1)),
+                        Kokkos::subview(Kokkos::View<const int*, CpMem>(P.unitContacts),
+                                        Kokkos::pair<int, int>(0, nc))};
+    if (incrPosColor) {
+      posDidFull = (P.posPrevContactCount <= 0);
+      numPosColors = colorContactsIncrementalKokkos(
+          P.contacts, numPosUnits, P.numParticles,
+          Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
+          Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount, P.unitColor,
+          P.contactKeys, P.bodyWinner, P.bodyColorMask, posLeftover,
+          /*forceFull*/ posDidFull, cSleep, posUnits);
+      if (!posDidFull && P.posLastFullColors > 0 &&
+          numPosColors > (P.posLastFullColors * 13) / 10) {
+        numPosColors = colorContactsIncrementalKokkos(
+            P.contacts, numPosUnits, P.numParticles,
+            Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
+            Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount, P.unitColor,
+            P.contactKeys, P.bodyWinner, P.bodyColorMask, posLeftover,
+            /*forceFull*/ true, cSleep, posUnits);
+        posDidFull = true;
+      }
+      if (posDidFull)
+        P.posLastFullColors = numPosColors;
+    } else {
+      numPosColors =
+          colorContactsKokkos(P.contacts, numPosUnits, P.numParticles, P.unitColor, P.bodyWinner,
+                              P.bodyColorMask, posLeftover, cSleep, posUnits);
+    }
+    // Every contact carries its unit's colour: the per-contact ledger commit below, the
+    // leftover fallback's colour filter and the diagnostics read it.
+    expandUnitColorsKokkos(posUnits, numPosUnits, Kokkos::View<const int*, CpMem>(P.unitColor),
+                           P.contactColor);
+    if (incrPosColor) {
+      // Commit this substep's (contact key, colour) for next substep's warm gather.
+      commitContactColorKokkos(Kokkos::View<const unsigned long long*, CpMem>(P.contactKeys),
+                               Kokkos::View<const int*, CpMem>(P.contactColor), P.prevContactKeys,
+                               P.prevContactColor, P.posCommitPerm, nc);
+      P.posPrevContactCount = nc;
+    }
+  }
+  // Dense colour buckets + fused sweep for the position projection (same precedent as the
+  // velocity sweeps: colour classes are body-disjoint => bit-identical; uncoloured leftovers
+  // keep the Jacobi fallback below). The buckets list unit indices.
+  std::vector<int> posOffs;
+  const bool posBuckets = P.velocityUseGS && numPosUnits > 0 && numPosColors > 0;
+  if (posBuckets)
+    buildColorBucketsKokkos(Kokkos::View<const int*, CpMem>(P.unitColor), numPosUnits, numPosColors,
+                            P.posPerm, P.bucketCursor, posOffs);
+  const Kokkos::View<const int*, CpMem> posPermC(P.posPerm);
+  const std::vector<int>* posOffsP = posBuckets ? &posOffs : nullptr;
+  const FusedSweepCtx posFused = (posBuckets && wantFused)
+                                     ? demMakeFusedCtx(space, posOffs, P.posOffsDev, P.fusedBar)
+                                     : FusedSweepCtx{};
+  const FusedSweepCtx* posFusedP = posFused.maxBucket > 0 ? &posFused : nullptr;
   // Persistent-contact restitution, gravity-gated (|g| = 0 leaves behaviour untouched: growth
   // packing / HCS bit-identical). A pair already in contact LAST substep is loaded, not impacting:
   // it gets e = 0 (the impulse still cancels the approach — pure inelastic support), so the
@@ -823,72 +896,20 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   if constexpr (Hooks::distributed)
     hooks.publishPositions(P);
 
-  // Colour the contact graph ONCE (topology-only; reused across the position sweeps), then remove
-  // overlap with colored Gauss–Seidel (true sequential projection, no count-averaging softening).
-  int posLeftover = 0;
-  int numPosColors = 0;
-  // Incremental position colouring, same single-GPU PGS gate + creep policy as the velocity path.
-  const bool incrPosColor =
-      usePersistPre && P.velocityUseGS && !Hooks::distributed && !incrColorOff;
-  bool posDidFull = false;
-  if (P.velocityUseGS) {
-    if (incrPosColor) {
-      posDidFull = (P.posPrevContactCount <= 0);
-      numPosColors = colorContactsIncrementalKokkos(
-          P.contacts, nc, P.numParticles,
-          Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
-          Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount,
-          P.contactColor, P.contactKeys, P.bodyWinner, P.bodyColorMask, posLeftover,
-          /*forceFull*/ posDidFull, cSleep);
-      if (!posDidFull && P.posLastFullColors > 0 &&
-          numPosColors > (P.posLastFullColors * 13) / 10) {
-        numPosColors = colorContactsIncrementalKokkos(
-            P.contacts, nc, P.numParticles,
-            Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
-            Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount,
-            P.contactColor, P.contactKeys, P.bodyWinner, P.bodyColorMask, posLeftover,
-            /*forceFull*/ true, cSleep);
-        posDidFull = true;
-      }
-      if (posDidFull)
-        P.posLastFullColors = numPosColors;
-      // Commit this substep's (contact key, colour) for next substep's warm gather.
-      commitContactColorKokkos(Kokkos::View<const unsigned long long*, CpMem>(P.contactKeys),
-                               Kokkos::View<const int*, CpMem>(P.contactColor), P.prevContactKeys,
-                               P.prevContactColor, P.posCommitPerm, nc);
-      P.posPrevContactCount = nc;
-    } else {
-      numPosColors = colorContactsKokkos(P.contacts, nc, P.numParticles, P.contactColor,
-                                         P.bodyWinner, P.bodyColorMask, posLeftover, cSleep);
-    }
-  }
   // Overlap resolved once the deepest penetration falls below ~0.01% of a particle radius.
   const float posTol = 1e-4f * P.baseRadius * P.globalScale;
   {
     auto pc = Kokkos::subview(P.posLambdaContact, Kokkos::pair<int, int>(0, nc));
     Kokkos::deep_copy(pc, 0.0f);
   }
-  // Dense colour buckets + fused sweep for the position projection (same precedent as the
-  // velocity sweeps: colour classes are body-disjoint => bit-identical; uncoloured leftovers
-  // keep the Jacobi fallback below).
-  std::vector<int> posOffs;
-  const bool posBuckets = P.velocityUseGS && nc > 0 && numPosColors > 0;
-  if (posBuckets)
-    buildColorBucketsKokkos(Kokkos::View<const int*, CpMem>(P.contactColor), nc, numPosColors,
-                            P.posPerm, P.bucketCursor, posOffs);
-  const Kokkos::View<const int*, CpMem> posPermC(P.posPerm);
-  const std::vector<int>* posOffsP = posBuckets ? &posOffs : nullptr;
-  const FusedSweepCtx posFused = (posBuckets && wantFused)
-                                     ? demMakeFusedCtx(space, posOffs, P.posOffsDev, P.fusedBar)
-                                     : FusedSweepCtx{};
-  const FusedSweepCtx* posFusedP = posFused.maxBucket > 0 ? &posFused : nullptr;
+
   // One position iteration (async residual zero + colored overlap sweep), graph-captured on
   // the single-GPU path like the velocity loops.
   auto emitPosIter = [&] {
     Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
-    solvePositionColoredGSKokkos(P.contacts, nc, P.contactColor, numPosColors, P.invMass, P.posPred,
-                                 P.quatPred, P.quat, P.invInertia, P.maxOverlap, P.posLambdaContact,
-                                 posPermC, posOffsP, posFusedP);
+    solvePositionColoredGSKokkos(P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors,
+                                 P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
+                                 P.maxOverlap, P.posLambdaContact, posPermC, posOffsP, posFusedP);
   };
   // Device-side position loop (CUDA, single-rank): all overlap-projection iterations + the
   // adaptive stop in ONE kernel. Leftover contacts (colour-mask saturation) need the host
@@ -898,8 +919,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     if (P.velocityUseGS && posLeftover == 0 && posFusedP) {
       const FusedLoopSpec spec{P.positionIterations, posTol, true};
       posLoopDone = solvePositionColoredGSKokkos(
-          P.contacts, nc, P.contactColor, numPosColors, P.invMass, P.posPred, P.quatPred, P.quat,
-          P.invInertia, P.maxOverlap, P.posLambdaContact, posPermC, posOffsP, posFusedP, &spec);
+          P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors, P.invMass, P.posPred,
+          P.quatPred, P.quat, P.invInertia, P.maxOverlap, P.posLambdaContact, posPermC, posOffsP,
+          posFusedP, &spec);
     }
   }
   bool graphPos = false;

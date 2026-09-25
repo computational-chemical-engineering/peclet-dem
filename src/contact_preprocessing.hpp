@@ -32,7 +32,7 @@ using CpMem = CpExec::memory_space;
 /// Portable mirror of ParticleSystem.cuh ContactConstraint (the fields this reduction touches).
 struct ContactC {
   int bodyA;
-  int bodyB;   // < 0 => boundary/static
+  int bodyB;   // < 0 => boundary/static: -1 - wallIndex (wallContactId)
   F4 normal;   // .xyz = world normal
   F4 rA;       // lever arm on A
   F4 rB;       // lever arm on B
@@ -46,6 +46,18 @@ struct ContactC {
   float boundaryRestitution{-1.0f};        // per-wall normal restitution; < 0 => use the global one
   float boundaryFriction{-1.0f};           // per-wall Coulomb friction;   < 0 => use the global one
 };
+
+/// Wall identity of a boundary contact (docs/contact_solve_framework.md §12 S6): a contact with a
+/// wall carries bodyB = -1 - wallIndex, where wallIndex runs over the analytic planes first
+/// ([0, numPlanes)) and then the SDF walls (numPlanes + w). Every "is a wall" test is bodyB < 0;
+/// the index only separates the position units of one body against different walls. The manifold
+/// reduction key (pairKey) ignores it: all walls of a body still form ONE velocity manifold.
+KOKKOS_INLINE_FUNCTION constexpr int wallContactId(int wallIndex) {
+  return -1 - wallIndex;
+}
+KOKKOS_INLINE_FUNCTION constexpr int wallIndexOf(int bodyB) {
+  return -1 - bodyB;
+}
 
 /// Portable mirror of ManifoldConstraint.
 struct ManifoldC {
@@ -616,6 +628,106 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
 
   Kokkos::deep_copy(space, outCount, numSeg);
   return numSeg;
+}
+
+/// Position-unit key (docs/contact_solve_framework.md §4.3, §12 S6): the canonical pair key for a
+/// body-body contact, and (bodyA << 32) | (unsigned)bodyB for a wall contact, which separates the
+/// walls of one body (bodyB = -1 - wallIndex, so the low word is 0xFFFFFFFF - wallIndex >= 2^31,
+/// never a body slot). Wall 0 keeps pairKey's value; pairKey itself is unchanged.
+KOKKOS_INLINE_FUNCTION std::uint64_t unitKey(const ContactC& c) {
+  if (c.bodyB < 0)
+    return (static_cast<std::uint64_t>(static_cast<unsigned>(c.bodyA)) << 32) |
+           static_cast<unsigned>(c.bodyB);
+  return pairKey(c);
+}
+
+/// The position units of a contact list as a CSR (§4.3): unit u owns the contacts
+/// list(start(u)) .. list(start(u + 1) - 1), sorted ascending by contact index, so list(start(u))
+/// is its leader (smallest contact index). Units are numbered by ascending leader. Empty views =
+/// the identity (every contact its own unit), which the colourings and the sweep treat exactly as
+/// the per-contact code they replace.
+struct PosUnits {
+  Kokkos::View<const int*, CpMem> start;  // numUnits + 1
+  Kokkos::View<const int*, CpMem> list;   // numContacts
+  KOKKOS_INLINE_FUNCTION bool on() const { return start.extent(0) > 0; }
+  KOKKOS_INLINE_FUNCTION int begin(int u) const { return on() ? start(u) : u; }
+  KOKKOS_INLINE_FUNCTION int end(int u) const { return on() ? start(u + 1) : u + 1; }
+  KOKKOS_INLINE_FUNCTION int contact(int k) const { return on() ? list(k) : k; }
+  KOKKOS_INLINE_FUNCTION int leader(int u) const { return on() ? list(start(u)) : u; }
+};
+
+/// Build the position units of contacts [0, n) (docs/contact_solve_framework.md §4.3, §12 S6): a
+/// unit is the set of contacts of one body pair, or of one body and one wall. Two key sorts: by
+/// unitKey to group (leader = the segment's smallest contact index), then by (leader, contact
+/// index) for the canonical CSR. Returns the unit count; unitStart gets numUnits + 1 entries.
+inline int buildPositionUnitsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, int n,
+                                    Kokkos::View<int*, CpMem> unitStart,
+                                    Kokkos::View<int*, CpMem> unitContacts) {
+  CpExec space;
+  if (n <= 0) {
+    Kokkos::deep_copy(space, Kokkos::subview(unitStart, 0), 0);
+    space.fence();
+    return 0;
+  }
+  using Kokkos::view_alloc;
+  using Kokkos::WithoutInitializing;
+  Kokkos::View<std::uint64_t*, CpMem> keys(
+      view_alloc(space, "peclet::dem::cp::ukeys", WithoutInitializing), n);
+  Kokkos::View<int*, CpMem> perm(view_alloc(space, "peclet::dem::cp::uperm", WithoutInitializing),
+                                 n);
+  Kokkos::parallel_for(
+      "peclet::dem::cp::ukey", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
+        keys(i) = unitKey(contacts(i));
+        perm(i) = i;
+      });
+  Kokkos::Experimental::sort_by_key(space, keys, perm);
+  Kokkos::View<int*, CpMem> segId(view_alloc(space, "peclet::dem::cp::useg", WithoutInitializing),
+                                  n);
+  int numSeg = 0;
+  Kokkos::parallel_scan(
+      "peclet::dem::cp::usegscan", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int p, int& run, const bool final) {
+        if (p == 0 || keys(p) != keys(p - 1))
+          ++run;
+        if (final)
+          segId(p) = run - 1;
+      },
+      numSeg);
+  Kokkos::View<int*, CpMem> segLead(
+      view_alloc(space, "peclet::dem::cp::ulead", WithoutInitializing), numSeg);
+  Kokkos::deep_copy(space, segLead, n);
+  Kokkos::parallel_for(
+      "peclet::dem::cp::uleadmin", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int p) { Kokkos::atomic_min(&segLead(segId(p)), perm(p)); });
+  // Second key: (leader << 32) | contact index -- unique, so the order does not depend on the
+  // sort's stability: units by ascending leader, contacts ascending inside each unit. perm(p)
+  // already holds the key's low word (the contact index), so it is the value the sort carries.
+  Kokkos::parallel_for(
+      "peclet::dem::cp::ukey2", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int p) {
+        const int i = perm(p);
+        keys(p) = (static_cast<std::uint64_t>(static_cast<unsigned>(segLead(segId(p)))) << 32) |
+                  static_cast<unsigned>(i);
+      });
+  Kokkos::Experimental::sort_by_key(space, keys, perm);
+  Kokkos::View<int*, CpMem> us = unitStart;
+  Kokkos::View<int*, CpMem> uc = unitContacts;
+  int nu = 0;
+  Kokkos::parallel_scan(
+      "peclet::dem::cp::ustart", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int p, int& run, const bool final) {
+        const bool isNew = (p == 0) || ((keys(p) >> 32) != (keys(p - 1) >> 32));
+        if (final) {
+          uc(p) = perm(p);
+          if (isNew)
+            us(run) = p;
+        }
+        if (isNew)
+          ++run;
+      },
+      nu);
+  Kokkos::deep_copy(space, Kokkos::subview(unitStart, nu), n);
+  space.fence();
+  return nu;
 }
 
 /// PGS friction bound: overwrite each contact's friction_lambda_n with its manifold's converged
