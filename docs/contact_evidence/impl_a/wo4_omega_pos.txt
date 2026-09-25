@@ -1,0 +1,26 @@
+== omega_pos = 1.5 on mass-split image copies (demStep, WO-4 item 2 + §4.5), build_ct OMP 2
+An isolated wrap pair is one physical contact seen twice (twins (i, j') and (i', j)); both bodies
+have k = 2 active slots, so each twin solves against 2 invMass per slot and the fold averages:
+the pair separates by omega * overlap. At omega_pos = 1.5 the inequality projection overshoots
+into a gap of 0.5 x overlap that nothing pulls back (C > 0 is inactive).
+
+tests/python/test_periodic_wrap_symmetry.py::test_wrap_pair_matches_in_box_pair (relax, L 10, R 1,
+overlap 0.2): wrap pair moves (da, db) = (+0.1500, -0.1500); the in-box pair (ia, ib) =
+(-0.1000, +0.1000). omega_pos 1.5: FAIL (|da - ib| = 0.05). omega_pos 1.0 (constant flipped for
+the experiment only, not committed): 7 / 7 pass.
+
+tests/python/mpi/test_validate_periodic.py at np 2 (python_mpi_validate_periodic_np2), 2-body wrap
+along x, start sep 0.6, diameter 0.8:
+  omega_pos 1.5: serial (demStep) 0.9000, distributed 0.8000 -> assert |serial - dist| < 0.05
+                 fails on rank 0; rank 1 then waits in a collective (the ctest hangs; --timeout).
+  omega_pos 1.0: serial 0.8000, distributed 0.8000; the N-body case runs (max|dist-serial|
+                 1.148e-01, mean 9.1e-04 over 20 steps, N = 324).
+
+Two-sphere periodic check (per2.py: x 0.2 and 7.5 in L 8, R 0.5, overlap 0.3, 5 position iters):
+positions move +0.225 / -0.225 = 0.45 total = 1.5 x 0.3.
+
+tests/python/mpi/test_validate_periodic.py at np 4 (python_mpi_validate_periodic_np4):
+  omega_pos 1.5: corner wrap (axes xy, start diag sep 0.707) serial 0.8464 vs dist 0.8000; N-body
+                 (N 309, 20 steps) "wrap-contact straddlers disagree with serial" -> FAIL.
+  omega_pos 1.0: corner wrap serial 0.8000 = dist 0.8000; N-body straddlers(last 16) max 4.8e-07,
+                 per-particle q95 9.9e-04 -> pass (exit 0).

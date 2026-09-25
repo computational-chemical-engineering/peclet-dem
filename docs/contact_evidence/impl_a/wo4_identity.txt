@@ -1,0 +1,46 @@
+== WO-4 (ca32026) np 1 OMP 1 dumps vs WO-3 (785d984)
+IDENT cluster_e09.np1.omp1.dump
+IDENT cluster_e10.np1.omp1.dump
+IDENT cluster_escalate.np1.omp1.dump
+IDENT cluster_friction.np1.omp1.dump
+IDENT cluster_jacobi.np1.omp1.dump
+IDENT cluster_multilevel.np1.omp1.dump
+IDENT cluster_norot.np1.omp1.dump
+IDENT cluster.np1.omp1.dump
+IDENT cluster.np4.omp1.dump
+IDENT cluster_onesided.np1.omp1.dump
+IDENT cluster_ordered.np1.omp1.dump
+IDENT cluster_periodic.np1.omp1.dump
+DIFF cluster_periodic_solo.np1.omp1.dump
+IDENT cluster_pgs.np1.omp1.dump
+IDENT cluster_pgs.np4.omp1.dump
+IDENT cluster_poisson.np1.omp1.dump
+IDENT cluster_posonly.np1.omp1.dump
+IDENT cluster_sync3.np1.omp1.dump
+IDENT hertz.np1.omp1.dump
+DIFF hub.np1.omp1.dump
+DIFF hub_pgs.np1.omp1.dump
+DIFF hub_pgs_solo.np1.omp1.dump
+DIFF hub_posonly.np1.omp1.dump
+DIFF hub_posonly_solo.np1.omp1.dump
+DIFF hub_solo.np1.omp1.dump
+IDENT ring_mini.np1.omp1.dump
+IDENT ring_mini_solo.np1.omp1.dump
+IDENT tri.np1.omp1.dump
+IDENT tri_pgs.np1.omp1.dump
+-- S6 wall scenes vs WO-3
+IDENT corner_pgs
+IDENT corner_pgs_full
+IDENT corner_g0
+IDENT drum
+IDENT drum_full
+-- 150-step settling pile (mlpile.py), 4 stabilization modes, np.array_equal vs WO-3
+IDENT escalate.npz
+IDENT multilevel.npz
+IDENT onesided.npz
+IDENT ordered.npz
+-- cluster_periodic --solo (demStep) position-phase CoM drift (minimum image), OMP 1
+before (WO-3 src, WO-4 test):
+MOMENTUM mode=cluster_periodic np=1 thr=1 N=925 steps=50 dP=2.396e-09 dX=n/a dXpos=2.264e-03 dL=2.979e-02 dLcm=3.202e-02 dLvel=n/a ghosts=0 ovl=4.404e-03
+after:
+MOMENTUM mode=cluster_periodic np=1 thr=1 N=925 steps=50 dP=2.013e-09 dX=n/a dXpos=1.833e-06 dL=2.916e-02 dLcm=2.774e-02 dLvel=n/a ghosts=0 ovl=4.317e-02

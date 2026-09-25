@@ -1,0 +1,96 @@
+== WO-3 re-verification after S7/S8 (785d984), build_ct, np 1
+-- sphere dumps np1 OMP1 (+np4 cluster, cluster_pgs) vs WO-2 (fw/dumps_wo2)
+IDENT cluster_e09.np1.omp1.dump
+IDENT cluster_e10.np1.omp1.dump
+IDENT cluster_escalate.np1.omp1.dump
+IDENT cluster_friction.np1.omp1.dump
+IDENT cluster_jacobi.np1.omp1.dump
+IDENT cluster_multilevel.np1.omp1.dump
+IDENT cluster_norot.np1.omp1.dump
+IDENT cluster.np1.omp1.dump
+IDENT cluster.np4.omp1.dump
+IDENT cluster_onesided.np1.omp1.dump
+IDENT cluster_ordered.np1.omp1.dump
+IDENT cluster_periodic.np1.omp1.dump
+IDENT cluster_periodic_solo.np1.omp1.dump
+IDENT cluster_pgs.np1.omp1.dump
+IDENT cluster_pgs.np4.omp1.dump
+IDENT cluster_poisson.np1.omp1.dump
+IDENT cluster_posonly.np1.omp1.dump
+IDENT cluster_sync3.np1.omp1.dump
+IDENT hertz.np1.omp1.dump
+IDENT hub.np1.omp1.dump
+IDENT hub_pgs.np1.omp1.dump
+IDENT hub_pgs_solo.np1.omp1.dump
+IDENT hub_posonly.np1.omp1.dump
+IDENT hub_posonly_solo.np1.omp1.dump
+IDENT hub_solo.np1.omp1.dump
+DIFF ring_mini.np1.omp1.dump
+DIFF ring_mini_solo.np1.omp1.dump
+IDENT tri.np1.omp1.dump
+IDENT tri_pgs.np1.omp1.dump
+-- S6 wall scenes vs WO-2
+IDENT corner_pgs
+IDENT corner_pgs_full
+IDENT corner_g0
+IDENT drum
+IDENT drum_full
+-- ring_mini OMP 1
+CONFLICTS mode=ring_mini np=1 thr=1 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=1 N=27 steps=10 dP=2.105e-08 dX=2.811e-06 dXpos=2.817e-06 dL=4.201e-02 dLcm=4.201e-02 dLvel=1.183e-03 ghosts=0 ovl=2.499e-01
+CONFLICTS mode=ring_mini np=1 thr=1 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=1 N=27 steps=10 dP=2.105e-08 dX=2.811e-06 dXpos=2.817e-06 dL=4.201e-02 dLcm=4.201e-02 dLvel=1.183e-03 ghosts=0 ovl=2.499e-01
+-- ring_mini OMP 8, step_mpi x 8
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=4.875e-09 dX=3.063e-06 dXpos=3.063e-06 dL=3.833e-02 dLcm=3.833e-02 dLvel=1.574e-03 ghosts=0 ovl=2.329e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=1.216e-08 dX=3.482e-06 dXpos=3.482e-06 dL=3.102e-02 dLcm=3.102e-02 dLvel=1.555e-03 ghosts=0 ovl=2.132e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=3.211e-08 dX=2.418e-06 dXpos=2.418e-06 dL=3.906e-02 dLcm=3.906e-02 dLvel=1.889e-03 ghosts=0 ovl=2.231e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=2.730e-08 dX=4.338e-06 dXpos=4.339e-06 dL=4.723e-02 dLcm=4.723e-02 dLvel=2.072e-03 ghosts=0 ovl=2.256e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=2.375e-08 dX=3.393e-06 dXpos=3.389e-06 dL=5.067e-02 dLcm=5.067e-02 dLvel=1.786e-03 ghosts=0 ovl=2.211e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=2.663e-08 dX=2.590e-06 dXpos=2.590e-06 dL=2.379e-02 dLcm=2.379e-02 dLvel=1.431e-03 ghosts=0 ovl=2.276e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=3.135e-08 dX=1.601e-06 dXpos=1.601e-06 dL=2.626e-02 dLcm=2.626e-02 dLvel=2.056e-03 ghosts=0 ovl=2.194e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=1.751e-08 dX=5.856e-06 dXpos=5.859e-06 dL=5.684e-02 dLcm=5.684e-02 dLvel=8.868e-04 ghosts=0 ovl=2.384e-01
+-- ring_mini OMP 8, --solo x 6
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=1.424e-08 dX=2.266e-06 dXpos=2.263e-06 dL=5.603e-02 dLcm=5.603e-02 dLvel=1.482e-03 ghosts=0 ovl=2.097e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=1.722e-08 dX=3.330e-06 dXpos=3.331e-06 dL=7.810e-02 dLcm=7.810e-02 dLvel=1.673e-03 ghosts=0 ovl=2.110e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=2.058e-08 dX=5.451e-06 dXpos=5.448e-06 dL=6.384e-02 dLcm=6.384e-02 dLvel=1.970e-03 ghosts=0 ovl=2.441e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=1.523e-08 dX=3.272e-06 dXpos=3.270e-06 dL=5.646e-02 dLcm=5.646e-02 dLvel=2.184e-03 ghosts=0 ovl=2.427e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=1.226e-08 dX=2.536e-06 dXpos=2.534e-06 dL=8.277e-02 dLcm=8.277e-02 dLvel=1.408e-03 ghosts=0 ovl=2.262e-01
+CONFLICTS mode=ring_mini np=1 thr=8 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=8 N=27 steps=10 dP=1.895e-08 dX=5.291e-06 dXpos=5.288e-06 dL=5.166e-02 dLcm=5.166e-02 dLvel=1.693e-03 ghosts=0 ovl=2.276e-01
+-- ring_mini CUDA x 3 (step_mpi, --solo)
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=2.532e-08 dX=3.410e-06 dXpos=3.414e-06 dL=3.708e-02 dLcm=3.708e-02 dLvel=1.552e-03 ghosts=0 ovl=2.166e-01
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=1.295e-08 dX=3.469e-06 dXpos=3.468e-06 dL=4.042e-02 dLcm=4.042e-02 dLvel=1.515e-03 ghosts=0 ovl=2.284e-01
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=2.291e-08 dX=4.684e-06 dXpos=4.690e-06 dL=7.323e-02 dLcm=7.323e-02 dLvel=1.736e-03 ghosts=0 ovl=2.318e-01
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=1.545e-08 dX=3.665e-06 dXpos=3.661e-06 dL=6.466e-02 dLcm=6.466e-02 dLvel=1.333e-03 ghosts=0 ovl=2.273e-01
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=1.681e-08 dX=3.700e-06 dXpos=3.701e-06 dL=4.240e-02 dLcm=4.240e-02 dLvel=1.767e-03 ghosts=0 ovl=2.274e-01
+CONFLICTS mode=ring_mini np=1 thr=2 vel=0 pos=0 degVel=15 degPos=19 colVel=15 colPos=19 leftVel=0 leftPos=0 degPosPt=1427
+MOMENTUM mode=ring_mini np=1 thr=2 N=27 steps=10 dP=2.396e-08 dX=1.810e-06 dXpos=1.815e-06 dL=2.971e-02 dLcm=2.971e-02 dLvel=1.471e-03 ghosts=0 ovl=2.036e-01
+-- survey (survey_leftovers.py bi4 bi6 ring:1500, OMP 8)
+SURVEY case=bi4 N=2000 phi=0.620 size_ratio=4.00 contacts/particle=9.24 manifolds/particle=9.24 maxDeg=57 meanDeg=8.23 maxDeg(largest grains)=57 conflicts_last(vel,pos)=(0, 0) conflicts_max_over_run(vel,pos)=(0, 0)
+LEFTOVERS case=bi4 max_over_run(vel,pos)=(0, 0)
+SURVEY case=bi6 N=4000 phi=0.620 size_ratio=6.00 contacts/particle=10.70 manifolds/particle=10.70 maxDeg=115 meanDeg=9.68 maxDeg(largest grains)=115 conflicts_last(vel,pos)=(0, 694) conflicts_max_over_run(vel,pos)=(1, 965)
+LEFTOVERS case=bi6 max_over_run(vel,pos)=(0, 0)
+SURVEY case=ring N=80 phi=0.344 contacts/particle=141.8 manifolds/particle=8.57 conflicts_last(vel,pos)=(0, 0) conflicts_max_over_run(vel,pos)=(0, 0)
+LEFTOVERS case=ring:1500 max_over_run(vel,pos)=(0, 0)
+SURVEY_EXIT 0
+-- tests/python (OMP 2)
+PYTEST_EXIT 0
+47 passed, 7 skipped, 56 warnings in 258.72s (0:04:18)

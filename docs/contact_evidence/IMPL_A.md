@@ -234,3 +234,72 @@ and WO-4's.
 **Additions not named by the note** (instrumentation, results unchanged): `diagnostics.coloring_leftovers()`
 (tier 2; the S3 measurement), the test's CONFLICTS line counts units (`degPos`, `leftPos`) and
 prints `degPosPt` (the per-point degree), and `debugColoringConflicts` counts units.
+
+## WO-3 (785d984): committed with §12 S7 / S8
+
+The parked 13158a6 cherry-picked; S7: every fine colouring's round cap is its vertex count + 2
+(`numManifolds + 2`, `numUnits + 2`). `colorKey(idx)` carries the index in its low word (a unit's
+key is its leader's), so keys are unique and no tie-break change was needed. S8:
+`test_hollow_cylinder_overlap` asserts detection (`num_contacts > 0`, `num_manifolds >= 1`; the
+scene has two bodies, no walls, no periodic axis) and keeps the separation assert. Raw:
+`impl_a/wo3_s7_reverify.txt`. Host load 20-60, OMP 1 unless stated.
+
+| check | gate | result |
+|---|---|---|
+| sphere dumps np 1 OMP 1 (+ np 4 `cluster`, `cluster_pgs`) vs WO-2 | identical | 27 / 27 identical; only `ring_mini`(`_solo`) change |
+| S6 wall scenes (corner x 3, drum x 2) vs WO-2 | identical | 5 / 5 |
+| `ring_mini` CONFLICTS pos, leftPos: OMP 1; OMP 8 step_mpi x 8, `--solo` x 6; CUDA x 3 x 2 | 0 | 0 everywhere (the parked build: leftPos 2-6 in 4 / 6 runs) |
+| `ring_mini` dXpos | <= 1e-5 | 2.8e-6 (OMP 1), <= 5.9e-6 (OMP 8), <= 4.7e-6 (CUDA); 19 position colours |
+| S3 survey, OMP 8: bi4, bi6, ring N = 80 x 1500 steps | 0 leftovers | (0, 0) each |
+| `tests/python` | pass | 47 passed (hollow cylinder included) |
+
+## WO-4 (ca32026): complete colourings, hub copies, local folds, demStep images
+
+Raw: `impl_a/wo4_*.txt`; scripts `impl_a/mlpile.py`, `impl_a/cmpnpz.py`. The copy machinery is
+`src/solve_copies.hpp` (no ArborX, so `tests/kokkos` links it).
+
+| check | gate | result |
+|---|---|---|
+| `test_coloring_overflow` star D = 32..300 (host OMP 8, CUDA), `kGate = true` | 0 conflicts, leftover 0 after copies | 0 / 0 at every D; D = 65 / 100 / 300: 2 / 3 / 9 copies, 22 / 25 / 30 colours |
+| `hub`, `hub_posonly`, `hub_pgs` np 1, OMP 1 and 8 x 3, step_mpi and `--solo` | dP <= 1e-6, dXpos <= 3e-5, CONFLICTS 0 | dP <= 6.1e-7, dXpos <= 3.5e-7, CONFLICTS 0; copies vel 7 (9 posonly), pos 9 |
+| same on CUDA x 3 | same | dP <= 5.7e-7 (baseline 1.0e-2..1.5e-2), dXpos <= 3.1e-7, CONFLICTS 0 |
+| every non-hub closed dump np 1 OMP 1 (+ np 4) vs WO-3 | identical | 22 / 22; the 5 S6 wall scenes identical; a 150-step multilevel settling pile, 4 stabilization modes, `np.array_equal` identical |
+| `cluster_periodic --solo` position-phase CoM drift (minimum image, new test metric) | <= 1e-5 R | 1.8e-6 R (before, WO-3 src: 2.3e-3 R); max overlap over the run 4.3e-2 (before 4.4e-3) |
+| `ring_mini` np 1 (host, CUDA) | unchanged vs WO-3 | identical dump; CUDA dXpos <= 5.3e-6 |
+| battery (`build_ct`, `-j1`, OMP 2, `--bind-to none`, core Python on PYTHONPATH, `--timeout 300`) | all pass | **192 / 195**: python_tests (1 case), python_mpi_validate_periodic_np2 (timeout), _np4 -- see Stop A |
+
+**Stop A (a statistical-agreement test fails): `kSplitOmegaPosition = 1.5` on demStep's periodic
+image copies.** An isolated wrap pair is one contact seen by two slots of each body (k = 2), so the
+split, relaxed projection separates it by 1.5 x the overlap and the inequality never pulls the gap
+back. Three tests fail on the single-rank reference (`impl_a/wo4_omega_pos.txt`):
+`test_wrap_pair_matches_in_box_pair` (0.150 vs 0.100), `validate_periodic` np 2 (serial 0.900 vs
+distributed 0.800; rank 0 asserts, rank 1 hangs) and np 4 (corner 0.846 vs 0.800, straddlers).
+With `kSplitOmegaPosition = 1.0` (an experiment, not committed) all three pass (0.800 / 0.800,
+straddlers 4.8e-7). The same overshoot will apply to every rank-split pair once WO-5 splits
+ghosts. Decision needed: omega_pos for split slots (1.0; 1.5 only at hubs; or accept and change
+the tests). WO-5 not started.
+
+**Finding B (implemented as written; no gate exercises it):** §4.4 / §3 "fold before the coarse
+cycle, re-seed after" with group masses from the solve views (§4.5) is not momentum-conservative
+at a hub that aggregates: the coarse cycle moves the hub's base by dV computed with mass m/s, the
+re-seed hands dV to all s copies and the next fold keeps it whole, so the body gains m dV instead
+of (m/s) dV. A fold (not a re-seed) after the coarse cycle, or true masses in the coarse cycle,
+would conserve; the second breaks the rank-level M for ghost copies (§3 says they enter with solve
+masses). `hub_pgs --stab=multilevel --vel-iters=1` (the pass runs; dP 2.9e-7) does not aggregate
+the hub, so no number shows it.
+
+**Interim under MPI (WO-4 only, superseded by WO-5):** hub copies at np >= 2 are rank-local
+(k = s, true masses across ranks, raw reverse); sigma is re-marked after every rank sync and the
+orphan shares are summed back to the balance before each sync. Hub numbers at np >= 2 were not
+measured.
+
+**Open points found for WO-5 (the note leaves them open):**
+1. `m_vel = 1 << col(rank)` needs the rank colouring, which is WO-6's; the opening payload's
+   velMask has no value to carry in WO-5.
+2. §4.6 step 5 seeds ghost orphan shares from "B the forwarded balance", but neither
+   `OpeningState` nor the later `VelocityState` forwards carry the orphan balance; after a sync the
+   ghost cannot re-seed B_new / k.
+3. With local hubs under rank-level M the local copies must take the base's share B / k (WO-4 divides
+   by s, the single-rank rule); the phase-end owner balance is seed + a(own)(share - seed / k).
+4. a_vel / a_pos need the per-slot degree every substep under MPI (WO-4 computes it only on a
+   failed colouring), and the solve views need the per-slot global k (WO-4 uses the group's k).

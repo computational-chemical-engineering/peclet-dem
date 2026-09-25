@@ -1,0 +1,32 @@
+== test_coloring_overflow, host OMP 8
+COLOR_OVERFLOW graph=contacts  D= 32 colours=32 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=manifolds D= 32 colours=32 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=contacts  D= 62 colours=62 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=manifolds D= 62 colours=62 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=contacts  D= 63 colours=63 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  1
+COLOR_OVERFLOW graph=manifolds D= 63 colours=63 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  1
+COLOR_OVERFLOW graph=contacts  D= 64 colours=64 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  1
+COLOR_OVERFLOW graph=manifolds D= 64 colours=64 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  1
+COLOR_OVERFLOW graph=contacts  D= 65 colours=22 leftover(attempt)=1 copies=2 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=manifolds D= 65 colours=22 leftover(attempt)=1 copies=2 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=contacts  D=100 colours=25 leftover(attempt)=36 copies=3 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=manifolds D=100 colours=25 leftover(attempt)=36 copies=3 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=contacts  D=300 colours=30 leftover(attempt)=236 copies=9 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=manifolds D=300 colours=30 leftover(attempt)=236 copies=9 leftover=0 conflicts=  0 at62=  0
+OK (kGate = true)
+== CUDA
+COLOR_OVERFLOW graph=contacts  D= 32 colours=32 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=manifolds D= 32 colours=32 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=contacts  D= 62 colours=62 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=manifolds D= 62 colours=62 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=contacts  D= 63 colours=63 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  1
+COLOR_OVERFLOW graph=manifolds D= 63 colours=63 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  1
+COLOR_OVERFLOW graph=contacts  D= 64 colours=64 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  1
+COLOR_OVERFLOW graph=manifolds D= 64 colours=64 leftover(attempt)=0 copies=0 leftover=0 conflicts=  0 at62=  1
+COLOR_OVERFLOW graph=contacts  D= 65 colours=22 leftover(attempt)=1 copies=2 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=manifolds D= 65 colours=22 leftover(attempt)=1 copies=2 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=contacts  D=100 colours=25 leftover(attempt)=36 copies=3 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=manifolds D=100 colours=25 leftover(attempt)=36 copies=3 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=contacts  D=300 colours=30 leftover(attempt)=236 copies=9 leftover=0 conflicts=  0 at62=  0
+COLOR_OVERFLOW graph=manifolds D=300 colours=30 leftover(attempt)=236 copies=9 leftover=0 conflicts=  0 at62=  0
+OK (kGate = true)
