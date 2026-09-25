@@ -1,0 +1,22 @@
+== ref(ca32026 numerics + WO-4b tests) hub_static  OMP 1
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=5.8374e-01 residual/R=0.0000e+00
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=4.877e-08 dXpos=4.877e-08 dLvel=0.000e+00 ghosts=0 ovl=0.000e+00
+GATE: hub_static leaf gap / residual overlap
+FAILED (np=1)
+== ref(ca32026 numerics + WO-4b tests) hub_static --solo OMP 1
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=5.8374e-01 residual/R=0.0000e+00
+GATE: hub_static leaf gap / residual overlap
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=4.877e-08 dXpos=4.877e-08 dLvel=0.000e+00 ghosts=0 ovl=0.000e+00
+FAILED (np=1)
+== ref(ca32026 numerics + WO-4b tests) hub_ml  OMP 1
+GATE: hub_ml exceeds its conservation thresholds
+FAILED (np=1)
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=1 mlHubAggregated=1
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=4.4667e+00 residual/R=1.9036e-07
+MOMENTUM mode=hub_ml np=1 thr=1 N=181 steps=10 dP=1.501e-02 dX=2.491e-03 dXpos=6.980e-08 dLvel=3.484e-03 ghosts=0 ovl=1.741e-03
+== ref(ca32026 numerics + WO-4b tests) hub_ml --solo OMP 1
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=1 mlHubAggregated=1
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=4.4667e+00 residual/R=1.9036e-07
+MOMENTUM mode=hub_ml np=1 thr=1 N=181 steps=10 dP=1.501e-02 dX=2.491e-03 dXpos=8.297e-08 dLvel=3.484e-03 ghosts=0 ovl=1.741e-03
+GATE: hub_ml exceeds its conservation thresholds
+FAILED (np=1)

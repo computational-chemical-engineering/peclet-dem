@@ -1,0 +1,102 @@
+== hub_static  OMP 1
+CONFLICTS mode=hub_static np=1 thr=1 vel=0 pos=0 degVel=30 degPos=30 colVel=30 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=4.0792e-02 residual/R=3.6987e-06
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=4.883e-08 dXpos=4.883e-08 dLvel=0.000e+00 ghosts=0 ovl=3.694e-05
+OK (np=1)
+== hub_static --solo OMP 1
+CONFLICTS mode=hub_static np=1 thr=1 vel=0 pos=0 degVel=30 degPos=30 colVel=30 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=5.5954e-02 residual/R=2.9243e-06
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=6.607e-08 dXpos=6.607e-08 dLvel=0.000e+00 ghosts=0 ovl=4.254e-05
+OK (np=1)
+== hub_ml  OMP 1
+CONFLICTS mode=hub_ml np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=180 ml=0 copiesVel=3 copiesPos=5
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=1 mlHubAggregated=1
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=2.2952e+00 residual/R=1.8761e-05
+MOMENTUM mode=hub_ml np=1 thr=1 N=181 steps=10 dP=1.641e-07 dX=7.888e-08 dXpos=8.518e-08 dLvel=2.984e-03 ghosts=0 ovl=2.044e-03
+OK (np=1)
+== hub_ml --solo OMP 1
+CONFLICTS mode=hub_ml np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=180 ml=0 copiesVel=3 copiesPos=5
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=1 mlHubAggregated=1
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=2.6626e+00 residual/R=3.0359e-05
+MOMENTUM mode=hub_ml np=1 thr=1 N=181 steps=10 dP=2.628e-07 dX=7.050e-08 dXpos=6.772e-08 dLvel=2.984e-03 ghosts=0 ovl=2.111e-03
+OK (np=1)
+== hub  OMP 1
+CONFLICTS mode=hub np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=1.773e-07 dX=2.864e-07 dXpos=3.233e-07 dLvel=3.845e-09 ghosts=0 ovl=2.466e-05
+OK (np=1)
+== hub --solo OMP 1
+CONFLICTS mode=hub np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=1.771e-07 dX=3.110e-07 dXpos=3.592e-07 dLvel=4.449e-09 ghosts=0 ovl=4.672e-05
+OK (np=1)
+== hub_posonly  OMP 1
+CONFLICTS mode=hub_posonly np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=3.245e-07 dXpos=3.245e-07 dLvel=0.000e+00 ghosts=0 ovl=3.217e-05
+OK (np=1)
+== hub_posonly --solo OMP 1
+CONFLICTS mode=hub_posonly np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.910e-07 dXpos=1.910e-07 dLvel=0.000e+00 ghosts=0 ovl=3.833e-05
+OK (np=1)
+== hub_pgs  OMP 1
+CONFLICTS mode=hub_pgs np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=2.789e-07 dX=1.391e-07 dXpos=1.417e-07 dLvel=2.200e-09 ghosts=0 ovl=2.433e-05
+OK (np=1)
+== hub_pgs --solo OMP 1
+CONFLICTS mode=hub_pgs np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=3.333e-07 dX=8.781e-08 dXpos=1.067e-07 dLvel=2.815e-09 ghosts=0 ovl=2.577e-05
+OK (np=1)
+== cluster_periodic --solo OMP 1
+CONFLICTS mode=cluster_periodic np=1 thr=1 vel=0 pos=0 degVel=6 degPos=10 colVel=7 colPos=10 leftVel=0 leftPos=0 degPosPt=10 ml=0 copiesVel=0 copiesPos=0
+MOMENTUM mode=cluster_periodic np=1 thr=1 N=925 steps=50 dP=3.169e-09 dX=n/a dXpos=5.804e-07 dLvel=n/a ghosts=0 ovl=7.174e-02
+OK (np=1)
+EXIT
+== hub_static  OMP 1
+CONFLICTS mode=hub_static np=1 thr=1 vel=0 pos=0 degVel=30 degPos=30 colVel=30 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=4.3825e-02 residual/R=1.6350e-06
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=2.321e-08 dXpos=2.321e-08 dLvel=0.000e+00 ghosts=0 ovl=2.691e-06
+OK (np=1)
+== hub_static --solo OMP 1
+CONFLICTS mode=hub_static np=1 thr=1 vel=0 pos=0 degVel=30 degPos=30 colVel=30 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+HUBGAP mode=hub_static np=1 thr=1 maxGap/delta=4.8976e-02 residual/R=3.4303e-06
+MOMENTUM mode=hub_static np=1 thr=1 N=301 steps=1 dP=0.000e+00 dX=4.789e-08 dXpos=4.789e-08 dLvel=0.000e+00 ghosts=0 ovl=4.046e-05
+OK (np=1)
+== hub_ml  OMP 1
+CONFLICTS mode=hub_ml np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=180 ml=0 copiesVel=3 copiesPos=5
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=1 mlHubAggregated=1
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=2.4756e+00 residual/R=5.7036e-07
+MOMENTUM mode=hub_ml np=1 thr=1 N=181 steps=10 dP=3.365e-07 dX=5.234e-08 dXpos=5.197e-08 dLvel=2.984e-03 ghosts=0 ovl=1.863e-03
+OK (np=1)
+== hub_ml --solo OMP 1
+CONFLICTS mode=hub_ml np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=180 ml=0 copiesVel=3 copiesPos=5
+MLCTRL mode=hub_ml np=1 thr=1 velCopies=3 mlLevels=1 mlHubAggregated=1
+HUBGAP mode=hub_ml np=1 thr=1 maxGap/delta=2.4441e+00 residual/R=3.2444e-05
+MOMENTUM mode=hub_ml np=1 thr=1 N=181 steps=10 dP=2.336e-07 dX=6.631e-08 dXpos=5.891e-08 dLvel=2.984e-03 ghosts=0 ovl=2.024e-03
+OK (np=1)
+== hub  OMP 1
+CONFLICTS mode=hub np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=2.045e-07 dX=2.049e-07 dXpos=2.546e-07 dLvel=4.731e-09 ghosts=0 ovl=2.505e-05
+OK (np=1)
+== hub --solo OMP 1
+CONFLICTS mode=hub np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub np=1 thr=1 N=301 steps=20 dP=1.801e-07 dX=2.118e-07 dXpos=2.616e-07 dLvel=3.845e-09 ghosts=0 ovl=4.846e-05
+OK (np=1)
+== hub_posonly  OMP 1
+CONFLICTS mode=hub_posonly np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=3.077e-07 dXpos=3.077e-07 dLvel=0.000e+00 ghosts=0 ovl=4.739e-05
+OK (np=1)
+== hub_posonly --solo OMP 1
+CONFLICTS mode=hub_posonly np=1 thr=1 vel=0 pos=0 degVel=32 degPos=30 colVel=32 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=9 copiesPos=9
+MOMENTUM mode=hub_posonly np=1 thr=1 N=301 steps=20 dP=0.000e+00 dX=1.676e-07 dXpos=1.676e-07 dLvel=0.000e+00 ghosts=0 ovl=2.729e-05
+OK (np=1)
+== hub_pgs  OMP 1
+CONFLICTS mode=hub_pgs np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=3.428e-07 dX=1.127e-07 dXpos=1.073e-07 dLvel=2.713e-09 ghosts=0 ovl=2.580e-05
+OK (np=1)
+== hub_pgs --solo OMP 1
+CONFLICTS mode=hub_pgs np=1 thr=1 vel=0 pos=0 degVel=31 degPos=30 colVel=31 colPos=30 leftVel=0 leftPos=0 degPosPt=300 ml=0 copiesVel=7 copiesPos=9
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=2.588e-07 dX=9.584e-08 dXpos=9.118e-08 dLvel=4.174e-09 ghosts=0 ovl=2.523e-05
+OK (np=1)
+== cluster_periodic --solo OMP 1
+CONFLICTS mode=cluster_periodic np=1 thr=1 vel=0 pos=0 degVel=6 degPos=9 colVel=7 colPos=10 leftVel=0 leftPos=0 degPosPt=9 ml=0 copiesVel=0 copiesPos=0
+MOMENTUM mode=cluster_periodic np=1 thr=1 N=925 steps=50 dP=1.277e-09 dX=n/a dXpos=1.649e-06 dLvel=n/a ghosts=0 ovl=7.076e-02
+OK (np=1)
+EXIT

@@ -1,0 +1,17 @@
+G7a tri_pgs: it, KE_np1, KE_np2, |dKE|/KE_np1, KE_np2 <= KE_np1 (1+1e-6)
+    4 0.1042666 0.1042666 0.000e+00 True
+    8 0.1042666 0.1042666 0.000e+00 True
+   16 0.1042666 0.1042666 0.000e+00 True
+   32 0.1042666 0.1042666 0.000e+00 True
+   64 0.1042666 0.1042666 0.000e+00 True
+G7c cluster_pgs --steps=1: it, np, RMS |v_np - v_np1| / |v|
+  np 2: 1.320e-01 3.960e-02 6.755e-04
+  np 4: 1.714e-01 6.333e-02 3.150e-03
+  np 8: 2.203e-01 8.046e-02 3.500e-03
+G7e ovl (max over steps), ratio to np 1; hard <= max(10 x np1, 1e-3 R), <= 0.1 R (R = 0.5)
+  cluster: np1 2.704e-02 | np2 4.495e-02 (1.66x) | np4 4.534e-02 (1.68x) | np8 5.234e-02 (1.94x HARD-FAIL)
+  cluster_pgs: np1 2.194e-02 | np2 4.241e-02 (1.93x) | np4 4.962e-02 (2.26x) | np8 4.963e-02 (2.26x)
+  cluster_friction: np1 2.060e-02 | np2 4.173e-02 (2.03x) | np4 5.211e-02 (2.53x HARD-FAIL) | np8 5.233e-02 (2.54x HARD-FAIL)
+G7f ITERS ratio npN / np1 (hard: np2 <= 3.5, np4/8 <= 5)
+  pos: np1 96 | np2 157 (1.64x) | np4 157 (1.64x) | np8 233 (2.43x)
+  vel: np1 116 | np2 150 (1.29x) | np4 202 (1.74x) | np8 203 (1.75x)

@@ -1,0 +1,76 @@
+== G7c it=8 np=1
+ITERS mode=cluster_pgs np=1 thr=1 vel=8 pos=20
+MOMENTUM mode=cluster_pgs np=1 thr=1 N=925 steps=1 dP=7.191e-09 dX=8.164e-08 dXpos=8.181e-08 dL=3.803e-04 dLcm=3.803e-04 dLvel=4.607e-09 ghosts=0 ovl=2.194e-02
+== G7c it=8 np=2
+ITERS mode=cluster_pgs np=2 thr=1 vel=8 pos=20
+MOMENTUM mode=cluster_pgs np=2 thr=1 N=925 steps=1 dP=7.009e-09 dX=5.002e-08 dXpos=5.006e-08 dL=3.699e-04 dLcm=3.699e-04 dLvel=1.217e-09 ghosts=222 ovl=4.243e-02
+== G7c it=8 np=4
+ITERS mode=cluster_pgs np=4 thr=1 vel=8 pos=20
+MOMENTUM mode=cluster_pgs np=4 thr=1 N=925 steps=1 dP=3.418e-09 dX=3.275e-08 dXpos=3.280e-08 dL=3.698e-04 dLcm=3.698e-04 dLvel=1.632e-09 ghosts=498 ovl=4.881e-02
+== G7c it=8 np=8
+ITERS mode=cluster_pgs np=8 thr=1 vel=8 pos=20
+MOMENTUM mode=cluster_pgs np=8 thr=1 N=925 steps=1 dP=2.526e-09 dX=7.027e-08 dXpos=7.032e-08 dL=3.682e-04 dLcm=3.682e-04 dLvel=4.225e-09 ghosts=924 ovl=4.899e-02
+== G7c it=32 np=1
+ITERS mode=cluster_pgs np=1 thr=1 vel=32 pos=20
+MOMENTUM mode=cluster_pgs np=1 thr=1 N=925 steps=1 dP=1.174e-08 dX=3.870e-08 dXpos=3.867e-08 dL=3.927e-04 dLcm=3.927e-04 dLvel=6.689e-09 ghosts=0 ovl=2.196e-02
+== G7c it=32 np=2
+ITERS mode=cluster_pgs np=2 thr=1 vel=32 pos=20
+MOMENTUM mode=cluster_pgs np=2 thr=1 N=925 steps=1 dP=1.129e-08 dX=5.201e-08 dXpos=5.211e-08 dL=3.892e-04 dLcm=3.892e-04 dLvel=8.971e-09 ghosts=222 ovl=4.219e-02
+== G7c it=32 np=4
+ITERS mode=cluster_pgs np=4 thr=1 vel=32 pos=20
+MOMENTUM mode=cluster_pgs np=4 thr=1 N=925 steps=1 dP=8.085e-09 dX=9.110e-08 dXpos=9.129e-08 dL=3.937e-04 dLcm=3.937e-04 dLvel=5.714e-09 ghosts=498 ovl=4.758e-02
+== G7c it=32 np=8
+ITERS mode=cluster_pgs np=8 thr=1 vel=32 pos=20
+MOMENTUM mode=cluster_pgs np=8 thr=1 N=925 steps=1 dP=8.844e-09 dX=6.398e-08 dXpos=6.412e-08 dL=3.727e-04 dLcm=3.727e-04 dLvel=5.502e-09 ghosts=924 ovl=4.789e-02
+== G7c it=128 np=1
+ITERS mode=cluster_pgs np=1 thr=1 vel=116 pos=20
+MOMENTUM mode=cluster_pgs np=1 thr=1 N=925 steps=1 dP=2.011e-08 dX=9.599e-08 dXpos=9.642e-08 dL=3.926e-04 dLcm=3.926e-04 dLvel=5.566e-09 ghosts=0 ovl=2.195e-02
+== G7c it=128 np=2
+ITERS mode=cluster_pgs np=2 thr=1 vel=128 pos=20
+MOMENTUM mode=cluster_pgs np=2 thr=1 N=925 steps=1 dP=2.554e-08 dX=2.595e-08 dXpos=2.585e-08 dL=3.823e-04 dLcm=3.823e-04 dLvel=1.708e-08 ghosts=222 ovl=4.218e-02
+== G7c it=128 np=4
+ITERS mode=cluster_pgs np=4 thr=1 vel=128 pos=20
+MOMENTUM mode=cluster_pgs np=4 thr=1 N=925 steps=1 dP=2.720e-08 dX=1.217e-08 dXpos=1.266e-08 dL=3.882e-04 dLcm=3.882e-04 dLvel=1.743e-08 ghosts=498 ovl=4.728e-02
+== G7c it=128 np=8
+ITERS mode=cluster_pgs np=8 thr=1 vel=128 pos=20
+MOMENTUM mode=cluster_pgs np=8 thr=1 N=925 steps=1 dP=1.172e-08 dX=7.861e-08 dXpos=7.883e-08 dL=3.665e-04 dLcm=3.665e-04 dLvel=1.302e-08 ghosts=924 ovl=4.758e-02
+== G7f vel np=1
+ITERS mode=cluster_pgs np=1 thr=1 vel=116 pos=20
+== G7f vel np=2
+ITERS mode=cluster_pgs np=2 thr=1 vel=178 pos=20
+== G7f vel np=4
+ITERS mode=cluster_pgs np=4 thr=1 vel=180 pos=20
+== G7f vel np=8
+ITERS mode=cluster_pgs np=8 thr=1 vel=185 pos=20
+== G7a it=4 np=1
+KE mode=tri_pgs np=1 thr=1 s1=1.042665992e-01 s2=1.042666066e-01 s3=1.042665992e-01
+== G7a it=4 np=2
+KE mode=tri_pgs np=2 thr=1 s1=1.034457012e-01 s2=1.034457086e-01 s3=1.034457012e-01
+== G7a it=8 np=1
+KE mode=tri_pgs np=1 thr=1 s1=1.042665992e-01 s2=1.042666066e-01 s3=1.042665992e-01
+== G7a it=8 np=2
+KE mode=tri_pgs np=2 thr=1 s1=1.042042720e-01 s2=1.042042645e-01 s3=1.042042571e-01
+== G7a it=16 np=1
+KE mode=tri_pgs np=1 thr=1 s1=1.042665992e-01 s2=1.042666066e-01 s3=1.042665992e-01
+== G7a it=16 np=2
+KE mode=tri_pgs np=2 thr=1 s1=1.042042720e-01 s2=1.042042645e-01 s3=1.042042571e-01
+== G7a it=32 np=1
+KE mode=tri_pgs np=1 thr=1 s1=1.042665992e-01 s2=1.042666066e-01 s3=1.042665992e-01
+== G7a it=32 np=2
+KE mode=tri_pgs np=2 thr=1 s1=1.042042720e-01 s2=1.042042645e-01 s3=1.042042571e-01
+== G7a it=64 np=1
+KE mode=tri_pgs np=1 thr=1 s1=1.042665992e-01 s2=1.042666066e-01 s3=1.042665992e-01
+== G7a it=64 np=2
+KE mode=tri_pgs np=2 thr=1 s1=1.042042720e-01 s2=1.042042645e-01 s3=1.042042571e-01
+== np1 hub_pgs 
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=3.050e-07 dX=2.316e-07 dXpos=1.929e-07 dL=7.346e-06 dLcm=7.346e-06 dLvel=1.030e-08 ghosts=0 ovl=2.357e-05
+DIFF vs WO-5
+== np1 hub_pgs --solo
+MOMENTUM mode=hub_pgs np=1 thr=1 N=301 steps=20 dP=3.050e-07 dX=2.316e-07 dXpos=1.929e-07 dL=7.346e-06 dLcm=7.346e-06 dLvel=1.030e-08 ghosts=0 ovl=2.357e-05
+DIFF vs WO-5
+== np1 hub_ml 
+MOMENTUM mode=hub_ml np=1 thr=1 N=181 steps=10 dP=2.879e-07 dX=7.722e-08 dXpos=8.100e-08 dL=5.097e-03 dLcm=5.097e-03 dLvel=5.128e-03 ghosts=0 ovl=2.015e-03
+DIFF vs WO-5
+== np1 hub_ml --solo
+MOMENTUM mode=hub_ml np=1 thr=1 N=181 steps=10 dP=2.908e-07 dX=7.722e-08 dXpos=8.430e-08 dL=5.097e-03 dLcm=5.097e-03 dLvel=5.128e-03 ghosts=0 ovl=2.015e-03
+DIFF vs WO-5

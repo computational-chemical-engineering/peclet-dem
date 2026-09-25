@@ -1,0 +1,13 @@
+IDENT cluster_pgs np=4 runs=5
+IDENT cluster_pgs np=8 runs=5
+IDENT cluster_poisson np=4 runs=5
+IDENT cluster_poisson np=8 runs=5
+IDENT cluster_posonly np=4 runs=5
+IDENT cluster_posonly np=8 runs=5
+IDENT hub_pgs np=4 runs=5
+IDENT hub_pgs np=8 runs=5
+IDENT hub_ml np=4 runs=5
+IDENT hub_ml np=8 runs=5
+IDENT ring_mini np=4 runs=5
+IDENT ring_mini np=8 runs=5
+EXIT

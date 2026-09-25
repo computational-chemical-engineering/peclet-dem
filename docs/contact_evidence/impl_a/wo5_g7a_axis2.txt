@@ -1,0 +1,30 @@
+== G7a it=4 np=1
+KE mode=tri_pgs np=1 thr=1 s1=1.042665992e-01 s2=1.042666066e-01 s3=1.042665992e-01
+OK (np=1)
+== G7a it=4 np=2
+KE mode=tri_pgs np=2 thr=1 s1=1.006087859e-01 s2=1.006087787e-01 s3=1.006087715e-01
+OK (np=2)
+== G7a it=8 np=1
+KE mode=tri_pgs np=1 thr=1 s1=1.042665992e-01 s2=1.042666066e-01 s3=1.042665992e-01
+OK (np=1)
+== G7a it=8 np=2
+KE mode=tri_pgs np=2 thr=1 s1=1.038624599e-01 s2=1.038624525e-01 s3=1.038624451e-01
+OK (np=2)
+== G7a it=16 np=1
+KE mode=tri_pgs np=1 thr=1 s1=1.042665992e-01 s2=1.042666066e-01 s3=1.042665992e-01
+OK (np=1)
+== G7a it=16 np=2
+KE mode=tri_pgs np=2 thr=1 s1=1.041034025e-01 s2=1.041033951e-01 s3=1.041033876e-01
+OK (np=2)
+== G7a it=32 np=1
+KE mode=tri_pgs np=1 thr=1 s1=1.042665992e-01 s2=1.042666066e-01 s3=1.042665992e-01
+OK (np=1)
+== G7a it=32 np=2
+KE mode=tri_pgs np=2 thr=1 s1=1.041034025e-01 s2=1.041033951e-01 s3=1.041033876e-01
+OK (np=2)
+== G7a it=64 np=1
+KE mode=tri_pgs np=1 thr=1 s1=1.042665992e-01 s2=1.042666066e-01 s3=1.042665992e-01
+OK (np=1)
+== G7a it=64 np=2
+KE mode=tri_pgs np=2 thr=1 s1=1.041034025e-01 s2=1.041033951e-01 s3=1.041033876e-01
+OK (np=2)

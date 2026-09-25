@@ -1,0 +1,28 @@
+== np 2 cluster_poisson
+OK (np=2)
+== np 4 cluster_poisson
+OK (np=4)
+== np 8 cluster_poisson
+OK (np=8)
+== np 2 hub_ml
+OK (np=2)
+== np 4 hub_static
+OK (np=4)
+== np 4 ring_mini
+OK (np=4)
+== np 1 cluster_periodic
+OK (np=1)
+== np 2 cluster_periodic
+OK (np=2)
+== np 8 cluster_posonly
+OK (np=8)
+== np 4 cluster_multilevel
+OK (np=4)
+== np 4 hub_pgs
+OK (np=4)
+== np 4 cluster
+OK (np=4)
+== np 4 cluster_friction
+OK (np=4)
+== np 4 cluster_jacobi
+OK (np=4)

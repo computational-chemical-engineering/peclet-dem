@@ -350,3 +350,107 @@ ca32026 gives 0.584 delta, so a bound of about 0.1-0.2 delta would still discrim
 Needed: the bound (or the scene).
 
 WO-5 not started (it depends on WO-4b, and its acceptance reuses both modes).
+
+## WO-4b (8b4a5f3): committed with §12 S10 / S11 / S12
+
+The parked 9cbd29f cherry-picked and amended: S10 (`hub_ml` = the dense shell `ns = 3.0 (rs/R)^2`,
+N = 181), S11 (`hub_static` gap bound 0.15 delta), S12 (a fused main velocity / position loop writes
+its iteration count to a device scalar, `FusedLoopSpec::iters`; read back only with the C++ switch
+`Simulation::debugIterationCounters`, which the test sets; off = no store, no copy; test flag
+`--fused=auto|on|off`), clang-format over the touched files. Raw: `impl_a/wo4b2_*.txt`. Host load
+80-95.
+
+| check | gate | result |
+|---|---|---|
+| 2. `hub_static` np 1 (OMP 1, OMP 8 x 3; step_mpi, `--solo`) | gap <= 0.15 delta, residual <= 1e-4 R, dXpos <= 3e-5, \|P\| = 0 | gap <= 0.057 delta, residual <= 4.3e-6 R, dXpos <= 5.7e-8, \|P\| 0 |
+| same, CUDA x 3 | same | gap <= 0.056 delta, residual <= 4.0e-6 R, dXpos <= 6.6e-8, \|P\| 0 |
+| 2. discrimination (ca32026 numerics + the WO-4b tests) | gap >= 0.3 delta | 0.584 delta |
+| 3. `hub_ml` np 1 (host OMP 1, 8 x 3; CUDA x 3; step_mpi, `--solo`) | dP <= 5e-6, controls | dP <= 2.7e-7 (host), <= 3.4e-7 (CUDA); velCopies 3, levels 1, mlHubAggregated 1 in every run |
+| 3. discrimination (ca32026 numerics) | dP > 1e-4, controls | dP 1.50e-2; levels 1, aggregated 1 |
+| 4. `hub`, `hub_posonly`, `hub_pgs` (host, CUDA) | dP <= 1e-6, dXpos <= 3e-5, CONFLICTS 0 | dP <= 3.7e-7, dXpos <= 9.4e-7, CONFLICTS 0 |
+| 5. `cluster_periodic --solo` drift | <= 1e-5 R | 1.1e-6 R (host), 1.7e-6 R (CUDA) |
+| S12: CUDA `--solo --fused=on` vs `off`, `--steps=1` | counts reported | `cluster_posonly --pos-iters=400` 97 / 97 (fused) vs 95-96 (launch; CUDA run-to-run); `cluster_pgs --vel-iters=400` 116 vs 116 |
+| 7. battery (`build_ct`, OMP 2, `-j1`, core Python on PYTHONPATH) | all pass | **201 / 201**, the 12 `python_mpi_*` run and pass |
+
+Item 6 (np 1 byte-identity to ca32026) stands from the parked run; the S12 change is host-inert by
+construction (the counter lives in the CUDA-only fused kernel and a branch on a device-loop flag),
+and the WO-5 G3 run below re-proves every np 1 dump against a build of 8b4a5f3.
+
+## WO-5 (2dfdee4 on branch `contacts-wo5-parked`, NOT on `contacts`): implemented, six stops
+
+§13.3 as written (activity pass; PGS opening `openVelocityPhase` 40 B / 28 B; `g = 0` counts
+opening; owner seeds; a-weighted pack; k-weighted apply, raw for k <= 1; orphan shares, the balance
+forwarded under Poisson, the phase-end restore; `invMassCoarse`; solve views from the per-slot k);
+§6.2 (`ghostCanon_`, the slot map in `demStepMpi`); hooks; debug checks; `split_stats.orphanClamps`.
+An MPI rank with `!exchanges()` runs WO-4's single-rank path (step 0), bit for bit.
+
+**Finding (acted on, flagged): the MPI twin-dedup switch has to cover every dedup site.** §4.2
+item 2 names the velocity colourings only, but the warm gather, `computeVn0`, the warm start, the
+side flags, the Poisson bank, the Jacobi count / solve and the legacy friction normal pass all skip
+`realIdx(A) > realIdx(B)`. With the §6.2 map a periodic self image of a lower slot makes the OWNED
+twin satisfy that test, so they would drop it (no warm start, no bank). All take
+`dedupTwins = !distributed` (np 1 Solo unchanged; np 1 step_mpi closed has no images).
+
+Raw: `impl_a/wo5_*.txt` (summaries `wo5_matrix_summary.txt`, `wo5_g7_tables.txt`); scripts
+`wo5_{dumps,matrix,matrix_cuda,g4,g7,perf}.sh`, `wo5_g7.py`, `wo5_msumm.py`. Host load 80-95.
+
+| check | gate | result |
+|---|---|---|
+| 1. G1 matrix np 1/2/4/8 x (OMP 1, OMP 8 x 3), 11 modes | §9 + §13.6 rows | dP <= 8.1e-7 (PGS family, <= 5e-6), 0 (posonly); dX, dXpos <= 6.6e-7 (clusters), <= 3.5e-6 (hubs), <= 4.7e-6 (ring); CONFLICTS 0 everywhere. **Misses:** `cluster_multilevel` dLvel 3.2e-5 (np 4), 8.7e-5 (np 8) vs 1e-6 (stop 6); `ring_mini` dLvel 1.5e-3-2.3e-3 vs 1e-5 at EVERY np, np 1 included (pre-existing: 1.55e-3 at the WO-0 baseline) |
+| 1. same, CUDA np 1 x 3 (step_mpi, `--solo`) | same | dP <= 7.7e-7, dXpos <= 7.8e-7, CONFLICTS 0; hub_static gap 0.057 delta; hub_ml controls L1 A1 |
+| 2. `ring_mini` np 2 / 4 / 8 (S9 closed) | dP <= 1e-6, dXpos <= 1e-5 R, CONFLICTS 0 | dP <= 3.5e-8, dXpos <= 4.7e-6, CONFLICTS 0 (was np 8: dXpos 0.14, ovl 3.6e6) |
+| 2. `ring_mini` ovl | <= 10 x np 1 and <= 0.1 R | np 1 0.250 (= 0.50 R); ratio np 2 / 4 / 8 = 0.91 / 0.89 / 1.16. **The 0.1 R bound fails at np 1 itself (stop 1)** |
+| 3. `hub_static` np 2 / 4 / 8 | gap <= 0.15 delta, residual <= 1e-4 R | gap 0.025 / 0.014 / 0.011 delta, residual 4.7e-5 / 6.5e-5 / 7.7e-5 R |
+| 3. `hub_ml` np 2 / 4 / 8 | controls, dP <= 5e-6 | dP 4.1e-7 / 2.5e-7 / 2.4e-7; controls np 2 L1 A5; **np 4, 8: no level built (stop 2)** |
+| 4. G3 np 1 vs a build of 8b4a5f3, OMP 1: 24 modes x (step_mpi, `--solo`), 5 S6 scenes, 4 piles | identical but named | **55 / 56 identical**; DIFF only `cluster_periodic` np 1 step_mpi (named) |
+| 4. named change `cluster_periodic` np 1 step_mpi | report | dP 2.71e-9 -> 5.08e-9; periodic CoM drift 9.3e-7 -> 8.5e-7 R; ovl 2.90e-2 -> 6.24e-2; KE s1 2322.8 -> 2330.5, s10 1156.1 -> 1150.5 |
+| 5. G4 np 4, 8, OMP 1, 5 runs | identical | 12 / 12 IDENT (`cluster_pgs`, `cluster_poisson`, `cluster_posonly`, `hub_pgs`, `hub_ml`, `ring_mini`) |
+| 6. G7a `tri_pgs --axis=2` np 2 vs np 1, it 4/8/16/32/64 | non-increasing, <= 1e-3 at 16, <= 1e-5 at 64, np2 <= np1 | 3.5e-2 / 3.9e-3 / 1.57e-3 / 1.57e-3 / 1.57e-3; KE_np2 <= KE_np1 always. **Misses (stop 3)** (default axis 0 does not cross the np 2 face: 0 at every count) |
+| 6. G7c `cluster_pgs --steps=1`, RMS \|v_np - v_np1\| / \|v\| at 8/32/128 | non-increasing, <= 1e-3 at 128 | np 2: 1.3e-1 / 4.0e-2 / 6.8e-4; np 4: 1.7e-1 / 6.3e-2 / **3.2e-3**; np 8: 2.2e-1 / 8.0e-2 / **3.5e-3** (stop 4) |
+| 6. G7e ovl, ratio to np 1 (np 1: 2.70e-2 / 2.19e-2 / 2.06e-2) | hard <= 10 x np 1 and <= 0.1 R (0.05); report ratio | `cluster` 1.66 / 1.68 / 1.94x (np 8: 0.0523 > 0.05); `cluster_pgs` 1.93 / 2.26 / 2.26x; `cluster_friction` 2.03 / 2.53 / 2.54x (np 4, 8: 0.0521, 0.0523 > 0.05). c771e07: 0.024-0.029 at np 2-8 (stop 5; ratio > 1.5 = R-U4 evidence per R-F6) |
+| 6. G7f ITERS ratio (np 1: pos 96, vel 116) | np 2 <= 3.5, np 4 / 8 <= 5; report > 2.5 | pos 1.64 / 1.64 / 2.43x; vel 1.29 / 1.74 / 1.75x |
+| 7. orphanClamps, `cluster_poisson`, every np and OMP, CUDA | 0 | 0 |
+| 8. Stop-A tests, `validate_periodic` np 2 / 4 | pass | pass (battery) |
+| debug-build checks (`-O2` without NDEBUG), 14 mode x np runs | never fire | none fired |
+| 9. performance | median <= 1.10 | NOT RUN (`impl_a/wo5_perf.sh build_base/tests/kokkos_mpi/test_momentum_mpi <WO-5 build>/tests/kokkos_mpi/test_momentum_mpi 5`) |
+| battery (`build_ct` built from 2dfdee4, OMP 2, `-j1`) | all pass | **200 / 201**: only `momentum_hub_ml_np4` (stop 2); the 12 `python_mpi_*` run and pass |
+
+**Stop 1: `ring_mini`'s "<= 0.1 R at every step" is unreachable at np 1.** ovl (the position loop's
+last residual, absolute) is 0.20-0.27 at np 1 in every build since WO-0 (0.4-0.54 R, R = 0.5): the
+jammed ring lattice does not converge in 20 position iterations. The relative guard holds (<= 1.16 x
+np 1) and nothing diverges.
+
+**Stop 2: `hub_ml` builds no multilevel level at np 4 and 8** (the WO-4b build: the same, so it is
+the scene, not WO-5). The whole 181-body scene lies inside every rank's ghost band, so each rank's
+vertex count is 181 while it owns only ~1/np of the eligible edges: the pairwise matching merges a
+few pairs and the 90 % stall rule rejects the level (instrumented: np 4 levels 0 in every one
+of the 36 rank-substeps the pass ran, eligible manifolds 0-11 per rank). Conservation holds (dP <= 2.5e-7).
+
+**Stop 3: G7a's 1e-3 at 16 and 1e-5 at 64 sit below the PGS loop's adaptive stop.** The np 2
+iterates reproduce Appendix A.1's M-PGS model (0.1006 at 4, 0.1039 at 8); the loop then stops at
+`maxApproach <= 0.02 vRest` near 16 iterations with 0.10410 against 0.10427, so 32 and 64 are the
+same run. The gate assumed the cap is the iteration count.
+
+**Stop 4: G7c misses at np 4 / 8 and R-F2 does not rescue it.** At 128 iterations np 1 has stopped
+at 116 (tolerance) while np 4 / 8 need 202 / 203 (G7f). R-F2's default was applied as an
+experiment, not committed (`impl_a/wo5_rf2_experiment.txt`, `kSplitOmegaVelocity = 1.5`): G7c at
+128 = 9.8e-4 / 1.15e-3 / 1.35e-3 (np 2 / 4 / 8) -- still > 1e-3 at np 4, 8, so R-F2 says stop;
+vel iterations 178 / 180 / 185 (np 2 worse than omega 1's 150); G7a 6.0e-4 from 8 on; and it
+changes the np 1 PGS hub dumps (`hub_pgs`, `hub_ml`, step_mpi and `--solo`) against G3, because
+`splitSlot` also marks local hub copies. Needed: whether R-F2 is scoped to rank-split slots, and
+the G7c bound.
+
+**Stop 5: G7e's hard 0.1 R is exceeded by 4-5 %** (`cluster` np 8 0.0523; `cluster_friction` np 4, 8
+0.0521, 0.0523; limit 0.05). At a fixed budget of 20 position iterations the rank faces leave 1.7-2.5x
+np 1's residual, which §13.4 predicts (1.5-9x); c771e07's raw sum left 0.024-0.029. Per R-F6 the
+ratios (> 1.5) go to the user with R-U4.
+
+**Stop 6: `cluster_multilevel` dLvel 3.2e-5 (np 4) / 8.7e-5 (np 8) against G1's 1e-6.** In one of
+24 (np 4) / 56 (np 8) rank-substeps the pass now builds a coarse level (c771e07 and WO-4b: none,
+dLvel 1.5e-8), and the coarse cycle is translation-only by design (§13.6 reports dLvel for
+`hub_ml` for that reason). An experiment with WO-4b's coarse masses (`invMass` for every vertex)
+builds the same level and gives 2.6e-4 / 8.5e-5, so it is not the `k / a` rule. dP stays 7.9e-7.
+
+**Also not in the note:** `ring_mini`'s G1 dLvel 1e-5 fails at every np and since WO-0 (1.5e-3 at
+np 1); WO-5 does not change it. `contacts` stays at 8b4a5f3; `build_ct` / `build_ct_cuda` hold the
+2dfdee4 binaries.
