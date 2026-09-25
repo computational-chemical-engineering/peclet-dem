@@ -428,6 +428,73 @@ inline void haloUnpackGhostColumn(Kokkos::View<float* [2], CpMem> pf,
       KOKKOS_LAMBDA(int g) { pf(no + slot(g), 1) = ghostVal(g); });
 }
 
+// --- fused owner -> ghost forwards (WO-5): one exchange instead of two when rotation is forwarded.
+// Pure copies (plus the same float shift add as haloUnpackF3), so bit-identical to the separate
+// forwards. POD => MPI_BYTE-copyable. ---
+struct VelocityState {
+  float v[3];
+  float w[3];
+};
+struct PositionState {
+  float x[3];
+  float q[4];
+};
+inline void haloPackVelocityState(V3 velPred, V3 angVelPred,
+                                  peclet::core::View<VelocityState> owned, int n) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::packVelState", Kokkos::RangePolicy<CpExec>(0, n), KOKKOS_LAMBDA(int i) {
+        VelocityState r;
+        for (int d = 0; d < 3; ++d) {
+          r.v[d] = velPred(i, d);
+          r.w[d] = angVelPred(i, d);
+        }
+        owned(i) = r;
+      });
+}
+inline void haloUnpackVelocityState(V3 velPred, V3 angVelPred,
+                                    peclet::core::View<VelocityState> ghost, Vi slot, int no,
+                                    int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::unpackVelState", Kokkos::RangePolicy<CpExec>(0, ng),
+      KOKKOS_LAMBDA(int g) {
+        const VelocityState r = ghost(g);
+        const int s = no + slot(g);
+        for (int d = 0; d < 3; ++d) {
+          velPred(s, d) = r.v[d];
+          angVelPred(s, d) = r.w[d];
+        }
+      });
+}
+inline void haloPackPositionState(V3 posPred, V4 quatPred, peclet::core::View<PositionState> owned,
+                                  int n) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::packPosState", Kokkos::RangePolicy<CpExec>(0, n), KOKKOS_LAMBDA(int i) {
+        PositionState r;
+        for (int d = 0; d < 3; ++d)
+          r.x[d] = posPred(i, d);
+        for (int d = 0; d < 4; ++d)
+          r.q[d] = quatPred(i, d);
+        owned(i) = r;
+      });
+}
+// The periodic image shift is added to x exactly as haloUnpackF3 adds it (one float add per axis).
+inline void haloUnpackPositionState(V3 posPred, V4 quatPred,
+                                    peclet::core::View<PositionState> ghost,
+                                    peclet::core::View<F3> shift, Vi slot, int no, int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::unpackPosState", Kokkos::RangePolicy<CpExec>(0, ng),
+      KOKKOS_LAMBDA(int g) {
+        const PositionState r = ghost(g);
+        const F3 sh = shift(g);
+        const int s = no + slot(g);
+        posPred(s, 0) = r.x[0] + sh.x;
+        posPred(s, 1) = r.x[1] + sh.y;
+        posPred(s, 2) = r.x[2] + sh.z;
+        for (int d = 0; d < 4; ++d)
+          quatPred(s, d) = r.q[d];
+      });
+}
+
 /// Owner<->ghost halo driver for the distributed Kokkos demStep. Set up once (initMpi), then each
 /// substep: gather() (rebuild + populate ghost slots) and per-iteration forward/forwardPositions.
 ///
@@ -1097,9 +1164,14 @@ class ParticleHalo {
     dev_.reverse(ghostVelInc_, ownedVelInc_);
     haloApplyVelocityIncrement(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak,
                                ownedVelInc_, numReal_);
-    forward(P.velPred);
-    if (rotation)
-      forward(P.angVelPred);
+    if (rotation) {  // one fused exchange of (velPred, angVelPred)
+      haloPackVelocityState(P.velPred, P.angVelPred, ownedVelState_, numReal_);
+      dev_.forward(ownedVelState_, ghostVelState_);
+      haloUnpackVelocityState(P.velPred, P.angVelPred, ghostVelState_, ghostSlot_, numReal_,
+                              numGhost_);
+    } else {
+      forward(P.velPred);
+    }
     markVelocityBaseline(P);
   }
   /// Forward the owners' predicted positions (+ quaternions) and mark the position baselines, with
@@ -1107,9 +1179,14 @@ class ParticleHalo {
   void publishPositions(Particles& P, bool rotation) {
     if (!exchanges())
       return;
-    forwardPositions(P.posPred);
-    if (rotation)
-      forward4(P.quatPred);
+    if (rotation) {  // one fused exchange of (posPred + periodic shift, quatPred)
+      haloPackPositionState(P.posPred, P.quatPred, ownedPosState_, numReal_);
+      dev_.forward(ownedPosState_, ghostPosState_);
+      haloUnpackPositionState(P.posPred, P.quatPred, ghostPosState_, shiftDev_, ghostSlot_,
+                              numReal_, numGhost_);
+    } else {
+      forwardPositions(P.posPred);
+    }
     haloMarkPositionBaseline(P.posPred, basePos_, ghostSlot_, numReal_, numGhost_);
   }
   /// Deliver every ghost's position-phase correction since its baseline onto its owner (reverse),
@@ -1170,11 +1247,15 @@ class ParticleHalo {
       ghostVelInc_ = peclet::core::View<VelocityIncrement>("peclet::dem::halo::ghostVelInc", g1);
       ghostPosInc_ = peclet::core::View<PositionIncrement>("peclet::dem::halo::ghostPosInc", g1);
       ghostVal_ = peclet::core::View<float>("peclet::dem::halo::ghostVal", g1);
+      ghostVelState_ = peclet::core::View<VelocityState>("peclet::dem::halo::ghostVelState", g1);
+      ghostPosState_ = peclet::core::View<PositionState>("peclet::dem::halo::ghostPosState", g1);
     }
     if (ownedVelInc_.extent(0) < o1) {
       ownedVelInc_ = peclet::core::View<VelocityIncrement>("peclet::dem::halo::ownedVelInc", o1);
       ownedPosInc_ = peclet::core::View<PositionIncrement>("peclet::dem::halo::ownedPosInc", o1);
       ownedVal_ = peclet::core::View<float>("peclet::dem::halo::ownedVal", o1);
+      ownedVelState_ = peclet::core::View<VelocityState>("peclet::dem::halo::ownedVelState", o1);
+      ownedPosState_ = peclet::core::View<PositionState>("peclet::dem::halo::ownedPosState", o1);
     }
   }
   // The maps the contact-ownership rule reads (docs/mpi_momentum_conservation.md §2.1), built on
@@ -1327,6 +1408,8 @@ class ParticleHalo {
   peclet::core::View<VelocityIncrement> ghostVelInc_, ownedVelInc_;
   peclet::core::View<PositionIncrement> ghostPosInc_, ownedPosInc_;
   peclet::core::View<float> ghostVal_, ownedVal_;
+  peclet::core::View<VelocityState> ghostVelState_, ownedVelState_;  // fused forwards (rotation)
+  peclet::core::View<PositionState> ghostPosState_, ownedPosState_;
   // Ownership maps (§2.1; see buildOwnershipMaps).
   Kokkos::View<int*, CpMem> ghostSource_, copyOffsets_, copyRanks_;
 };
