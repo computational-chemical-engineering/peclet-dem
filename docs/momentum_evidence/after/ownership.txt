@@ -1,0 +1,26 @@
+# test_ownership_mpi, OMP_NUM_THREADS=1; identical on host-openmp (build_mom) and nvidia-cuda
+# (build_cuda_mom, RTX 5080, all ranks on one GPU).
+  reverse_closed np=1: ghosts=0 copies=0 owned-mismatch=0 ghost!=owner=0 second-sync-changed=0
+  reverse_closed np=2: ghosts=128 copies=128 owned-mismatch=0 ghost!=owner=0 second-sync-changed=0
+  reverse_closed np=4: ghosts=288 copies=288 owned-mismatch=0 ghost!=owner=0 second-sync-changed=0
+  reverse_closed np=8: ghosts=488 copies=488 owned-mismatch=0 ghost!=owner=0 second-sync-changed=0
+  reverse_periodic np=1: ghosts=488 copies=488 owned-mismatch=0 ghost!=owner=0 second-sync-changed=0
+  reverse_periodic np=2: ghosts=544 copies=544 owned-mismatch=0 ghost!=owner=0 second-sync-changed=0
+  reverse_periodic np=4: ghosts=768 copies=768 owned-mismatch=0 ghost!=owner=0 second-sync-changed=0
+  reverse_periodic np=8: ghosts=1216 copies=1216 owned-mismatch=0 ghost!=owner=0 second-sync-changed=0
+  exactly_once_closed np=1: pairs=5571 owned=5571 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=0
+  exactly_once_closed np=2: pairs=5571 owned=5571 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=0
+  exactly_once_closed np=4: pairs=5571 owned=5571 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=0
+  exactly_once_closed np=8: pairs=5571 owned=5571 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=0
+  exactly_once_periodic np=1: pairs=5953 owned=5953 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=0
+  exactly_once_periodic np=2: pairs=5953 owned=5953 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=0
+  exactly_once_periodic np=4: pairs=5953 owned=5953 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=0
+  exactly_once_periodic np=8: pairs=5953 owned=5953 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=0
+  exactly_once_drift np=1: pairs=5373 owned=5373 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=0
+  exactly_once_drift np=2: pairs=5405 owned=5405 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=2
+  exactly_once_drift np=4: pairs=5436 owned=5436 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=7
+  exactly_once_drift np=8: pairs=5463 owned=5463 duplicates=0 missing=0 (seen by no rank: 0) extra=0 one-sided-visible=8
+# Regression check (temporary build, not committed): with the partner-visibility test removed
+# (lower-gid owner alone) exactly_once_drift fails: missing 2 / 4 / 5 at np 2 / 4 / 8, all seen by
+# some rank. Strong jitter (+-0.3) in the PERIODIC box: np 2 misses 2 and np 4 misses 3 pairs, every
+# one "seen by no rank" (a pre-existing halo gap, not the ownership rule); np 8 misses none.

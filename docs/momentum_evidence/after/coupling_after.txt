@@ -1,0 +1,35 @@
+LOAD 98.06, 99.11, 100.84
+=== moving_suspension np=1 dem=after
+[np=1] mean_vx=-2.27080469e-01  migrated=True  reference
+MPI MOVING SUSPENSION (np=1): PASS
+exit=0
+=== moving_suspension np=2 dem=after
+[np=2] mean_vx=-2.27080478e-01  migrated=True  vs np=1 -2.27080469e-01 rel-err=3.89e-08
+MPI MOVING SUSPENSION (np=2): PASS
+exit=0
+=== moving_suspension np=4 dem=after
+[np=4] mean_vx=-2.27080473e-01  migrated=True  vs np=1 -2.27080469e-01 rel-err=1.94e-08
+MPI MOVING SUSPENSION (np=4): PASS
+exit=0
+=== fixed_bed_ergun np=1 dem=after
+[np=1]  f_drive     U         eps    Ergun(U,eps)  rel-err
+              0.20  1.5042e-03  0.600  2.0000e-01     0.0%  (Re_p~0.00)
+             20.00  1.4982e-01  0.600  2.0000e+01     0.0%  (Re_p~0.14)
+           1000.00  6.4216e+00  0.600  1.0000e+03     0.0%  (Re_p~5.87)
+MPI FIXED-BED ERGUN (np=1): PASS
+exit=0
+=== fixed_bed_ergun np=2 dem=after
+[np=2]  f_drive     U         eps    Ergun(U,eps)  rel-err
+              0.20  1.5042e-03  0.600  2.0000e-01     0.0%  (Re_p~0.00)
+             20.00  1.4982e-01  0.600  2.0000e+01     0.0%  (Re_p~0.14)
+           1000.00  6.4216e+00  0.600  1.0000e+03     0.0%  (Re_p~5.87)
+MPI FIXED-BED ERGUN (np=2): PASS
+exit=0
+=== fixed_bed_ergun np=4 dem=after
+[np=4]  f_drive     U         eps    Ergun(U,eps)  rel-err
+              0.20  1.5042e-03  0.600  2.0000e-01     0.0%  (Re_p~0.00)
+             20.00  1.4982e-01  0.600  2.0000e+01     0.0%  (Re_p~0.14)
+           1000.00  6.4216e+00  0.600  1.0000e+03     0.0%  (Re_p~5.87)
+MPI FIXED-BED ERGUN (np=4): PASS
+exit=0
+LOAD 95.91, 98.42, 100.56

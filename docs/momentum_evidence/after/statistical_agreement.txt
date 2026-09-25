@@ -1,0 +1,9 @@
+# tests/python/mpi/test_validate_exact.py (N = 200, 15 steps), OMP_NUM_THREADS=1, 2026-09-25,
+# PYTHONPATH=<dem build>:core/build_rel_py. build_ref = dem e4e17f0 src (the redundant two-owner
+# scheme); build_mom = this branch (WO-3; WO-5 is bitwise-identical at OMP 1).
+build_ref np=1: max|dist-serial|=8.535e-05  mean=2.171e-06  q95=2.387e-05  particles>2e-2: 0/200 over 15 steps, N=200
+build_ref np=2: max|dist-serial|=1.030e-01  mean=5.312e-03  q95=3.602e-02  particles>2e-2: 27/200 over 15 steps, N=200
+build_ref np=4: max|dist-serial|=1.092e-01  mean=4.978e-03  q95=3.535e-02  particles>2e-2: 26/200 over 15 steps, N=200
+build_mom np=1: max|dist-serial|=8.535e-05  mean=2.171e-06  q95=2.387e-05  particles>2e-2: 0/200 over 15 steps, N=200
+build_mom np=2: max|dist-serial|=6.628e-02  mean=3.921e-03  q95=3.151e-02  particles>2e-2: 19/200 over 15 steps, N=200
+build_mom np=4: max|dist-serial|=7.210e-02  mean=4.003e-03  q95=3.164e-02  particles>2e-2: 24/200 over 15 steps, N=200
