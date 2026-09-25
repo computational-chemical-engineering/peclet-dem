@@ -2,9 +2,11 @@
 //
 // Two families of scenes (argv[1]):
 //
-//   jacobi_closed / jacobi_periodic — the EXACT-REDUNDANT baseline: velocityUseGS=false routes the
-//     distributed step through the legacy count-averaged Jacobi solves, whose ghost-pair handling
-//     is exactly redundant (each rank computes the full serial delta of its owned bodies).
+//   jacobi_closed / jacobi_periodic — the ORDER-INDEPENDENT baseline: velocityUseGS=false routes
+//     the distributed step through the legacy count-averaged Jacobi solves. Every contact is solved
+//     once, by its owning rank, from the synced state; the ghost halves are reverse-accumulated
+//     onto their owners and the per-body counts are made global (syncContactCounts) before the
+//     divide, so the distributed step is the serial Jacobi up to float summation order.
 //     Reference = the SAME stepMpi code on MPI_COMM_SELF (one block spanning the whole domain);
 //     gravity/materials off, tight tolerances (the historical demstep_mpi test).
 //
@@ -109,7 +111,7 @@ static void ownedOf(const std::vector<float>& gpos, int n, const double boxSize[
   }
 }
 
-// ================================ jacobi_* (exact-redundant baseline) ========================
+// ============================== jacobi_* (order-independent baseline) =======================
 static int runJacobi(bool periodic, int rank, int size) {
   const Scene scene = periodic ? Scene{{true, true, true}, 5, 11.0, 2.2}
                                : Scene{{false, false, false}, 4, 14.0, 1.8};
@@ -130,7 +132,7 @@ static int runJacobi(bool periodic, int rank, int size) {
     sim.setGravity(0, 0, 0);
     sim.setSolverIterations(POS_ITERS, VEL_ITERS);
     sim.setMaterialParams(0.0f, 0.0f, 0.0f);
-    sim.setVelocityUseGS(false);  // legacy count-averaged Jacobi = the exact-redundant scheme
+    sim.setVelocityUseGS(false);  // legacy count-averaged Jacobi = the order-independent scheme
   };
 
   std::vector<float> ownedPos;

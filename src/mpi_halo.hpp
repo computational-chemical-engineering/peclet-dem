@@ -426,6 +426,28 @@ inline void haloUnpackGhostColumn(Kokkos::View<float* [2], CpMem> pf,
       "peclet::dem::halo::unpackGhostCol", Kokkos::RangePolicy<CpExec>(0, ng),
       KOKKOS_LAMBDA(int g) { pf(no + slot(g), 1) = ghostVal(g); });
 }
+// The Jacobi count-averaging counts (constraintCounts: per body slot, the contacts this rank
+// solved at it): ghost -> owner sum, then back. Integers, so the sum is exact in any order.
+inline void haloPackGhostCount(Vi counts, peclet::core::View<int> ghostCnt, Vi slot, int no,
+                               int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::packGhostCount", Kokkos::RangePolicy<CpExec>(0, ng),
+      KOKKOS_LAMBDA(int g) { ghostCnt(g) = counts(no + slot(g)); });
+}
+inline void haloAddPackOwnedCount(Vi counts, peclet::core::View<int> ownedCnt, int no) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::addPackOwnedCount", Kokkos::RangePolicy<CpExec>(0, no),
+      KOKKOS_LAMBDA(int i) {
+        counts(i) += ownedCnt(i);
+        ownedCnt(i) = counts(i);
+      });
+}
+inline void haloUnpackGhostCount(Vi counts, peclet::core::View<int> ghostCnt, Vi slot, int no,
+                                 int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::unpackGhostCount", Kokkos::RangePolicy<CpExec>(0, ng),
+      KOKKOS_LAMBDA(int g) { counts(no + slot(g)) = ghostCnt(g); });
+}
 
 // --- fused owner -> ghost forwards (WO-5): one exchange instead of two when rotation is forwarded.
 // Pure copies (plus the same float shift add as haloUnpackF3), so bit-identical to the separate
@@ -1216,6 +1238,22 @@ class ParticleHalo {
     dev_.forward(ownedVal_, ghostVal_);
     haloUnpackGhostColumn(P.planeFriction, ghostVal_, ghostSlot_, numReal_, numGhost_);
   }
+  /// Jacobi count-averaging counts (constraintCounts; the velocityUseGS=false solves and the
+  /// colour-saturation fallbacks): each rank counted the contacts it owns at both endpoints, ghost
+  /// endpoints included; sum the ghost counts onto the owners, then forward the owners' totals, so
+  /// every copy of a body divides by the serial (global) count. Collective over the neighbourhood:
+  /// call it only where every rank does (docs/mpi_momentum_conservation.md §4.2).
+  void syncContactCounts(Particles& P) {
+    if (!exchanges())
+      return;
+    haloPackGhostCount(P.constraintCounts, ghostCnt_, ghostSlot_, numReal_, numGhost_);
+    Kokkos::deep_copy(Kokkos::subview(ownedCnt_, std::pair<std::size_t, std::size_t>(0, numReal_)),
+                      0);
+    dev_.reverse(ghostCnt_, ownedCnt_);
+    haloAddPackOwnedCount(P.constraintCounts, ownedCnt_, numReal_);
+    dev_.forward(ownedCnt_, ghostCnt_);
+    haloUnpackGhostCount(P.constraintCounts, ghostCnt_, ghostSlot_, numReal_, numGhost_);
+  }
 
   void selfMapReals(Vi realIndices, int no) {
     Kokkos::parallel_for(
@@ -1246,6 +1284,7 @@ class ParticleHalo {
       ghostVelInc_ = peclet::core::View<VelocityIncrement>("peclet::dem::halo::ghostVelInc", g1);
       ghostPosInc_ = peclet::core::View<PositionIncrement>("peclet::dem::halo::ghostPosInc", g1);
       ghostVal_ = peclet::core::View<float>("peclet::dem::halo::ghostVal", g1);
+      ghostCnt_ = peclet::core::View<int>("peclet::dem::halo::ghostCnt", g1);
       ghostVelState_ = peclet::core::View<VelocityState>("peclet::dem::halo::ghostVelState", g1);
       ghostPosState_ = peclet::core::View<PositionState>("peclet::dem::halo::ghostPosState", g1);
     }
@@ -1253,6 +1292,7 @@ class ParticleHalo {
       ownedVelInc_ = peclet::core::View<VelocityIncrement>("peclet::dem::halo::ownedVelInc", o1);
       ownedPosInc_ = peclet::core::View<PositionIncrement>("peclet::dem::halo::ownedPosInc", o1);
       ownedVal_ = peclet::core::View<float>("peclet::dem::halo::ownedVal", o1);
+      ownedCnt_ = peclet::core::View<int>("peclet::dem::halo::ownedCnt", o1);
       ownedVelState_ = peclet::core::View<VelocityState>("peclet::dem::halo::ownedVelState", o1);
       ownedPosState_ = peclet::core::View<PositionState>("peclet::dem::halo::ownedPosState", o1);
     }
@@ -1407,6 +1447,7 @@ class ParticleHalo {
   peclet::core::View<VelocityIncrement> ghostVelInc_, ownedVelInc_;
   peclet::core::View<PositionIncrement> ghostPosInc_, ownedPosInc_;
   peclet::core::View<float> ghostVal_, ownedVal_;
+  peclet::core::View<int> ghostCnt_, ownedCnt_;
   peclet::core::View<VelocityState> ghostVelState_, ownedVelState_;  // fused forwards (rotation)
   peclet::core::View<PositionState> ghostPosState_, ownedPosState_;
   // Ownership maps (§2.1; see buildOwnershipMaps).

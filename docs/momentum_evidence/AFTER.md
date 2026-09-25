@@ -30,32 +30,62 @@ every run below** (BEFORE: 3–43), from other sessions; see each section.
   (was 5.3e-3 / 3.6e-2 / 0.10), np 4 4.0e-3 / 3.2e-2 / 7.2e-2 (was 5.0e-3 / 3.5e-2 / 0.11).
 - **Convergence premise (G8)**: ovl after/before = 0.61..1.00 in every cell — the interface
   coupling did not slow the position loop; it ends with less overlap than the redundant solve.
-- **Battery: 128/130.** `demstep_jacobi_closed_np2` and `_np4` FAIL (posErr 0.157, tol 1e-2) —
-  **open, stop-and-report** (below). All 12 `python_mpi_*` pass (not skipped).
+- **Battery: 134/134 after WO-3b** (was 128/130: `demstep_jacobi_closed_np2` and `_np4` failed
+  with posErr 0.157, tol 1e-2; fixed by global Jacobi counts, below; +4 `momentum_cluster_jacobi`).
+  All 12 `python_mpi_*` pass (not skipped).
 - **Coupling (Ergun, moving suspension, np 1/2/4)**: every printed observable identical before
   and after.
 
-## Open: `demstep_jacobi_closed_np{2,4}` (stop-and-report, G7 / R10)
+## WO-3b: global per-body counts for the count-averaged Jacobi solves (was open, G7 / R10)
 
-The legacy count-averaged Jacobi path (`velocityUseGS = false`: `solveVelocityKokkos` →
-`applyVelocityDeltasAveragedKokkos`, `solvePositionKokkos` → `applyUpdatesKokkos`,
-`src/solve_driver.hpp` ~l.506–510 and ~l.912–914, plus the colour-saturation fallbacks) divides
-each body's accumulated delta by its per-body `constraintCounts`. Under owner-exclusive contacts
-those counts cover only the contacts this rank owns — on the owner and on every ghost copy — so
-the distributed Jacobi is no longer the serial Jacobi, and `demstep_jacobi_closed` (which pins
-the distributed step to the same step on `MPI_COMM_SELF` at 1e-2) fails:
+**The failure.** The count-averaged solves (`velocityUseGS = false`: `solveVelocityKokkos` →
+`applyVelocityDeltasAveragedKokkos`, `solvePositionKokkos` → `applyUpdatesKokkos`, plus the
+colour-saturation fallbacks of the GS loops) divide each body's summed correction by its per-body
+`constraintCounts`. Serial semantics: the factor is **per body**, not per contact (velocity
+`min(1, 2/count_i)`, position `1/count_i`; body A and B of one contact are scaled by their own
+counts). Since WO-3 each rank counts only the contacts it owns, so a count missed the pairs the
+partner rank solves:
 
 ```
-[jacobi_closed  ] np=2 particles=64 ghosts(total)=64 posErr=1.566e-01 (tol 1e-02) overlap dist=1.1834e-05 ref=2.4319e-05
+[jacobi_closed  ] np=2 particles=64 ghosts(total)=64 posErr=1.566e-01 (tol 1e-02)
 ```
 
-np 1 and `jacobi_periodic` (tolerance 0.30) pass. The overlap is resolved in both runs; the
-packing lands elsewhere. The note (§4.2) reconciles the legacy-friction counts only
-(`syncFrictionCounts`); it does not address `constraintCounts`, and it calls the `'jacobi'`
-diagnostic solver "the same case" as the colour-saturation fallbacks. A count reconciliation
-between each Jacobi solve and its apply (the `syncFrictionCounts` pattern) would restore the
-serial counts, but it is a new sync point inside the driver, beyond the edits WO-3 allows.
-Tolerance untouched; decision for the design owner.
+**The fix** (`ParticleHalo::syncContactCounts`, the `syncFrictionCounts` pattern on the int
+column): between each Jacobi kernel and its apply, the ghosts' partial counts are reverse-summed
+onto their owners and the totals forwarded back, so the owner and every ghost copy divide by the
+serial count; the ghost's scaled increment is then delivered by the existing reverse. The Jacobi
+A/B is a global setting, so that sync is unconditional there (one extra count exchange per Jacobi
+iteration, velocity and position; this path is diagnostic). The GS loops' saturation fallback is
+decided per rank (`velLeftover`, `posLeftover` come from the rank-local colouring), so its
+activation is voted inside the loop's existing stop Allreduce (`allMaxAny`: two floats, MAX, the
+same one message); only if some rank has leftovers do all ranks sync counts and apply. No message
+was added to the GS production path.
+
+| gate | result |
+|---|---|
+| `demstep_jacobi_closed` posErr, np 1 / 2 / 4 (tol 1e-3 / 1e-2 / 1e-2) | 0 / 5.9e-6 / 7.6e-6 (was 0 / 0.157 / 0.157) |
+| `demstep_jacobi_periodic` posErr, np 2 / 4 (tol 0.30) | 4.8e-7 / 0.106 (was 2.3e-2 / 0.107) |
+| `cluster_jacobi` (new ctest mode), np 1 | dP 9.0e-3, dX 2.1e-2 R, dXpos 8.2e-4 R, dLvel 3.2e-3: serial per-body averaging is not conservative (§4.2, R7) |
+| `cluster_jacobi` np 2/4/8 × OMP 1/8 × 3 (`after/matrix_jacobi.txt`) | max dP 9.1e-3, dX 2.2e-2, dXpos 8.3e-4, dLvel 3.2e-3 = the np 1 level (before WO-3b: dXpos 2.4e-2..3.1e-2, dP 1.1e-2..1.3e-2) |
+| `cluster_jacobi` gate (tolOf) | dP 1.5e-2, dX 3e-2, dXpos 2e-3, dLvel 5e-3 |
+| np 1 closed vs the WO-0 dumps (5 modes, OMP 1) | byte-identical; `cluster_jacobi` np 1 byte-identical to its parent |
+| GS path np 2/4/8, 6 modes, vs the parent commit (OMP 1) | 18/18 byte-identical (the vote does not change a bit) |
+| run-to-run np 4/8, OMP 1, 3 runs: cluster, cluster_friction, cluster_pgs, cluster_jacobi | 1 distinct hash in all 8 cells |
+| GS modes matrix, np 1..8 × OMP 1/8 (`after/matrix_gs_wo3b.txt`) | all within G1 (dP ≤ 9.5e-9, 8.0e-7 free fall; dXpos ≤ 1.1e-6 R) |
+| battery (`after/battery_wo3b.txt`), OMP 2, -j1 | 134/134, 12 `python_mpi_*` ran |
+
+`jacobi_periodic` np 4 (0.106) is unchanged by WO-3b and within its divergence guard; the scene
+(L = 11, rcut 3) violates P1 on its decomposed axes (block 5.5 < 2 · 3, R8).
+
+**Finding, pre-existing, not changed here:** the saturation fallback is unreachable. Both
+colourings pick `col` with `while (col < 62 && forbidden bit)`, so a body whose 62 low colours are
+taken gives colour 62 to every further contact instead of leaving it uncoloured (-1); the
+arbitration colours at least one contact per round, so the stall break never fires and
+`leftover` is always 0. A body of degree > 63 therefore has several same-colour contacts: an
+in-place race on multi-thread and GPU backends (reading of the code; not reproduced). A trial
+scene, the `cluster` grains with a radius-4 grain at the centre in place of those within 3.9, gave
+leftover 0 on every rank at np 1..8, so the fallback branch with the vote taken is untested; it
+was not kept as a test. The WO-3b vote is in place for when the colouring leaves leftovers.
 
 ## Conservation matrix (G1)
 

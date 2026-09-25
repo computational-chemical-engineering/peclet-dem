@@ -45,6 +45,15 @@ struct MpiSolveHooks {
     MPI_Allreduce(&v, &g, 1, MPI_FLOAT, MPI_MAX, halo.comm());
     return g;
   }
+  /// allMax of a residual plus a vote in the SAME Allreduce: `any` becomes true on every rank if
+  /// it was true on any (a rank-local fallback made collective at no extra message).
+  float allMaxAny(float v, bool& any) const {
+    const float in[2] = {v, any ? 1.0f : 0.0f};
+    float out[2] = {v, in[1]};
+    MPI_Allreduce(in, out, 2, MPI_FLOAT, MPI_MAX, halo.comm());
+    any = out[1] > 0.0f;
+    return out[0];
+  }
   bool syncPoint(int it) const { return (it + 1) % syncEvery == 0; }
   int visibleManifolds(int) const { return numManifoldsVisible; }
   void beginSolve(Particles& P) const { halo.markVelocityBaseline(P); }
@@ -52,6 +61,7 @@ struct MpiSolveHooks {
   void publishPositions(Particles& P) const { halo.publishPositions(P, forwardRotation); }
   void syncPositions(Particles& P) const { halo.syncPositions(P, forwardRotation); }
   void syncFrictionCounts(Particles& P) const { halo.syncFrictionCounts(P); }
+  void syncContactCounts(Particles& P) const { halo.syncContactCounts(P); }
 };
 
 /// Largest particle radius over ALL ranks (growth included) -- the halo band and the contact

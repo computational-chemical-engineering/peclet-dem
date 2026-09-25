@@ -47,6 +47,11 @@
 //   cluster_pgs       XPBD, free fall (g != 0), mu = 0.4, spins, stabilization off: the warm-
 //                     started PGS velocity solve with the friction cone (the production path)
 //   cluster_posonly   XPBD, g = 0, velocity solve OFF (the dem default): the position phase alone
+//   cluster_jacobi    cluster with velocityUseGS off: the legacy count-averaged Jacobi velocity
+//                     and position solves, which divide each body's summed correction by its
+//                     GLOBAL per-body contact count (syncContactCounts). Per-body averaging is not
+//                     momentum-conserving in serial either (docs/mpi_momentum_conservation.md
+//                     §4.2), so the gate is the np = 1 level, not round-off.
 //   hertz             the force-based Hertz-Mindlin engine (step_hertz_mpi), mu = 0.4, spins
 //   cluster_sync3     cluster_friction with sync_every = 3 (owner/ghost reconciliation every 3rd
 //                     sweep)
@@ -109,6 +114,10 @@ static Tol tolOf(const std::string& mode) {
     return {5e-6, 1e-5, 1e-5, -1, 1e-6};
   if (mode == "cluster_posonly")  // the velocity increments are exact zeros
     return {1e-12, 1e-5, 1e-5, -1, 1e-12};
+  // cluster_jacobi: NOT round-off -- serial per-body averaging drifts (np 1: dP 9.0e-3, dX 2.1e-2,
+  // dXpos 8.2e-4, dLvel 3.2e-3; np 2..8 the same). Rank-local counts gave dXpos 2.4e-2+.
+  if (mode == "cluster_jacobi")
+    return {1.5e-2, 3e-2, 2e-3, -1, 5e-3};
   if (mode == "cluster_periodic")  // dP only
     return {1e-6, -1, -1, -1, -1};
   if (mode == "hertz")  // regression guard; today 2.8e-8 / 8.8e-7 / 4.4e-7
@@ -311,6 +320,7 @@ static D3 velocityPhaseTorque(const State& a, const State& b, const D3& g, doubl
 struct Mode {
   std::string name;
   bool friction = false, spins = false, gravity = false, hertz = false, periodic = false;
+  bool jacobi = false;  // velocityUseGS off: the legacy count-averaged Jacobi solves
   int velIters = 8;
   int syncEvery = 1;
   bool forwardRotation = true;
@@ -390,6 +400,8 @@ static int runCluster(const Mode& md, int rank, int size) {
   sim.setGravity(static_cast<float>(g[0]), static_cast<float>(g[1]), static_cast<float>(g[2]));
   sim.setSolverIterations(20, md.velIters);
   sim.setMaterialParams(0.5f, 0.0f, md.friction ? 0.4f : 0.0f);
+  if (md.jacobi)
+    sim.setVelocityUseGS(false);
   if (md.gravity)
     sim.setStabilizationMode("off");  // one-sided stabilization is a momentum sink by design
   if (md.hertz) {
@@ -581,6 +593,8 @@ int main(int argc, char** argv) {
       md.friction = md.spins = md.gravity = true;
     } else if (mode == "cluster_posonly") {
       md.velIters = 0;
+    } else if (mode == "cluster_jacobi") {
+      md.jacobi = true;
     } else if (mode == "hertz") {
       md.friction = md.spins = md.hertz = true;
     } else if (mode == "cluster_sync3") {
@@ -596,7 +610,7 @@ int main(int argc, char** argv) {
       fail = runPerf(mode == "perf_pgs", rank, size);
     else if (mode == "cluster" || mode == "cluster_friction" || mode == "cluster_pgs" ||
              mode == "cluster_posonly" || mode == "hertz" || mode == "cluster_sync3" ||
-             mode == "cluster_norot" || mode == "cluster_periodic")
+             mode == "cluster_norot" || mode == "cluster_periodic" || mode == "cluster_jacobi")
       fail = runCluster(md, rank, size);
     else {
       if (rank == 0)

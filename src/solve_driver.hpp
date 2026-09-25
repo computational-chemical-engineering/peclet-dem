@@ -15,11 +15,13 @@
 ///     ghost's change since its baseline onto its owner, then refresh owner->ghost (reverse, then
 ///     forward), every `syncEvery` iterations plus once after every solve phase;
 ///     `publishPositions` opens the position phase with a forward only (the integration of a
-///     ghost is not an interaction); `syncFrictionCounts` makes the legacy-friction counts the
-///     serial ones. `visibleManifolds(nm)` is the whole visible range, read only by the label
-///     passes (warm-ledger match, grounded / height levels). `allMax` turns each adaptive-stop
-///     residual into a global MPI_Allreduce(MAX) so all ranks take the same break (a rank-local
-///     break would desynchronise the collective syncs and deadlock).
+///     ghost is not an interaction); `syncFrictionCounts` makes the legacy-friction counts and
+///     `syncContactCounts` the Jacobi count-averaging counts the serial ones.
+///     `visibleManifolds(nm)` is the whole visible range, read only by the label passes
+///     (warm-ledger match, grounded / height levels). `allMax` turns each adaptive-stop residual
+///     into a global MPI_Allreduce(MAX) so all ranks take the same break (a rank-local break
+///     would desynchronise the collective syncs and deadlock); `allMaxAny` folds a vote on a
+///     rank-local fallback (colour-mask saturation) into that same Allreduce.
 ///
 /// `nBodies` is the body-slot span of the solve graph: numReal on the single-GPU path (ghost slots
 /// are realIndices-mapped onto their owners), numReal + numGhost under MPI (ghosts are self-mapped
@@ -232,6 +234,7 @@ struct CudaIterGraph {
 struct SoloSolveHooks {
   static constexpr bool distributed = false;
   float allMax(float v) const { return v; }
+  float allMaxAny(float v, bool&) const { return v; }
   bool syncPoint(int) const { return false; }
   int visibleManifolds(int nm) const { return nm; }
   void beginSolve(Particles&) const {}
@@ -239,6 +242,7 @@ struct SoloSolveHooks {
   void publishPositions(Particles&) const {}
   void syncPositions(Particles&) const {}
   void syncFrictionCounts(Particles&) const {}
+  void syncContactCounts(Particles&) const {}
 };
 
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
@@ -484,12 +488,20 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       // Colour-mask saturation fallback (interpenetration degree > 62): the manifolds the colouring
       // could not place are applied with the count-averaged Jacobi pass — stable, and only active
       // in pathologically crushed regions; without it those manifolds were silently skipped and
-      // deep overlap could never resolve.
-      if (velLeftover > 0) {
+      // deep overlap could never resolve. The leftover is rank-local under MPI, so the apply is
+      // decided by a vote folded into the stop's Allreduce (no extra message), and then every rank
+      // makes the per-body counts global before it divides (syncContactCounts is collective). The
+      // stop residual is the sweep's alone (the Jacobi pass does not write maxApproach), so reading
+      // it before the apply is the same value.
+      bool velFallback = velLeftover > 0;
+      if (velFallback)
         solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred,
                             P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRest,
                             P.deltaVel, P.deltaAngVel, P.constraintCounts,
                             Kokkos::View<const int*, CpMem>(P.manifoldColor), -1);
+      const float velRes = hooks.allMaxAny(readFloat(P.maxApproach), velFallback);
+      if (velFallback) {
+        hooks.syncContactCounts(P);
         applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
                                           P.deltaAngVel, P.constraintCounts);
       }
@@ -500,12 +512,15 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       // at vz ~ -5 with the vRest stop). Once the warm-started network is converged the first
       // sweep's correction is ~0 and the loop still exits immediately. Distributed: the residual
       // is Allreduce-MAXed so every rank takes the same break (collective-refresh consistency).
-      if (hooks.allMax(readFloat(P.maxApproach)) <= (usePGS ? 0.02f * vRest : vRest))
+      if (velRes <= (usePGS ? 0.02f * vRest : vRest))
         break;
     } else {
+      // Legacy Jacobi (velocityUseGS off, a global setting): each body's summed impulse is scaled
+      // by its OWN contact count, so every copy of it must divide by the global count.
       solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
                           P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
                           P.deltaAngVel, P.constraintCounts);
+      hooks.syncContactCounts(P);
       applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
                                         P.deltaAngVel, P.constraintCounts);
     }
@@ -896,20 +911,28 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         emitPosIter();
       // Colour-mask saturation fallback: contacts the colouring could not place (degree > 62 in
       // crushed regions) get the count-averaged Jacobi projection so deep overlap still resolves.
-      if (posLeftover > 0) {
+      // As in the velocity loop: rank-local leftover -> a vote in the stop's Allreduce, global
+      // counts, then the apply (the Jacobi pass's maxOverlap is recorded before the vote; the
+      // apply does not touch it).
+      bool posFallback = posLeftover > 0;
+      if (posFallback)
         solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
                             P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap,
                             Kokkos::View<const int*, CpMem>(P.contactColor), -1);
+      const float posRes = hooks.allMaxAny(readFloat(P.maxOverlap), posFallback);
+      if (posFallback) {
+        hooks.syncContactCounts(P);
         applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
                            P.constraintCounts);
       }
       // Adaptive stop: end once no contact overlaps by more than posTol. Fixed positionIterations
       // is the cap. Distributed: Allreduce-MAXed so all ranks break together.
-      if (hooks.allMax(readFloat(P.maxOverlap)) < posTol)
+      if (posRes < posTol)
         break;
     } else {
       solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
                           P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
+      hooks.syncContactCounts(P);  // global per-body counts (see the velocity Jacobi branch)
       applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
                          P.constraintCounts);
     }

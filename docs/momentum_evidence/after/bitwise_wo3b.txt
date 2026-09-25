@@ -1,0 +1,18 @@
+== G3 np1 closed vs WO-0 baseline (OMP 1)
+cluster np1 IDENTICAL
+cluster_friction np1 IDENTICAL
+cluster_pgs np1 IDENTICAL
+cluster_posonly np1 IDENTICAL
+hertz np1 IDENTICAL
+cluster_jacobi np1 IDENTICAL to pre-WO-3b
+== G4 run-to-run np 4/8 OMP 1, 3 runs
+cluster np4 distinct hashes: 1 / 3
+cluster np8 distinct hashes: 1 / 3
+cluster_friction np4 distinct hashes: 1 / 3
+cluster_friction np8 distinct hashes: 1 / 3
+cluster_pgs np4 distinct hashes: 1 / 3
+cluster_pgs np8 distinct hashes: 1 / 3
+cluster_jacobi np4 distinct hashes: 1 / 3
+cluster_jacobi np8 distinct hashes: 1 / 3
+== GS path at np 2/4/8, OMP 1: WO-3b vs its parent (90733e9 src), one run each
+cluster cluster_friction cluster_pgs cluster_posonly cluster_periodic hertz x np 2/4/8: 18/18 IDENTICAL

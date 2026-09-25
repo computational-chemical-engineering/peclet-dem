@@ -88,6 +88,15 @@ Under Poisson (event-level) restitution two ranks can draw from one body's orpha
 one reconciliation interval, each bounded by its own view of the balance; the owner clamps the
 delivered balance at 0 (docs/mpi_momentum_conservation.md, R5).
 
+The count-averaged solves divide a body's summed correction by its per-body contact count: the
+legacy friction pass, the Jacobi A/B (`set_velocity_solver('jacobi')`) and the colour-saturation
+fallbacks of the Gauss–Seidel loops. Each rank counts only the contacts it owns, so before every
+such divide the ghosts' partial counts are summed onto their owners and the totals forwarded back
+(`syncFrictionCounts`, `syncContactCounts`): every copy of a body divides by the serial count.
+The saturation fallback is decided per rank, so its activation is voted in the same
+`MPI_Allreduce` as the loop's stop residual (no extra message); the count exchange then runs on
+every rank, only in iterations where some rank has uncoloured leftovers.
+
 ### What is validated
 - `tests/kokkos_mpi/` — the distributed Kokkos `demStep`/`rebalance` ctests, run under `mpirun` at
   **np=1,2,4**, in both a closed (non-periodic) box and a fully-periodic lattice (the periodic case

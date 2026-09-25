@@ -907,3 +907,18 @@ Each item has a default, so the work proceeds unattended.
 | R8 | P1: block extent ≥ 2 · band on decomposed periodic axes (one image per particle and rank) | Fact (pre-existing assumption) | No check added here; record |
 | R9 | G9 fails | Fact | Levers in order (§5): a fused bidirectional exchange (core primitive), then a two-ended narrow-phase append. Each is a separate decision. |
 | R10 | A statistical-agreement test regresses at np ≥ 2 | Fact | Stop and report; never loosen a tolerance in this package |
+
+**R10 addendum (WO-3b, 2026-09-25).** It happened: `demstep_jacobi_closed` np 2/4 regressed to
+posErr 0.157 (tol 1e-2), because the count-averaged solves divide by **per-body** counts (serial
+Jacobi: `min(1, 2/count_i)` for velocity, `1/count_i` for position, each body by its own count)
+and after WO-3 a rank counts only the contacts it owns. Fix: `syncContactCounts` (the
+`syncFrictionCounts` pattern: ghost partial counts reverse-summed to the owner, totals forwarded)
+between each Jacobi kernel and its apply, so every copy divides by the serial count. It is
+unconditional under the Jacobi A/B (a global setting); for the GS loops' rank-local
+colour-saturation fallback the activation is voted in the existing stop Allreduce (`allMaxAny`,
+two floats in the same message), so no message is added to the GS production path, which stays
+byte-identical. Result: posErr 5.9e-6 / 7.6e-6 at np 2 / 4, tolerance untouched; the new
+`momentum_cluster_jacobi` gate holds np 2..8 at the np 1 drift level (per-body averaging is not
+conservative in serial, R7). Found on the way: the saturation fallback is unreachable (the
+colourings assign colour 62 to every contact beyond the 62nd at a body instead of leaving it
+uncoloured). Evidence: `momentum_evidence/AFTER.md`, WO-3b section.

@@ -1,0 +1,25 @@
+MOMENTUM mode=cluster_jacobi np=1 thr=1 N=925 steps=50 dP=8.964e-03 dX=2.139e-02 dXpos=8.188e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=0 ovl=2.023e-01 rep=1
+MOMENTUM mode=cluster_jacobi np=1 thr=1 N=925 steps=50 dP=8.964e-03 dX=2.139e-02 dXpos=8.188e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=0 ovl=2.023e-01 rep=2
+MOMENTUM mode=cluster_jacobi np=1 thr=1 N=925 steps=50 dP=8.964e-03 dX=2.139e-02 dXpos=8.188e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=0 ovl=2.023e-01 rep=3
+MOMENTUM mode=cluster_jacobi np=1 thr=8 N=925 steps=50 dP=9.057e-03 dX=2.155e-02 dXpos=8.117e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=0 ovl=2.023e-01 rep=1
+MOMENTUM mode=cluster_jacobi np=1 thr=8 N=925 steps=50 dP=9.057e-03 dX=2.159e-02 dXpos=8.092e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=0 ovl=2.023e-01 rep=2
+MOMENTUM mode=cluster_jacobi np=1 thr=8 N=925 steps=50 dP=8.964e-03 dX=2.130e-02 dXpos=8.291e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=0 ovl=2.023e-01 rep=3
+MOMENTUM mode=cluster_jacobi np=2 thr=1 N=925 steps=50 dP=9.017e-03 dX=2.130e-02 dXpos=8.199e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=242 ovl=2.023e-01 rep=1
+MOMENTUM mode=cluster_jacobi np=2 thr=1 N=925 steps=50 dP=9.017e-03 dX=2.130e-02 dXpos=8.199e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=242 ovl=2.023e-01 rep=2
+MOMENTUM mode=cluster_jacobi np=2 thr=1 N=925 steps=50 dP=9.017e-03 dX=2.130e-02 dXpos=8.199e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=242 ovl=2.023e-01 rep=3
+MOMENTUM mode=cluster_jacobi np=2 thr=8 N=925 steps=50 dP=9.017e-03 dX=2.123e-02 dXpos=8.197e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=242 ovl=2.023e-01 rep=1
+MOMENTUM mode=cluster_jacobi np=2 thr=8 N=925 steps=50 dP=8.944e-03 dX=2.111e-02 dXpos=8.067e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=242 ovl=2.023e-01 rep=2
+MOMENTUM mode=cluster_jacobi np=2 thr=8 N=925 steps=50 dP=8.944e-03 dX=2.112e-02 dXpos=8.260e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=242 ovl=2.023e-01 rep=3
+MOMENTUM mode=cluster_jacobi np=4 thr=1 N=925 steps=50 dP=9.017e-03 dX=2.122e-02 dXpos=8.213e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=533 ovl=2.023e-01 rep=1
+MOMENTUM mode=cluster_jacobi np=4 thr=1 N=925 steps=50 dP=9.017e-03 dX=2.122e-02 dXpos=8.213e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=533 ovl=2.023e-01 rep=2
+MOMENTUM mode=cluster_jacobi np=4 thr=1 N=925 steps=50 dP=9.017e-03 dX=2.122e-02 dXpos=8.213e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=533 ovl=2.023e-01 rep=3
+MOMENTUM mode=cluster_jacobi np=4 thr=8 N=925 steps=50 dP=8.944e-03 dX=2.107e-02 dXpos=8.106e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=533 ovl=2.023e-01 rep=1
+MOMENTUM mode=cluster_jacobi np=4 thr=8 N=925 steps=50 dP=8.955e-03 dX=2.113e-02 dXpos=8.137e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=534 ovl=2.023e-01 rep=2
+MOMENTUM mode=cluster_jacobi np=4 thr=8 N=925 steps=50 dP=8.944e-03 dX=2.115e-02 dXpos=8.230e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=533 ovl=2.023e-01 rep=3
+MOMENTUM mode=cluster_jacobi np=8 thr=1 N=925 steps=50 dP=8.943e-03 dX=2.117e-02 dXpos=8.174e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=878 ovl=2.023e-01 rep=1
+MOMENTUM mode=cluster_jacobi np=8 thr=1 N=925 steps=50 dP=8.943e-03 dX=2.117e-02 dXpos=8.174e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=878 ovl=2.023e-01 rep=2
+MOMENTUM mode=cluster_jacobi np=8 thr=1 N=925 steps=50 dP=8.943e-03 dX=2.117e-02 dXpos=8.174e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=878 ovl=2.023e-01 rep=3
+MOMENTUM mode=cluster_jacobi np=8 thr=8 N=925 steps=50 dP=8.944e-03 dX=2.105e-02 dXpos=8.192e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=878 ovl=2.023e-01 rep=1
+MOMENTUM mode=cluster_jacobi np=8 thr=8 N=925 steps=50 dP=8.943e-03 dX=2.118e-02 dXpos=8.214e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=878 ovl=2.023e-01 rep=2
+MOMENTUM mode=cluster_jacobi np=8 thr=8 N=925 steps=50 dP=9.106e-03 dX=2.147e-02 dXpos=8.083e-04 dL=3.533e-03 dLcm=3.189e-03 dLvel=3.163e-03 ghosts=880 ovl=2.023e-01 rep=3
+EXIT matrix
