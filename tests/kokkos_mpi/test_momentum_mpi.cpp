@@ -102,6 +102,7 @@
 // --hub=<scale>, --delta=<overlap / R>, --solo (single-rank demStep via Simulation::step instead
 // of step_mpi; np = 1 only), --e=<normal restitution> (default 0.5; cluster_e09/_e10 set theirs),
 // --steps=<n> (overrides the mode's step count), --vel-iters=<n> (velocity iterations),
+// --stab=<mode> (overrides the mode's stabilization: off|onesided|multilevel|escalate|ordered),
 // --axis=<0|1|2> (tri: the approach axis), --relabel=<seed> (seed 0 = identity; otherwise the body
 // list is std::shuffle'd with std::mt19937(seed) before the gids are assigned, which samples
 // another serial Gauss-Seidel order of the same physical scene).
@@ -416,21 +417,27 @@ static std::vector<Body> makeRingMini() {
 }
 
 // Rank-local colouring diagnostics of the last step: over the contacts / manifolds the step
-// coloured (colour >= -1; the caller filled both colour arrays with -3 before the step, so the
-// entries the step did not colour -- the non-owned visible ones under MPI -- are skipped), the
-// largest per-body degree and the same-colour pairs, sum over (body, colour) of (count - 1).
+// coloured (colour >= -1 or -3; the caller filled the colour arrays with kNotColoured before the
+// step, so the entries the step did not colour -- the non-owned visible ones under MPI -- are
+// skipped), the largest per-body degree and the same-colour pairs, sum over (body, colour) of
+// (count - 1).
 struct ColorDiag {
   int degC = 0, degM = 0, confC = 0, confM = 0;
-  int degPt = 0;             // largest per-body degree of the per-POINT contact graph
-  int colC = 0, colM = 0;    // colours used (largest colour + 1)
-  int leftC = 0, leftM = 0;  // items the step left uncoloured (-1): the count-averaged fallback
+  int degPt = 0;                     // largest per-body degree of the per-POINT contact graph
+  int colC = 0, colM = 0;            // colours used (largest colour + 1)
+  int leftC = 0, leftM = 0;          // items the step left uncoloured (-1, or -3: no free colour)
+  int confMl = 0;                    // multilevel: same-colour pairs at an aggregate (all levels)
+  int copiesVel = 0, copiesPos = 0;  // hub copy slots (§4.4)
 };
+// The "not coloured by this step" marker; distinct from every colour a step writes (>= 0, -1,
+// -2, and -3 = kColorUncolourable).
+static constexpr int kNotColoured = -100;
 static void markColors(ProbeSim& sim) {
-  Kokkos::deep_copy(sim.parts().contactColor, -3);
-  Kokkos::deep_copy(sim.parts().unitColor, -3);
-  Kokkos::deep_copy(sim.parts().manifoldColor, -3);
+  Kokkos::deep_copy(sim.parts().contactColor, kNotColoured);
+  Kokkos::deep_copy(sim.parts().unitColor, kNotColoured);
+  Kokkos::deep_copy(sim.parts().manifoldColor, kNotColoured);
 }
-static ColorDiag colorDiag(const ProbeSim& sim) {
+static ColorDiag colorDiag(ProbeSim& sim) {
   const peclet::dem::Particles& P = sim.parts();
   int nc = 0, nm = 0;
   Kokkos::deep_copy(nc, P.contactCount);
@@ -455,7 +462,7 @@ static ColorDiag colorDiag(const ProbeSim& sim) {
     }
     left = 0;
     for (const auto& x : e)
-      left += x.second == -1;
+      left += (x.second == -1 || x.second == -3);  // -3: no free colour (after copies: invariant)
     for (int x : d)
       deg = std::max(deg, x);
   };
@@ -466,14 +473,23 @@ static ColorDiag colorDiag(const ProbeSim& sim) {
   auto hus = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.unitStart);
   auto hul = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.unitContacts);
   auto huc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.unitColor);
+  // Hub copies (docs/contact_solve_framework.md §4.4): an edge's vertex is its override slot.
+  auto slotOf = [](const auto& ov, int e, int def) {
+    return (ov.extent(0) > 0 && ov(e) >= 0) ? ov(e) : def;
+  };
+  const bool pH = P.posCopies.nHubs > 0, vH = P.velCopies.nHubs > 0;
+  auto hpa = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.posCopies.slotA);
+  auto hpb = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.posCopies.slotB);
+  auto hva = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.velCopies.slotA);
+  auto hvb = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.velCopies.slotB);
   for (int u = 0; u < nu; ++u) {
     const int col = huc(u);
-    if (col < -1)
+    if (col < -1 && col != -3)  // skip inactive (-2) and not-coloured-here entries
       continue;
     const int i = hul(hus(u));
-    ec.push_back({hc(i).bodyA, col});
+    ec.push_back({pH ? slotOf(hpa, u, hc(i).bodyA) : hc(i).bodyA, col});
     if (hc(i).bodyB >= 0)
-      ec.push_back({hc(i).bodyB, col});
+      ec.push_back({pH ? slotOf(hpb, u, hc(i).bodyB) : hc(i).bodyB, col});
   }
   for (int i = 0; i < nc; ++i) {
     const int col = hcc(i);
@@ -485,11 +501,11 @@ static ColorDiag colorDiag(const ProbeSim& sim) {
   }
   for (int i = 0; i < nm; ++i) {
     const int col = hmc(i);
-    if (col < -1)
+    if (col < -1 && col != -3)  // skip inactive (-2) and not-coloured-here entries
       continue;
-    em.push_back({hr(hm(i).bodyA), col});
+    em.push_back({vH ? slotOf(hva, i, hr(hm(i).bodyA)) : hr(hm(i).bodyA), col});
     if (hm(i).bodyB >= 0)
-      em.push_back({hr(hm(i).bodyB), col});
+      em.push_back({vH ? slotOf(hvb, i, hr(hm(i).bodyB)) : hr(hm(i).bodyB), col});
   }
   tally(ec, g.degC, g.confC, g.colC, g.leftC);
   {
@@ -497,6 +513,9 @@ static ColorDiag colorDiag(const ProbeSim& sim) {
     tally(ep, g.degPt, c0, c1, l0);
   }
   tally(em, g.degM, g.confM, g.colM, g.leftM);
+  g.confMl = sim.debugMultilevelColoringConflicts();
+  g.copiesVel = P.velCopies.nCopies;
+  g.copiesPos = P.posCopies.nCopies;
   return g;
 }
 
@@ -779,6 +798,10 @@ static int runCluster(const Mode& md, int rank, int size) {
 
   double dP = 0, dX = 0, dXpos = 0, dL = 0, dLcm = 0, dLvel = 0, ovl = 0;
   D3 xposAcc{0, 0, 0}, lvelAcc{0, 0, 0};
+  // Periodic box: the CoM of wrapped positions jumps at a wrap, so the position-phase drift is
+  // accumulated from each body's minimum-image displacement (fixed ownership, asserted below).
+  D3 xposAccPer{0, 0, 0};
+  double dXposPer = 0.0;
   Sums Sprev = S0;
   int fail = 0;
   const int nOwned = static_cast<int>(gids.size());
@@ -802,6 +825,9 @@ static int runCluster(const Mode& md, int rank, int size) {
       cd.leftC = std::max(cd.leftC, c.leftC);
       cd.leftM = std::max(cd.leftM, c.leftM);
       cd.degPt = std::max(cd.degPt, c.degPt);
+      cd.confMl = std::max(cd.confMl, c.confMl);
+      cd.copiesVel = std::max(cd.copiesVel, c.copiesVel);
+      cd.copiesPos = std::max(cd.copiesPos, c.copiesPos);
     }
     if (md.friction &&
         !md.hertz) {  // friction-active body-body contacts (their |dist| = lever gap)
@@ -852,6 +878,20 @@ static int runCluster(const Mode& md, int rank, int size) {
       ec[d] = Lc[d] - LcmStart[d];
       xposAcc[d] += (S.mx[d] - Sprev.mx[d]) / M - dt * (S.P[d] + Sprev.P[d]) / (2.0 * M);
     }
+    if (md.periodic && static_cast<int>(nx.m.size()) == static_cast<int>(st.m.size())) {
+      const double box = 2.0 * -LO;
+      double loc[3] = {0, 0, 0}, gl[3];
+      for (int i = 0; i < static_cast<int>(nx.m.size()); ++i)
+        for (int d = 0; d < 3; ++d) {
+          double dx = static_cast<double>(nx.x[3 * i + d]) - st.x[3 * i + d];
+          dx -= box * std::round(dx / box);
+          loc[d] += nx.m[i] * dx;
+        }
+      MPI_Allreduce(loc, gl, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+      for (int d = 0; d < 3; ++d)
+        xposAccPer[d] += gl[d] / M - dt * (S.P[d] + Sprev.P[d]) / (2.0 * M);
+      dXposPer = std::max(dXposPer, norm(xposAccPer) / RAD);
+    }
     if (!md.hertz) {
       D3 Xpred;  // CoM of the predicted positions x + (v + g dt) dt
       for (int d = 0; d < 3; ++d)
@@ -890,16 +930,19 @@ static int runCluster(const Mode& md, int rank, int size) {
   if (!md.hertz) {  // max over steps (above) and ranks
     // Position columns count UNITS (degPos = units per body, leftPos = uncoloured units);
     // degPosPt is the per-point contact degree (the pre-unit degPos).
-    const int loc[9] = {cd.confM, cd.confC, cd.degM,  cd.degC, cd.colM,
-                        cd.colC,  cd.leftM, cd.leftC, cd.degPt};
-    int mx[9];
-    MPI_Allreduce(loc, mx, 9, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    // Vertices are colouring vertices: hub copy slots included (§4.4), so degVel / degPos report
+    // the per-copy degree (<= 32 at a split hub); ml = multilevel same-colour pairs at an
+    // aggregate; copiesVel / copiesPos = hub copy slots (max over steps and ranks).
+    const int loc[12] = {cd.confM, cd.confC, cd.degM,  cd.degC,   cd.colM,      cd.colC,
+                         cd.leftM, cd.leftC, cd.degPt, cd.confMl, cd.copiesVel, cd.copiesPos};
+    int mx[12];
+    MPI_Allreduce(loc, mx, 12, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
     if (rank == 0)
       std::printf(
           "CONFLICTS mode=%s np=%d thr=%d vel=%d pos=%d degVel=%d degPos=%d colVel=%d "
-          "colPos=%d leftVel=%d leftPos=%d degPosPt=%d\n",
-          md.name.c_str(), size, thr, mx[0], mx[1], mx[2], mx[3], mx[4], mx[5], mx[6], mx[7],
-          mx[8]);
+          "colPos=%d leftVel=%d leftPos=%d degPosPt=%d ml=%d copiesVel=%d copiesPos=%d\n",
+          md.name.c_str(), size, thr, mx[0], mx[1], mx[2], mx[3], mx[4], mx[5], mx[6], mx[7], mx[8],
+          mx[9], mx[10], mx[11]);
   }
   if (rank == 0) {
     std::printf("KE mode=%s np=%d thr=%d", md.name.c_str(), size, thr);
@@ -921,9 +964,9 @@ static int runCluster(const Mode& md, int rank, int size) {
           md.name.c_str(), size, thr, n, steps * sub, dP, dX, dL, dLcm, totGhost, ovl);
     else if (md.periodic)
       std::printf(
-          "MOMENTUM mode=%s np=%d thr=%d N=%d steps=%d dP=%.3e dX=n/a dXpos=n/a dL=%.3e "
+          "MOMENTUM mode=%s np=%d thr=%d N=%d steps=%d dP=%.3e dX=n/a dXpos=%.3e dL=%.3e "
           "dLcm=%.3e dLvel=n/a ghosts=%d ovl=%.3e\n",
-          md.name.c_str(), size, thr, n, steps, dP, dL, dLcm, totGhost, ovl);
+          md.name.c_str(), size, thr, n, steps, dP, dXposPer, dL, dLcm, totGhost, ovl);
     else
       std::printf(
           "MOMENTUM mode=%s np=%d thr=%d N=%d steps=%d dP=%.3e dX=%.3e dXpos=%.3e dL=%.3e "
@@ -1098,6 +1141,7 @@ int main(int argc, char** argv) {
     Mode md;
     md.name = mode;
     int velItersFlag = -1;  // --vel-iters: applied after the mode's own default below
+    std::string stabFlag;   // --stab=<mode>: override the mode's stabilization (test-only)
     bool restitutionFlag = false;
     for (int a = 2; a < argc; ++a) {
       if (std::strncmp(argv[a], "--dump=", 7) == 0)
@@ -1123,6 +1167,8 @@ int main(int argc, char** argv) {
         md.axis = std::stoi(argv[a] + 7);
       else if (std::strncmp(argv[a], "--relabel=", 10) == 0)
         md.relabel = static_cast<unsigned>(std::stoul(argv[a] + 10));
+      else if (std::strncmp(argv[a], "--stab=", 7) == 0)
+        stabFlag = argv[a] + 7;
     }
     if (md.axis < 0 || md.axis > 2) {
       if (rank == 0)
@@ -1183,6 +1229,8 @@ int main(int argc, char** argv) {
     }
     if (velItersFlag >= 0)
       md.velIters = velItersFlag;
+    if (!stabFlag.empty())
+      md.stab = stabFlag;
     md.reportOnly = mode == "tri" || mode == "tri_pgs" || mode == "cluster_e09" ||
                     mode == "cluster_e10" || mode == "cluster_poisson" ||
                     mode == "cluster_multilevel" || mode == "cluster_escalate" ||

@@ -34,12 +34,15 @@
 #include <algorithm>
 #include <cstdlib>
 #include <Kokkos_Core.hpp>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "broadphase_arborx.hpp"
 #include "contact_preprocessing.hpp"
 #include "particles.hpp"
+#include "solve_copies.hpp"
 #include "solver_friction.hpp"
 #include "solver_multilevel.hpp"
 #include "solver_position.hpp"
@@ -284,6 +287,50 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // (see solver_velocity.hpp). count==1 binary collisions are identical to the old Jacobi path.
   int velLeftover = 0;
   int numColors = 0;
+  // Complete colourings (docs/contact_solve_framework.md §4.2 item 4): colour each phase graph
+  // once; if an edge found no free colour, split every vertex above kHubEdgeBudget edges into hub
+  // copies (§4.4) and recolour that phase from scratch on the copy vertices -- guaranteed to
+  // succeed (§1.6). Anything still uncoloured violates the colouring invariant (§12 S3): a single
+  // rank throws here, the distributed step votes it in its first stop Allreduce and every rank
+  // throws. Copy slots are appended at [slotBase, slotBase + nCopies); both phases reuse the range.
+  PhaseCopies& VC = P.velCopies;
+  PhaseCopies& PC = P.posCopies;
+  VC.nHubs = VC.nCopies = VC.nGroups = 0;
+  PC.nHubs = PC.nCopies = PC.nGroups = 0;
+  const int slotBase = P.numParticles;
+  VC.slotBase = PC.slotBase = slotBase;
+  P.splitStats = SplitStats{};
+  P.mlLast.numLevels = 0;
+  Kokkos::View<int*, CpMem> edgeA, edgeB;  // a failed phase's colouring edges (scratch)
+  auto growSlots = [&](int nCopies) {
+    if (slotBase + nCopies > P.capacity)
+      P.ensureCapacity(slotBase + nCopies + 64);
+  };
+  std::string invariantMsg;
+  auto noteInvariant = [&](const char* phase, Kokkos::View<const int*, CpMem> color, int n) {
+    // Name the first uncolourable edge's vertices and their degrees (host readback, error path).
+    auto hc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), color);
+    auto ha = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), edgeA);
+    auto hb = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), edgeB);
+    auto hd = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.vertexDegree);
+    int bad = 0, first = -1;
+    for (int e = 0; e < n; ++e)
+      if (hc(e) == -1 || hc(e) == kColorUncolourable) {
+        ++bad;
+        if (first < 0)
+          first = e;
+      }
+    std::string m = std::string("colouring invariant violated: ") + std::to_string(bad) + " " +
+                    phase + " uncolourable edges after hub splitting";
+    if (first >= 0) {
+      m += " (first: vertex " + std::to_string(ha(first)) + ", degree " +
+           std::to_string(ha(first) >= 0 ? hd(ha(first)) : 0);
+      if (hb(first) >= 0)
+        m += "; vertex " + std::to_string(hb(first)) + ", degree " + std::to_string(hd(hb(first)));
+      m += ")";
+    }
+    invariantMsg += (invariantMsg.empty() ? "" : "; ") + m;
+  };
   if (P.velocityUseGS) {
     // Incremental colouring (single-GPU PGS path only): carry surviving pairs' colours across
     // substeps, re-arbitrating only the new manifolds. Bit-identical colouring FORM to the full
@@ -292,7 +339,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     // full recolour stays (a carried colour can cross a rank boundary it never arbitrated against).
     const bool incrColor = usePersistPre && P.velocityUseGS && !Hooks::distributed && !incrColorOff;
     if (incrColor) {
-      bool didFull = (P.prevPairCount <= 0);
+      // A substep coloured through hub copies carried per-COPY colours: recolour in full.
+      bool didFull = (P.prevPairCount <= 0) || P.velCopiesLastSubstep;
       numColors = colorManifoldsIncrementalKokkos(
           P.manifolds, nm, P.realIndices, nBodies,
           Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
@@ -310,8 +358,32 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         P.velLastFullColors = numColors;
     } else {
       numColors = colorManifoldsKokkos(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
-                                       P.bodyWinner, P.bodyColorMask, velLeftover, mSleep);
+                                       P.bodyWinner, P.bodyColorMask, velLeftover, mSleep, {},
+                                       /*dedupTwins*/ !Hooks::distributed);
     }
+    if (velLeftover > 0 && nm > 0) {
+      // Attempt failed: hub copies over the vertices realIdx(body) (§4.4), full recolour.
+      edgeA = Kokkos::View<int*, CpMem>("peclet::dem::copies_eA", nm);
+      edgeB = Kokkos::View<int*, CpMem>("peclet::dem::copies_eB", nm);
+      velocityEdgeEndsKokkos(P.manifolds, nm, P.realIndices,
+                             Kokkos::View<const int*, CpMem>(P.manifoldColor), edgeA, edgeB);
+      growCopyView(P.vertexDegree, static_cast<std::size_t>(nBodies), "peclet::dem::vertexDegree");
+      vertexDegreeKokkos(edgeA, edgeB, nm, nBodies, P.vertexDegree);
+      buildHubCopiesKokkos(edgeA, edgeB, nm, nBodies, slotBase, P.vertexDegree, VC);
+      growSlots(VC.nCopies);
+      const SlotOverride ovColor{VC.slotA, VC.slotB, {}, 1.0f};
+      numColors = colorManifoldsKokkos(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
+                                       P.bodyWinner, P.bodyColorMask, velLeftover, mSleep, ovColor,
+                                       /*dedupTwins*/ !Hooks::distributed, slotBase + VC.nCopies);
+      if (incrColor)
+        P.velLastFullColors = numColors;
+      buildCopyGroupsKokkos(P.realIndices, nBodies, P.numReal, P.vertexDegree, {}, VC);
+      P.splitStats.lightHubs = countLightHubsKokkos(VC, edgeA, edgeB, nm, nBodies,
+                                                    Kokkos::View<const float*, CpMem>(P.invMass));
+      if (velLeftover > 0)
+        noteInvariant("velocity", Kokkos::View<const int*, CpMem>(P.manifoldColor), nm);
+    }
+    P.velCopiesLastSubstep = VC.nCopies > 0;
   }
   // Dense colour buckets for the PGS sweeps (bit-identical: colour classes are body-disjoint).
   std::vector<int> velOffs;
@@ -378,8 +450,41 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           colorContactsKokkos(P.contacts, numPosUnits, P.numParticles, P.unitColor, P.bodyWinner,
                               P.bodyColorMask, posLeftover, cSleep, posUnits);
     }
-    // Every contact carries its unit's colour: the per-contact ledger commit below, the
-    // leftover fallback's colour filter and the diagnostics read it.
+    // Position vertices are raw slots. demStep's periodic images are local copies of their body
+    // (§WO-4 item 2): they join its fold group, which needs the per-slot degree even without hubs.
+    const bool images = !Hooks::distributed && P.numParticles > P.numReal;
+    if ((posLeftover > 0 || images) && numPosUnits > 0) {
+      edgeA = Kokkos::View<int*, CpMem>("peclet::dem::copies_eA", numPosUnits);
+      edgeB = Kokkos::View<int*, CpMem>("peclet::dem::copies_eB", numPosUnits);
+      positionEdgeEndsKokkos(P.contacts, posUnits, numPosUnits,
+                             Kokkos::View<const int*, CpMem>(P.unitColor), edgeA, edgeB);
+      growCopyView(P.vertexDegree, static_cast<std::size_t>(P.numParticles),
+                   "peclet::dem::vertexDegree");
+      vertexDegreeKokkos(edgeA, edgeB, numPosUnits, P.numParticles, P.vertexDegree);
+      if (posLeftover > 0) {
+        // Attempt failed: hub copies over the raw slots (§4.4), full recolour (the incremental
+        // path falls back to this full path with copies).
+        buildHubCopiesKokkos(edgeA, edgeB, numPosUnits, P.numParticles, slotBase, P.vertexDegree,
+                             PC);
+        growSlots(PC.nCopies);
+        const SlotOverride ovColor{PC.slotA, PC.slotB, {}, 1.0f};
+        numPosColors = colorContactsKokkos(P.contacts, numPosUnits, P.numParticles, P.unitColor,
+                                           P.bodyWinner, P.bodyColorMask, posLeftover, cSleep,
+                                           posUnits, ovColor, slotBase + PC.nCopies);
+        if (incrPosColor) {
+          posDidFull = true;
+          P.posLastFullColors = numPosColors;
+        }
+        if (posLeftover > 0)
+          noteInvariant("position", Kokkos::View<const int*, CpMem>(P.unitColor), numPosUnits);
+      }
+      buildCopyGroupsKokkos(P.realIndices, P.numParticles, P.numReal, P.vertexDegree,
+                            images ? Kokkos::View<const float* [3], CpMem>(P.imageShift)
+                                   : Kokkos::View<const float* [3], CpMem>(),
+                            PC);
+    }
+    // Every contact carries its unit's colour: the per-contact ledger commit below and the
+    // diagnostics read it.
     expandUnitColorsKokkos(posUnits, numPosUnits, Kokkos::View<const int*, CpMem>(P.unitColor),
                            P.contactColor);
     if (incrPosColor) {
@@ -390,9 +495,31 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       P.posPrevContactCount = nc;
     }
   }
+  P.splitStats.velHubCopies = VC.nCopies;
+  P.splitStats.posHubCopies = PC.nCopies;
+  P.splitStats.splitBodiesVel = countSplitBodiesKokkos(VC);
+  P.splitStats.splitBodiesPos = countSplitBodiesKokkos(PC);
+  // The colouring invariant (§4.2 item 4, §12 S3): a single rank throws now; the distributed step
+  // votes the flag in its first stop Allreduce and every rank throws there (a rank-local throw
+  // would leave the others waiting in a collective).
+  bool invariantPending = !invariantMsg.empty();
+  if constexpr (!Hooks::distributed) {
+    if (invariantPending)
+      throw std::runtime_error(invariantMsg);
+  }
+  auto voteInvariant = [&](float res) {
+    bool bad = invariantPending;
+    invariantPending = false;
+    const float r = hooks.allMaxAny(res, bad);
+    if (bad)
+      throw std::runtime_error(invariantMsg.empty()
+                                   ? std::string("colouring invariant violated on another rank")
+                                   : invariantMsg);
+    return r;
+  };
   // Dense colour buckets + fused sweep for the position projection (same precedent as the
-  // velocity sweeps: colour classes are body-disjoint => bit-identical; uncoloured leftovers
-  // keep the Jacobi fallback below). The buckets list unit indices.
+  // velocity sweeps: colour classes are body-disjoint => bit-identical). The buckets list unit
+  // indices.
   std::vector<int> posOffs;
   const bool posBuckets = P.velocityUseGS && numPosUnits > 0 && numPosColors > 0;
   if (posBuckets)
@@ -503,6 +630,39 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     if constexpr (Hooks::distributed)
       hooks.syncVelocities(P);
   }
+  // Velocity-phase copies (§4.4 step 6, §4.5): seeded once the warm start -- known impulses on
+  // true masses -- has been applied (and, under MPI, published). The sweeps, the stabilization
+  // passes and the multilevel cycle take the solve views and the slot overrides; the fold runs in
+  // every iteration after the sweep; every rank sync re-marks the seeds (syncVel).
+  const bool velCopiesOn = VC.nGroups > 0;
+  Kokkos::View<const float*, CpMem> invMassVel = P.invMass;
+  Kokkos::View<const float* [3], CpMem> invInertiaVel = P.invInertia;
+  SlotOverride velOv{};
+  const Kokkos::View<float*, CpMem> orphPkW =
+      poisson ? P.bodyOrphanVPeak : Kokkos::View<float*, CpMem>();
+  if (velCopiesOn) {
+    buildSolveViewsKokkos(P, VC, slotBase + VC.nCopies, P.invMass, P.invInertia);
+    seedCopySlotStateKokkos(P, VC);
+    markCopySeedsKokkos(VC, P.velPred, P.angVelPred, orphV, orphPkW);
+    invMassVel = P.invMassSolve;
+    invInertiaVel = P.invInertiaSolve;
+    velOv = SlotOverride{VC.slotA, VC.slotB, P.splitSlot, kSplitOmegaVelocity};
+  }
+  auto foldVel = [&] {
+    if (velCopiesOn)
+      foldCopiesKokkos(space, VC, P.velPred, P.angVelPred, orphV, orphPkW);
+  };
+  // A rank sync inside the velocity phase: orphan accounts back to balances, the raw reverse +
+  // forward, then the copies' seeds re-marked from the reconciled bases.
+  auto syncVel = [&] {
+    if constexpr (Hooks::distributed) {
+      if (velCopiesOn)
+        unfoldOrphanKokkos(VC, orphV);
+      hooks.syncVelocities(P);
+      if (velCopiesOn)
+        markCopySeedsKokkos(VC, P.velPred, P.angVelPred, orphV, orphPkW);
+    }
+  };
   // Restitution threshold ~ the speed one substep of free fall gains: below it a contact is
   // RESTING and bounces with e=0 (see solveVelocityKokkos — dense-pile energy-bomb guard).
   const float vRest = 2.0f * P.dt * gMagP;
@@ -513,20 +673,21 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // stop — and the physics — are bit-identical to the submission path.
   auto emitVelIter = [&] {
     Kokkos::deep_copy(space, P.maxApproach, 0.0f);
-    solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia,
+    solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel,
                            P.quat, P.velPred, P.angVelPred, P.realIndices, P.growthRate,
                            P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
                            Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
                            P.frictionDynamic, P.vt0, P.restitutionTangent,
                            Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC,
-                           orphV, orphPk, velPermC, velOffsP, velFusedP);
+                           orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
+    foldVel();
   };
   // Device-side iteration loop (CUDA, single-rank): the whole adaptive velocity loop as ONE
   // kernel — same sweeps, same residual, same stop; the per-iteration readback and the graph
   // capture disappear. The final residual stays in P.maxApproach for the stabilization trigger.
   bool velLoopDone = false;
   if constexpr (!Hooks::distributed) {
-    if (usePGS && P.velocityUseGS && velLeftover == 0 && velFusedP) {
+    if (usePGS && P.velocityUseGS && !velCopiesOn && velFusedP) {
       const FusedLoopSpec spec{P.velocityIterations, 0.02f * vRest, false};
       velLoopDone = solveVelocityPGSKokkos(
           P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia, P.quat, P.velPred,
@@ -539,7 +700,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   }
   bool graphVel = false;
   CudaIterGraph gVel;
-  if (!velLoopDone && usePGS && P.velocityUseGS && velLeftover == 0) {
+  if (!velLoopDone && usePGS && P.velocityUseGS) {
     PECLET_DEM_GRAPH_LOOP(graphVel, gVel, emitVelIter, P.graphCache[0])
   }
   for (int it = 0; !velLoopDone && it < P.velocityIterations; ++it) {
@@ -554,30 +715,15 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           emitVelIter();
       } else {
         Kokkos::deep_copy(space, P.maxApproach, 0.0f);
-        solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, P.invMass,
-                                     P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
-                                     P.growthRate, P.restitutionNormal, vRest, P.maxApproach);
+        solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, invMassVel,
+                                     invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,
+                                     P.growthRate, P.restitutionNormal, vRest, P.maxApproach, {},
+                                     {}, {}, {}, velOv);
+        foldVel();
       }
-      // Colour-mask saturation fallback (interpenetration degree > 62): the manifolds the colouring
-      // could not place are applied with the count-averaged Jacobi pass — stable, and only active
-      // in pathologically crushed regions; without it those manifolds were silently skipped and
-      // deep overlap could never resolve. The leftover is rank-local under MPI, so the apply is
-      // decided by a vote folded into the stop's Allreduce (no extra message), and then every rank
-      // makes the per-body counts global before it divides (syncContactCounts is collective). The
-      // stop residual is the sweep's alone (the Jacobi pass does not write maxApproach), so reading
-      // it before the apply is the same value.
-      bool velFallback = velLeftover > 0;
-      if (velFallback)
-        solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred,
-                            P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRest,
-                            P.deltaVel, P.deltaAngVel, P.constraintCounts,
-                            Kokkos::View<const int*, CpMem>(P.manifoldColor), -1);
-      const float velRes = hooks.allMaxAny(readFloat(P.maxApproach), velFallback);
-      if (velFallback) {
-        hooks.syncContactCounts(P);
-        applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
-                                          P.deltaAngVel, P.constraintCounts);
-      }
+      // Every active manifold is coloured (§4.2): the count-averaged fallback is gone. The stop's
+      // Allreduce carries the colouring-invariant vote (voteInvariant; no extra message).
+      const float velRes = voteInvariant(readFloat(P.maxApproach));
       // Adaptive stop. One-shot GS: end once no pair approaches above the resting threshold. PGS:
       // maxApproach records the largest APPLIED correction, and meaningful increments are ~g dt
       // (they propagate a chain one link per sweep), so the tolerance must sit well below vRest or
@@ -603,11 +749,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     }
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))
-        hooks.syncVelocities(P);
+        syncVel();
     }
   }
   if constexpr (Hooks::distributed)
-    hooks.syncVelocities(P);  // final owner->ghost refresh of the main velocity phase
+    syncVel();  // final owner->ghost refresh of the main velocity phase
   // STABILIZATION PASS: if the symmetric sweeps could not drain the residual (a collapsing
   // column needs ~one sweep per layer to carry its weight to the floor -- unaffordable), arrest
   // the remaining quasi-static approach with grounded one-sided sweeps. In dynamic scenes the
@@ -628,16 +774,17 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         auto emitOsIter = [&] {
           Kokkos::deep_copy(space, P.maxApproach, 0.0f);
           solveVelocityPGSKokkos(
-              P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia, P.quat,
+              P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel, P.quat,
               P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRestS,
               P.maxApproach, P.lambdaAcc, P.vn0,
               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
               P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {},
-              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP);
+              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
+          foldVel();
         };
         bool osLoopDone = false;
         if constexpr (!Hooks::distributed) {
-          if (velLeftover == 0 && velFusedP) {
+          if (!velCopiesOn && velFusedP) {
             const FusedLoopSpec spec{2 * P.velocityIterations, vRestS, false};
             osLoopDone = solveVelocityPGSKokkos(
                 P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia, P.quat,
@@ -651,7 +798,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         }
         bool graphOs = false;
         CudaIterGraph gOs;
-        if (!osLoopDone && velLeftover == 0) {
+        if (!osLoopDone) {
           PECLET_DEM_GRAPH_LOOP(graphOs, gOs, emitOsIter, P.graphCache[1])
         }
         for (int it = 0; !osLoopDone && it < 2 * P.velocityIterations; ++it) {
@@ -663,7 +810,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
             break;
           if constexpr (Hooks::distributed) {
             if (hooks.syncPoint(it))
-              hooks.syncVelocities(P);
+              syncVel();
           }
         }
       } else if (smode == 2) {
@@ -690,10 +837,15 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
             P.manifolds, nm, P.realIndices, Kokkos::View<const int*, CpMem>(P.manifoldColor),
             Kokkos::View<const float*, CpMem>(P.vn0), Kokkos::View<const float* [3], CpMem>(P.vt0),
             Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent), P.posPred, gHat,
-            Kokkos::View<const float*, CpMem>(P.invMass), qsThr, mlGates, nBodies, S, P.bodyWinner,
-            P.bodyColorMask, /*excludeImmovable*/ sleepOn,
+            invMassVel, qsThr, mlGates, nBodies, S, P.bodyWinner, P.bodyColorMask,
+            /*excludeImmovable*/ sleepOn,
             sleepOn ? Kokkos::View<const unsigned char*, CpMem>(P.asleep)
                     : Kokkos::View<const unsigned char*, CpMem>());
+        P.mlLast.numLevels = H.numLevels;
+        P.mlLast.numManifolds = nm;
+        P.mlLast.numBodies = nBodies;
+        P.mlLast.parentOff = H.parentOff;
+        P.mlLast.numGroups = H.numGroups;
         // Dense per-(level, colour) buckets, built once per hierarchy (see solver_multilevel.hpp).
         std::vector<std::vector<int>> mlOffs;
         if (H.numLevels > 0) {
@@ -717,28 +869,35 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         // One stabilization iteration (async QS-residual zero + fine sweep + coarse cycle),
         // graph-captured on the single-GPU path — this loop is THE launch storm (up to 16
         // iterations x [colour sweeps + per-(level, colour) coarse kernels] per substep).
+        // With hub copies (§4.4): fold between the fine sweep and the coarse cycle (the coarse
+        // leg reads the bases, [0, nBodies)), and re-seed the copies from the bases after it.
         auto emitMlIter = [&] {
           Kokkos::deep_copy(space, P.maxApproachQS, 0.0f);
           solveVelocityPGSKokkos(
-              P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia, P.quat,
+              P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel, P.quat,
               P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRestS,
               P.maxApproach, P.lambdaAcc, P.vn0,
               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
               P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse),
-              P.maxApproachQS, bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP);
-          if (H.numLevels > 0)
-            multilevelCoarseCycleKokkos(
-                P.manifolds, nm, P.realIndices, Kokkos::View<const float*, CpMem>(P.invMass),
-                P.velPred, P.lambdaAcc, P.maxApproachQS, nBodies, H, S,
-                /*coarseSweeps*/ 2, Kokkos::View<const float*, CpMem>(relV), &mlOffs,
-                Kokkos::View<const int*, CpMem>(P.mlBucketPerm), mlFusedP);
+              P.maxApproachQS, bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP,
+              nullptr, velOv);
+          foldVel();
+          if (H.numLevels > 0) {
+            multilevelCoarseCycleKokkos(P.manifolds, nm, P.realIndices, invMassVel, P.velPred,
+                                        P.lambdaAcc, P.maxApproachQS, nBodies, H, S,
+                                        /*coarseSweeps*/ 2, Kokkos::View<const float*, CpMem>(relV),
+                                        &mlOffs, Kokkos::View<const int*, CpMem>(P.mlBucketPerm),
+                                        mlFusedP);
+            if (velCopiesOn)
+              reseedCopiesKokkos(space, VC, P.velPred, P.angVelPred);
+          }
         };
         // Device-side stabilization loop (CUDA, single-rank): fine sweep + coarse cycle +
         // adaptive stop, all iterations in ONE kernel (see demFusedMlLoopK).
         bool mlLoopDone = false;
 #ifdef KOKKOS_ENABLE_CUDA
         if constexpr (!Hooks::distributed) {
-          if (velLeftover == 0 && velFusedP) {
+          if (!velCopiesOn && velFusedP) {
             if (H.numLevels > 0 && mlFusedP) {
               const PGSManifoldSweep fStab = makePGSManifoldSweep(
                   P.manifolds, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
@@ -771,7 +930,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
 #endif
         bool graphMl = false;
         CudaIterGraph gMl;
-        if (!mlLoopDone && velLeftover == 0) {
+        if (!mlLoopDone) {
           PECLET_DEM_GRAPH_LOOP(graphMl, gMl, emitMlIter, P.graphCache[2])
         }
         for (int it = 0; !mlLoopDone && it < 2 * P.velocityIterations; ++it) {
@@ -783,7 +942,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
             break;
           if constexpr (Hooks::distributed) {
             if (hooks.syncPoint(it))
-              hooks.syncVelocities(P);
+              syncVel();
           }
         }
       } else if (smode == 4) {
@@ -799,8 +958,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
             P.manifolds, nm, P.realIndices, Kokkos::View<const int*, CpMem>(P.manifoldColor),
             Kokkos::View<const int*, CpMem>(P.heightLevel), P.levelKey, P.levelPerm, buckets);
         const PGSManifoldSweep sweep{P.manifolds,
-                                     P.invMass,
-                                     P.invInertia,
+                                     invMassVel,
+                                     invInertiaVel,
                                      P.quat,
                                      P.velPred,
                                      P.angVelPred,
@@ -822,18 +981,20 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                      relV,
                                      vpkC,
                                      orphV,
-                                     orphPk};
+                                     orphPk,
+                                     velOv};
         for (int it = 0; it < 2 * P.velocityIterations; ++it) {
           Kokkos::deep_copy(P.maxApproach, 0.0f);
           solveVelocityPGSBucketsKokkos(sweep, Kokkos::View<const int*, CpMem>(P.levelPerm),
                                         buckets, /*topDown*/ false);
           solveVelocityPGSBucketsKokkos(sweep, Kokkos::View<const int*, CpMem>(P.levelPerm),
                                         buckets, /*topDown*/ true);
+          foldVel();
           if (hooks.allMax(readFloat(P.maxApproach)) <= vRestS)
             break;
           if constexpr (Hooks::distributed) {
             if (hooks.syncPoint(it))
-              hooks.syncVelocities(P);
+              syncVel();
           }
         }
       } else if (smode == 3) {
@@ -843,24 +1004,29 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         for (int it = 0; it < 256; ++it) {
           Kokkos::deep_copy(P.maxApproach, 0.0f);
           solveVelocityPGSKokkos(
-              P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia, P.quat,
+              P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel, P.quat,
               P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRestS,
               P.maxApproach, P.lambdaAcc, P.vn0,
               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
               P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {},
-              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP);
+              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
+          foldVel();
           if (hooks.allMax(readFloat(P.maxApproach)) <= vRestS)
             break;
           if constexpr (Hooks::distributed) {
             if (hooks.syncPoint(it))
-              hooks.syncVelocities(P);
+              syncVel();
           }
         }
       }
       if constexpr (Hooks::distributed)
-        hooks.syncVelocities(P);  // final refresh of the stabilization phase
+        syncVel();  // final refresh of the stabilization phase
     }
   }
+  // End of the velocity phase: the orphan accounts back to balances (the bookkeeping, the legacy
+  // friction pass and the next substep read the bases; copy slots are dead from here on).
+  if (velCopiesOn)
+    unfoldOrphanKokkos(VC, orphV);
   // Poisson bookkeeping runs once per substep on the FINAL velocity state (after every phase and
   // ghost refresh): bank this substep's kinetic compression, deduct what was returned/released.
   if (poisson)
@@ -896,6 +1062,30 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   if constexpr (Hooks::distributed)
     hooks.publishPositions(P);
 
+  // Position-phase copies (§4.4, §4.5; demStep's periodic images, §WO-4 item 2): seeded after the
+  // predict (and, under MPI, the publish). An image is re-seeded to its body's predicted position
+  // plus its generation shift, so its increments are relative to the body.
+  const bool posCopiesOn = PC.nGroups > 0;
+  Kokkos::View<const float*, CpMem> invMassPos = P.invMass;
+  Kokkos::View<const float* [3], CpMem> invInertiaPos = P.invInertia;
+  SlotOverride posOv{};
+  if (posCopiesOn) {
+    buildSolveViewsKokkos(P, PC, slotBase + PC.nCopies, P.invMass, P.invInertia);
+    seedCopySlotStateKokkos(P, PC);
+    markCopySeedsKokkos(PC, P.posPred, {}, {}, {});
+    invMassPos = P.invMassSolve;
+    invInertiaPos = P.invInertiaSolve;
+    posOv = PC.nHubs > 0 ? SlotOverride{PC.slotA, PC.slotB, P.splitSlot, kSplitOmegaPosition}
+                         : SlotOverride{{}, {}, P.splitSlot, kSplitOmegaPosition};
+  }
+  auto syncPos = [&] {
+    if constexpr (Hooks::distributed) {
+      hooks.syncPositions(P);
+      if (posCopiesOn)
+        markCopySeedsKokkos(PC, P.posPred, {}, {}, {});
+    }
+  };
+
   // Overlap resolved once the deepest penetration falls below ~0.01% of a particle radius.
   const float posTol = 1e-4f * P.baseRadius * P.globalScale;
   {
@@ -908,15 +1098,18 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   auto emitPosIter = [&] {
     Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
     solvePositionColoredGSKokkos(P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors,
-                                 P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
-                                 P.maxOverlap, P.posLambdaContact, posPermC, posOffsP, posFusedP);
+                                 invMassPos, P.posPred, P.quatPred, P.quat, invInertiaPos,
+                                 P.maxOverlap, P.posLambdaContact, posPermC, posOffsP, posFusedP,
+                                 nullptr, posOv);
+    if (posCopiesOn)
+      foldCopiesKokkos(space, PC, P.posPred, {}, {}, {});
   };
   // Device-side position loop (CUDA, single-rank): all overlap-projection iterations + the
-  // adaptive stop in ONE kernel. Leftover contacts (colour-mask saturation) need the host
-  // loop's per-iteration Jacobi fallback, so they keep the launch path.
+  // adaptive stop in ONE kernel. Disabled while the phase has copies (the fold runs between
+  // iterations on the host-driven path).
   bool posLoopDone = false;
   if constexpr (!Hooks::distributed) {
-    if (P.velocityUseGS && posLeftover == 0 && posFusedP) {
+    if (P.velocityUseGS && !posCopiesOn && posFusedP) {
       const FusedLoopSpec spec{P.positionIterations, posTol, true};
       posLoopDone = solvePositionColoredGSKokkos(
           P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors, P.invMass, P.posPred,
@@ -926,7 +1119,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   }
   bool graphPos = false;
   CudaIterGraph gPos;
-  if (!posLoopDone && P.velocityUseGS && posLeftover == 0) {
+  if (!posLoopDone && P.velocityUseGS) {
     PECLET_DEM_GRAPH_LOOP(graphPos, gPos, emitPosIter, P.graphCache[3])
   }
   for (int it = 0; !posLoopDone && it < P.positionIterations; ++it) {
@@ -935,22 +1128,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         gPos.launch(space);
       else
         emitPosIter();
-      // Colour-mask saturation fallback: contacts the colouring could not place (degree > 62 in
-      // crushed regions) get the count-averaged Jacobi projection so deep overlap still resolves.
-      // As in the velocity loop: rank-local leftover -> a vote in the stop's Allreduce, global
-      // counts, then the apply (the Jacobi pass's maxOverlap is recorded before the vote; the
-      // apply does not touch it).
-      bool posFallback = posLeftover > 0;
-      if (posFallback)
-        solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
-                            P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap,
-                            Kokkos::View<const int*, CpMem>(P.contactColor), -1);
-      const float posRes = hooks.allMaxAny(readFloat(P.maxOverlap), posFallback);
-      if (posFallback) {
-        hooks.syncContactCounts(P);
-        applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
-                           P.constraintCounts);
-      }
+      // Every active unit is coloured (§4.2): the count-averaged fallback is gone; the stop's
+      // Allreduce carries the colouring-invariant vote if the velocity loop did not.
+      const float posRes = voteInvariant(readFloat(P.maxOverlap));
       // Adaptive stop: end once no contact overlaps by more than posTol. Fixed positionIterations
       // is the cap. Distributed: Allreduce-MAXed so all ranks break together.
       if (posRes < posTol)
@@ -967,11 +1147,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     }
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))
-        hooks.syncPositions(P);
+        syncPos();
     }
   }
   if constexpr (Hooks::distributed)
-    hooks.syncPositions(P);  // final owner->ghost refresh of the position phase
+    syncPos();  // final owner->ghost refresh of the position phase
   // Position-channel Coulomb-bound carry (PGS path): next substep's friction cone sees
   // mu * (velocity-impulse channel + this position-channel load). Without it a jostled bed's
   // bound under-counts the true normal force and stick leaks (measured: 99% sliding wall

@@ -204,6 +204,30 @@ NB_MODULE(_dem, m) {
           "colourings left uncoloured (single-rank). Non-zero means a colouring exhausted its "
           "arbitration rounds or palette.")
       .def(
+          "multilevel_coloring_conflicts",
+          [](Diagnostics& d) { return d.s->debugMultilevelColoringConflicts(); },
+          "Same-colour pairs at an aggregate of the last multilevel hierarchy, summed over its "
+          "levels; a valid coarse colouring returns 0 (0 also when no hierarchy was built).")
+      .def(
+          "split_stats",
+          [](Diagnostics& d) {
+            const auto st = d.s->debugSplitStats();
+            nb::dict r;
+            r["vel_hub_copies"] = st.velHubCopies;
+            r["pos_hub_copies"] = st.posHubCopies;
+            r["light_hubs"] = st.lightHubs;
+            r["split_bodies_vel"] = st.splitBodiesVel;
+            r["split_bodies_pos"] = st.splitBodiesPos;
+            r["unfired_split_contacts"] = st.unfiredSplitContacts;
+            r["drift_migrations"] = st.driftMigrations;
+            return r;
+          },
+          "Dict of the last substep's body copies (docs/contact_solve_framework.md §4.4): hub "
+          "copy slots per phase, light hubs (hub mass < 10x its partners' mean), bodies solved "
+          "through more than one slot per phase (hubs; periodic images in the single-rank "
+          "position phase), and (0 until implemented) unfired split contacts and drift "
+          "migrations.")
+      .def(
           "rest_orphan_stats", [](Diagnostics& d) { return d.s->restOrphanStats(); },
           "Poisson-restitution instrument: (sum, max, n_bodies>0) of the per-body orphaned event "
           "budget (physical impulse units).")

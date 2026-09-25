@@ -186,12 +186,13 @@ inline void demStep(Particles& P) {
   Kokkos::deep_copy(space, P.topGhost, P.numReal);
   // Periodic ghost band: every partner of every pair the narrow phase can report gets an image.
   // A wrap pair with distances a, b to its two faces is reported iff a + b < rA + rB + margin,
-  // so the FARTHER partner sits within 2 R_max + margin of its face. Position corrections land on
-  // the RAW slot (a ghost's are discarded at commit), so a partner without an image never moves:
-  // a band of one R_max (the old choice -- enough to DETECT every pair from the near side) left
-  // every pair with max(a, b) > R_max resolved one-sidedly, the far partner absorbing only its own
-  // half of the overlap. With both imaged the wrap pair is two twin manifolds, exactly like a pair
-  // symmetric about the face always was, and the distributed step's halo band (rcut + skin).
+  // so the FARTHER partner sits within 2 R_max + margin of its face. A band of one R_max (the old
+  // choice -- enough to DETECT every pair from the near side) left every pair with
+  // max(a, b) > R_max resolved one-sidedly. With both imaged the wrap pair is two twin manifolds,
+  // exactly like a pair symmetric about the face always was, and the distributed step's halo band
+  // (rcut + skin). In the position phase an image slot is a local mass-split COPY of its body
+  // (docs/contact_solve_framework.md §WO-4 item 2): its corrections are folded onto the body every
+  // iteration (demSolveContacts), so the body's CoM moves by exactly the corrections applied.
   const float ghostBand = 2.0f * maxRad + margin;
   // Size the SoA for the ghost boundary layer BEFORE emitting (CUDA did this in initialize() via
   // calculate_capacity). Without it a Simulation(numReal) leaves capacity==numReal, so every ghost
@@ -201,6 +202,20 @@ inline void demStep(Particles& P) {
                        P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
                        P.shapeId, P.realIndices, P.topGhost, P.gid, P.materialId);
   P.numParticles = readInt(P.topGhost);
+  if (P.numParticles > P.numReal) {
+    // Each image's periodic shift at generation (the position-phase copy seed, §WO-4 item 2).
+    growCopyView(P.imageShift, static_cast<std::size_t>(P.capacity), "peclet::dem::imageShift");
+    auto sh = P.imageShift;
+    auto pp = P.posPred;
+    auto ri = P.realIndices;
+    Kokkos::parallel_for(
+        "peclet::dem::image_shift", Kokkos::RangePolicy<CpExec>(space, P.numReal, P.numParticles),
+        KOKKOS_LAMBDA(int q) {
+          const int i = ri(q);
+          for (int c = 0; c < 3; ++c)
+            sh(q, c) = pp(q, c) - pp(i, c);
+        });
+  }
 
   fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
   // Collision detection runs on the PREDICTED state (speculative positions/orientations), matching
@@ -244,8 +259,13 @@ inline void demStep(Particles& P) {
   // stabilization, friction, colored-GS overlap projection) — shared with the distributed step.
   demSolveContacts(P, nc, nm, P.numReal, P.realIndices, SoloSolveHooks{});
 
-  if (sleepStep)
+  if (sleepStep) {
+    // Hub copies may have grown the SoA inside the solve (ensureCapacity): keep the restored view
+    // capacity-sized.
+    if (static_cast<int>(savedInvMass.extent(0)) < P.capacity)
+      Kokkos::resize(savedInvMass, P.capacity);
     P.invMass = savedInvMass;  // restore the real inverse mass for the commit / next step
+  }
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
 
   // Sleep detection: a grounded body whose motion stayed below the resting floor for K substeps

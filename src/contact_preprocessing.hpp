@@ -419,6 +419,45 @@ KOKKOS_INLINE_FUNCTION std::uint64_t pairKey(const ContactC& c) {
 /// Slots are < 2^31, so no single-rank key ever has it set.
 inline constexpr std::uint64_t kNonOwnedPairBit = 1ull << 63;
 
+/// Colouring palette (docs/contact_solve_framework.md §4.2 item 1): the greedy takes the lowest
+/// colour free at both endpoints among bits 0..63 of the uint64 mask and never forces one. An edge
+/// with no free colour is marked kColorUncolourable; it is neither coloured nor remaining, so the
+/// arbitration terminates, and it counts as `leftover` (after hub copies: an invariant violation).
+inline constexpr int kColorPalette = 64;
+inline constexpr int kColorUncolourable = -3;
+
+/// Per-edge slot overrides of a phase's hub copies (docs/contact_solve_framework.md §4.4 item 5)
+/// plus the per-slot mass-split flag and relaxation of §4.5. Empty views = today's indices, no
+/// relaxation (the identity). `a(e)` / `b(e)` are the slots of edge e's A / B end (-1 = the
+/// default index: realIdx(bodyX) in the velocity phase, the raw contact body in the position
+/// phase). Every STATE access of a phase's sweeps goes through slotA / slotB; keys, labels and side
+/// flags keep the body.
+struct SlotOverride {
+  Kokkos::View<const int*, CpMem> a, b;
+  Kokkos::View<const unsigned char*, CpMem> split;  // per slot: 1 = its body has k > 1
+  float omega = 1.0f;                               // the phase's split relaxation (§4.5)
+  KOKKOS_INLINE_FUNCTION int slotA(int e, int def) const {
+    if (a.extent(0) > 0) {
+      const int s = a(e);
+      if (s >= 0)
+        return s;
+    }
+    return def;
+  }
+  KOKKOS_INLINE_FUNCTION int slotB(int e, int def) const {
+    if (b.extent(0) > 0) {
+      const int s = b(e);
+      if (s >= 0)
+        return s;
+    }
+    return def;
+  }
+  /// True iff the edge touches a mass-split slot (its step is scaled by omega before the clamp).
+  KOKKOS_INLINE_FUNCTION bool relax(int sA, int sB) const {
+    return split.extent(0) > 0 && (split(sA) != 0 || (sB >= 0 && split(sB) != 0));
+  }
+};
+
 /// Decode the canonical (bodyA, bodyB) from a pair key (bodyB = -1 for boundary). Bit 63
 /// (kNonOwnedPairBit) is masked: the identity on every key below 2^63.
 KOKKOS_INLINE_FUNCTION void decodeKey(std::uint64_t key, int& bodyA, int& bodyB) {

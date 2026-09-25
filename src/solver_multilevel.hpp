@@ -42,6 +42,12 @@ namespace peclet::dem {
 /// at that level (skipped by the coarse sweeps).
 inline constexpr int kMlMaxLevels = 10;
 inline constexpr int kMlSlotSkip = 63;
+/// Transient mark of the coarse colouring (docs/contact_solve_framework.md §4.4, "the multilevel
+/// coarse colouring"): an edge that won its groups but found no free colour keeps slot 63 and is
+/// skipped at this level. Bit 62 lies above the 10 x 6 packed slot bits and is SET in every word
+/// (the build initialises colorPacked to ~0), so the mark is the bit CLEARED, and it is set again
+/// when the level's colouring ends -- the packed word is bit for bit what it was without the mark.
+inline constexpr long long kMlPendingSkipBit = 1ll << 62;
 
 /// Host-side description of one built hierarchy (offsets into the packed group pools).
 struct ContactHierarchy {
@@ -291,8 +297,8 @@ inline ContactHierarchy buildContactHierarchyKokkos(
               if (!mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred, gHat, qsThr,
                                       gateMask))
                 return;
-              if (((cp(idx) >> slotShift) & 63) != kMlSlotSkip)
-                return;  // committed in an earlier round
+              if (((cp(idx) >> slotShift) & 63) != kMlSlotSkip || !(cp(idx) & kMlPendingSkipBit))
+                return;  // committed (or marked skip) in an earlier round
               const int gA = grp(realIdx(m.bodyA));
               const int gB = (m.bodyB >= 0) ? grp(realIdx(m.bodyB)) : -1;
               if (gB == gA)
@@ -310,7 +316,7 @@ inline ContactHierarchy buildContactHierarchyKokkos(
               if (!mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred, gHat, qsThr,
                                       gateMask))
                 return;
-              if (((cp(idx) >> slotShift) & 63) != kMlSlotSkip)
+              if (((cp(idx) >> slotShift) & 63) != kMlSlotSkip || !(cp(idx) & kMlPendingSkipBit))
                 return;
               const int gA = grp(realIdx(m.bodyA));
               const int gB = (m.bodyB >= 0) ? grp(realIdx(m.bodyB)) : -1;
@@ -324,9 +330,13 @@ inline ContactHierarchy buildContactHierarchyKokkos(
               std::uint64_t forbidden = colorMask(gA);
               if (gB >= 0)
                 forbidden |= colorMask(gB);
-              int c = 0;
-              while (c < kMlSlotSkip - 1 && (forbidden & (std::uint64_t(1) << c)))
+              int c = 0;  // lowest free colour among 0..62; never forced (§4.4)
+              while (c < kMlSlotSkip && ((forbidden >> c) & 1))
                 ++c;
+              if (c == kMlSlotSkip) {
+                cp(idx) &= ~kMlPendingSkipBit;  // keeps slot 63: skipped at this level
+                return;
+              }
               cp(idx) = (cp(idx) & ~(63ll << slotShift)) | (static_cast<long long>(c) << slotShift);
               const std::uint64_t bit = std::uint64_t(1) << c;
               colorMask(gA) |= bit;
@@ -336,10 +346,13 @@ inline ContactHierarchy buildContactHierarchyKokkos(
             rem);
         space.fence();
         if (rem == prevRemaining)
-          break;  // mask saturation: leftovers keep slot 63 and are skipped at this level
+          break;  // safety bound: leftovers keep slot 63 and are skipped at this level
         prevRemaining = rem;
         remaining = rem;
       }
+      Kokkos::parallel_for(
+          "peclet::dem::ml_color_clear_skip", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+          KOKKOS_LAMBDA(int idx) { cp(idx) |= kMlPendingSkipBit; });
       Kokkos::parallel_reduce(
           "peclet::dem::ml_color_max", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
           KOKKOS_LAMBDA(int idx, int& mx) {

@@ -1,6 +1,11 @@
-// dem — colour-mask overflow of the contact / manifold graph colourings (REPORT-ONLY; the future
-// gate). docs/contact_evidence/FOLLOWUPS.md, defect 1.
+// dem — colour-mask overflow of the contact / manifold graph colourings. docs/contact_evidence/
+// FOLLOWUPS.md, defect 1; fixed by docs/contact_solve_framework.md §4.2 / §4.4 (WO-4): the greedy
+// takes the lowest free colour of 64 and never forces one (an edge with none is marked -3 =
+// leftover), and when a colouring leaves a leftover every vertex above 32 edges is split into hub
+// copies and the graph is recoloured on the copy vertices. The gate (kGate = true): after copies,
+// 0 same-colour pairs at every colouring vertex and leftover = 0.
 //
+// The history the test was written against (kept for the record):
 // Both greedy colourings (colorManifoldsKokkos: the velocity sweeps; colorContactsKokkos: the
 // position sweeps) pick the lowest colour free at both endpoints with
 //     while (c < 62 && (forbidden & (1 << c))) ++c;
@@ -26,15 +31,16 @@
 #include <utility>
 #include <vector>
 
+#include "solve_copies.hpp"  // the hub-copy builder (buildHubCopiesKokkos)
 #include "solver_position.hpp"
 #include "solver_velocity.hpp"
 
 using namespace peclet::dem;
 
-// ---- the future gate: a valid colouring has no same-colour pair at any body ----
-static constexpr bool kGate = false;
+// ---- the gate: after hub copies, no same-colour pair at any colouring vertex, no leftover ----
+static constexpr bool kGate = true;
 
-// sum over (body, colour) of (count - 1), for coloured (>= 0) edges.
+// sum over (vertex, colour) of (count - 1), for coloured (>= 0) edges.
 static int conflictsOf(const std::vector<std::pair<int, int>>& edges, const std::vector<int>& col) {
   std::map<std::pair<int, int>, int> n;
   for (std::size_t e = 0; e < edges.size(); ++e) {
@@ -77,17 +83,37 @@ int main(int argc, char** argv) {
         Kokkos::deep_copy(c, hc);
         Kokkos::View<int*, CpMem> col("col", ne);
         int leftover = -1;
-        const int nc = colorContactsKokkos(c, ne, nb, col, winner, mask, leftover);
+        int nc = colorContactsKokkos(c, ne, nb, col, winner, mask, leftover);
+        const int leftover0 = leftover;
+        std::vector<std::pair<int, int>> vEdges = edges;  // colouring vertices (copies after split)
+        int copies = 0;
+        if (leftover > 0) {
+          PhaseCopies H;
+          Kokkos::View<int*, CpMem> eA("eA", ne), eB("eB", ne), deg("deg", nb);
+          positionEdgeEndsKokkos(c, PosUnits{}, ne, col, eA, eB);
+          vertexDegreeKokkos(eA, eB, ne, nb, deg);
+          buildHubCopiesKokkos(eA, eB, ne, nb, /*slotBase*/ nb, deg, H);
+          copies = H.nCopies;
+          Kokkos::View<long long*, CpMem> w2("w2", nb + H.nCopies);
+          Kokkos::View<std::uint64_t*, CpMem> m2("m2", nb + H.nCopies);
+          nc = colorContactsKokkos(c, ne, nb, col, w2, m2, leftover, {}, PosUnits{},
+                                   SlotOverride{H.slotA, H.slotB, {}, 1.0f}, nb + H.nCopies);
+          auto ha = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), H.slotA);
+          auto hb = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), H.slotB);
+          for (int e = 0; e < ne; ++e)
+            vEdges[e] = {ha(e) >= 0 ? ha(e) : edges[e].first, hb(e) >= 0 ? hb(e) : edges[e].second};
+        }
         auto hcol = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), col);
         std::vector<int> v(hcol.data(), hcol.data() + ne);
         int at62 = 0;
         for (int x : v)
           at62 += (x == 62);
-        const int conf = conflictsOf(edges, v);
+        const int conf = conflictsOf(vEdges, v);
         std::printf(
-            "COLOR_OVERFLOW graph=contacts  D=%3d colours=%2d leftover=%d conflicts=%3d at62=%3d\n",
-            D, nc, leftover, conf, at62);
-        if (kGate && conf > 0)
+            "COLOR_OVERFLOW graph=contacts  D=%3d colours=%2d leftover(attempt)=%d copies=%d "
+            "leftover=%d conflicts=%3d at62=%3d\n",
+            D, nc, leftover0, copies, leftover, conf, at62);
+        if (kGate && (conf > 0 || leftover != 0))
           fail = 1;
       }
       // velocity graph: one ManifoldC per edge, identity real-index map
@@ -108,22 +134,42 @@ int main(int argc, char** argv) {
         Kokkos::deep_copy(realIdx, hr);
         Kokkos::View<int*, CpMem> col("col", ne);
         int leftover = -1;
-        const int nc = colorManifoldsKokkos(m, ne, realIdx, nb, col, winner, mask, leftover);
+        int nc = colorManifoldsKokkos(m, ne, realIdx, nb, col, winner, mask, leftover);
+        const int leftover0 = leftover;
+        std::vector<std::pair<int, int>> vEdges = edges;
+        int copies = 0;
+        if (leftover > 0) {
+          PhaseCopies H;
+          Kokkos::View<int*, CpMem> eA("eA", ne), eB("eB", ne), deg("deg", nb);
+          velocityEdgeEndsKokkos(m, ne, realIdx, col, eA, eB);
+          vertexDegreeKokkos(eA, eB, ne, nb, deg);
+          buildHubCopiesKokkos(eA, eB, ne, nb, /*slotBase*/ nb, deg, H);
+          copies = H.nCopies;
+          Kokkos::View<long long*, CpMem> w2("w2", nb + H.nCopies);
+          Kokkos::View<std::uint64_t*, CpMem> m2("m2", nb + H.nCopies);
+          nc = colorManifoldsKokkos(m, ne, realIdx, nb, col, w2, m2, leftover, {},
+                                    SlotOverride{H.slotA, H.slotB, {}, 1.0f}, true, nb + H.nCopies);
+          auto ha = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), H.slotA);
+          auto hb = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), H.slotB);
+          for (int e = 0; e < ne; ++e)
+            vEdges[e] = {ha(e) >= 0 ? ha(e) : edges[e].first, hb(e) >= 0 ? hb(e) : edges[e].second};
+        }
         auto hcol = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), col);
         std::vector<int> v(hcol.data(), hcol.data() + ne);
         int at62 = 0;
         for (int x : v)
           at62 += (x == 62);
-        const int conf = conflictsOf(edges, v);
+        const int conf = conflictsOf(vEdges, v);
         std::printf(
-            "COLOR_OVERFLOW graph=manifolds D=%3d colours=%2d leftover=%d conflicts=%3d at62=%3d\n",
-            D, nc, leftover, conf, at62);
-        if (kGate && conf > 0)
+            "COLOR_OVERFLOW graph=manifolds D=%3d colours=%2d leftover(attempt)=%d copies=%d "
+            "leftover=%d conflicts=%3d at62=%3d\n",
+            D, nc, leftover0, copies, leftover, conf, at62);
+        if (kGate && (conf > 0 || leftover != 0))
           fail = 1;
       }
     }
   }
   Kokkos::finalize();
-  std::printf(fail ? "FAILED\n" : "OK (report-only: kGate = %s)\n", kGate ? "true" : "false");
+  std::printf(fail ? "FAILED\n" : "OK (kGate = %s)\n", kGate ? "true" : "false");
   return fail;
 }

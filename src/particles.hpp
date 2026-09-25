@@ -33,6 +33,33 @@ struct DebugContactCapture {
   std::vector<float> posPred, rad;
 };
 
+/// One solve phase's body copies (docs/contact_solve_framework.md §4.4, §4.5, §WO-4 item 2): the
+/// hub copies of the colouring (extra slots [slotBase, slotBase + nCopies) appended to the SoA,
+/// per-edge slot overrides) and the fold GROUPS -- one per body updated through more than one slot
+/// in the phase (a hub's base + copies; in demStep's position phase also the periodic images of a
+/// body). Group g's members are groupSlot[groupStart(g), groupStart(g + 1)), base (the body's own
+/// slot) first; groupShift is each member's periodic shift (0 but for images and their copies),
+/// groupK the active-copy count k, seedX / seedW the phase seed sigma of the base. Grow-only views;
+/// nGroups == 0 = the phase has no copies (every sweep runs on today's indices and masses).
+struct PhaseCopies {
+  int nHubs = 0, nCopies = 0, nGroups = 0, slotBase = 0;
+  int maxHubDegree = 0;                       // diagnostics: the largest hub degree
+  Kokkos::View<int*, CpMem> slotA, slotB;     // per edge: override slot of the A / B end, -1
+  Kokkos::View<int*, CpMem> copyBase;         // per copy slot (slot - slotBase): its hub's vertex
+  Kokkos::View<int*, CpMem> hubVertex, hubS;  // per hub: base vertex, copy count s (incl. base)
+  Kokkos::View<int*, CpMem> groupStart, groupSlot, groupK;
+  Kokkos::View<float* [3], CpMem> groupShift;       // per member
+  Kokkos::View<unsigned char*, CpMem> groupActive;  // per member: >= 1 active edge (counts in k)
+  Kokkos::View<float* [3], CpMem> seedX, seedW;  // per group: sigma (velPred / posPred; angVelPred)
+};
+
+/// diagnostics.split_stats() (docs/contact_solve_framework.md §WO-4 item 4): the last substep's
+/// copies. unfiredSplitContacts (WO-6) and driftMigrations (WO-7) stay 0 until those land.
+struct SplitStats {
+  int velHubCopies = 0, posHubCopies = 0, lightHubs = 0, splitBodiesVel = 0, splitBodiesPos = 0;
+  long long unfiredSplitContacts = 0, driftMigrations = 0;
+};
+
 struct Particles {
   // --- per-particle state (size = capacity) ---
   V3 pos;
@@ -353,6 +380,29 @@ struct Particles {
   // and the overlap (position) solve — correct coupled multi-contact impulses + non-penetration,
   // default; false = count-averaged Jacobi (the legacy robust path, still used by step_mpi).
   bool velocityUseGS = true;
+
+  // --- contact-solve copies (docs/contact_solve_framework.md §4.4, §4.5) ---
+  PhaseCopies velCopies, posCopies;
+  // Solve views (§4.5): per slot k x invMass / k x invInertia of its body while the phase has
+  // copies (else the sweeps take invMass / invInertia themselves), and splitSlot = (k > 1).
+  // Grow-only, sized to the slots the phase touches.
+  Kokkos::View<float*, CpMem> invMassSolve;
+  Kokkos::View<float* [3], CpMem> invInertiaSolve;
+  Kokkos::View<unsigned char*, CpMem> splitSlot;
+  Kokkos::View<int*, CpMem> vertexDegree;  // scratch: per colouring vertex, active edges
+  Kokkos::View<float* [3], CpMem>
+      imageShift;  // demStep: posPred(image) - posPred(real) at generation
+  // The velocity incremental colouring carries colours by pair key; after a substep coloured
+  // through hub copies those colours are per COPY and may repeat at the body, so the next substep
+  // recolours in full (§4.2 item 4).
+  bool velCopiesLastSubstep = false;
+  SplitStats splitStats;
+  // The last multilevel hierarchy's shape (host), for the coarse-colouring validity check
+  // (Simulation::debugMultilevelColoringConflicts). numLevels = 0: none built last substep.
+  struct MlLast {
+    int numLevels = 0, numManifolds = 0, numBodies = 0;
+    std::vector<int> parentOff, numGroups;
+  } mlLast;
 
   // TEST-ONLY contact capture (Simulation::debugCaptureContacts; see DebugContactCapture).
   bool debugCapture = false;

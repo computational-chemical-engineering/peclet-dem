@@ -941,14 +941,22 @@ class Simulation : public ShapeRegistry {
     CpExec space;
     const int nm = readInt(P_.manifoldCount);
     const int nc = readInt(P_.contactCount);
-    const int nb = std::max(P_.numParticles, P_.numReal) + 1;
-    Kokkos::View<std::uint64_t*, CpMem> seen("dbg_color_seen", nb);
+    // Colouring vertices include the hub copy slots (docs/contact_solve_framework.md §4.4), which
+    // sit above the SoA's live span; under MPI the contacts also reference ghost slots.
+    const int nb =
+        std::max({P_.numParticles, P_.numReal, P_.velCopies.slotBase, P_.posCopies.slotBase}) +
+        std::max(P_.velCopies.nCopies, P_.posCopies.nCopies) + 1;
+    Kokkos::View<std::uint64_t*, CpMem> seen("dbg_color_seen", std::max(nb, P_.capacity + 1));
     int velConf = 0, posConf = 0;
     if (nm > 0) {
       Kokkos::deep_copy(space, seen, std::uint64_t(0));
       auto manifolds = P_.manifolds;
       auto realIdx = P_.realIndices;
       auto mColor = P_.manifoldColor;
+      const peclet::dem::SlotOverride ov =
+          P_.velCopies.nHubs > 0
+              ? peclet::dem::SlotOverride{P_.velCopies.slotA, P_.velCopies.slotB, {}, 1.0f}
+              : peclet::dem::SlotOverride{};
       Kokkos::parallel_reduce(
           "peclet::dem::dbg_vel_color", Kokkos::RangePolicy<CpExec>(space, 0, nm),
           KOKKOS_LAMBDA(int idx, int& acc) {
@@ -957,9 +965,10 @@ class Simulation : public ShapeRegistry {
               return;
             const auto m = manifolds(idx);
             const std::uint64_t bit = std::uint64_t(1) << c;
-            if ((Kokkos::atomic_fetch_or(&seen(realIdx(m.bodyA)), bit) >> c) & 1)
+            if ((Kokkos::atomic_fetch_or(&seen(ov.slotA(idx, realIdx(m.bodyA))), bit) >> c) & 1)
               acc += 1;
-            if (m.bodyB >= 0 && ((Kokkos::atomic_fetch_or(&seen(realIdx(m.bodyB)), bit) >> c) & 1))
+            if (m.bodyB >= 0 &&
+                ((Kokkos::atomic_fetch_or(&seen(ov.slotB(idx, realIdx(m.bodyB))), bit) >> c) & 1))
               acc += 1;
           },
           velConf);
@@ -972,6 +981,10 @@ class Simulation : public ShapeRegistry {
       auto contacts = P_.contacts;
       auto uColor = P_.unitColor;
       const peclet::dem::PosUnits units{P_.unitStart, P_.unitContacts};
+      const peclet::dem::SlotOverride ov =
+          P_.posCopies.nHubs > 0
+              ? peclet::dem::SlotOverride{P_.posCopies.slotA, P_.posCopies.slotB, {}, 1.0f}
+              : peclet::dem::SlotOverride{};
       Kokkos::parallel_reduce(
           "peclet::dem::dbg_pos_color", Kokkos::RangePolicy<CpExec>(space, 0, nu),
           KOKKOS_LAMBDA(int idx, int& acc) {
@@ -980,9 +993,10 @@ class Simulation : public ShapeRegistry {
               return;
             const auto ct = contacts(units.leader(idx));
             const std::uint64_t bit = std::uint64_t(1) << c;
-            if ((Kokkos::atomic_fetch_or(&seen(ct.bodyA), bit) >> c) & 1)
+            if ((Kokkos::atomic_fetch_or(&seen(ov.slotA(idx, ct.bodyA)), bit) >> c) & 1)
               acc += 1;
-            if (ct.bodyB >= 0 && ((Kokkos::atomic_fetch_or(&seen(ct.bodyB), bit) >> c) & 1))
+            if (ct.bodyB >= 0 &&
+                ((Kokkos::atomic_fetch_or(&seen(ov.slotB(idx, ct.bodyB)), bit) >> c) & 1))
               acc += 1;
           },
           posConf);
@@ -990,11 +1004,10 @@ class Simulation : public ShapeRegistry {
     space.fence();
     return {velConf, posConf};
   }
-  // TEST-ONLY: (velocity, position) edges the LAST substep's colourings left uncoloured (-1):
-  // manifolds and position units. Non-zero means a colouring ran out of arbitration rounds
-  // (numBodies + 2) or palette; such edges take the count-averaged fallback
-  // (docs/contact_solve_framework.md §12 S3). Single-rank: under MPI the non-owned tail of the
-  // manifold list keeps stale colours.
+  // TEST-ONLY: (velocity, position) edges the LAST substep's colourings left uncoloured (-1, or
+  // -3 = no free colour): manifolds and position units. After hub splitting this is 0 or the step
+  // threw (the colouring invariant, docs/contact_solve_framework.md §4.2, §12 S3). Single-rank:
+  // under MPI the non-owned tail of the manifold list keeps stale colours.
   std::pair<int, int> debugColoringLeftovers() {
     using peclet::dem::CpExec;
     CpExec space;
@@ -1006,14 +1019,72 @@ class Simulation : public ShapeRegistry {
     if (nm > 0 && P_.velocityUseGS)
       Kokkos::parallel_reduce(
           "peclet::dem::dbg_vel_left", Kokkos::RangePolicy<CpExec>(space, 0, nm),
-          KOKKOS_LAMBDA(int i, int& acc) { acc += mColor(i) == -1 ? 1 : 0; }, velLeft);
+          KOKKOS_LAMBDA(int i, int& acc) {
+            acc += (mColor(i) == -1 || mColor(i) == peclet::dem::kColorUncolourable) ? 1 : 0;
+          },
+          velLeft);
     if (nu > 0)
       Kokkos::parallel_reduce(
           "peclet::dem::dbg_pos_left", Kokkos::RangePolicy<CpExec>(space, 0, nu),
-          KOKKOS_LAMBDA(int u, int& acc) { acc += uColor(u) == -1 ? 1 : 0; }, posLeft);
+          KOKKOS_LAMBDA(int u, int& acc) {
+            acc += (uColor(u) == -1 || uColor(u) == peclet::dem::kColorUncolourable) ? 1 : 0;
+          },
+          posLeft);
     space.fence();
     return {velLeft, posLeft};
   }
+  // TEST-ONLY (docs/contact_solve_framework.md §WO-4 item 3): same-colour pairs at an AGGREGATE
+  // in the last multilevel hierarchy, summed over levels -- a valid coarse colouring is
+  // group-disjoint per (level, colour). 0 when no hierarchy was built.
+  int debugMultilevelColoringConflicts() {
+    using peclet::dem::CpExec;
+    using peclet::dem::CpMem;
+    const auto& L = P_.mlLast;
+    if (L.numLevels <= 0 || L.numManifolds <= 0)
+      return 0;
+    CpExec space;
+    const int nm = L.numManifolds, nb = L.numBodies;
+    Kokkos::View<int*, CpMem> grp("dbg_ml_grp", nb);
+    auto realIdx = P_.realIndices;
+    auto manifolds = P_.manifolds;
+    auto cp = P_.mlColorPacked;
+    auto parent = P_.mlParent;
+    Kokkos::parallel_for(
+        "peclet::dem::dbg_ml_grp0", Kokkos::RangePolicy<CpExec>(space, 0, nb),
+        KOKKOS_LAMBDA(int i) { grp(i) = i; });
+    int total = 0;
+    for (int lvl = 1; lvl <= L.numLevels; ++lvl) {
+      const int pOff = L.parentOff[lvl - 1], ng = L.numGroups[lvl - 1];
+      const int shift = 6 * (lvl - 1);
+      Kokkos::parallel_for(
+          "peclet::dem::dbg_ml_compose", Kokkos::RangePolicy<CpExec>(space, 0, nb),
+          KOKKOS_LAMBDA(int i) { grp(i) = parent(pOff + grp(i)); });
+      Kokkos::View<std::uint64_t*, CpMem> seen("dbg_ml_seen", ng + 1);
+      int conf = 0;
+      Kokkos::parallel_reduce(
+          "peclet::dem::dbg_ml_color", Kokkos::RangePolicy<CpExec>(space, 0, nm),
+          KOKKOS_LAMBDA(int idx, int& acc) {
+            const int c = static_cast<int>((cp(idx) >> shift) & 63);
+            if (c == peclet::dem::kMlSlotSkip)
+              return;
+            const auto m = manifolds(idx);
+            const int gA = grp(realIdx(m.bodyA));
+            const int gB = m.bodyB >= 0 ? grp(realIdx(m.bodyB)) : -1;
+            const std::uint64_t bit = std::uint64_t(1) << c;
+            if ((Kokkos::atomic_fetch_or(&seen(gA), bit) >> c) & 1)
+              acc += 1;
+            if (gB >= 0 && gB != gA && ((Kokkos::atomic_fetch_or(&seen(gB), bit) >> c) & 1))
+              acc += 1;
+          },
+          conf);
+      total += conf;
+    }
+    space.fence();
+    return total;
+  }
+  // diagnostics.split_stats() (docs/contact_solve_framework.md §WO-4 item 4): the last substep's
+  // body copies.
+  peclet::dem::SplitStats debugSplitStats() const { return P_.splitStats; }
   float maxOverlap() {
     float h;
     Kokkos::deep_copy(h, P_.maxOverlap);

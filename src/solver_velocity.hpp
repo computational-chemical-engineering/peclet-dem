@@ -319,14 +319,18 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                 Kokkos::View<int*, CpMem> mColor,
                                 Kokkos::View<long long*, CpMem> bodyWinner,
                                 Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover,
-                                Kokkos::View<const unsigned char*, CpMem> sleepMask = {}) {
+                                Kokkos::View<const unsigned char*, CpMem> sleepMask = {},
+                                SlotOverride ov = {}, bool dedupTwins = true, int vertexSpan = 0) {
   leftover = 0;
   CpExec space;
   if (numManifolds <= 0 || numReal <= 0)
     return 0;
+  // Colouring vertices: realIdx(body), or a hub copy slot through `ov` (§4.4); vertexSpan covers
+  // the copy slots (0 = numReal, the no-copy span).
+  const int nV = vertexSpan > 0 ? vertexSpan : numReal;
   const bool sleepOn = sleepMask.extent(0) > 0;
   Kokkos::parallel_for(
-      "peclet::dem::color_init_bodies", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
+      "peclet::dem::color_init_bodies", Kokkos::RangePolicy<CpExec>(space, 0, nV),
       KOKKOS_LAMBDA(int i) { bodyMask(i) = 0; });
   // -2 inactive (skip forever), -1 uncoloured, >=0 committed colour.
   Kokkos::parallel_for(
@@ -337,7 +341,9 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           mColor(idx) = -2;  // inactive or a frozen (both-asleep) island manifold
           return;
         }
-        if (m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB)) {
+        // Periodic twin dedup (§4.2 item 2): single-rank only; under MPI ownership already
+        // excludes the non-owned twin (dedupTwins = !Hooks::distributed).
+        if (dedupTwins && m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB)) {
           mColor(idx) = -2;  // periodic dedup: the (realA<=realB) twin carries this contact
           return;
         }
@@ -352,7 +358,7 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
   const int maxRounds = numManifolds + 2;
   for (int round = 0; round < maxRounds && remaining > 0; ++round) {
     Kokkos::parallel_for(
-        "peclet::dem::color_reset_winner", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
+        "peclet::dem::color_reset_winner", Kokkos::RangePolicy<CpExec>(space, 0, nV),
         KOKKOS_LAMBDA(int i) { bodyWinner(i) = -1; });
     Kokkos::parallel_for(
         "peclet::dem::color_contend", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -361,9 +367,9 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
             return;
           const ManifoldC m = manifolds(idx);
           const long long key = colorKey(idx);
-          Kokkos::atomic_max(&bodyWinner(realIdx(m.bodyA)), key);
+          Kokkos::atomic_max(&bodyWinner(ov.slotA(idx, realIdx(m.bodyA))), key);
           if (m.bodyB >= 0)
-            Kokkos::atomic_max(&bodyWinner(realIdx(m.bodyB)), key);
+            Kokkos::atomic_max(&bodyWinner(ov.slotB(idx, realIdx(m.bodyB))), key);
         });
     int rem = 0;
     Kokkos::parallel_reduce(
@@ -372,8 +378,8 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           if (mColor(idx) != -1)
             return;
           const ManifoldC m = manifolds(idx);
-          const int ea = realIdx(m.bodyA);
-          const int eb = (m.bodyB >= 0) ? realIdx(m.bodyB) : -1;
+          const int ea = ov.slotA(idx, realIdx(m.bodyA));
+          const int eb = (m.bodyB >= 0) ? ov.slotB(idx, realIdx(m.bodyB)) : -1;
           // Winner iff it holds BOTH its endpoints -> no uncoloured conflict, sole writer of ea/eb.
           const long long key = colorKey(idx);
           if (bodyWinner(ea) != key || (eb >= 0 && bodyWinner(eb) != key)) {
@@ -383,9 +389,13 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           std::uint64_t forbidden = bodyMask(ea);
           if (eb >= 0)
             forbidden |= bodyMask(eb);
-          int c = 0;
-          while (c < 62 && (forbidden & (std::uint64_t(1) << c)))
-            ++c;  // lowest free colour (cap 63; dense sphere degree ~12, far below)
+          int c = 0;  // lowest free colour of 64; never forced (§4.2 item 1)
+          while (c < kColorPalette && ((forbidden >> c) & 1))
+            ++c;
+          if (c == kColorPalette) {
+            mColor(idx) = kColorUncolourable;  // no free colour: neither coloured nor remaining
+            return;
+          }
           mColor(idx) = c;
           const std::uint64_t bit = std::uint64_t(1) << c;
           bodyMask(ea) |= bit;
@@ -395,8 +405,7 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
         rem);
     space.fence();
     if (rem == prevRemaining)
-      break;  // colour-mask saturation (degree > 62): leftovers stay -1, Jacobi fallback applies
-              // them
+      break;  // safety bound only: every round commits (or marks -3) the highest-key contender
     prevRemaining = rem;
     remaining = rem;
   }
@@ -412,7 +421,7 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
   Kokkos::parallel_reduce(
       "peclet::dem::color_leftover", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
       KOKKOS_LAMBDA(int idx, int& acc) {
-        if (mColor(idx) == -1)
+        if (mColor(idx) == -1 || mColor(idx) == kColorUncolourable)
           acc += 1;
       },
       leftover);
@@ -442,7 +451,8 @@ inline int colorManifoldsIncrementalKokkos(
     Kokkos::View<const unsigned long long*, CpMem> prevKeys,
     Kokkos::View<const int*, CpMem> prevColor, int prevCount, Kokkos::View<int*, CpMem> mColor,
     Kokkos::View<long long*, CpMem> bodyWinner, Kokkos::View<std::uint64_t*, CpMem> bodyMask,
-    int& leftover, bool forceFull, Kokkos::View<const unsigned char*, CpMem> sleepMask = {}) {
+    int& leftover, bool forceFull, Kokkos::View<const unsigned char*, CpMem> sleepMask = {},
+    bool dedupTwins = true) {
   leftover = 0;
   CpExec space;
   if (numManifolds <= 0 || numReal <= 0)
@@ -462,7 +472,7 @@ inline int colorManifoldsIncrementalKokkos(
           mColor(idx) = -2;  // inactive or a frozen (both-asleep) island manifold
           return;
         }
-        if (m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB)) {
+        if (dedupTwins && m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB)) {
           mColor(idx) = -2;  // periodic dedup twin
           return;
         }
@@ -535,9 +545,13 @@ inline int colorManifoldsIncrementalKokkos(
           std::uint64_t forbidden = bodyMask(ea);
           if (eb >= 0)
             forbidden |= bodyMask(eb);
-          int c = 0;
-          while (c < 62 && (forbidden & (std::uint64_t(1) << c)))
+          int c = 0;  // lowest free colour of 64; never forced (§4.2 item 1)
+          while (c < kColorPalette && ((forbidden >> c) & 1))
             ++c;
+          if (c == kColorPalette) {
+            mColor(idx) = kColorUncolourable;
+            return;
+          }
           mColor(idx) = c;
           const std::uint64_t bit = std::uint64_t(1) << c;
           bodyMask(ea) |= bit;
@@ -547,7 +561,7 @@ inline int colorManifoldsIncrementalKokkos(
         rem);
     space.fence();
     if (rem == prevRemaining)
-      break;  // colour-mask saturation: leftovers stay -1 (Jacobi fallback)
+      break;  // safety bound only (see colorManifoldsKokkos)
     prevRemaining = rem;
     remaining = rem;
   }
@@ -562,7 +576,7 @@ inline int colorManifoldsIncrementalKokkos(
   Kokkos::parallel_reduce(
       "peclet::dem::icolor_leftover", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
       KOKKOS_LAMBDA(int idx, int& acc) {
-        if (mColor(idx) == -1)
+        if (mColor(idx) == -1 || mColor(idx) == kColorUncolourable)
           acc += 1;
       },
       leftover);
@@ -1077,6 +1091,9 @@ struct PGSManifoldSweep {
   // e x the late-stage speed; the orphaned peak restores the full event's velocity scale.
   Kokkos::View<float*, CpMem> restOrphan;
   Kokkos::View<const float*, CpMem> restOrphanVPeak;
+  // Hub-copy slot overrides + split relaxation (docs/contact_solve_framework.md §4.4, §4.5);
+  // empty = realIdx, no relaxation. Every state access below uses realA / realB.
+  SlotOverride ov{};
 
   KOKKOS_FUNCTION void solveOne(int idx) const {
     using detail::genInvMass;
@@ -1084,8 +1101,8 @@ struct PGSManifoldSweep {
     {
       const ManifoldC m = manifolds(idx);
       const int idA = m.bodyA, idB = m.bodyB;
-      const int realA = realIdx(idA);
-      const int realB = (idB >= 0) ? realIdx(idB) : idB;
+      const int realA = ov.slotA(idx, realIdx(idA));
+      const int realB = (idB >= 0) ? ov.slotB(idx, realIdx(idB)) : idB;
       const float invMassA = invMass(realA);
       const float invMassB = (idB >= 0) ? invMass(realB) : 0.0f;
       const F3 invIA = ld3(invInertia, realA);
@@ -1156,7 +1173,9 @@ struct PGSManifoldSweep {
       // double-count.
       const float target = (v0til > 0.0f) ? -restitution * v0til : 0.0f;
       const float vtil = sgn * vn;
-      const float dp = (vtil - target) / wTotal;
+      float dp = (vtil - target) / wTotal;
+      if (ov.relax(realA, realB))
+        dp *= ov.omega;  // split relaxation before the clamp (§4.5; omega_vel = 1)
       const float pOld = lambdaAcc(idx);
       float pNew = pOld + dp;
       if (pNew < 0.0f)
@@ -1443,7 +1462,8 @@ inline PGSManifoldSweep makePGSManifoldSweep(
     Kokkos::View<const float* [3], CpMem> vt0, float restitutionTangent,
     Kokkos::View<const float*, CpMem> posImpulse, Kokkos::View<float*, CpMem> restBank,
     Kokkos::View<float*, CpMem> restRel, Kokkos::View<const float*, CpMem> restVPeak,
-    Kokkos::View<float*, CpMem> restOrphan, Kokkos::View<const float*, CpMem> restOrphanVPeak) {
+    Kokkos::View<float*, CpMem> restOrphan, Kokkos::View<const float*, CpMem> restOrphanVPeak,
+    SlotOverride ov = {}) {
   return PGSManifoldSweep{manifolds,
                           invMass,
                           invInertia,
@@ -1468,7 +1488,8 @@ inline PGSManifoldSweep makePGSManifoldSweep(
                           restRel,
                           restVPeak,
                           restOrphan,
-                          restOrphanVPeak};
+                          restOrphanVPeak,
+                          ov};
 }
 
 /// Returns true when the sweep (or, with `loop`, the whole iteration loop) was submitted;
@@ -1491,13 +1512,14 @@ inline bool solveVelocityPGSKokkos(
     Kokkos::View<float*, CpMem> restOrphan = {},
     Kokkos::View<const float*, CpMem> restOrphanVPeak = {},
     Kokkos::View<const int*, CpMem> colorPerm = {}, const std::vector<int>* colorOffs = nullptr,
-    const FusedSweepCtx* fused = nullptr, const FusedLoopSpec* loop = nullptr) {
+    const FusedSweepCtx* fused = nullptr, const FusedLoopSpec* loop = nullptr,
+    SlotOverride ov = {}) {
   CpExec space;
   const PGSManifoldSweep f = makePGSManifoldSweep(
       manifolds, invMass, invInertia, quat, velPred, angVelPred, realIdx, growthRate,
       restitutionNormal, restVelThreshold, maxApproach, maxApproachQS, lambdaAcc, vn0, sideFlag,
       lambdaT, frictionDynamic, vt0, restitutionTangent, posImpulse, restBank, restRel, restVPeak,
-      restOrphan, restOrphanVPeak);
+      restOrphan, restOrphanVPeak, ov);
   // Fused mode (CUDA): one persistent kernel iterates the colours device-side with a grid
   // barrier between them — same per-manifold math, same colour ordering, bit-identical to the
   // launch loop below (see solver_fused.hpp). Loop mode additionally iterates the whole
@@ -1633,7 +1655,7 @@ inline void solveVelocityColoredGSKokkos(
     Kokkos::View<float, CpMem> maxApproach,
     Kokkos::View<const unsigned char*, CpMem> persistent = {},
     Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {},
-    Kokkos::View<const unsigned char*, CpMem> grounded = {}) {
+    Kokkos::View<const unsigned char*, CpMem> grounded = {}, SlotOverride ov = {}) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -1647,8 +1669,9 @@ inline void solveVelocityColoredGSKokkos(
           const ManifoldC m = manifolds(idx);
 
           const int idA = m.bodyA, idB = m.bodyB;
-          const int realA = realIdx(idA);
-          const int realB = (idB >= 0) ? realIdx(idB) : idB;
+          // hub-copy slot overrides (§4.4; empty = realIdx): every state access uses realA/B
+          const int realA = ov.slotA(idx, realIdx(idA));
+          const int realB = (idB >= 0) ? ov.slotB(idx, realIdx(idB)) : idB;
 
           const float invMassA = invMass(realA);
           const float invMassB = (idB >= 0) ? invMass(realB) : 0.0f;
