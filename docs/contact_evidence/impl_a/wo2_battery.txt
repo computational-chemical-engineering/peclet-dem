@@ -1,0 +1,199 @@
+  1/195 Test   #1: python_tests ..............................   Passed
+  2/195 Test   #2: python_mpi_validate_exact_np1 .............   Passed
+  3/195 Test   #3: python_mpi_validate_exact_np2 .............   Passed
+  4/195 Test   #4: python_mpi_validate_exact_np4 .............   Passed
+  5/195 Test   #5: python_mpi_validate_periodic_np1 ..........   Passed
+  6/195 Test   #6: python_mpi_validate_periodic_np2 ..........   Passed
+  7/195 Test   #7: python_mpi_validate_periodic_np4 ..........   Passed
+  8/195 Test   #8: python_mpi_verify_distributed_np1 .........   Passed
+  9/195 Test   #9: python_mpi_verify_distributed_np2 .........   Passed
+ 10/195 Test  #10: python_mpi_verify_distributed_np4 .........   Passed
+ 11/195 Test  #11: python_mpi_verify_rotating_drum_mpi_np1 ...   Passed
+ 12/195 Test  #12: python_mpi_verify_rotating_drum_mpi_np2 ...   Passed
+ 13/195 Test  #13: python_mpi_verify_rotating_drum_mpi_np4 ...   Passed
+ 14/195 Test  #14: contact_preprocessing .....................   Passed
+ 15/195 Test  #15: narrowphase ...............................   Passed
+ 16/195 Test  #16: solver_velocity ...........................   Passed
+ 17/195 Test  #17: solver_position ...........................   Passed
+ 18/195 Test  #18: solver_friction ...........................   Passed
+ 19/195 Test  #19: integration ...............................   Passed
+ 20/195 Test  #20: periodicity ...............................   Passed
+ 21/195 Test  #21: thermostat ................................   Passed
+ 22/195 Test  #22: coloring_overflow .........................   Passed
+ 23/195 Test  #23: broadphase_arborx .........................   Passed
+ 24/195 Test  #24: pipeline ..................................   Passed
+ 25/195 Test  #25: migrate_np1 ...............................   Passed
+ 26/195 Test  #26: demstep_jacobi_closed_np1 .................   Passed
+ 27/195 Test  #27: demstep_jacobi_periodic_np1 ...............   Passed
+ 28/195 Test  #28: demstep_modern_np1 ........................   Passed
+ 29/195 Test  #29: demstep_modern_rebal_np1 ..................   Passed
+ 30/195 Test  #30: demstep_hertz_np1 .........................   Passed
+ 31/195 Test  #31: demstep_hertz_rebal_np1 ...................   Passed
+ 32/195 Test  #32: rebalance_np1 .............................   Passed
+ 33/195 Test  #33: halo_schedule_one_sided_xpbd_np1 ..........   Passed
+ 34/195 Test  #34: halo_schedule_one_sided_hertz_np1 .........   Passed
+ 35/195 Test  #35: halo_schedule_skin_divergent_np1 ..........   Passed
+ 36/195 Test  #36: halo_schedule_skin_migrate_reorder_np1 ....   Passed
+ 37/195 Test  #37: halo_schedule_skin_empty_rank_np1 .........   Passed
+ 38/195 Test  #38: ghost_band_band_change_np1 ................   Passed
+ 39/195 Test  #39: ghost_band_default_band_np1 ...............   Passed
+ 40/195 Test  #40: ghost_band_margin_np1 .....................   Passed
+ 41/195 Test  #41: ghost_band_explicit_rcut_np1 ..............   Passed
+ 42/195 Test  #42: align_np1 .................................   Passed
+ 43/195 Test  #43: migrate_np2 ...............................   Passed
+ 44/195 Test  #44: demstep_jacobi_closed_np2 .................   Passed
+ 45/195 Test  #45: demstep_jacobi_periodic_np2 ...............   Passed
+ 46/195 Test  #46: demstep_modern_np2 ........................   Passed
+ 47/195 Test  #47: demstep_modern_rebal_np2 ..................   Passed
+ 48/195 Test  #48: demstep_hertz_np2 .........................   Passed
+ 49/195 Test  #49: demstep_hertz_rebal_np2 ...................   Passed
+ 50/195 Test  #50: rebalance_np2 .............................   Passed
+ 51/195 Test  #51: halo_schedule_one_sided_xpbd_np2 ..........   Passed
+ 52/195 Test  #52: halo_schedule_one_sided_hertz_np2 .........   Passed
+ 53/195 Test  #53: halo_schedule_skin_divergent_np2 ..........   Passed
+ 54/195 Test  #54: halo_schedule_skin_migrate_reorder_np2 ....   Passed
+ 55/195 Test  #55: halo_schedule_skin_empty_rank_np2 .........   Passed
+ 56/195 Test  #56: ghost_band_band_change_np2 ................   Passed
+ 57/195 Test  #57: ghost_band_default_band_np2 ...............   Passed
+ 58/195 Test  #58: ghost_band_margin_np2 .....................   Passed
+ 59/195 Test  #59: ghost_band_explicit_rcut_np2 ..............   Passed
+ 60/195 Test  #60: align_np2 .................................   Passed
+ 61/195 Test  #61: migrate_np4 ...............................   Passed
+ 62/195 Test  #62: demstep_jacobi_closed_np4 .................   Passed
+ 63/195 Test  #63: demstep_jacobi_periodic_np4 ...............   Passed
+ 64/195 Test  #64: demstep_modern_np4 ........................   Passed
+ 65/195 Test  #65: demstep_modern_rebal_np4 ..................   Passed
+ 66/195 Test  #66: demstep_hertz_np4 .........................   Passed
+ 67/195 Test  #67: demstep_hertz_rebal_np4 ...................   Passed
+ 68/195 Test  #68: rebalance_np4 .............................   Passed
+ 69/195 Test  #69: halo_schedule_one_sided_xpbd_np4 ..........   Passed
+ 70/195 Test  #70: halo_schedule_one_sided_hertz_np4 .........   Passed
+ 71/195 Test  #71: halo_schedule_skin_divergent_np4 ..........   Passed
+ 72/195 Test  #72: halo_schedule_skin_migrate_reorder_np4 ....   Passed
+ 73/195 Test  #73: halo_schedule_skin_empty_rank_np4 .........   Passed
+ 74/195 Test  #74: ghost_band_band_change_np4 ................   Passed
+ 75/195 Test  #75: ghost_band_default_band_np4 ...............   Passed
+ 76/195 Test  #76: ghost_band_margin_np4 .....................   Passed
+ 77/195 Test  #77: ghost_band_explicit_rcut_np4 ..............   Passed
+ 78/195 Test  #78: align_np4 .................................   Passed
+ 79/195 Test  #79: momentum_cluster_np1 ......................   Passed
+ 80/195 Test  #80: momentum_cluster_friction_np1 .............   Passed
+ 81/195 Test  #81: momentum_cluster_pgs_np1 ..................   Passed
+ 82/195 Test  #82: momentum_cluster_posonly_np1 ..............   Passed
+ 83/195 Test  #83: momentum_hertz_np1 ........................   Passed
+ 84/195 Test  #84: momentum_cluster_sync3_np1 ................   Passed
+ 85/195 Test  #85: momentum_cluster_norot_np1 ................   Passed
+ 86/195 Test  #86: momentum_cluster_periodic_np1 .............   Passed
+ 87/195 Test  #87: momentum_cluster_jacobi_np1 ...............   Passed
+ 88/195 Test  #88: momentum_cluster_np2 ......................   Passed
+ 89/195 Test  #89: momentum_cluster_friction_np2 .............   Passed
+ 90/195 Test  #90: momentum_cluster_pgs_np2 ..................   Passed
+ 91/195 Test  #91: momentum_cluster_posonly_np2 ..............   Passed
+ 92/195 Test  #92: momentum_hertz_np2 ........................   Passed
+ 93/195 Test  #93: momentum_cluster_sync3_np2 ................   Passed
+ 94/195 Test  #94: momentum_cluster_norot_np2 ................   Passed
+ 95/195 Test  #95: momentum_cluster_periodic_np2 .............   Passed
+ 96/195 Test  #96: momentum_cluster_jacobi_np2 ...............   Passed
+ 97/195 Test  #97: momentum_cluster_np4 ......................   Passed
+ 98/195 Test  #98: momentum_cluster_friction_np4 .............   Passed
+ 99/195 Test  #99: momentum_cluster_pgs_np4 ..................   Passed
+100/195 Test #100: momentum_cluster_posonly_np4 ..............   Passed
+101/195 Test #101: momentum_hertz_np4 ........................   Passed
+102/195 Test #102: momentum_cluster_sync3_np4 ................   Passed
+103/195 Test #103: momentum_cluster_norot_np4 ................   Passed
+104/195 Test #104: momentum_cluster_periodic_np4 .............   Passed
+105/195 Test #105: momentum_cluster_jacobi_np4 ...............   Passed
+106/195 Test #106: momentum_cluster_np8 ......................   Passed
+107/195 Test #107: momentum_cluster_friction_np8 .............   Passed
+108/195 Test #108: momentum_cluster_pgs_np8 ..................   Passed
+109/195 Test #109: momentum_cluster_posonly_np8 ..............   Passed
+110/195 Test #110: momentum_hertz_np8 ........................   Passed
+111/195 Test #111: momentum_cluster_sync3_np8 ................   Passed
+112/195 Test #112: momentum_cluster_norot_np8 ................   Passed
+113/195 Test #113: momentum_cluster_periodic_np8 .............   Passed
+114/195 Test #114: momentum_cluster_jacobi_np8 ...............   Passed
+115/195 Test #115: ownership_reverse_closed_np1 ..............   Passed
+116/195 Test #116: ownership_reverse_periodic_np1 ............   Passed
+117/195 Test #117: ownership_exactly_once_closed_np1 .........   Passed
+118/195 Test #118: ownership_exactly_once_periodic_np1 .......   Passed
+119/195 Test #119: ownership_exactly_once_drift_np1 ..........   Passed
+120/195 Test #120: ownership_reverse_closed_np2 ..............   Passed
+121/195 Test #121: ownership_reverse_periodic_np2 ............   Passed
+122/195 Test #122: ownership_exactly_once_closed_np2 .........   Passed
+123/195 Test #123: ownership_exactly_once_periodic_np2 .......   Passed
+124/195 Test #124: ownership_exactly_once_drift_np2 ..........   Passed
+125/195 Test #125: ownership_reverse_closed_np4 ..............   Passed
+126/195 Test #126: ownership_reverse_periodic_np4 ............   Passed
+127/195 Test #127: ownership_exactly_once_closed_np4 .........   Passed
+128/195 Test #128: ownership_exactly_once_periodic_np4 .......   Passed
+129/195 Test #129: ownership_exactly_once_drift_np4 ..........   Passed
+130/195 Test #130: ownership_reverse_closed_np8 ..............   Passed
+131/195 Test #131: ownership_reverse_periodic_np8 ............   Passed
+132/195 Test #132: ownership_exactly_once_closed_np8 .........   Passed
+133/195 Test #133: ownership_exactly_once_periodic_np8 .......   Passed
+134/195 Test #134: ownership_exactly_once_drift_np8 ..........   Passed
+135/195 Test #135: followup_hub_np1 ..........................   Passed
+136/195 Test #136: followup_hub_posonly_np1 ..................   Passed
+137/195 Test #137: followup_hub_np2 ..........................   Passed
+138/195 Test #138: followup_hub_posonly_np2 ..................   Passed
+139/195 Test #139: followup_hub_np4 ..........................   Passed
+140/195 Test #140: followup_hub_posonly_np4 ..................   Passed
+141/195 Test #141: followup_friction_pair_np1 ................   Passed
+142/195 Test #142: followup_friction_pair_pgs_np1 ............   Passed
+143/195 Test #143: followup_missed_drift_pair_np1 ............   Passed
+144/195 Test #144: followup_missed_periodic_np1 ..............   Passed
+145/195 Test #145: followup_missed_drift_pair_np2 ............   Passed
+146/195 Test #146: followup_missed_periodic_np2 ..............   Passed
+147/195 Test #147: followup_missed_drift_pair_np4 ............   Passed
+148/195 Test #148: followup_missed_periodic_np4 ..............   Passed
+149/195 Test #149: followup_missed_drift_pair_np8 ............   Passed
+150/195 Test #150: followup_missed_periodic_np8 ..............   Passed
+151/195 Test #151: followup_missed_drift_lattice_np4 .........   Passed
+152/195 Test #152: followup_cluster_e09_np1 ..................   Passed
+153/195 Test #153: followup_cluster_e10_np1 ..................   Passed
+154/195 Test #154: followup_cluster_poisson_np1 ..............   Passed
+155/195 Test #155: followup_cluster_multilevel_np1 ...........   Passed
+156/195 Test #156: followup_cluster_escalate_np1 .............   Passed
+157/195 Test #157: followup_cluster_ordered_np1 ..............   Passed
+158/195 Test #158: followup_cluster_onesided_np1 .............   Passed
+159/195 Test #159: followup_hub_pgs_np1 ......................   Passed
+160/195 Test #160: followup_ring_mini_np1 ....................   Passed
+161/195 Test #161: followup_cluster_e09_np2 ..................   Passed
+162/195 Test #162: followup_cluster_e10_np2 ..................   Passed
+163/195 Test #163: followup_cluster_poisson_np2 ..............   Passed
+164/195 Test #164: followup_cluster_multilevel_np2 ...........   Passed
+165/195 Test #165: followup_cluster_escalate_np2 .............   Passed
+166/195 Test #166: followup_cluster_ordered_np2 ..............   Passed
+167/195 Test #167: followup_cluster_onesided_np2 .............   Passed
+168/195 Test #168: followup_hub_pgs_np2 ......................   Passed
+169/195 Test #169: followup_ring_mini_np2 ....................   Passed
+170/195 Test #170: followup_cluster_e09_np4 ..................   Passed
+171/195 Test #171: followup_cluster_e10_np4 ..................   Passed
+172/195 Test #172: followup_cluster_poisson_np4 ..............   Passed
+173/195 Test #173: followup_cluster_multilevel_np4 ...........   Passed
+174/195 Test #174: followup_cluster_escalate_np4 .............   Passed
+175/195 Test #175: followup_cluster_ordered_np4 ..............   Passed
+176/195 Test #176: followup_cluster_onesided_np4 .............   Passed
+177/195 Test #177: followup_hub_pgs_np4 ......................   Passed
+178/195 Test #178: followup_ring_mini_np4 ....................   Passed
+179/195 Test #179: followup_tri_np1 ..........................   Passed
+180/195 Test #180: followup_tri_pgs_np1 ......................   Passed
+181/195 Test #181: followup_tri_np2 ..........................   Passed
+182/195 Test #182: followup_tri_pgs_np2 ......................   Passed
+183/195 Test #183: followup_oracle_closed_np1 ................   Passed
+184/195 Test #184: followup_oracle_shear_np1 .................   Passed
+185/195 Test #185: followup_oracle_periodic_np1 ..............   Passed
+186/195 Test #186: followup_oracle_closed_np2 ................   Passed
+187/195 Test #187: followup_oracle_shear_np2 .................   Passed
+188/195 Test #188: followup_oracle_periodic_np2 ..............   Passed
+189/195 Test #189: followup_oracle_closed_np4 ................   Passed
+190/195 Test #190: followup_oracle_shear_np4 .................   Passed
+191/195 Test #191: followup_oracle_periodic_np4 ..............   Passed
+192/195 Test #192: followup_oracle_closed_np8 ................   Passed
+193/195 Test #193: followup_oracle_shear_np8 .................   Passed
+194/195 Test #194: followup_oracle_periodic_np8 ..............   Passed
+195/195 Test #195: align_np8 .................................   Passed
+100% tests passed, 0 tests failed out of 195
+mpi       = 1044.27 sec*proc (183 tests)
+python    = 633.02 sec*proc (13 tests)
+Total Test time (real) = 571.67 sec

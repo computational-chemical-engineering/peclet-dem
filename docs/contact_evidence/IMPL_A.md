@@ -132,3 +132,57 @@ mpirun --bind-to none -np N build_ct/tests/kokkos_mpi/test_ownership_mpi oracle_
 ```
 `build_base`: configured from the WO-0 tree with build_ct's flags; the 8 kokkos_mpi targets built.
 Frozen from here on.
+
+## WO-1 (07114fb)
+
+Cherry-picked from the parked `95c5637`; gate restated per §12 S1. Raw: `impl_a/wo1_reverify.txt`
+(and the parked `wo1_cf.txt`, `wo1_fricpair.txt`). Host load 56-68, OMP 1 unless stated.
+
+| check | gate | result |
+|---|---|---|
+| `friction_pair` couple ratio \|dL\|/\|dist n x J_t\|, delta/R 0.001 / 0.01 / 0.05 / 0.1 / 0.2 (dt 1e-2) | <= 1e-2 (S1) | 1.3e-3 / 1.0e-4 / 7.8e-6 / 1.6e-5 / 7.7e-6 (was 1.000) |
+| same, dt 0.02 / 0.005 / 0.0025 at delta 0.05 | <= 1e-2 | 2.1e-5 / 1.2e-5 / 8.7e-6 |
+| `cluster_friction` dLvel, np 1 / 2 / 4 / 8 x OMP 1, 8 | <= 1e-7 (S1) | max 6.9e-9 (was 1.9e-5) |
+| frictionless np 1 OMP 1 dumps vs WO-0 baseline | identical | 23 / 23 identical; `cluster_friction`, `ring_mini`(`_solo`) change (friction 0.02) |
+
+Test changes: `kFrictionPairGate` (friction_pair only; friction_pair_pgs stays report-only),
+`tolOf(cluster_friction).dLvel = 1e-7`.
+
+## WO-2 (5c91df9)
+
+Cherry-picked from the parked `b47fae0`; §12 S2 applied (`test_cooling_slope_vs_enskog` keeps the
+Enskog band, prints r_j for information). `tolOf(cluster_jacobi)` tightened to the G1 row. Raw:
+`impl_a/wo2_reverify.txt`.
+
+| check | gate | result |
+|---|---|---|
+| `cluster_jacobi` np 1 / 2 / 4 / 8 x OMP 1, 8 | dP <= 1e-6, dXpos <= 1e-5 | dP <= 1.07e-8, dXpos <= 2.6e-7, dLvel <= 7.3e-9 (was dP 9.0e-3) |
+| `demstep_jacobi_{closed,periodic}_np{1,2,4}` | pass | 6 / 6 |
+| every other np 1 OMP 1 dump + np 4 `cluster`, `cluster_pgs` vs WO-1 | identical | 28 / 28 identical (only `cluster_jacobi` changes) |
+| Enskog cooling (info) | 0.5 < r_gs < 2.5 | GS 1.804, mass-split Jacobi 2.141 x Enskog |
+
+**Battery at WO-2** (`impl_a/wo2_battery.txt`; build_ct, `-j1`, OMP 2, `--bind-to none`,
+`PYTHONPATH=core/build_rel_py`, which imports `peclet.core.mpi`): **195 / 195 pass** = 182 C++
+(kokkos, arborx, kokkos_mpi) + `python_tests` + **12 `python_mpi_*` RUN and pass** (none skipped).
+
+## WO-3: STOPPED before implementation (a stated premise of §4.3 is false)
+
+§4.3 defines a unit as "the set of contacts of one body pair (walls: one body and one wall)" and
+says "the unit list reuses the manifold reduction's sort". For walls the sort cannot give that:
+- `pairKey` (`src/contact_preprocessing.hpp:396`) keys every boundary contact as
+  `(bodyA << 32) | 0xFFFFFFFF`, so all planes AND all SDF walls of one body fall in ONE segment
+  (the velocity manifold is "merged per body" by design, `:94`).
+- `ContactC` carries no wall identity (`bodyB = -1` for every plane and SDF wall;
+  `narrowphase.hpp:393, 461, 484`), so "one body and one wall" cannot be derived afterwards either.
+
+Consequence for each reading (none is fixed by the note):
+- (a) unit = the sort's segment (all walls of a body): a sphere touching 2-3 planes (box edges and
+  corners, drums, packings) changes at np 1 (its wall contacts become one edge applied in index
+  order instead of 2-3 separately coloured edges), contradicting §0 "spheres, analytic walls
+  byte-identical". The momentum-test modes have no walls, so the WO-3 dump acceptance would not
+  see it; the python tests with boxes would.
+- (b) one unit per wall contact: spheres stay bitwise, but a ring or SDF particle on a wall keeps
+  one edge per contact point at its vertex (wall degree stays per point; ring beds in containers
+  would lean on WO-4 hub copies).
+- (c) add a wall id to `ContactC` (narrow phase) and key units by (body, wall): matches the
+  definition, spheres bitwise, but changes a data structure in a file the WO-3 list does not name.
