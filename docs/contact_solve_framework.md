@@ -2190,3 +2190,20 @@ PSOR would have a unique least-displacement fixed point and legitimate over-rela
 | R-F8 | `hub_ml` may not reproduce B on ca32026 (dP ≤ 1e-4) if the fine sweep leaves the coarse cycle too little to do. | Fact | Retry in this order: approach speed 0.5 (still below `qsThr`); hub density 1/8 (mass `scale³/8`). If neither reproduces B, land the fix on the proof, keep `hub_ml` as a conservation gate (its positive controls still assert aggregation), drop mutant 6 from G13, and record why. |
 | R-F9 | Cost of the per-substep activity pass and of the larger opening payload on CUDA under MPI. | Fact | Expected ≤ 1 % of a substep; report in G12. |
 | R-P6 | A coloured edge that never writes (e.g. `num_points = 0`) still counts its copies as active: `k` one larger, slightly more under-relaxation, conservation intact. | Fact | Accept (the same class as R-P2). |
+- **S10: the `hub_ml` scene is the dense shell** (settles WO-4b Stop 1). As §13 specifies it, the
+  leaves never touch each other. The contact graph is then a star, the matching merges only the hub
+  and one leaf, and the 90 % stall rule rejects the level, so no level is ever built. Use the
+  denser shell in which the leaves touch: `ns = 3.0 (rs/R)^2`, N = 181. It builds a level and
+  aggregates the hub. Measured: dP 1.5e-2 on ca32026 and 1.7e-7 to 2.1e-7 with fix B, at OMP 1 and
+  8, for both step_mpi and `--solo`. The positive controls (levels > 0, `mlHubAggregated` > 0, and
+  dP > 1e-4 on ca32026) apply to this scene. The observed s = 3 velocity copies is accepted.
+- **S11: the `hub_static` leaf-gap bound is 0.15 δ** (settles WO-4b Stop 2). The ≤ 0.02 δ estimate
+  missed one effect: each copy takes about 32 sequential pushes of about 0.01 δ before the fold.
+  Their random-walk residual is about 0.06 δ, and a projection that never takes a push back cannot
+  remove it. Measured: 0.034 δ at OMP 1, up to 0.061 δ at OMP 8, and up to 0.053 δ on CUDA. The
+  bound of 0.15 δ still separates cleanly from the ω = 1.5 defect (0.584 δ), by 3.9×. This residual
+  is the same non-retractable-projection limitation that R-U4 (WO-12) would remove.
+- **S12: the iteration counters must work in the fused device loop** (G7f needs them). The fused
+  loop writes its iteration count to a device scalar. Read it back to the host only when
+  diagnostics are enabled, which the test harness does. With diagnostics off there must be no
+  extra fence or copy.
