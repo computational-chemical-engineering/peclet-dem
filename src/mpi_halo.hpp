@@ -122,6 +122,42 @@ struct MigratePack {
   float hertzSnWall[Particles::kHertzMaxWalls];
 };
 
+// Ghost -> owner reverse payloads (docs/mpi_momentum_conservation.md §2.3). A ghost's accumulated
+// change since its baseline -- exactly what this rank's owned contacts wrote into it -- is summed
+// onto its owner by core's ParticleHalo<3>::reverse, which accumulates through
+// Kokkos::atomic_add: that applies the operator+ below. So operator+ SUMS the velocity, angular
+// velocity and orphan-account increments and takes the MAX of orphanPeak (an event peak speed,
+// not an additive quantity). POD => MPI_BYTE-copyable.
+struct VelocityIncrement {
+  float v[3];
+  float w[3];
+  float orphan;
+  float orphanPeak;
+};
+KOKKOS_INLINE_FUNCTION VelocityIncrement operator+(const VelocityIncrement& a,
+                                                   const VelocityIncrement& b) {
+  VelocityIncrement r;
+  for (int d = 0; d < 3; ++d) {
+    r.v[d] = a.v[d] + b.v[d];
+    r.w[d] = a.w[d] + b.w[d];
+  }
+  r.orphan = a.orphan + b.orphan;
+  r.orphanPeak = a.orphanPeak > b.orphanPeak ? a.orphanPeak : b.orphanPeak;
+  return r;
+}
+// Position-phase payload: the predicted-position increment (the projection is translation-only).
+// Summed by core's reverse (Kokkos::atomic_add applies this operator+).
+struct PositionIncrement {
+  float x[3];
+};
+KOKKOS_INLINE_FUNCTION PositionIncrement operator+(const PositionIncrement& a,
+                                                   const PositionIncrement& b) {
+  PositionIncrement r;
+  for (int d = 0; d < 3; ++d)
+    r.x[d] = a.x[d] + b.x[d];
+  return r;
+}
+
 // --- free-function pack/unpack kernels (namespace scope: nvcc forbids KOKKOS_LAMBDA in member fns)
 // ---
 
@@ -237,6 +273,115 @@ inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 in
         orphan(s) = p.orphan;
         orphanVPeak(s) = p.orphanVPeak;
       });
+}
+
+// --- ghost -> owner reconciliation kernels (docs/mpi_momentum_conservation.md §2.3). In every
+// ghost kernel g in [0, ng) is the TOPOLOGY ghost index (the order core's forward/reverse use) and
+// s = no + slot(g) its canonical SoA slot. ---
+
+// Velocity baselines: base*(g) = the ghost slot's current value.
+inline void haloMarkVelocityBaseline(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak,
+                                     V3 baseV, V3 baseW, Vf baseO, Vf basePk, Vi slot, int no,
+                                     int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::markVelBase", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
+        const int s = no + slot(g);
+        for (int d = 0; d < 3; ++d) {
+          baseV(g, d) = velPred(s, d);
+          baseW(g, d) = angVelPred(s, d);
+        }
+        baseO(g) = orphan(s);
+        basePk(g) = orphanPeak(s);
+      });
+}
+// inc(g) = ghost slot - baseline, component-wise; the peak travels only if it rose above its
+// baseline (else 0), so a decayed owner peak is never undone.
+inline void haloPackVelocityIncrement(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak,
+                                      V3 baseV, V3 baseW, Vf baseO, Vf basePk,
+                                      peclet::core::View<VelocityIncrement> inc, Vi slot, int no,
+                                      int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::packVelInc", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
+        const int s = no + slot(g);
+        VelocityIncrement r;
+        for (int d = 0; d < 3; ++d) {
+          r.v[d] = velPred(s, d) - baseV(g, d);
+          r.w[d] = angVelPred(s, d) - baseW(g, d);
+        }
+        r.orphan = orphan(s) - baseO(g);
+        r.orphanPeak = orphanPeak(s) > basePk(g) ? orphanPeak(s) : 0.0f;
+        inc(g) = r;
+      });
+}
+// Owned rows [0, no) take the summed increments of all their ghost copies.
+inline void haloApplyVelocityIncrement(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak,
+                                       peclet::core::View<VelocityIncrement> ownedInc, int no) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::applyVelInc", Kokkos::RangePolicy<CpExec>(0, no), KOKKOS_LAMBDA(int i) {
+        const VelocityIncrement r = ownedInc(i);
+        for (int d = 0; d < 3; ++d) {
+          velPred(i, d) += r.v[d];
+          angVelPred(i, d) += r.w[d];
+        }
+        orphan(i) = Kokkos::fmax(0.0f, orphan(i) + r.orphan);
+        orphanPeak(i) = Kokkos::fmax(orphanPeak(i), r.orphanPeak);
+      });
+}
+inline void haloMarkPositionBaseline(V3 posPred, V3 baseX, Vi slot, int no, int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::markPosBase", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
+        const int s = no + slot(g);
+        for (int d = 0; d < 3; ++d)
+          baseX(g, d) = posPred(s, d);
+      });
+}
+// A position increment is a difference of two values in one image frame, so it needs no periodic
+// shift on its way to the owner.
+inline void haloPackPositionIncrement(V3 posPred, V3 baseX,
+                                      peclet::core::View<PositionIncrement> inc, Vi slot, int no,
+                                      int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::packPosInc", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
+        const int s = no + slot(g);
+        PositionIncrement r;
+        for (int d = 0; d < 3; ++d)
+          r.x[d] = posPred(s, d) - baseX(g, d);
+        inc(g) = r;
+      });
+}
+inline void haloApplyPositionIncrement(V3 posPred, peclet::core::View<PositionIncrement> ownedInc,
+                                       int no) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::applyPosInc", Kokkos::RangePolicy<CpExec>(0, no), KOKKOS_LAMBDA(int i) {
+        const PositionIncrement r = ownedInc(i);
+        for (int d = 0; d < 3; ++d)
+          posPred(i, d) += r.x[d];
+      });
+}
+// The legacy-friction contact count, column 1 of planeFriction: ghost -> owner sum, then back.
+inline void haloPackGhostColumn(Kokkos::View<float* [2], CpMem> pf,
+                                peclet::core::View<float> ghostVal, Vi slot, int no, int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::packGhostCol", Kokkos::RangePolicy<CpExec>(0, ng),
+      KOKKOS_LAMBDA(int g) { ghostVal(g) = pf(no + slot(g), 1); });
+}
+inline void haloAddOwnedColumn(Kokkos::View<float* [2], CpMem> pf,
+                               peclet::core::View<float> ownedVal, int no) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::addOwnedCol", Kokkos::RangePolicy<CpExec>(0, no),
+      KOKKOS_LAMBDA(int i) { pf(i, 1) += ownedVal(i); });
+}
+inline void haloPackOwnedColumn(Kokkos::View<float* [2], CpMem> pf,
+                                peclet::core::View<float> ownedVal, int no) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::packOwnedCol", Kokkos::RangePolicy<CpExec>(0, no),
+      KOKKOS_LAMBDA(int i) { ownedVal(i) = pf(i, 1); });
+}
+inline void haloUnpackGhostColumn(Kokkos::View<float* [2], CpMem> pf,
+                                  peclet::core::View<float> ghostVal, Vi slot, int no, int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::unpackGhostCol", Kokkos::RangePolicy<CpExec>(0, ng),
+      KOKKOS_LAMBDA(int g) { pf(no + slot(g), 1) = ghostVal(g); });
 }
 
 /// Owner<->ghost halo driver for the distributed Kokkos demStep. Set up once (initMpi), then each
@@ -375,7 +520,8 @@ class ParticleHalo {
       numSend_ = static_cast<int>(topo.sendIdx.size());
       allocBuffers(no, ng);
       uploadShift(topo);
-      uploadGhostSlots(topo, ng);
+      const std::vector<int> hSlot = uploadGhostSlots(topo, ng);
+      buildOwnershipMaps(topo, no, ng, hSlot);
       // Snapshot the owned positions at build time — the reference for the displacement check.
       if (verletSkin_ > 0.0f) {
         if (refPos_.extent(0) < static_cast<std::size_t>(no))
@@ -875,6 +1021,77 @@ class ParticleHalo {
     haloUnpackF4(field, ghostF4_, ghostSlot_, numReal_, numGhost_);
   }
 
+  // ---- ghost -> owner reconciliation (docs/mpi_momentum_conservation.md §2.3) ----
+  // Every sync below is COLLECTIVE (a reverse, then a forward, over a possibly one-sided
+  // topology): it may be skipped only when this rank neither sends nor receives (exchanges()),
+  // never because this rank "wrote no ghost" -- that is rank-local and deadlocks the neighbours.
+
+  /// Velocity baselines: the ghosts' current velPred / angVelPred / orphan account (no MPI).
+  void markVelocityBaseline(Particles& P) {
+    if (numGhost_ <= 0)
+      return;
+    haloMarkVelocityBaseline(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, baseVel_,
+                             baseAngVel_, baseOrphan_, baseOrphanPeak_, ghostSlot_, numReal_,
+                             numGhost_);
+  }
+  /// Deliver every ghost's velocity-phase change since its baseline onto its owner (reverse), then
+  /// republish the owners (forward) and re-mark the baselines.
+  void syncVelocities(Particles& P, bool rotation) {
+    if (!exchanges())
+      return;
+    haloPackVelocityIncrement(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, baseVel_,
+                              baseAngVel_, baseOrphan_, baseOrphanPeak_, ghostVelInc_, ghostSlot_,
+                              numReal_, numGhost_);
+    Kokkos::deep_copy(
+        Kokkos::subview(ownedVelInc_, std::pair<std::size_t, std::size_t>(0, numReal_)),
+        VelocityIncrement{});
+    dev_.reverse(ghostVelInc_, ownedVelInc_);
+    haloApplyVelocityIncrement(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak,
+                               ownedVelInc_, numReal_);
+    forward(P.velPred);
+    if (rotation)
+      forward(P.angVelPred);
+    markVelocityBaseline(P);
+  }
+  /// Forward the owners' predicted positions (+ quaternions) and mark the position baselines, with
+  /// NO reverse: a ghost's change before this point is its integration, not an interaction.
+  void publishPositions(Particles& P, bool rotation) {
+    if (!exchanges())
+      return;
+    forwardPositions(P.posPred);
+    if (rotation)
+      forward4(P.quatPred);
+    haloMarkPositionBaseline(P.posPred, basePos_, ghostSlot_, numReal_, numGhost_);
+  }
+  /// Deliver every ghost's position-phase correction since its baseline onto its owner (reverse),
+  /// then publish (forward + re-mark).
+  void syncPositions(Particles& P, bool rotation) {
+    if (!exchanges())
+      return;
+    haloPackPositionIncrement(P.posPred, basePos_, ghostPosInc_, ghostSlot_, numReal_, numGhost_);
+    Kokkos::deep_copy(
+        Kokkos::subview(ownedPosInc_, std::pair<std::size_t, std::size_t>(0, numReal_)),
+        PositionIncrement{});
+    dev_.reverse(ghostPosInc_, ownedPosInc_);
+    haloApplyPositionIncrement(P.posPred, ownedPosInc_, numReal_);
+    publishPositions(P, rotation);
+  }
+  /// Legacy-friction contact counts (planeFriction column 1): each rank counted its owned contacts
+  /// at both endpoints, ghost endpoints included; sum the ghost counts onto the owners, then
+  /// forward the owners' totals, so every copy holds the serial count.
+  void syncFrictionCounts(Particles& P) {
+    if (!exchanges())
+      return;
+    haloPackGhostColumn(P.planeFriction, ghostVal_, ghostSlot_, numReal_, numGhost_);
+    Kokkos::deep_copy(Kokkos::subview(ownedVal_, std::pair<std::size_t, std::size_t>(0, numReal_)),
+                      0.0f);
+    dev_.reverse(ghostVal_, ownedVal_);
+    haloAddOwnedColumn(P.planeFriction, ownedVal_, numReal_);
+    haloPackOwnedColumn(P.planeFriction, ownedVal_, numReal_);
+    dev_.forward(ownedVal_, ghostVal_);
+    haloUnpackGhostColumn(P.planeFriction, ghostVal_, ghostSlot_, numReal_, numGhost_);
+  }
+
   void selfMapReals(Vi realIndices, int no) {
     Kokkos::parallel_for(
         "peclet::dem::halo::selfMapReals", Kokkos::RangePolicy<CpExec>(0, no),
@@ -891,6 +1108,54 @@ class ParticleHalo {
     ghostF4_ = peclet::core::View<F4>("peclet::dem::halo::ghostF4", ng);
     ownedPack_ = peclet::core::View<MpiGatherPack>("peclet::dem::halo::ownedPack", no);
     ghostPack_ = peclet::core::View<MpiGatherPack>("peclet::dem::halo::ghostPack", ng);
+    // Reconciliation buffers: grow-only (core's reverse/forward address [0, numReceived) and the
+    // self tail by subview/index, and owned rows through sendIdx/selfIdx < no).
+    const std::size_t g1 = static_cast<std::size_t>(std::max(ng, 1)),
+                      o1 = static_cast<std::size_t>(std::max(no, 1));
+    if (baseVel_.extent(0) < g1) {
+      baseVel_ = V3("peclet::dem::halo::baseVel", g1);
+      baseAngVel_ = V3("peclet::dem::halo::baseAngVel", g1);
+      basePos_ = V3("peclet::dem::halo::basePos", g1);
+      baseOrphan_ = Vf("peclet::dem::halo::baseOrphan", g1);
+      baseOrphanPeak_ = Vf("peclet::dem::halo::baseOrphanPeak", g1);
+      ghostVelInc_ = peclet::core::View<VelocityIncrement>("peclet::dem::halo::ghostVelInc", g1);
+      ghostPosInc_ = peclet::core::View<PositionIncrement>("peclet::dem::halo::ghostPosInc", g1);
+      ghostVal_ = peclet::core::View<float>("peclet::dem::halo::ghostVal", g1);
+    }
+    if (ownedVelInc_.extent(0) < o1) {
+      ownedVelInc_ = peclet::core::View<VelocityIncrement>("peclet::dem::halo::ownedVelInc", o1);
+      ownedPosInc_ = peclet::core::View<PositionIncrement>("peclet::dem::halo::ownedPosInc", o1);
+      ownedVal_ = peclet::core::View<float>("peclet::dem::halo::ownedVal", o1);
+    }
+  }
+  // The maps the contact-ownership rule reads (docs/mpi_momentum_conservation.md §2.1), built on
+  // the host from the flattened topology at every rebuild:
+  //   ghostSource_(s - no)  the rank ghost slot s was received from (this rank for a periodic
+  //                         self-ghost), indexed by the CANONICAL offset;
+  //   copyOffsets_/copyRanks_  CSR over owned rows: the ranks each owned row is ghosted to
+  //                         (cross-rank only, ascending -- sendRanks is ascending).
+  void buildOwnershipMaps(const peclet::core::halo::ParticleHaloTopology<3>::FlatTopo& t, int no,
+                          int ng, const std::vector<int>& hSlot) {
+    const std::size_t g1 = static_cast<std::size_t>(std::max(ng, 1));
+    std::vector<int> src(g1, rank_);  // the self tail [numReceived, ng) stays rank_
+    for (std::size_t k = 0; k < t.recvRanks.size(); ++k)
+      for (int j = 0; j < t.recvCounts[k]; ++j)
+        src[static_cast<std::size_t>(hSlot[static_cast<std::size_t>(t.recvOffsets[k]) + j])] =
+            t.recvRanks[k];
+    std::vector<int> off(static_cast<std::size_t>(no) + 1, 0);
+    for (const auto i : t.sendIdx)
+      ++off[static_cast<std::size_t>(i) + 1];
+    for (int i = 0; i < no; ++i)
+      off[static_cast<std::size_t>(i) + 1] += off[static_cast<std::size_t>(i)];
+    std::vector<int> ranks(std::max<std::size_t>(t.sendIdx.size(), 1), -1);
+    std::vector<int> cur(off.begin(), off.end() - 1);
+    for (std::size_t k = 0; k < t.sendRanks.size(); ++k)
+      for (int j = t.sendOffsets[k]; j < t.sendOffsets[k + 1]; ++j)
+        ranks[static_cast<std::size_t>(cur[static_cast<std::size_t>(t.sendIdx[j])]++)] =
+            t.sendRanks[k];
+    ghostSource_ = peclet::core::toDevice(src, "peclet::dem::halo::ghostSource");
+    copyOffsets_ = peclet::core::toDevice(off, "peclet::dem::halo::copyOffsets");
+    copyRanks_ = peclet::core::toDevice(ranks, "peclet::dem::halo::copyRanks");
   }
   // Max Euclidean displacement of any owned particle since the last topology build (device reduce +
   // one scalar read-back) — the Verlet-skin reuse criterion.
@@ -923,7 +1188,8 @@ class ParticleHalo {
   // Canonical ghost placement: topology ghost g -> slot offset in [0, ng). The received blocks go
   // in ascending source rank (core numbers them in message-arrival order); the local periodic
   // self-ghosts [numReceived, ng) keep their place after them.
-  void uploadGhostSlots(const peclet::core::halo::ParticleHaloTopology<3>::FlatTopo& t, int ng) {
+  std::vector<int> uploadGhostSlots(const peclet::core::halo::ParticleHaloTopology<3>::FlatTopo& t,
+                                    int ng) {
     std::vector<std::size_t> blocks(t.recvRanks.size());
     for (std::size_t k = 0; k < blocks.size(); ++k)
       blocks[k] = k;
@@ -939,6 +1205,10 @@ class ParticleHalo {
     for (int g = next; g < ng; ++g)
       h(g) = g;
     Kokkos::deep_copy(ghostSlot_, h);
+    std::vector<int> hs(static_cast<std::size_t>(std::max(ng, 0)));
+    for (int g = 0; g < ng; ++g)
+      hs[static_cast<std::size_t>(g)] = h(g);
+    return hs;
   }
   // Canonical owned order after a migration: core keeps this rank's stayers first (in their old
   // order) and appends the lastReceived() arrivals message by message, in arrival order. Stably
@@ -1001,6 +1271,15 @@ class ParticleHalo {
   Vi ghostSlot_;  // topology ghost index -> canonical ghost slot offset (see uploadGhostSlots)
   peclet::core::View<F4> ownedF4_, ghostF4_;
   peclet::core::View<MpiGatherPack> ownedPack_, ghostPack_;
+  // Reconciliation state (§2.3): per-ghost baselines in TOPOLOGY ghost order, the reverse payloads
+  // and the count-column buffers -- all grow-only.
+  V3 baseVel_, baseAngVel_, basePos_;
+  Vf baseOrphan_, baseOrphanPeak_;
+  peclet::core::View<VelocityIncrement> ghostVelInc_, ownedVelInc_;
+  peclet::core::View<PositionIncrement> ghostPosInc_, ownedPosInc_;
+  peclet::core::View<float> ghostVal_, ownedVal_;
+  // Ownership maps (§2.1; see buildOwnershipMaps).
+  Kokkos::View<int*, CpMem> ghostSource_, copyOffsets_, copyRanks_;
 };
 
 }  // namespace peclet::dem

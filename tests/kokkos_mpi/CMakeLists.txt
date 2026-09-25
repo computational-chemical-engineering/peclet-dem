@@ -34,7 +34,7 @@ separate_arguments(_mpi_preflags NATIVE_COMMAND "${MPIEXEC_PREFLAGS}")
 
 set(_dem_src "${CMAKE_CURRENT_SOURCE_DIR}/../../src")
 foreach(t migrate_mpi demstep_mpi rebalance_mpi halo_schedule_mpi ghost_band_mpi align_mpi
-          momentum_mpi)
+          momentum_mpi ownership_mpi)
   add_executable(test_${t} test_${t}.cpp)
   target_include_directories(test_${t} PRIVATE ${_dem_src} ${PECLET_CORE_INCLUDE})
   target_compile_definitions(test_${t} PRIVATE PECLET_DEM_MPI)
@@ -96,6 +96,15 @@ foreach(np 1 2 4 8)
   foreach(mode cluster cluster_friction cluster_pgs cluster_posonly hertz cluster_sync3
                cluster_norot cluster_periodic)
     _dem_mpi_test(momentum_${mode}_np${np} ${np} test_momentum_mpi ${mode})
+  endforeach()
+endforeach()
+# ownership: the owner-exclusive contact scheme's building blocks (docs/mpi_momentum_conservation.md).
+# reverse_*: ghost -> owner reconciliation of ParticleHalo -- exact integer sums onto the owners,
+# ghost == owner afterwards, and a second sync with no writes changes nothing (closed; periodic on
+# every axis, so periodic self-ghosts appear at np = 1).
+foreach(np 1 2 4 8)
+  foreach(mode reverse_closed reverse_periodic)
+    _dem_mpi_test(ownership_${mode}_np${np} ${np} test_ownership_mpi ${mode})
   endforeach()
 endforeach()
 # migrate_to_weights(w, align) == flow's aligned partition: also at np = 8, where the budget's
