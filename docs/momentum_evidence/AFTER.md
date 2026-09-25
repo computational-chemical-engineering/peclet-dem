@@ -374,3 +374,20 @@ docs/momentum_evidence/run_perf_ab.sh build_base /tmp/perf_after > docs/momentum
 the after build misses the gate on a quiet host, §5's levers apply in order: a fused
 bidirectional exchange, which needs a core primitive, then a two-ended narrow-phase append. Each
 is a separate decision.)
+
+## Performance, final interleaved A/B (HEAD 1d70ca5, 2026-09-25 afternoon)
+
+`OMP_WAIT_POLICY=passive run_perf_ab.sh build_base build_mom`, 5 interleaved repeats. Load 55–60 on
+48 cores. Raw data: `after/perf_ab_final.txt`. Units are ms/step, N = 19683, periodic.
+
+| mode, ranks × threads | before min / median | after min / median | median ratio |
+|---|---|---|---|
+| gas, 4×4 | 35.9 / 45.2 | 41.7 / 42.9 | 0.95 |
+| gas, 8×2 | 16.4 / 33.0 | 16.3 / 32.9 | 1.00 |
+| pgs, 4×4 | 39.4 / 42.3 | 38.0 / 43.2 | 1.02 |
+| pgs, 8×2 | 29.6 / 35.3 | 26.7 / 33.1 | 0.94 |
+
+The cost is inside the noise, which is about ±5 % on paired medians at this load. The one min-ratio
+above 1.10 is gas 4×4. It comes from a single before-run outlier of 35.9 ms; the other four
+before-runs were at least 45 ms. Absolute times are 2–4× the quiet-host baseline in BEFORE.md, so a
+quiet-host re-measure is still owed.
