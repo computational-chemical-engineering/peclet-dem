@@ -150,11 +150,11 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   // 4-6. The shared modern velocity + position solve, distributed: rank-local colouring over the
   // owned + ghost body slots (nBodies = numParticles; realIndices are self-mapped, so ghost
   // copies evolve in place between reconciliations), persistent-pair keys from the global ids.
-  demSolveContacts(
-      P, ncOwned, nmOwned, P.numParticles, P.gid,
-      MpiSolveHooks{halo, syncEvery < 1 ? 1 : syncEvery, forwardRotation, nmVisible});
+  demSolveContacts(P, ncOwned, nmOwned, P.numParticles, P.gid,
+                   MpiSolveHooks{halo, syncEvery < 1 ? 1 : syncEvery, forwardRotation, nmVisible});
 
-  // 7. Commit (owned results kept; ghosts discarded, re-gathered next substep).
+  // 7. Commit (owned results kept; the ghost slots, reconciled by the final sync, are dropped and
+  // re-gathered next substep).
   finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
 
   if (P.thermostatTau > 0.0f && P.dt > 0.0f)

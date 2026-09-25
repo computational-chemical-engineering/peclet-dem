@@ -33,17 +33,16 @@
 // Build with -DPECLET_DEM_MPI.
 #include <mpi.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <Kokkos_Core.hpp>
+#include <map>
 #include <random>
 #include <string>
 #include <vector>
-
-#include <algorithm>
-#include <map>
 
 #include "mpi_halo.hpp"
 #include "particles.hpp"
@@ -264,7 +263,8 @@ static Scene makeScene(int size, bool drift) {
     int bestAxis = -1;
     float bestDist = kRad, bestSign = 0.0f;
     for (int d = 0; d < 3; ++d) {
-      const float lo = static_cast<float>(b.origin[d]), hi = static_cast<float>(b.origin[d] + b.size[d]);
+      const float lo = static_cast<float>(b.origin[d]),
+                  hi = static_cast<float>(b.origin[d] + b.size[d]);
       if (b.origin[d] > 0 && sc.x[g][d] - lo < bestDist) {  // interior low face
         bestDist = sc.x[g][d] - lo;
         bestAxis = d;
@@ -333,7 +333,8 @@ static void ownedKeys(const Scene& sc, const std::vector<int>& mine, bool period
   peclet::dem::fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
   const int np = peclet::dem::findCollisionsGrow(P, margin);
   const int nc = peclet::dem::narrowPhaseGrow(P, np, margin);
-  const int ncOwned = peclet::dem::partitionContactsKokkos(P.contacts, nc, halo.contactOwnership(P));
+  const int ncOwned =
+      peclet::dem::partitionContactsKokkos(P.contacts, nc, halo.contactOwnership(P));
   auto hc = Kokkos::create_mirror_view(P.contacts);
   auto hg = Kokkos::create_mirror_view(P.gid);
   Kokkos::deep_copy(hc, P.contacts);

@@ -787,7 +787,9 @@ NB_MODULE(_dem, m) {
           nb::arg("rebalance_every") = 0, nb::arg("verlet_skin") = 0.0,
           "Enable the distributed step: ghost-band width rcut (a lower bound -- step_mpi widens it "
           "to the contact reach 2.1 x the global maximum radius, so the default 0 means exactly "
-          "that), sync cadence, rotation forwarding, the load-rebalance interval in steps (0 = "
+          "that), sync_every (the owner/ghost reconciliation interval; conservation is exact at "
+          "any value, larger = more lag, fewer messages), rotation forwarding, the "
+          "load-rebalance interval in steps (0 = "
           "fixed decomposition), and the Verlet ghost-reuse skin (0 = rebuild the halo topology "
           "every substep; >0 = reuse it until a particle moves > skin).")
       .def("step_mpi", &Simulation::stepMpi, nb::arg("n") = 1,

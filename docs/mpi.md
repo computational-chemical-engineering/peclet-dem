@@ -46,18 +46,21 @@ sim.migrate_to_weights(w, align=1)                       # co-rebalance onto the
   (on-device gather/scatter + host-staged MPI), `peclet::core::halo::ParticleMigrator`, and the
   weighted-ORB `particle_rebalance` path. Rebuilt each substep from the owned positions.
 - `src/step_solve_mpi.hpp` (`demStepMpi`) — the distributed substep. The periodic ghost generation of the
-  single-rank step is replaced by a cross-rank gather (ghosts carry **real** mass), and the
-  owners refresh their ghost copies (velPred/angVelPred, then posPred/quatPred) every `sync_every`
-  solver iterations (and the last). Each owned particle therefore sees all its neighbours — owned or
-  ghost — and computes its **full XPBD delta locally**; the ghost deltas land on self-mapped
-  slots and are discarded. Friction (wall + body-body Coulomb) **is** carried — same kernels as the
+  single-rank step is replaced by a cross-rank gather (ghosts carry **real** mass). The contacts are
+  partitioned owned-first (`ContactOwnership`, `partitionContactsKokkos`) and reduced to manifolds
+  owned-first, and each rank solves only the contacts it owns; the partner's half of every impulse
+  lands in the partner's self-mapped ghost slot and is **reverse-accumulated onto its owner** at the
+  next sync, after which the owners refresh their ghost copies (velPred/angVelPred, then
+  posPred/quatPred) — every `sync_every` solver iterations and after every phase (see *Contact
+  ownership* below). Friction (wall + body-body Coulomb) **is** carried — same kernels as the
   single-rank step.
 - `src/solve_driver.hpp` (`demSolveContacts`) — **one driver, two hook policies.** The distributed
   step runs the SAME modern solve sequence as `step(n)` (graph-colored Gauss–Seidel restitution,
   warm-started PGS with persistent contacts, gravity statics / stabilization passes, friction cone,
   colored-GS overlap projection, adaptive stops) in its processor-block Gauss–Seidel form:
-  `SoloSolveHooks` compiles the single-GPU sequence, `MpiSolveHooks` adds the owner→ghost refreshes
-  and the `MPI_Allreduce(MAX)` on every adaptive-stop residual (a rank-local break would
+  `SoloSolveHooks` compiles the single-GPU sequence, `MpiSolveHooks` adds the owner/ghost
+  reconciliations (ghost→owner reverse, then owner→ghost forward) and the `MPI_Allreduce(MAX)` on
+  every adaptive-stop residual (a rank-local break would
   desynchronise the collective refreshes and deadlock). Persistent-contact pair keys are built from
   **global ids**, so the ledger survives halo rebuilds and ownership migration, and `MigratePack`
   carries each particle's slice of it across a rebalance. The force-based engine has the same shape
@@ -65,13 +68,25 @@ sim.migrate_to_weights(w, align=1)                       # co-rebalance onto the
 - **Periodicity:** cross-rank ghosts supply the wrap on *decomposed* axes; local periodic self-ghosts
   (the halo built with `includePeriodicSelf`) supply it on *undecomposed* periodic axes.
 
-### The EXACT scheme + the `sync_every` (M) knob
-`sync_every=1` is **EXACT**: every owned particle has all its neighbours refreshed every iteration, so
-it reproduces the serial XPBD delta at np=1; at np=2/4 the rank-local sweep order of the colored
-PGS differs from single-rank, so agreement is statistical rather than bit-exact (numbers under *What
-is validated* below). `sync_every=M>1` is an approximation — boundary error
-grows with M in exchange for fewer halo exchanges per step. `forward_rotation=False` skips the ghost
-quaternion forward and is **exact for spheres**.
+### Contact ownership, reconciliation and the `sync_every` (M) knob
+Every contact is solved by **exactly one** rank: the only owner that sees it, or, when both
+owners see it, the owner of its lower-gid body (for a periodic self-image twin: the twin whose
+real body has the lower gid). Each rank sweeps only the contacts it owns, writing the partner's
+half of every impulse into the partner's ghost slot. At every sync, each ghost's accumulated
+change is **added onto its owner** (core `ParticleHalo::reverse`) and the owners then republish
+their state (forward). Every impulse and every overlap correction is therefore applied once,
+equal and opposite: linear momentum and the centre of mass are conserved to round-off at any np,
+thread count and `sync_every`, and the velocity phase conserves angular momentum wherever the
+serial model does. `sync_every=M` sets how many sweeps pass between reconciliations: conservation
+does not depend on it; larger M means more lag at rank faces and fewer messages.
+Interior contacts keep the serial Gauss–Seidel order; a contact across a rank face sees its far
+body as of the last reconciliation, so trajectories agree with single-rank statistically, not
+bit-for-bit (numbers under *What is validated*). `forward_rotation=False` skips the ghost
+angular-velocity and quaternion forwards (spheres).
+
+Under Poisson (event-level) restitution two ranks can draw from one body's orphan account within
+one reconciliation interval, each bounded by its own view of the balance; the owner clamps the
+delivered balance at 0 (docs/mpi_momentum_conservation.md, R5).
 
 ### What is validated
 - `tests/kokkos_mpi/` — the distributed Kokkos `demStep`/`rebalance` ctests, run under `mpirun` at
@@ -88,13 +103,19 @@ quaternion forward and is **exact for spheres**.
   (per-particle vs serial), `test_validate_periodic` (wrap through the split axes: 2-body, corner,
   N-body with resting straddlers), `test_verify_distributed` (elastic energy + settling-pack
   observables) and `test_verify_rotating_drum_mpi` (moving SDF wall + rebalancing).
-- np=1 agrees with the single-rank step to float noise (max 1e-4 over 15 steps). At np=2/4 the
-  modern stack (processor-block Gauss–Seidel with rank-local colouring) sweeps the finite-iteration
-  PGS in a different order than single-rank, so per-particle agreement on a stiff, randomly
-  overlapping IC is *statistical* (measured 2026-09-08, N=200, 15 steps: mean 5e-3, 95 % quantile
-  4e-2, max 0.11 = a quarter diameter); resting wrap contacts agree exactly and the aggregate
-  observables (energy, overlap, pile geometry) match to their tolerances. The C++ `demstep_*`
-  ctests are the tolerance-based statement of the same thing.
+- np=1 agrees with the single-rank step to float noise (max 8.5e-5 over 15 steps). At np=2/4 the
+  modern stack (processor-block Gauss–Seidel with rank-local colouring, one owner per contact)
+  sweeps the finite-iteration PGS in a different order than single-rank, and a contact across a
+  rank face sees its far body as of the last reconciliation, so per-particle agreement on a stiff,
+  randomly overlapping IC is *statistical* (measured 2026-09-25, N=200, 15 steps, OMP 1: np=2 mean
+  3.9e-3, 95 % quantile 3.2e-2, max 6.6e-2; np=4 mean 4.0e-3, 95 % quantile 3.2e-2, max 7.2e-2 --
+  the redundant two-owner scheme gave 5.3e-3 / 3.6e-2 / 0.10 and 5.0e-3 / 3.5e-2 / 0.11 in the same
+  session); resting wrap contacts agree exactly and the aggregate observables (energy, overlap,
+  pile geometry) match to their tolerances. The C++ `demstep_*` ctests are the tolerance-based
+  statement of the same thing.
+- `momentum_*` gates conservation (dP ≤ 1e-6, CoM ≤ 1e-5 R, velocity-phase dL ≤ 1e-6 frictionless,
+  ≤ 1e-4 with the legacy friction pass) at np 1/2/4/8, and `ownership_*` gates that every contact
+  is owned exactly once.
 
 ### Validation lessons carried into the Kokkos step
 - **Full per-particle state must travel through migration** (quaternion + angular velocity, not just
@@ -142,9 +163,10 @@ at np = 1, 2, 4, 8.
 The original host-C++ bring-up harness (particle migration + the three ghost-exchange schemes A/B/C
 matched cell-for-cell to a serial reference) validated this machinery before it was wired into the
 module; it was retired at 1.0.0 (it targeted core's pre-`peclet::core` headers) and lives in git
-history before dem `b43040c`. The shipped `step_mpi` follows the **EXACT** variant (full owner→ghost
-state refresh, every owned particle computes its complete serial delta locally) rather than the
-reverse-reduction schemes B/C.
+history before dem `b43040c`. Since 2026-09 the shipped `step_mpi` uses reverse reduction: owner-exclusive
+contacts plus a ghost→owner accumulation at every sync. The earlier "EXACT" variant solved each
+cross-rank contact on both owners, which is exact only for Jacobi-type deltas and broke momentum
+conservation under the Gauss–Seidel stack.
 
 See [multi_gpu_testing.md](multi_gpu_testing.md) for the multi-GPU profiling/scaling playbook, `../../docs/ROADMAP.md`
 (Phase 4 / Phase 7) and the "MPI / flow" section of `../../flow/CLAUDE.md` for the Eulerian precedent.

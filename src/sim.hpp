@@ -807,8 +807,9 @@ class Simulation : public ShapeRegistry {
   // Enable the distributed step. rcut is a LOWER bound on the ghost-band width: the XPBD step
   // uses max(rcut, 2.1 R_max) with R_max the GLOBAL maximum radius, re-evaluated every step
   // (growth included -- the same band as the single-rank periodic ghosts), so rcut <= 0 means
-  // exactly the contact reach; sync_every is the owner->ghost refresh
-  // interval (1 = EXACT). rebalance_every: re-decompose by particle count + migrate ownership every
+  // exactly the contact reach; sync_every: owner/ghost reconciliation interval; conservation is
+  // exact at any value, larger = more lag, fewer messages. rebalance_every: re-decompose by
+  // particle count + migrate ownership every
   // N distributed steps to keep the per-rank load even as a packing densifies (0 = never; the
   // partition is then fixed at the initial decomposition, as before). A pure redistribution — the
   // physics result is unchanged.

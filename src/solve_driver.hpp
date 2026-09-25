@@ -360,10 +360,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       auto mt = Kokkos::subview(P.prevMatched, Kokkos::pair<int, int>(0, P.prevPairCount));
       Kokkos::deep_copy(mt, static_cast<unsigned char>(0));
     }
-    gatherWarmLambdaKokkos(P.manifolds, nmVisible, P.realIndices, keyIdx, P.prevPairKeys, P.prevLambda,
-                           P.prevLambdaT, P.prevPosImpulse, P.prevRestBank, P.prevRestVPeak,
-                           P.prevPairCount, P.pairKeys, P.lambdaAcc, P.lambdaT, P.posImpulse,
-                           P.restBank, P.restVPeak,
+    gatherWarmLambdaKokkos(P.manifolds, nmVisible, P.realIndices, keyIdx, P.prevPairKeys,
+                           P.prevLambda, P.prevLambdaT, P.prevPosImpulse, P.prevRestBank,
+                           P.prevRestVPeak, P.prevPairCount, P.pairKeys, P.lambdaAcc, P.lambdaT,
+                           P.posImpulse, P.restBank, P.restVPeak,
                            poisson ? P.prevMatched : Kokkos::View<unsigned char*, CpMem>());
     if (poisson) {
       {  // per-substep release accumulator starts from zero every substep
@@ -373,8 +373,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       // Orphan transfer: age the body accounts (owned range; MPI ghosts are mirrored), then
       // settle dead pairs' remaining budgets onto their endpoint bodies. Under MPI the pair-key
       // identities are gids, so the scatter resolves them through a sorted gid -> slot map built
-      // over owned + ghost slots (a ghost-side credit is overwritten by the next owner mirror —
-      // the owner's redundant ledger copy applies the same credit authoritatively).
+      // over owned + ghost slots (a ghost-side credit is delivered to the owner by the velocity
+      // reverse at the next sync; the pair's bank lives only in its owning rank's ledger).
       decayBodyOrphanKokkos(P.bodyOrphan, P.bodyOrphanVPeak, P.numReal, 2.0f * P.dt * gMagP);
       if (P.prevPairCount > 0) {
         Kokkos::View<const int*, CpMem> gidSorted, slotSorted;
@@ -406,8 +406,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     }
     markPersistentManifoldsKokkos(P.manifolds, nm, P.realIndices, keyIdx, P.prevPairKeys,
                                   P.prevPairCount, P.pairKeys, P.manifoldPersistent);
-    updateGroundedLevelsKokkos(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat, P.groundedLevel,
-                               nBodies, /*sweeps*/ 8, /*decay*/ 8);
+    updateGroundedLevelsKokkos(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat,
+                               P.groundedLevel, nBodies, /*sweeps*/ 8, /*decay*/ 8);
     // STAGED SOLVE (Guendelman): the main sweeps are fully momentum-conserving (side flags all
     // zero) -- ballistic impact, discharge and shear see correct physics. One-sided grounding is
     // reserved for the STABILIZATION pass below, which runs only if the main sweeps leave an
@@ -700,8 +700,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         // inelastic impulse only EQUALIZES velocities, so a deep column still cools one halving
         // per cycle -- measured insufficient on the statics battery (kept for A/B comparison
         // against the multilevel pass).
-        computeHeightLevelsKokkos(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat, P.heightLevel,
-                                  nBodies);
+        computeHeightLevelsKokkos(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat,
+                                  P.heightLevel, nBodies);
         std::vector<std::pair<int, int>> buckets;
         buildLevelColorBucketsKokkos(
             P.manifolds, nm, P.realIndices, Kokkos::View<const int*, CpMem>(P.manifoldColor),

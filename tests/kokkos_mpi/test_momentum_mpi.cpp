@@ -105,7 +105,7 @@ static Tol tolOf(const std::string& mode) {
     return {1e-6, 1e-5, 1e-5, -1, 1e-6};
   if (mode == "cluster_friction" || mode == "cluster_sync3" || mode == "cluster_norot")
     return {1e-6, 1e-5, 1e-5, -1, 1e-4};  // the serial legacy-friction floor dLvel is 1.9e-5
-  if (mode == "cluster_pgs")  // free-fall float accumulation floor dP 7.9e-7 at np 1
+  if (mode == "cluster_pgs")              // free-fall float accumulation floor dP 7.9e-7 at np 1
     return {5e-6, 1e-5, 1e-5, -1, 1e-6};
   if (mode == "cluster_posonly")  // the velocity increments are exact zeros
     return {1e-12, 1e-5, 1e-5, -1, 1e-12};

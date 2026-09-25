@@ -324,9 +324,8 @@ inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 in
 // s = no + slot(g) its canonical SoA slot. ---
 
 // Velocity baselines: base*(g) = the ghost slot's current value.
-inline void haloMarkVelocityBaseline(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak,
-                                     V3 baseV, V3 baseW, Vf baseO, Vf basePk, Vi slot, int no,
-                                     int ng) {
+inline void haloMarkVelocityBaseline(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak, V3 baseV,
+                                     V3 baseW, Vf baseO, Vf basePk, Vi slot, int no, int ng) {
   Kokkos::parallel_for(
       "peclet::dem::halo::markVelBase", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
         const int s = no + slot(g);
@@ -340,8 +339,8 @@ inline void haloMarkVelocityBaseline(V3 velPred, V3 angVelPred, Vf orphan, Vf or
 }
 // inc(g) = ghost slot - baseline, component-wise; the peak travels only if it rose above its
 // baseline (else 0), so a decayed owner peak is never undone.
-inline void haloPackVelocityIncrement(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak,
-                                      V3 baseV, V3 baseW, Vf baseO, Vf basePk,
+inline void haloPackVelocityIncrement(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak, V3 baseV,
+                                      V3 baseW, Vf baseO, Vf basePk,
                                       peclet::core::View<VelocityIncrement> inc, Vi slot, int no,
                                       int ng) {
   Kokkos::parallel_for(

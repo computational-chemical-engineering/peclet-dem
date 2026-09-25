@@ -35,6 +35,8 @@ judgement call in the moment.
   approach value.
 - **Sleeping is an `invMassEff` swap around the solve call**, not a per-manifold mechanism.
 - **Radius and halo sizing derive from `baseRadius*scale*globalScale`** — all three factors.
+- **Distributed contacts are owner-exclusive with reverse accumulation**, not solved redundantly
+  on both owners (the redundant solve was momentum-non-conserving under Gauss–Seidel).
 - **Never use `get_max_overlap()` as the sole packing-quality gate.**
 - Shipped constants that look arbitrary and are not: stabilization cap **K=64** (not 16), multilevel
   slip gate at **8·g·dt** (not ungated, not 2·g·dt).
@@ -132,10 +134,21 @@ later). `mpi_halo.hpp` therefore unpacks ghost block g into `no + ghostSlot_(g)`
 rank) and stably re-orders migrants by `MigratePack::srcRank`; np ≤ 2 are bit-identical to before,
 np 4/8 bitwise stable over 5 runs (OMP_NUM_THREADS=1). Any new receive path into the SoA must keep
 this. **Threads are a second, separate source:** the narrow phase appends contacts in thread order,
-and the processor-block Gauss–Seidel is order-sensitive at rank faces (a shared contact swept at
-different states by its two owners is not momentum-conserving: `ghost_band_margin` shifts a jammed
-3-body chain rigidly by 2.1e-2, every pair still resolved). So runs are reproducible only at
-`OMP_NUM_THREADS=1` (or Serial), and the `ghost_band_*` ctests pin it via `ENVIRONMENT`.
+so runs are bitwise reproducible only at `OMP_NUM_THREADS=1` (or Serial). Conservation does
+not depend on it (see below).
+
+**Every contact is owned by exactly one rank, and ghost increments are reverse-accumulated**
+(2026-09-25, `docs/mpi_momentum_conservation.md`). `ContactOwnership` (`mpi_halo.hpp`):
+the only owner that sees the pair, else the lower-gid body's owner. `demStepMpi` partitions
+the contacts owned-first and reduces manifolds owned-first (key bit 63), and
+`demSolveContacts` sweeps only `[0, ncOwned)` / `[0, nmOwned)`. Only the grounded/height
+levels and the warm-ledger match read the visible range. Every `syncVelocities` /
+`syncPositions` is **reverse, then forward**. The position phase opens with
+`publishPositions` (forward only: the integration of a ghost is not an interaction). NEVER
+re-introduce a redundant two-owner solve, never skip a reverse on rank-local grounds (it is
+collective), and any new kernel that writes body state during the solve must write ghost
+slots only as the partner half of an impulse pair: the reverse delivers exactly what is
+there. `ghost_band_*` no longer pins one thread.
 
 **The distributed XPBD ghost band is `max(rcut, 2.1 R_max)` over the GLOBAL max radius** (2026-09-24;
 `step_solve_mpi.hpp` `demStepMpi`, `xpbdContactReach`). The narrow phase reports a pair while the

@@ -315,13 +315,18 @@ ownership migration; the migration pack carries each particle's slice.
 
 ## 10. Distributed form
 
-`step_mpi` / `step_hertz_mpi` run the **same drivers** with the MPI hooks: the colouring and sweeps
-stay rank-local over owned + ghost bodies, ghost pairs are solved redundantly on both owners (ghost
-deltas discarded at the next refresh), owners re-publish ghost state every `sync_every` iterations
-plus once after every phase, and each adaptive-stop residual is `MPI_Allreduce(MAX)`-ed so all ranks
-break together. That is processor-block Gauss–Seidel: the same fixed point and the same physics as
-single-rank, not bit-exact (the rank-local sweep order differs). Full detail, validation and the
-periodicity/capacity rules: [mpi.md](mpi.md); scaling and profiling:
+`step_mpi` / `step_hertz_mpi` run the **same drivers** with the MPI hooks. XPBD (`step_mpi`): every
+contact is solved by exactly one rank (the only owner that sees it, else the lower-gid body's
+owner), the colouring and sweeps stay rank-local over that rank's owned contacts and owned + ghost
+bodies, the partner half of every impulse lands in the ghost slot, and at every sync (every
+`sync_every` iterations plus once after every phase) each ghost's change is reverse-accumulated onto
+its owner before the owners re-publish — so linear momentum and the centre of mass are conserved to
+round-off (`docs/mpi_momentum_conservation.md`). Each adaptive-stop residual is
+`MPI_Allreduce(MAX)`-ed so all ranks break together. That is processor-block Gauss–Seidel: the same
+physics as single-rank, not bit-exact (a contact across a rank face sees its far body as of the
+last reconciliation). The explicit Hertz–Mindlin engine evaluates each cross-rank pair on both
+owners from bit-identical state, which is conservative as it stands. Full detail, validation and
+the periodicity/capacity rules: [mpi.md](mpi.md); scaling and profiling:
 [multi_gpu_testing.md](multi_gpu_testing.md).
 
 ---
