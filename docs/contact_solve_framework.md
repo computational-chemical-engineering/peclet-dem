@@ -1457,3 +1457,34 @@ max overlap < 1e-4 R:
 | mass-split copies s = 2 | 3 | 98 |
 | mass-split copies s = 4 | 3 | 49 |
 | mass-split copies s = 4, ω = 1.5 | 2 | 49 |
+
+## 12. Session decisions during implementation (2026-09-25, binding on the work orders)
+
+- **S1: the WO-1 gate is restated at the float floor.** The relative 1e-6 is unreachable in
+  single precision: after the fix |dL| is 7e-9 to 3e-8, which is 7.7e-6 to 1.3e-3 of
+  |dist n × J_t|. That is also true of the existing midpoint path, the PGS cone. The new gates:
+  - `friction_pair`: couple ratio |dL| / |dist n × J_t| ≤ 1e-2. Before the fix it was 1.000.
+  - `cluster_friction`: dLvel ≤ 1e-7 at np 1 to 8. Measured ≤ 6.4e-9.
+- **S2: `test_cooling_slope_vs_enskog` loses its Jacobi comparison.** The assertion
+  `r_gs >= 0.9 * r_j` took the old per-body count-averaged Jacobi as its reference. That Jacobi is
+  gone: under D3 it became mass-split Jacobi, which is conservative and at a fixed iteration count
+  more dissipative (2.14 × Enskog, against GS at 1.81 × Enskog). The test keeps its physics check,
+  the Enskog band 0.5 < r_gs < 2.5, and prints r_j for information only. A mass-split Jacobi that
+  over-dissipates at finite iterations is expected (§2, one-shot argument), and the path is legacy
+  and not a default.
+- **S3: the "dead fallback" premise was false.** Each colouring stops after
+  `maxRounds = numBodies + 2` rounds. On `ring_mini` (27 rings, a multigraph of contact points)
+  that left 24052 contacts uncoloured, so the count-averaged position fallback ran every substep at
+  np 1 (dXpos 3.5e-2 R). The design already removes the cause: WO-3 sweeps position per contact
+  pair, and WO-4 gives complete colouring with hub copies. The decisions:
+  - Keep the round cap.
+  - Once WO-4 lands, an edge the colouring leaves uncoloured violates the colouring invariant. It
+    throws, with a clear message naming the body and its degree. It is never fallback work, and
+    the count-averaged fallbacks are deleted as the note says.
+  - WO-3 must show, on `ring_mini` and on the ring and hub survey scenes, that the cap is no longer
+    exhausted. If any scene still exhausts it, STOP before WO-4.
+- **S4: the WO-2 per-body counts are confirmed as implemented.** Velocity counts skip periodic
+  twins. Position counts every contact in [0, nc), with no dist filter. Both match the contact sets
+  each kernel actually applies. Re-verify this after WO-3 changes the position sweep to per-pair.
+- **S5: the WO-0 `debugCaptureContacts` hook in `src` (+83 lines) is accepted.** It was proved
+  inert: 127/127 comparisons identical.
