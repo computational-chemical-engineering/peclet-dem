@@ -45,6 +45,11 @@ struct FusedLoopSpec {
   int maxIters;
   float tol;
   bool strictLess;  // position loop breaks on res < tol; velocity loops on res <= tol
+  // Diagnostics only (docs/contact_solve_framework.md §12 S12): a device scalar that receives the
+  // iterations the loop ran (the host loop's count). nullptr = not written; the driver passes it
+  // only with Particles::iterCounters on and reads it back only then (no extra fence or copy
+  // otherwise).
+  int* iters = nullptr;
 };
 
 /// Fused-sweep policy. `mode` is Particles::fusedSweeps (set_fused_sweeps): -1 auto, 0 off
@@ -125,11 +130,13 @@ template <class Sweep>
 __global__ void demFusedSweepLoopK(Sweep f, Kokkos::View<const int*, CpMem> perm,
                                    Kokkos::View<const int*, CpMem> offs, int numColors,
                                    int maxIters, float tol, bool strictLess, float* res,
-                                   unsigned* bar) {
+                                   unsigned* bar, int* iters) {
   const int stride = gridDim.x * blockDim.x;
   const int tid = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned k = 0;
+  int ran = 0;  // the host loop's iteration count (the break is uniform across blocks)
   for (int it = 0; it < maxIters; ++it) {
+    ran = it + 1;
     if (tid == 0)
       *res = 0.0f;
     demGridBarrier(bar, k++);
@@ -146,6 +153,8 @@ __global__ void demFusedSweepLoopK(Sweep f, Kokkos::View<const int*, CpMem> perm
       break;
     demGridBarrier(bar, k++);  // every block has read res before the next zero
   }
+  if (iters != nullptr && tid == 0)
+    *iters = ran;  // diagnostics (§12 S12): a store, no fence; read back only when enabled
 }
 
 inline constexpr int kFusedBlock = 256;
@@ -212,7 +221,7 @@ inline bool demLaunchFusedSweepLoop(CpExec& space, const Sweep& f,
                   str);
   demFusedSweepLoopK<Sweep><<<grid, kFusedBlock, 0, str>>>(f, perm, ctx.offsDev, numColors,
                                                            spec.maxIters, spec.tol, spec.strictLess,
-                                                           res, ctx.bar.data());
+                                                           res, ctx.bar.data(), spec.iters);
   return true;
 }
 

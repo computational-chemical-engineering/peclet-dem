@@ -248,6 +248,23 @@ struct SoloSolveHooks {
   void syncContactCounts(Particles&) const {}
 };
 
+/// Diagnostics (docs/contact_solve_framework.md §12 S12): the device scalar a fused main loop
+/// writes its iteration count to (slot 0 velocity, 1 position), allocated on first use.
+inline int* demIterCountSlot(Particles& P, int slot) {
+  if (P.iterCountDev.extent(0) < 2)
+    P.iterCountDev = Kokkos::View<int*, CpMem>("peclet::dem::iter_count", 2);
+  return P.iterCountDev.data() + slot;
+}
+/// The count a fused main loop wrote (one small readback, only with P.iterCounters on); -1 with
+/// the counters off (no fence, no copy).
+inline int demReadIterCount(const Particles& P, int slot) {
+  if (!P.iterCounters || P.iterCountDev.extent(0) < 2)
+    return -1;
+  int v = -1;
+  Kokkos::deep_copy(v, Kokkos::subview(P.iterCountDev, slot));
+  return v;
+}
+
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
 /// comment). Runs between the narrow phase and finalCommit; the caller owns ghost construction,
 /// broad/narrow phase and the commit.
@@ -299,7 +316,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   PC.nHubs = PC.nCopies = PC.nGroups = 0;
   const int slotBase = P.numParticles;
   VC.slotBase = PC.slotBase = slotBase;
-  P.splitStats = SplitStats{};
+  {  // mlHubAggregated is the max over the step call's substeps (reset by the step entry points)
+    const int mlAgg = P.splitStats.mlHubAggregated;
+    P.splitStats = SplitStats{};
+    P.splitStats.mlHubAggregated = mlAgg;
+  }
   P.mlLast.numLevels = 0;
   Kokkos::View<int*, CpMem> edgeA, edgeB;  // a failed phase's colouring edges (scratch)
   auto growSlots = [&](int nCopies) {
@@ -688,7 +709,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   bool velLoopDone = false;
   if constexpr (!Hooks::distributed) {
     if (usePGS && P.velocityUseGS && !velCopiesOn && velFusedP) {
-      const FusedLoopSpec spec{P.velocityIterations, 0.02f * vRest, false};
+      FusedLoopSpec spec{P.velocityIterations, 0.02f * vRest, false};
+      if (P.iterCounters)  // diagnostics (§12 S12): the loop writes its count on the device
+        spec.iters = demIterCountSlot(P, 0);
       velLoopDone = solveVelocityPGSKokkos(
           P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia, P.quat, P.velPred,
           P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.maxApproach,
@@ -703,7 +726,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   if (!velLoopDone && usePGS && P.velocityUseGS) {
     PECLET_DEM_GRAPH_LOOP(graphVel, gVel, emitVelIter, P.graphCache[0])
   }
+  P.splitStats.velItersUsed = velLoopDone ? demReadIterCount(P, 0) : 0;
   for (int it = 0; !velLoopDone && it < P.velocityIterations; ++it) {
+    ++P.splitStats.velItersUsed;
     if (legacyFriction)
       accumulateNormalImpulseKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred,
                                     P.angVelPred, P.realIndices, P.growthRate);
@@ -831,17 +856,30 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         // bulk) without starving a crushing bed's aggregation. (The env A/B over the mask was
         // retired in 1.0.0; the measured-best mask is the only one that ships.)
         constexpr int mlGates = mldetail::kGateSlip;
+        // Coarse vertex masses (docs/contact_solve_framework.md §13.2): after the fold the a(q)
+        // active local copies of vertex q move together, so the coarse problem sees ONE vertex of
+        // mass a m / k -- invMassCoarse = invMass k / a. On a single rank (and for WO-4's interim
+        // rank-local hubs) a = k at every vertex, so invMassCoarse is P.invMass itself: the true
+        // mass at a folded hub, not the solve view's m / k (which gained (1 - 1/s) m dV per
+        // coarse cycle at a hub that aggregates).
+        const Kokkos::View<const float*, CpMem> invMassCoarse = P.invMass;
         MlScratch S{P.mlColorPacked, P.mlParent, P.mlInvMassG, P.mlVelG,
                     P.mlVelG0,       P.mlMassG,  P.mlGrp,      P.mlMate};
         const ContactHierarchy H = buildContactHierarchyKokkos(
             P.manifolds, nm, P.realIndices, Kokkos::View<const int*, CpMem>(P.manifoldColor),
             Kokkos::View<const float*, CpMem>(P.vn0), Kokkos::View<const float* [3], CpMem>(P.vt0),
             Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent), P.posPred, gHat,
-            invMassVel, qsThr, mlGates, nBodies, S, P.bodyWinner, P.bodyColorMask,
+            invMassCoarse, qsThr, mlGates, nBodies, S, P.bodyWinner, P.bodyColorMask,
             /*excludeImmovable*/ sleepOn,
             sleepOn ? Kokkos::View<const unsigned char*, CpMem>(P.asleep)
                     : Kokkos::View<const unsigned char*, CpMem>());
         P.mlLast.numLevels = H.numLevels;
+        if (H.numLevels > 0 && velCopiesOn)  // §13.2's positive control (diagnostic)
+          P.splitStats.mlHubAggregated =
+              std::max(P.splitStats.mlHubAggregated,
+                       countSplitAggregatedKokkos(
+                           Kokkos::View<const int*, CpMem>(S.parent), H.parentOff[0], nBodies,
+                           H.numGroups[0], Kokkos::View<const unsigned char*, CpMem>(P.splitSlot)));
         P.mlLast.numManifolds = nm;
         P.mlLast.numBodies = nBodies;
         P.mlLast.parentOff = H.parentOff;
@@ -883,7 +921,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
               nullptr, velOv);
           foldVel();
           if (H.numLevels > 0) {
-            multilevelCoarseCycleKokkos(P.manifolds, nm, P.realIndices, invMassVel, P.velPred,
+            multilevelCoarseCycleKokkos(P.manifolds, nm, P.realIndices, invMassCoarse, P.velPred,
                                         P.lambdaAcc, P.maxApproachQS, nBodies, H, S,
                                         /*coarseSweeps*/ 2, Kokkos::View<const float*, CpMem>(relV),
                                         &mlOffs, Kokkos::View<const int*, CpMem>(P.mlBucketPerm),
@@ -1075,8 +1113,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     markCopySeedsKokkos(PC, P.posPred, {}, {}, {});
     invMassPos = P.invMassSolve;
     invInertiaPos = P.invInertiaSolve;
-    posOv = PC.nHubs > 0 ? SlotOverride{PC.slotA, PC.slotB, P.splitSlot, kSplitOmegaPosition}
-                         : SlotOverride{{}, {}, P.splitSlot, kSplitOmegaPosition};
+    // The slot overrides only: the overlap projection is never relaxed (§13.1).
+    if (PC.nHubs > 0)
+      posOv = SlotOverride{PC.slotA, PC.slotB, {}, 1.0f};
   }
   auto syncPos = [&] {
     if constexpr (Hooks::distributed) {
@@ -1110,7 +1149,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   bool posLoopDone = false;
   if constexpr (!Hooks::distributed) {
     if (P.velocityUseGS && !posCopiesOn && posFusedP) {
-      const FusedLoopSpec spec{P.positionIterations, posTol, true};
+      FusedLoopSpec spec{P.positionIterations, posTol, true};
+      if (P.iterCounters)  // diagnostics (§12 S12)
+        spec.iters = demIterCountSlot(P, 1);
       posLoopDone = solvePositionColoredGSKokkos(
           P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors, P.invMass, P.posPred,
           P.quatPred, P.quat, P.invInertia, P.maxOverlap, P.posLambdaContact, posPermC, posOffsP,
@@ -1122,7 +1163,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   if (!posLoopDone && P.velocityUseGS) {
     PECLET_DEM_GRAPH_LOOP(graphPos, gPos, emitPosIter, P.graphCache[3])
   }
+  P.splitStats.posItersUsed = posLoopDone ? demReadIterCount(P, 1) : 0;
   for (int it = 0; !posLoopDone && it < P.positionIterations; ++it) {
+    ++P.splitStats.posItersUsed;
     if (P.velocityUseGS) {
       if (graphPos)
         gPos.launch(space);

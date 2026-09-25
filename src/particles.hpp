@@ -53,11 +53,17 @@ struct PhaseCopies {
   Kokkos::View<float* [3], CpMem> seedX, seedW;  // per group: sigma (velPred / posPred; angVelPred)
 };
 
-/// diagnostics.split_stats() (docs/contact_solve_framework.md §WO-4 item 4): the last substep's
-/// copies. unfiredSplitContacts (WO-6) and driftMigrations (WO-7) stay 0 until those land.
+/// diagnostics.split_stats() (docs/contact_solve_framework.md §WO-4 item 4, §13.5 WO-4b): the last
+/// substep's copies. unfiredSplitContacts (WO-6) and driftMigrations (WO-7) stay 0 until those
+/// land. mlHubAggregated: the mass-split velocity vertices (k > 1: a hub's base; a rank-split
+/// body's slot) that sit in a level-1 multilevel group of >= 2 members, the max over the substeps
+/// of the last step call (§13.2's positive control). velItersUsed / posItersUsed: the iterations
+/// the last substep's main velocity loop and position loop ran (a device-side loop reports its
+/// count only with Particles::iterCounters on, §12 S12; -1 otherwise).
 struct SplitStats {
   int velHubCopies = 0, posHubCopies = 0, lightHubs = 0, splitBodiesVel = 0, splitBodiesPos = 0;
   long long unfiredSplitContacts = 0, driftMigrations = 0;
+  int mlHubAggregated = 0, velItersUsed = 0, posItersUsed = 0;
 };
 
 struct Particles {
@@ -403,6 +409,13 @@ struct Particles {
     int numLevels = 0, numManifolds = 0, numBodies = 0;
     std::vector<int> parentOff, numGroups;
   } mlLast;
+
+  // Diagnostics (Simulation::debugIterationCounters; docs/contact_solve_framework.md §12 S12):
+  // with iterCounters on, a single-rank device-side (fused) main velocity / position loop writes
+  // its iteration count to iterCountDev(0) / (1), read back into splitStats.velItersUsed /
+  // posItersUsed. Off (the default): nothing is written or read back, the counters read -1.
+  bool iterCounters = false;
+  Kokkos::View<int*, CpMem> iterCountDev;
 
   // TEST-ONLY contact capture (Simulation::debugCaptureContacts; see DebugContactCapture).
   bool debugCapture = false;

@@ -30,12 +30,16 @@ namespace peclet::dem {
 /// ceil(d / kHubEdgeBudget) copies, so no copy carries more than 32 and the 64-colour greedy
 /// provably succeeds (§1.6).
 inline constexpr int kHubEdgeBudget = 32;
-/// Split relaxation (§4.5): the PGS normal step on an edge touching a mass-split slot is scaled by
-/// kSplitOmegaVelocity before the clamp (1: no relaxation; the pre-designed lever of R-F2), the
-/// overlap projection's step by kSplitOmegaPosition (POCS on the split problem converges for
-/// omega in (0, 2); Appendix A.4).
+/// Split relaxation (§4.5, §13.1): the PGS normal step on an edge touching a mass-split slot is
+/// scaled by kSplitOmegaVelocity before the clamp (1: no relaxation; the pre-designed lever of
+/// R-F2, legitimate there because the PGS normal multiplier is accumulated and its clamp can
+/// retract an overshoot). The overlap projection is NEVER relaxed (omega_pos = 1, §13.1): it
+/// applies -C/w only while C < 0 and never retracts (non-accumulated POCS), so an overshoot is a
+/// permanent gap (omega w/w~ - 1)|C|. At omega 1 each update is an exact projection in the split
+/// metric, the local fold and the rank reconciliation are exact projections onto the consensus
+/// subspaces, and cyclic projection onto these half-spaces and subspaces converges to a feasible
+/// point (Fejer-monotone; which point depends on the order, as for serial POCS).
 inline constexpr float kSplitOmegaVelocity = 1.0f;
-inline constexpr float kSplitOmegaPosition = 1.5f;
 
 /// Grow-only (re)allocation of a copy-machinery view to at least n entries.
 template <class V>
@@ -545,6 +549,30 @@ inline int countSplitBodiesKokkos(const PhaseCopies& H) {
   Kokkos::parallel_reduce(
       "peclet::dem::copies_count_split", Kokkos::RangePolicy<CpExec>(0, H.nGroups),
       KOKKOS_LAMBDA(int g, int& acc) { acc += gk(g) > 1 ? 1 : 0; }, n);
+  return n;
+}
+
+/// split_stats.mlHubAggregated (§13.2's positive control): the vertices v in [0, nV) with
+/// split(v) != 0 (k > 1) whose level-1 multilevel group -- parent(off + v), the first level's
+/// parent map -- has at least two members. Diagnostic only (reads the hierarchy, writes nothing
+/// the solve reads).
+inline int countSplitAggregatedKokkos(Kokkos::View<const int*, CpMem> parent, int off, int nV,
+                                      int nGroups1,
+                                      Kokkos::View<const unsigned char*, CpMem> split) {
+  if (nV <= 0 || nGroups1 <= 0 || split.extent(0) < static_cast<std::size_t>(nV))
+    return 0;
+  Kokkos::View<int*, CpMem> cnt("peclet::dem::ml_agg_cnt", nGroups1);
+  Kokkos::parallel_for(
+      "peclet::dem::ml_agg_hist", Kokkos::RangePolicy<CpExec>(0, nV),
+      KOKKOS_LAMBDA(int v) { Kokkos::atomic_add(&cnt(parent(off + v)), 1); });
+  int n = 0;
+  Kokkos::parallel_reduce(
+      "peclet::dem::ml_agg_count", Kokkos::RangePolicy<CpExec>(0, nV),
+      KOKKOS_LAMBDA(int v, int& acc) {
+        if (split(v) != 0 && cnt(parent(off + v)) >= 2)
+          acc += 1;
+      },
+      n);
   return n;
 }
 

@@ -524,8 +524,8 @@ struct PositionContactSweep {
   Kokkos::View<float*, CpMem> posLambdaAcc;
 
   PosUnits units;  // empty = one contact per work item (the identity)
-  // Hub-copy slot overrides per UNIT + split relaxation (docs/contact_solve_framework.md §4.4,
-  // §4.5); empty = the raw contact bodies, no relaxation.
+  // Hub-copy slot overrides per UNIT (docs/contact_solve_framework.md §4.4); empty = the raw
+  // contact bodies. The position phase carries no relaxation (§13.1).
   SlotOverride ov{};
 
   /// One work item: every contact of position unit u, sequentially in ascending contact index
@@ -588,10 +588,9 @@ struct PositionContactSweep {
     const float wTotal = computeW(rA, n, invMassA, invIA) + computeW(rB, n, invMassB, invIB);
     if (wTotal < 1e-6f)
       return;
-    float dLambda = -C / wTotal;
-    if (ov.relax(idA, idB))
-      dLambda *=
-          ov.omega;  // split relaxation (§4.5, omega_pos); the ledger takes the relaxed value
+    // Never over-relaxed (omega_pos = 1, docs/contact_solve_framework.md §13.1): this projection
+    // cannot retract an overshoot.
+    const float dLambda = -C / wTotal;
     // Position-channel normal load bookkeeping: the friction cone must see the TOTAL normal
     // force; whatever de-penetration flows through this projection (instead of the velocity
     // impulses) is accumulated here, converted to impulse units by the caller, and carried

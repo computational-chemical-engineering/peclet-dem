@@ -140,6 +140,15 @@ foreach(np 1 2 4)
     _dem_mpi_test(followup_${mode}_np${np} ${np} test_momentum_mpi ${mode})
   endforeach()
 endforeach()
+# hub_static / hub_ml (docs/contact_solve_framework.md §13.2, §13.6, WO-4b): the overlap projection
+# is not over-relaxed (every leaf of a split hub ends in contact) and a multilevel coarse vertex
+# carries the mass of its folded copies (momentum at a hub that aggregates). GATED at np = 1;
+# report-only at np = 2, 4 until the rank-level mass split (WO-5).
+foreach(np 1 2 4)
+  foreach(mode hub_static hub_ml)
+    _dem_mpi_test(momentum_${mode}_np${np} ${np} test_momentum_mpi ${mode})
+  endforeach()
+endforeach()
 foreach(np 1 2)  # three bodies: A1/A2 and B on two ranks
   foreach(mode tri tri_pgs)
     _dem_mpi_test(followup_${mode}_np${np} ${np} test_momentum_mpi ${mode})

@@ -755,6 +755,7 @@ class Simulation : public ShapeRegistry {
   /// Advance `n` XPBD substeps of the stored dt (set_dt first; suite/docs/NAMING.md 1.5).
   void step(int n = 1) {
     requireDt("step");
+    P_.splitStats.mlHubAggregated = 0;  // split_stats: max over this call's substeps
     for (int i = 0; i < n; ++i)
       demStep(P_);
   }
@@ -764,6 +765,7 @@ class Simulation : public ShapeRegistry {
   void relax(int n = 1) {
     const float dt = P_.dt;
     P_.dt = 0.0f;
+    P_.splitStats.mlHubAggregated = 0;
     for (int i = 0; i < n; ++i)
       demStep(P_);
     P_.dt = dt;
@@ -886,6 +888,7 @@ class Simulation : public ShapeRegistry {
     requireDt("step_mpi");
     const double rcut = mpiRcut_;  // demStepMpi widens it to the global contact reach
     ensureGlobalGids();
+    P_.splitStats.mlHubAggregated = 0;  // split_stats: max over this call's substeps
     for (int s = 0; s < nsteps; ++s) {
       if (mpiRebalanceEvery_ > 0 && mpiStepCount_ % mpiRebalanceEvery_ == 0)
         halo_->rebalance(P_);
@@ -911,6 +914,11 @@ class Simulation : public ShapeRegistry {
   /// the ownership partition) and the owned predicted state to host buffers
   /// (debugCapturedContacts(): the last substep's). Never changes numerics.
   void debugCaptureContacts(bool on) { P_.debugCapture = on; }
+  /// Diagnostics (C++ only; docs/contact_solve_framework.md §12 S12): make a single-rank
+  /// device-side (fused) main velocity / position loop report its iteration count in
+  /// debugSplitStats() (velItersUsed / posItersUsed). Costs one readback per loop when on;
+  /// never changes numerics.
+  void debugIterationCounters(bool on) { P_.iterCounters = on; }
   const DebugContactCapture& debugCapturedContacts() const { return P_.debugCaptured; }
 #endif  // PECLET_DEM_MPI
 

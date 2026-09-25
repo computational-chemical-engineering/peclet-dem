@@ -220,13 +220,20 @@ NB_MODULE(_dem, m) {
             r["split_bodies_pos"] = st.splitBodiesPos;
             r["unfired_split_contacts"] = st.unfiredSplitContacts;
             r["drift_migrations"] = st.driftMigrations;
+            r["ml_hub_aggregated"] = st.mlHubAggregated;
+            r["vel_iters_used"] = st.velItersUsed;
+            r["pos_iters_used"] = st.posItersUsed;
             return r;
           },
           "Dict of the last substep's body copies (docs/contact_solve_framework.md §4.4): hub "
           "copy slots per phase, light hubs (hub mass < 10x its partners' mean), bodies solved "
           "through more than one slot per phase (hubs; periodic images in the single-rank "
           "position phase), and (0 until implemented) unfired split contacts and drift "
-          "migrations.")
+          "migrations; ml_hub_aggregated: split velocity vertices in a multi-member level-1 "
+          "multilevel group (max over the last step call's substeps); vel_iters_used / "
+          "pos_iters_used: iterations of the last substep's main velocity and position loops "
+          "(-1: a device-side loop, whose count is read back only with the C++ diagnostics "
+          "switch debugIterationCounters).")
       .def(
           "rest_orphan_stats", [](Diagnostics& d) { return d.s->restOrphanStats(); },
           "Poisson-restitution instrument: (sum, max, n_bodies>0) of the per-body orphaned event "

@@ -98,11 +98,28 @@
 //                     about the cluster centre, orientations uniformly random (mt19937(11)),
 //                     cluster-recipe velocities, g = 0, friction 0.02, pos/vel iterations 20/8,
 //                     dt 1e-2, 10 steps: per-point position-graph degrees far above 64
-// Options (after the mode): --dump=<path>, --dt=<dt>, --posit=<position iterations>,
+//
+// GATED hub modes of docs/contact_solve_framework.md §13 (WO-4b; np = 1 gated, np >= 2 report-only
+// until WO-5): makeHubLast -- the hub LAST (highest gid), mass scale^3 leaf masses.
+//   hub_static        every leaf (scale 1) overlaps the hub by delta = 0.04 R, all at rest, g = 0,
+//                     velocity iterations 0, position iterations 64, 1 step: max leaf-hub gap
+//                     <= 0.15 delta (§12 S11), residual overlap <= 1e-4 R, dXpos <= 3e-5, |P|
+//                     exactly 0 (an over-relaxed projection leaves every leaf ~0.5 delta clear)
+//   hub_ml            the dense shell 3.0 (rs/R)^2 (§12 S10; N = 181), the leaves with dir.z < 0
+//                     approaching the hub at 0.3 (1 + 0.1 N(0,1)), free
+//                     fall, frictionless, stabilization multilevel, velocity iterations 1, 10
+//                     steps: dP <= 5e-6, dX, dXpos <= 3e-5, and the positive controls (velocity
+//                     hub copies > 0 at np = 1, >= 1 multilevel level, split_stats.mlHubAggregated
+//                     >= 1, each in at least one step) -- the coarse cycle at a folded hub
+// Both print HUBGAP (maxGap / delta, residual / R), hub_ml also MLCTRL (the controls).
+// Options (after the mode): --dump=<path>, --dt=<dt>, --posit=<n> / --pos-iters=<n> (position
+// iterations),
 // --hub=<scale>, --delta=<overlap / R>, --solo (single-rank demStep via Simulation::step instead
 // of step_mpi; np = 1 only), --e=<normal restitution> (default 0.5; cluster_e09/_e10 set theirs),
 // --steps=<n> (overrides the mode's step count), --vel-iters=<n> (velocity iterations),
 // --stab=<mode> (overrides the mode's stabilization: off|onesided|multilevel|escalate|ordered),
+// --fused=<auto|on|off> (diagnostics.set_fused_sweeps; 'on' with --solo runs the device-side
+// loops on CUDA, whose ITERS come from the device counter of §12 S12),
 // --axis=<0|1|2> (tri: the approach axis), --relabel=<seed> (seed 0 = identity; otherwise the body
 // list is std::shuffle'd with std::mt19937(seed) before the gids are assigned, which samples
 // another serial Gauss-Seidel order of the same physical scene).
@@ -118,6 +135,8 @@
 //            the step coloured -- the largest per-body-slot degree and the colour count, each the
 //            maximum over steps and ranks; leftVel / leftPos count the items the step left
 //            uncoloured (-1, the count-averaged fallback's set), maximum over steps and ranks
+//   ITERS mode=.. np=.. thr=.. vel=.. pos=..   the iterations the LAST step's main velocity and
+//            position loops ran (split_stats velItersUsed / posItersUsed; G7f)
 // ovl is the maximum over the steps of the Allreduce-MAX of max_overlap (the position loop's last
 // residual; it under-reports the committed overlap but is measured the same way before and after).
 // Angular momentum and rotational energy use the world-frame inertia R diag(1/invI) R^T of the
@@ -196,6 +215,13 @@ static Tol tolOf(const std::string& mode) {
     return {1e-6, -1, -1, -1, -1};
   if (mode == "hertz")  // regression guard; today 2.8e-8 / 8.8e-7 / 4.4e-7
     return {1e-6, 1e-5, -1, 1e-5, -1};
+  // docs/contact_solve_framework.md §13.6 G1 additions. hub_static: velocities unchanged, the
+  // ABSOLUTE |P| must stay exactly 0 (sum m|v| = 0, no normalized dP). hub_ml: dLvel reported only
+  // (the coarse cycle is translation-only by design).
+  if (mode == "hub_static")
+    return {0.0, -1, 3e-5, -1, -1};
+  if (mode == "hub_ml")
+    return {5e-6, 3e-5, 3e-5, -1, -1};
   return {-1, -1, -1, -1, -1};
 }
 static bool within(double v, double tol) {
@@ -361,6 +387,105 @@ static std::vector<Body> makeHub(float hubScale) {
     b.push_back(q);
   }
   return b;
+}
+
+// The WO-4b hub scenes (docs/contact_solve_framework.md §13.2, §13.6): makeHub's geometry with the
+// hub moved LAST (the highest gid, so at np >= 2 every leaf-hub contact is owned by the leaf's
+// owner and the hub is mass-split across ranks) and its mass scale^3 leaf masses (load():
+// invMassOf). The random stream is makeHub's (one gauss then one uni per leaf, in order), so the
+// leaves sit where makeHub puts them.
+//   hub_static  every leaf of scale exactly 1, all velocities zero: every leaf overlaps the hub by
+//               delta = rs - (r_h + R) = 0.04 R.
+//   hub_ml      the dense shell ns = 3.0 (rs/R)^2 (§12 S10), only the leaves with dir.z < 0 (about
+//               half; N = 181 bodies at scale 10), scale 1 +- 0.1 as makeHub; hub and
+//               leaves carry makeHub's drift, the leaves a radial approach speed 0.3 (1 + 0.1
+//               N(0,1)) (the leaf's own gauss draw).
+static constexpr double kHubDelta = 0.02;  // makeHub's overlap rs - (r_h + R) = 0.04 R
+static std::vector<Body> makeHubLast(float hubScale, bool ml) {
+  std::mt19937 rng(20260926u);
+  std::uniform_real_distribution<float> uni(-1.0f, 1.0f);
+  std::normal_distribution<float> gauss(0.0f, 1.0f);
+  const D3 c{0.3, -0.2, 0.1};
+  const float drift[3] = {0.7f, -0.4f, 0.3f};
+  const double rs = hubScale * RAD + RAD - kHubDelta;  // shell centre distance (makeHub's)
+  // hub_ml: the DENSE shell 3.0 (rs/R)^2 (§12 S10; N = 181 at scale 10), whose leaves touch each
+  // other, so the multilevel matching can aggregate the hub (makeHub's 2.5 leaves a star graph
+  // that never builds a level). hub_static keeps makeHub's 2.5.
+  const int ns = static_cast<int>((ml ? 3.0 : 2.5) * (rs / RAD) * (rs / RAD));
+  std::vector<Body> b;
+  const double golden = 3.14159265358979 * (3.0 - std::sqrt(5.0));
+  for (int k = 0; k < ns; ++k) {
+    const double z = 1.0 - 2.0 * (k + 0.5) / ns, r = std::sqrt(1.0 - z * z), ph = golden * k;
+    const D3 dir{r * std::cos(ph), r * std::sin(ph), z};
+    const float gk = gauss(rng);
+    const float sk = 1.0f + 0.1f * uni(rng);
+    if (ml && !(dir[2] < 0.0))
+      continue;
+    const float speed = ml ? 0.3f * (1.0f + 0.1f * gk) : 0.0f;
+    Body q{};
+    for (int d = 0; d < 3; ++d) {
+      q.x[d] = static_cast<float>(c[d] + rs * dir[d]);
+      q.v[d] = ml ? drift[d] - speed * static_cast<float>(dir[d]) : 0.0f;
+    }
+    q.scale = ml ? sk : 1.0f;
+    b.push_back(q);
+  }
+  Body h{};
+  for (int d = 0; d < 3; ++d) {
+    h.x[d] = static_cast<float>(c[d]);
+    h.v[d] = ml ? drift[d] : 0.0f;
+  }
+  h.scale = hubScale;
+  b.push_back(h);
+  return b;
+}
+
+// The hub scenes' leaf-gap metric (§13.6): every rank's owned bodies gathered to every rank; the
+// hub is the last gid. maxGap = the largest leaf-hub separation |x_l - x_h| - (r_l + r_h) (> 0: the
+// leaf is clear of the hub), residual = the largest overlap over every pair (leaf-hub and
+// leaf-leaf), 0 if none.
+struct HubGap {
+  double maxGap = 0.0, residual = 0.0;
+};
+static HubGap hubGap(const Simulation& sim, const std::vector<int>& gids,
+                     const std::vector<Body>& bodies) {
+  const std::vector<float> x = sim.getPositions();
+  const int n = static_cast<int>(gids.size());
+  std::vector<float> loc(static_cast<std::size_t>(4 * n));
+  for (int i = 0; i < n; ++i) {
+    loc[4 * i] = static_cast<float>(gids[i]);
+    for (int d = 0; d < 3; ++d)
+      loc[4 * i + 1 + d] = x[3 * i + d];
+  }
+  int size = 1;
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  const int cnt = 4 * n;
+  std::vector<int> cnts(size), offs(size, 0);
+  MPI_Allgather(&cnt, 1, MPI_INT, cnts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+  int tot = 0;
+  for (int r = 0; r < size; ++r) {
+    offs[r] = tot;
+    tot += cnts[r];
+  }
+  std::vector<float> all(static_cast<std::size_t>(tot));
+  MPI_Allgatherv(loc.data(), cnt, MPI_FLOAT, all.data(), cnts.data(), offs.data(), MPI_FLOAT,
+                 MPI_COMM_WORLD);
+  const int nb = static_cast<int>(bodies.size());
+  std::vector<D3> p(static_cast<std::size_t>(nb), D3{0, 0, 0});
+  for (int k = 0; k < tot / 4; ++k)
+    p[static_cast<int>(all[4 * k])] = D3{all[4 * k + 1], all[4 * k + 2], all[4 * k + 3]};
+  HubGap h;
+  h.maxGap = -1e30;
+  const int hub = nb - 1;
+  for (int a = 0; a < nb; ++a)
+    for (int b = a + 1; b < nb; ++b) {
+      const D3 d{p[a][0] - p[b][0], p[a][1] - p[b][1], p[a][2] - p[b][2]};
+      const double gap = norm(d) - (bodies[a].scale + bodies[b].scale) * RAD;
+      if (b == hub)
+        h.maxGap = std::max(h.maxGap, gap);
+      h.residual = std::max(h.residual, -gap);
+    }
+  return h;
 }
 
 // The review's tri scene (docs/contact_evidence/review): A1 and A2 approach B along `axis` at 1;
@@ -646,8 +771,10 @@ struct Mode {
   int axis = 0;              // --axis (tri)
   unsigned relabel = 0;      // --relabel: 0 = identity
   bool tri = false, ring = false, poisson = false;
-  bool reportOnly = false;  // the WO-0 modes: never fail today
-  std::string stab;         // stabilization mode set after the gravity rule's 'off' (empty = keep)
+  bool hubStatic = false, hubMl = false;  // the WO-4b hub scenes (makeHubLast)
+  bool reportOnly = false;                // the WO-0 modes: never fail today
+  std::string stab;   // stabilization mode set after the gravity rule's 'off' (empty = keep)
+  std::string fused;  // --fused=auto|on|off: diagnostics.set_fused_sweeps (empty = default)
 };
 
 // Gather every rank's owned bodies to rank 0 and write them sorted by global body index (see the
@@ -704,10 +831,11 @@ static void dumpState(const Simulation& sim, const std::vector<int>& gids, const
 
 static int runCluster(const Mode& md, int rank, int size) {
   const bool hub = md.hubScale > 0.0f;
-  std::vector<Body> bodies = md.tri    ? makeTri(md.axis)
-                             : md.ring ? makeRingMini()
-                             : hub     ? makeHub(md.hubScale)
-                                       : makeCluster(6.0, md.spins, md.periodic);
+  std::vector<Body> bodies = md.tri                       ? makeTri(md.axis)
+                             : md.ring                    ? makeRingMini()
+                             : (md.hubStatic || md.hubMl) ? makeHubLast(md.hubScale, md.hubMl)
+                             : hub                        ? makeHub(md.hubScale)
+                                                          : makeCluster(6.0, md.spins, md.periodic);
   if (md.relabel != 0) {  // another serial order of the same scene: permute before the gids
     std::mt19937 perm(md.relabel);
     std::shuffle(bodies.begin(), bodies.end(), perm);
@@ -715,7 +843,10 @@ static int runCluster(const Mode& md, int rank, int size) {
   const int n = static_cast<int>(bodies.size());
   const float dt0 = md.hertz ? 1e-4f : 1e-2f;
   const float dt = md.dt > 0.0f ? md.dt : dt0;
-  const int steps0 = md.hertz ? 40 : (hub ? 20 : (md.tri ? 3 : (md.ring ? 10 : 50)));
+  const int steps0 = md.hertz       ? 40
+                     : md.hubStatic ? 1
+                     : md.hubMl     ? 10
+                                    : (hub ? 20 : (md.tri ? 3 : (md.ring ? 10 : 50)));
   const int steps =
       md.steps > 0 ? md.steps : static_cast<int>(std::lround(steps0 * dt0 / dt));  // same duration
   const int sub = md.hertz ? 25 : 1;  // Hertz: substeps per recorded step
@@ -741,6 +872,9 @@ static int runCluster(const Mode& md, int rank, int size) {
   sim.setDt(dt);
   sim.setGravity(static_cast<float>(g[0]), static_cast<float>(g[1]), static_cast<float>(g[2]));
   sim.setSolverIterations(md.posIters, md.velIters);
+  sim.debugIterationCounters(true);  // ITERS also from a device-side loop (§12 S12; no numerics)
+  if (!md.fused.empty())
+    sim.setFusedSweeps(md.fused);  // bit-identical submission policy (CUDA); exercises S12
   sim.setMaterialParams(md.restitution, 0.0f, md.ring ? 0.02f : (md.friction ? 0.4f : 0.0f));
   if (md.jacobi)
     sim.setVelocityUseGS(false);
@@ -797,6 +931,12 @@ static int runCluster(const Mode& md, int rank, int size) {
   const D3 Lstart = angular(st, S0), LcmStart = angularCm(st, S0);
 
   double dP = 0, dX = 0, dXpos = 0, dL = 0, dLcm = 0, dLvel = 0, ovl = 0;
+  // hub_static starts at rest (sum m|v| = 0): its dP is the ABSOLUTE |P(t) - P(0)| (§13.6).
+  const double pNorm = pScale > 0.0 ? pScale : 1.0;
+  // ITERS: the iterations the last step's main velocity / position loops ran (split_stats; the
+  // stops are Allreduce-MAXed, so every rank ran the same count); the positive controls of hub_ml
+  // (§13.2): hub copies, multilevel levels, mlHubAggregated, each the max over steps and ranks.
+  int itVel = 0, itPos = 0, ctlLevels = 0, ctlAgg = 0;
   D3 xposAcc{0, 0, 0}, lvelAcc{0, 0, 0};
   // Periodic box: the CoM of wrapped positions jumps at a wrap, so the position-phase drift is
   // accumulated from each body's minimum-image displacement (fixed ownership, asserted below).
@@ -828,6 +968,11 @@ static int runCluster(const Mode& md, int rank, int size) {
       cd.confMl = std::max(cd.confMl, c.confMl);
       cd.copiesVel = std::max(cd.copiesVel, c.copiesVel);
       cd.copiesPos = std::max(cd.copiesPos, c.copiesPos);
+      const peclet::dem::SplitStats ss = sim.debugSplitStats();
+      itVel = ss.velItersUsed;
+      itPos = ss.posItersUsed;
+      ctlLevels = std::max(ctlLevels, sim.parts().mlLast.numLevels);
+      ctlAgg = std::max(ctlAgg, ss.mlHubAggregated);
     }
     if (md.friction &&
         !md.hertz) {  // friction-active body-body contacts (their |dist| = lever gap)
@@ -902,7 +1047,7 @@ static int runCluster(const Mode& md, int rank, int size) {
       dXpos = std::max(dXpos, norm(xposAcc) / RAD);
       dLvel = std::max(dLvel, norm(lvelAcc) / lScale);
     }
-    dP = std::max(dP, norm(ep) / pScale);
+    dP = std::max(dP, norm(ep) / pNorm);
     dX = std::max(dX, norm(ex) / RAD);
     dL = std::max(dL, norm(el) / lScale);
     dLcm = std::max(dLcm, norm(ec) / lScale);
@@ -944,6 +1089,41 @@ static int runCluster(const Mode& md, int rank, int size) {
           md.name.c_str(), size, thr, mx[0], mx[1], mx[2], mx[3], mx[4], mx[5], mx[6], mx[7], mx[8],
           mx[9], mx[10], mx[11]);
   }
+  if (!md.hertz) {
+    int loc[4] = {itVel, itPos, ctlLevels, ctlAgg}, mx[4];
+    MPI_Allreduce(loc, mx, 4, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    int cv = cd.copiesVel, cvMax = 0;
+    MPI_Allreduce(&cv, &cvMax, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    if (rank == 0)
+      std::printf("ITERS mode=%s np=%d thr=%d vel=%d pos=%d\n", md.name.c_str(), size, thr, mx[0],
+                  mx[1]);
+    if (md.hubMl) {
+      if (rank == 0)
+        std::printf("MLCTRL mode=%s np=%d thr=%d velCopies=%d mlLevels=%d mlHubAggregated=%d\n",
+                    md.name.c_str(), size, thr, cvMax, mx[2], mx[3]);
+      // The positive controls (§13.2): the mode fails if it does not test what it claims.
+      if ((size == 1 && cvMax <= 0) || mx[2] < 1 || mx[3] < 1) {
+        fail = 1;
+        if (rank == 0)
+          std::fprintf(stderr, "GATE: hub_ml positive control failed\n");
+      }
+    }
+  }
+  if (md.hubStatic || md.hubMl) {
+    const HubGap hg = hubGap(sim, gids, bodies);
+    if (rank == 0)
+      std::printf("HUBGAP mode=%s np=%d thr=%d maxGap/delta=%.4e residual/R=%.4e\n",
+                  md.name.c_str(), size, thr, hg.maxGap / kHubDelta, hg.residual / RAD);
+    // hub_static (§13.6, bound §12 S11): every leaf ends in contact with the hub and the overlaps
+    // are gone. The coupling gaps are ~ k m_leaf / m_hub delta, plus the random-walk residual of
+    // ~32 sequential ~0.01 delta pushes per copy before the fold (~0.06 delta), which the
+    // non-retractable projection keeps; omega 1.5 leaves ~0.58 delta. Bound 0.15 delta.
+    if (md.hubStatic && !(hg.maxGap <= 0.15 * kHubDelta && hg.residual <= 1e-4 * RAD)) {
+      fail = 1;
+      if (rank == 0)
+        std::fprintf(stderr, "GATE: hub_static leaf gap / residual overlap\n");
+    }
+  }
   if (rank == 0) {
     std::printf("KE mode=%s np=%d thr=%d", md.name.c_str(), size, thr);
     for (std::size_t k = 0; k < keHist.size(); ++k)
@@ -982,7 +1162,12 @@ static int runCluster(const Mode& md, int rank, int size) {
     if (rank == 0)
       std::fprintf(stderr, "GATE: %s exceeds its conservation thresholds\n", md.name.c_str());
   }
-  if ((hub || md.reportOnly) && !kFollowupGate)
+  // hub_static / hub_ml are GATED at np = 1; at np >= 2 they stay report-only until WO-5 lands
+  // the rank-level mass split (docs/contact_solve_framework.md §13.5 WO-4b).
+  const bool gatedHub = md.hubStatic || md.hubMl;
+  if (gatedHub && size > 1)
+    fail = 0;
+  if (((hub && !gatedHub) || md.reportOnly) && !kFollowupGate)
     fail = 0;  // report-only (a non-finite state is printed above, not failed)
   return fail;
 }
@@ -1141,6 +1326,7 @@ int main(int argc, char** argv) {
     Mode md;
     md.name = mode;
     int velItersFlag = -1;  // --vel-iters: applied after the mode's own default below
+    int posItersFlag = -1;  // --pos-iters (alias --posit): likewise
     std::string stabFlag;   // --stab=<mode>: override the mode's stabilization (test-only)
     bool restitutionFlag = false;
     for (int a = 2; a < argc; ++a) {
@@ -1149,7 +1335,9 @@ int main(int argc, char** argv) {
       else if (std::strncmp(argv[a], "--dt=", 5) == 0)
         md.dt = std::stof(argv[a] + 5);
       else if (std::strncmp(argv[a], "--posit=", 8) == 0)
-        md.posIters = std::stoi(argv[a] + 8);
+        posItersFlag = std::stoi(argv[a] + 8);
+      else if (std::strncmp(argv[a], "--pos-iters=", 12) == 0)
+        posItersFlag = std::stoi(argv[a] + 12);
       else if (std::strncmp(argv[a], "--hub=", 6) == 0)
         md.hubScale = std::stof(argv[a] + 6);
       else if (std::strncmp(argv[a], "--delta=", 8) == 0)
@@ -1169,6 +1357,8 @@ int main(int argc, char** argv) {
         md.relabel = static_cast<unsigned>(std::stoul(argv[a] + 10));
       else if (std::strncmp(argv[a], "--stab=", 7) == 0)
         stabFlag = argv[a] + 7;
+      else if (std::strncmp(argv[a], "--fused=", 8) == 0)
+        md.fused = argv[a] + 8;
     }
     if (md.axis < 0 || md.axis > 2) {
       if (rank == 0)
@@ -1226,9 +1416,24 @@ int main(int argc, char** argv) {
       md.gravity = true;
     } else if (mode == "ring_mini") {
       md.ring = true;
+    } else if (mode == "hub_static") {  // §13.6: g = 0, velocity solve off, 64 position iterations
+      if (md.hubScale <= 0.0f)
+        md.hubScale = 10.0f;
+      md.hubStatic = true;
+      md.velIters = 0;
+      md.posIters = 64;
+    } else if (mode ==
+               "hub_ml") {  // §13.2: free fall, frictionless, multilevel, 1 velocity iteration
+      if (md.hubScale <= 0.0f)
+        md.hubScale = 10.0f;
+      md.hubMl = md.gravity = true;
+      md.velIters = 1;
+      md.stab = "multilevel";
     }
     if (velItersFlag >= 0)
       md.velIters = velItersFlag;
+    if (posItersFlag >= 0)
+      md.posIters = posItersFlag;
     if (!stabFlag.empty())
       md.stab = stabFlag;
     md.reportOnly = mode == "tri" || mode == "tri_pgs" || mode == "cluster_e09" ||
@@ -1240,7 +1445,8 @@ int main(int argc, char** argv) {
       fail = runPerf(mode == "perf_pgs", rank, size);
     else if (mode == "friction_pair" || mode == "friction_pair_pgs")
       fail = runFrictionPair(md, rank, size);
-    else if (mode == "hub" || mode == "hub_posonly" || mode == "hub_pgs")
+    else if (mode == "hub" || mode == "hub_posonly" || mode == "hub_pgs" || mode == "hub_static" ||
+             mode == "hub_ml")
       fail = runCluster(md, rank, size);
     else if (mode == "tri" || mode == "tri_pgs" || mode == "cluster_e09" || mode == "cluster_e10" ||
              mode == "cluster_poisson" || mode == "cluster_multilevel" ||
