@@ -1505,3 +1505,30 @@ max overlap < 1e-4 R:
     WO-0 has none.
   - Rejected: (a) units = the sort's segments, which changes np 1 spheres at box edges and corners;
     (b) one unit per wall contact, which pushes ring beds in containers onto hub copies.
+- **S7: the colouring round cap bounds the colouring graph, not the bodies.** `maxRounds = numBodies + 2`
+  (`solver_position.hpp:204, 358`, and `numReal + 2` in `solver_velocity.hpp:348, 501`) is not a
+  termination bound: the vertices being coloured are units or contacts, not bodies. On `ring_mini`
+  at OMP 8 it ran out in 4 of 6 runs. Change every colouring to
+  `maxRounds = numVerticesColoured + 2`. The bound holds because in each round the globally
+  highest-key uncoloured vertex is the maximum at both its bodies and is always coloured, provided
+  a colour is free, which WO-4 guarantees. That argument needs **unique keys**:
+  - Verify that `colorKey` cannot tie between two vertices that share a body. Otherwise two winners
+    would both write the non-atomic `bodyMask |=`, which is a race.
+  - If ties are possible, break them with the vertex index inside the key, as long as that leaves
+    single-thread np 1 byte-identical. If it cannot, STOP.
+  - Rounds stay O(log n) in practice. The stall break stays; after WO-4 an exhausted cap or a stall
+    throws (S3).
+- **S8: `test_hollow_cylinder_overlap` asserts detection, not residual overlap.** WO-3 sweeps a
+  pair's 30 contact points in order, which removes the overlap within the substep, so the
+  post-step assertion `max_overlap > 0` now reads 0.0. The bodies still separate (dx 0.54 after 99
+  steps). Replace that assertion:
+  - assert that step 0's narrow phase detected at least one contact between the two cylinders,
+    using an existing diagnostic contact count;
+  - if no such diagnostic exists, assert that the initial configuration's overlap is > 0, measured
+    before the step with the same overlap query;
+  - keep the separation assertion.
+- **S9: a known temporary regression between WO-3 and WO-5.** Once WO-3 lands, `ring_mini` at np 4
+  and 8 diverges (np 8: dXpos 0.14, max overlap 3.6e6). The per-point Jacobi fallback no longer
+  damps the raw cross-rank sum. WO-5, the rank-level mass split, is the designed fix. `contacts`
+  must NOT be pushed between WO-3 and WO-5, and WO-5's acceptance must include `ring_mini` at
+  np 4 and 8.
