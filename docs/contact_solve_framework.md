@@ -2207,3 +2207,63 @@ PSOR would have a unique least-displacement fixed point and legitimate over-rela
   loop writes its iteration count to a device scalar. Read it back to the host only when
   diagnostics are enabled, which the test harness does. With diagnostics off there must be no
   extra fence or copy.
+- **S13: G7 runs with every adaptive stop off.** The WO-5 misses were resolved by
+  `docs/contact_evidence/INVESTIGATION_WO5.md` (branch `wo5-investigation`, 689381d). With exactly N
+  iterations forced:
+  - np 2/4/8 converge to np 1 to the float floor. G7a gives 3.6e-3 at N = 8, 6.3e-5 at 16, and
+    1.4e-7 from 32.
+  - Copies agree exactly after every sync.
+  - The 1.57e-3 plateau was the adaptive stop (`solve_driver.hpp:837`).
+
+  The G7 gates change as follows:
+  - G7a and G7c run with every stop disabled and N forced.
+  - G7a keeps its thresholds.
+  - G7c becomes ≤ 1e-3 at N = 256. Measured: 1.0e-4 at np 4 and 1.2e-4 at np 8. The contraction
+    per iteration is 0.971 against 0.963 at np 1.
+  - The investigation's instrumentation diff (`investigation_wo5/instrumentation.diff`) may be
+    reused for the knob that forces N.
+- **S14: the adaptive stop's residual includes the consensus correction.** A solve has not
+  converged while copies of one body disagree. Today the stop ends with copies about 1e-3 apart,
+  because its residual leaves out the correction the averaging applies at a sync. The change:
+  - At each sync, compute the maximum consensus correction |v_avg − v_copy| (and |Δx| in the
+    position phase), normalised exactly like the existing residual of that phase.
+  - Fold it into the SAME Allreduce-MAX as the stop residual, which adds no message.
+  - The phase stops only when both quantities are below tolerance.
+  - The effect: more iterations at interfaces and at hub/periodic copies. np 1 changes only where
+    copies exist, which are already named changes. Non-copy np 1 runs must stay byte-identical.
+  - Measure the new G7f ratio and the ms/step, and report both.
+- **S15 (new work order WO-5b): friction and the Jacobi position path use world-frame inverse
+  inertia.** In `solver_friction.hpp:199-201, 224-226, 231-233` legacy friction multiplies a
+  world-frame torque by the BODY-frame inverse inertia without rotating it. On one hand-worked
+  ring–ring impulse the pair's L changes by 32 % of the applied torque; with R I⁻¹ Rᵀ the change is
+  4.5e-11. The fix:
+  - Use R I⁻¹ Rᵀ, with the same helper the PGS/normal paths use.
+  - Apply the same fix to `solver_position.hpp:135, 148` if the pattern is the same there; verify
+    first.
+  - Add an isotropy guard (isotropic inverse inertia → skip the rotation) so that spheres stay
+    byte-identical.
+  - Non-spherical np 1 results change. Name this and record it in the register.
+- **S16: the test's dLvel baseline is the post-predict ω.** `test_momentum_mpi.cpp:747` measured
+  from the pre-predict ω, which booked the explicit gyroscopic term (`integration.hpp:62-83`) to the
+  velocity phase. The change is test-only. With S15 and S16, ring_mini dLvel measured 2–4e-8 at
+  np 1/2/4/8.
+- **S17: the multilevel coarse cycle's angular momentum is a separate follow-up, out of this
+  package.** `MlCoarseSweep::solveOne` (`solver_multilevel.hpp:433-481`) applies coarse impulses
+  as pure translation of an aggregate, and prolongation (`:832-838`) gives every member the same
+  ΔV. J therefore acts at the aggregates' centres of mass: ΔL = (X_gA − X_gB) × J. That is true at
+  np 1 too (`hub_ml` dLvel 3.0e-3). Linear momentum is exact.
+  - The principled fix is rigid-body aggregates: 6-DOF coarse bodies, with the impulse at the
+    contact point and rigid-body prolongation. It needs its own design pass.
+  - Multilevel is opt-in; the default stabilization is `onesided`.
+  - In this package: gate linear momentum and CoM for `cluster_multilevel` and `hub_ml`, and REPORT
+    their dLvel, not gate it.
+- **S18: WO-5 gate restatements.**
+  - `ring_mini` overlap: the 0.1 R bound is wrong, since np 1 itself has 0.5 R in every build since
+    WO-0. The gate becomes np ≥ 2 overlap ≤ 3 × np 1 of the same build (hard), with the ratio
+    reported.
+  - The G7e absolute 0.05 bound: likewise, ≤ 3 × np 1 (hard), ratio reported. The ratio goes to
+    the user with R-U4.
+  - `hub_ml`'s positive controls (level built, hub aggregated) are required at np 1 and 2 only. At
+    np 4/8 each rank owns too few eligible contacts, so there only conservation is gated.
+  - The twin-dedup deviation (the check is disabled at every MPI dedup site) is accepted as
+    recorded in IMPL_A.
