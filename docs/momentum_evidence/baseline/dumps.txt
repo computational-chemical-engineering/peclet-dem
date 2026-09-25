@@ -1,0 +1,5 @@
+MOMENTUM mode=cluster np=1 thr=1 N=925 steps=50 dP=2.827e-09 dX=3.240e-07 dXpos=3.288e-07 dL=8.169e-04 dLcm=8.169e-04 dLvel=2.946e-09 ghosts=0 ovl=2.704e-02 tag=base
+MOMENTUM mode=cluster_friction np=1 thr=1 N=925 steps=50 dP=3.691e-09 dX=1.338e-07 dXpos=1.337e-07 dL=3.162e-04 dLcm=3.162e-04 dLvel=1.857e-05 ghosts=0 ovl=2.059e-02 tag=base
+MOMENTUM mode=cluster_pgs np=1 thr=1 N=925 steps=50 dP=7.858e-07 dX=4.213e-07 dXpos=1.362e-07 dL=3.803e-04 dLcm=3.803e-04 dLvel=1.864e-08 ghosts=0 ovl=2.194e-02 tag=base
+MOMENTUM mode=cluster_posonly np=1 thr=1 N=925 steps=50 dP=0.000e+00 dX=4.938e-07 dXpos=4.938e-07 dL=2.946e-03 dLcm=2.946e-03 dLvel=0.000e+00 ghosts=0 ovl=2.735e-02 tag=base
+MOMENTUM mode=hertz np=1 thr=1 N=925 steps=1000 dP=2.770e-08 dX=8.784e-07 dXpos=n/a dL=4.422e-07 dLcm=4.442e-07 dLvel=n/a ghosts=0 ovl=0.000e+00 tag=base

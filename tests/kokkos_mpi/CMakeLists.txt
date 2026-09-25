@@ -90,8 +90,11 @@ endforeach()
 # velocity and the position phase (XPBD engine, frictionless / friction / free-fall PGS / position
 # phase alone) and for the force-based Hertz engine. REPORT-ONLY for now (kGate in the source):
 # the future conservation gate. np = 8 puts the cluster on the common corner of all eight blocks.
+# cluster_sync3 / cluster_norot: the friction cluster at sync_every = 3 / forward_rotation = false;
+# cluster_periodic: the cluster on the corner of a fully periodic box (wrap pairs on every axis).
 foreach(np 1 2 4 8)
-  foreach(mode cluster cluster_friction cluster_pgs cluster_posonly hertz)
+  foreach(mode cluster cluster_friction cluster_pgs cluster_posonly hertz cluster_sync3
+               cluster_norot cluster_periodic)
     _dem_mpi_test(momentum_${mode}_np${np} ${np} test_momentum_mpi ${mode})
   endforeach()
 endforeach()

@@ -48,10 +48,25 @@
 //                     started PGS velocity solve with the friction cone (the production path)
 //   cluster_posonly   XPBD, g = 0, velocity solve OFF (the dem default): the position phase alone
 //   hertz             the force-based Hertz-Mindlin engine (step_hertz_mpi), mu = 0.4, spins
+//   cluster_sync3     cluster_friction with sync_every = 3 (owner/ghost reconciliation every 3rd
+//                     sweep)
+//   cluster_norot     cluster_friction with forward_rotation = false
+//   cluster_periodic  cluster in a FULLY PERIODIC box [-16, 16]^3, centred on the box corner, so
+//                     wrap pairs exist on every axis (periodic self-ghost twins at np = 1, cross-
+//                     rank wraps at np >= 2). Only dP is meaningful there (X and L are not
+//                     conserved quantities of a periodic box): dX, dXpos and dLvel print n/a.
 //   perf_gas / perf_pgs  timing only (not a ctest): N = 20000, fully periodic, ms/step
 //
 // Output: one parseable line per run,
-//   MOMENTUM mode=.. np=.. thr=.. N=.. steps=.. dP=.. dX=.. dXpos=.. dL=.. dLcm=.. dLvel=..
+//   MOMENTUM mode=.. np=.. thr=.. N=.. steps=.. dP=.. dX=.. dXpos=.. dL=.. dLcm=.. dLvel=.. ovl=..
+// ovl is the maximum over the steps of the Allreduce-MAX of max_overlap (the position loop's last
+// residual; it under-reports the committed overlap but is measured the same way before and after).
+//
+// Optional second argument --dump=<path>: after the last step rank 0 writes every owned body of
+// every rank, sorted by its global body index (the index into the test's body list, which is the
+// same at every np), as raw records {int32 gid; float32 pos[3], vel[3], angVel[3], quat[4]} --
+// the committed state (for hertz: the committed state of the force engine). Used for the bitwise
+// comparisons of the conservation work (docs/mpi_momentum_conservation.md, G3/G4).
 // Report-only for now: the thresholds below are the future gate (kGate = false: never fails on
 // drift; a non-finite state still fails).
 #include <mpi.h>
@@ -60,7 +75,9 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <Kokkos_Core.hpp>
 #include <random>
 #include <string>
@@ -149,11 +166,13 @@ static void load(Simulation& sim, const std::vector<Body>& b, const std::vector<
 // ORB layout,
 // random velocities + a net drift + an inward radial component (keeps it colliding), optional
 // random spins. Deterministic (fixed seed); every rank builds the same global set.
-static std::vector<Body> makeCluster(double ballRadius, bool spins) {
+// `periodic`: centre the ball on the box corner (-16, -16, -16) instead and wrap every position
+// into [-16, 16), so the cluster straddles every periodic face.
+static std::vector<Body> makeCluster(double ballRadius, bool spins, bool periodic = false) {
   std::mt19937 rng(20260925u);
   std::uniform_real_distribution<float> uni(-1.0f, 1.0f);
   std::normal_distribution<float> gauss(0.0f, 1.0f);
-  const D3 c{0.3, -0.2, 0.1};
+  const D3 c = periodic ? D3{LO, LO, LO} : D3{0.3, -0.2, 0.1};
   const float drift[3] = {0.7f, -0.4f, 0.3f};
   const double h = 2.0 * RAD;
   const int n = static_cast<int>(std::ceil(ballRadius / h));
@@ -172,6 +191,15 @@ static std::vector<Body> makeCluster(double ballRadius, bool spins) {
           q.w[d] = spins ? 3.0f * gauss(rng) : 0.0f;
         }
         q.scale = 1.0f + 0.1f * uni(rng);
+        if (periodic)
+          for (int d = 0; d < 3; ++d) {
+            double x = q.x[d];
+            if (x < LO)
+              x += L;
+            if (x >= LO + L)
+              x -= L;
+            q.x[d] = static_cast<float>(x);
+          }
         b.push_back(q);
       }
   return b;
@@ -261,21 +289,78 @@ static D3 velocityPhaseTorque(const State& a, const State& b, const D3& g, doubl
 
 struct Mode {
   std::string name;
-  bool friction = false, spins = false, gravity = false, hertz = false;
+  bool friction = false, spins = false, gravity = false, hertz = false, periodic = false;
   int velIters = 8;
+  int syncEvery = 1;
+  bool forwardRotation = true;
+  std::string dump;  // --dump=<path>: final-state dump (empty = none)
 };
 
+// Gather every rank's owned bodies to rank 0 and write them sorted by global body index (see the
+// file note for the record layout).
+static void dumpState(const Simulation& sim, const std::vector<int>& gids, const std::string& path,
+                      int rank, int size) {
+  constexpr int kRec = 14;  // int32 gid + 13 float32
+  const std::vector<float> x = sim.getPositions(), v = sim.getVelocities(),
+                           w = sim.getAngularVelocities(), q = sim.getQuaternions();
+  const int n = static_cast<int>(gids.size());
+  std::vector<std::uint32_t> loc(static_cast<std::size_t>(n) * kRec);
+  for (int i = 0; i < n; ++i) {
+    std::uint32_t* r = &loc[static_cast<std::size_t>(i) * kRec];
+    const std::int32_t g = gids[i];
+    std::memcpy(&r[0], &g, 4);
+    std::memcpy(&r[1], &x[3 * i], 12);
+    std::memcpy(&r[4], &v[3 * i], 12);
+    std::memcpy(&r[7], &w[3 * i], 12);
+    std::memcpy(&r[10], &q[4 * i], 16);
+  }
+  const int cnt = n * kRec;
+  std::vector<int> cnts(size), offs(size, 0);
+  MPI_Gather(&cnt, 1, MPI_INT, cnts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+  int tot = 0;
+  if (rank == 0)
+    for (int r = 0; r < size; ++r) {
+      offs[r] = tot;
+      tot += cnts[r];
+    }
+  std::vector<std::uint32_t> all(rank == 0 ? static_cast<std::size_t>(tot) : 0);
+  MPI_Gatherv(loc.data(), cnt, MPI_UINT32_T, all.data(), cnts.data(), offs.data(), MPI_UINT32_T, 0,
+              MPI_COMM_WORLD);
+  if (rank != 0)
+    return;
+  const int nrec = tot / kRec;
+  std::vector<int> order(nrec);
+  for (int k = 0; k < nrec; ++k)
+    order[k] = k;
+  auto gidOf = [&](int k) {
+    std::int32_t g;
+    std::memcpy(&g, &all[static_cast<std::size_t>(k) * kRec], 4);
+    return g;
+  };
+  std::sort(order.begin(), order.end(), [&](int a, int b) { return gidOf(a) < gidOf(b); });
+  std::FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) {
+    std::fprintf(stderr, "cannot write %s\n", path.c_str());
+    return;
+  }
+  for (int k : order)
+    std::fwrite(&all[static_cast<std::size_t>(k) * kRec], 4, kRec, f);
+  std::fclose(f);
+}
+
 static int runCluster(const Mode& md, int rank, int size) {
-  const std::vector<Body> bodies = makeCluster(6.0, md.spins);
+  const std::vector<Body> bodies = makeCluster(6.0, md.spins, md.periodic);
   const int n = static_cast<int>(bodies.size());
   const float dt = md.hertz ? 1e-4f : 1e-2f;
   const int steps = md.hertz ? 40 : 50;
   const int sub = md.hertz ? 25 : 1;  // Hertz: substeps per recorded step
   const D3 g = md.gravity ? D3{0.0, 0.0, -10.0} : D3{0, 0, 0};
 
-  const std::vector<int> gids = ownedOf(bodies, LO, L, GX, false, rank, size);
-  Simulation sim(2 * n + 64);
-  sim.setDomain(L, L, L, false, false, false);
+  const bool per3 = md.periodic;
+  const std::vector<int> gids = ownedOf(bodies, LO, L, GX, per3, rank, size);
+  // A periodic box carries a ghost layer on every face the cluster straddles.
+  Simulation sim(per3 ? 4 * n + 64 : 2 * n + 64);
+  sim.setDomain(L, L, L, per3, per3, per3);
   sim.setDomainMinMax(peclet::dem::F3{-16.0f, -16.0f, -16.0f},
                       peclet::dem::F3{16.0f, 16.0f, 16.0f});
   sim.setGlobalScale(1.0f);
@@ -292,9 +377,9 @@ static int runCluster(const Mode& md, int rank, int size) {
   load(sim, bodies, gids);
   const std::tuple<double, double, double> origin{LO, LO, LO}, dsize{L, L, L};
   const std::tuple<long, long, long> gsize{GX, GX, GX};
-  const std::tuple<bool, bool, bool> per{false, false, false};
+  const std::tuple<bool, bool, bool> per{per3, per3, per3};
   sim.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);
-  sim.enableMpiStep(0.0, 1, /*forward_rotation=*/true);
+  sim.enableMpiStep(0.0, md.syncEvery, md.forwardRotation);
 
   State st = readState(sim);
   const Sums S0 = globalSums(st);
@@ -322,7 +407,7 @@ static int runCluster(const Mode& md, int rank, int size) {
   };
   const D3 Lstart = angular(st, S0), LcmStart = angularCm(st, S0);
 
-  double dP = 0, dX = 0, dXpos = 0, dL = 0, dLcm = 0, dLvel = 0;
+  double dP = 0, dX = 0, dXpos = 0, dL = 0, dLcm = 0, dLvel = 0, ovl = 0;
   D3 xposAcc{0, 0, 0}, lvelAcc{0, 0, 0};
   Sums Sprev = S0;
   int fail = 0;
@@ -332,6 +417,11 @@ static int runCluster(const Mode& md, int rank, int size) {
       sim.stepHertzMpi(sub, 0.3f);
     else
       sim.stepMpi(1);
+    {
+      float o = sim.maxOverlap(), og = o;
+      MPI_Allreduce(&o, &og, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
+      ovl = std::max(ovl, static_cast<double>(og));
+    }
     const State nx = readState(sim);
     if (static_cast<int>(nx.m.size()) != nOwned)
       fail = 1;  // the per-body velocity-phase record assumes fixed ownership
@@ -373,14 +463,21 @@ static int runCluster(const Mode& md, int rank, int size) {
     if (md.hertz)
       std::printf(
           "MOMENTUM mode=%s np=%d thr=%d N=%d steps=%d dP=%.3e dX=%.3e dXpos=n/a dL=%.3e "
-          "dLcm=%.3e dLvel=n/a ghosts=%d\n",
-          md.name.c_str(), size, thr, n, steps * sub, dP, dX, dL, dLcm, totGhost);
+          "dLcm=%.3e dLvel=n/a ghosts=%d ovl=%.3e\n",
+          md.name.c_str(), size, thr, n, steps * sub, dP, dX, dL, dLcm, totGhost, ovl);
+    else if (md.periodic)
+      std::printf(
+          "MOMENTUM mode=%s np=%d thr=%d N=%d steps=%d dP=%.3e dX=n/a dXpos=n/a dL=%.3e "
+          "dLcm=%.3e dLvel=n/a ghosts=%d ovl=%.3e\n",
+          md.name.c_str(), size, thr, n, steps, dP, dL, dLcm, totGhost, ovl);
     else
       std::printf(
           "MOMENTUM mode=%s np=%d thr=%d N=%d steps=%d dP=%.3e dX=%.3e dXpos=%.3e dL=%.3e "
-          "dLcm=%.3e dLvel=%.3e ghosts=%d\n",
-          md.name.c_str(), size, thr, n, steps, dP, dX, dXpos, dL, dLcm, dLvel, totGhost);
+          "dLcm=%.3e dLvel=%.3e ghosts=%d ovl=%.3e\n",
+          md.name.c_str(), size, thr, n, steps, dP, dX, dXpos, dL, dLcm, dLvel, totGhost, ovl);
   }
+  if (!md.dump.empty())
+    dumpState(sim, gids, md.dump, rank, size);
   if (kGate && (!(dP < kTolP) || !(dX < kTolX) || (!md.hertz && !(dLvel < kTolL))))
     fail = 1;
   return fail;
@@ -449,6 +546,8 @@ int main(int argc, char** argv) {
     const std::string mode = (argc > 1) ? argv[1] : "cluster";
     Mode md;
     md.name = mode;
+    if (argc > 2 && std::strncmp(argv[2], "--dump=", 7) == 0)
+      md.dump = argv[2] + 7;
     if (mode == "cluster") {
     } else if (mode == "cluster_friction") {
       md.friction = md.spins = true;
@@ -458,11 +557,20 @@ int main(int argc, char** argv) {
       md.velIters = 0;
     } else if (mode == "hertz") {
       md.friction = md.spins = md.hertz = true;
+    } else if (mode == "cluster_sync3") {
+      md.friction = md.spins = true;
+      md.syncEvery = 3;
+    } else if (mode == "cluster_norot") {
+      md.friction = md.spins = true;
+      md.forwardRotation = false;
+    } else if (mode == "cluster_periodic") {
+      md.periodic = true;
     }
     if (mode == "perf_gas" || mode == "perf_pgs")
       fail = runPerf(mode == "perf_pgs", rank, size);
     else if (mode == "cluster" || mode == "cluster_friction" || mode == "cluster_pgs" ||
-             mode == "cluster_posonly" || mode == "hertz")
+             mode == "cluster_posonly" || mode == "hertz" || mode == "cluster_sync3" ||
+             mode == "cluster_norot" || mode == "cluster_periodic")
       fail = runCluster(md, rank, size);
     else {
       if (rank == 0)
