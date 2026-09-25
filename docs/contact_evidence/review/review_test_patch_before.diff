@@ -1,0 +1,114 @@
+diff --git a/tests/kokkos_mpi/test_momentum_mpi.cpp b/tests/kokkos_mpi/test_momentum_mpi.cpp
+index 0831109..9c233a1 100644
+--- a/tests/kokkos_mpi/test_momentum_mpi.cpp
++++ b/tests/kokkos_mpi/test_momentum_mpi.cpp
+@@ -78,6 +78,7 @@
+ #include <cstdint>
+ #include <cstdio>
+ #include <cstring>
++#include <cstdlib>
+ #include <Kokkos_Core.hpp>
+ #include <random>
+ #include <string>
+@@ -349,15 +350,36 @@ static void dumpState(const Simulation& sim, const std::vector<int>& gids, const
+ }
+ 
+ static int runCluster(const Mode& md, int rank, int size) {
+-  const std::vector<Body> bodies = makeCluster(6.0, md.spins, md.periodic);
++  std::vector<Body> bodies;
++  if (md.name == "tri") {  // REVIEW: two impactors on one side of a rank face, one target
++    const char* ax = std::getenv("REVIEW_AXIS");
++    const int k = ax ? std::atoi(ax) : 0, t = (k + 1) % 3;
++    auto mk = [&](float a, float b) {
++      Body q{};
++      q.x[k] = a;
++      q.x[t] = b;
++      q.scale = 1.0f;
++      return q;
++    };
++    Body A1 = mk(-0.42f, 0.45f), B = mk(0.45f, 0.0f), A2 = mk(-0.42f, -0.45f);
++    A1.v[k] = A2.v[k] = 1.0f;
++    bodies = {A1, B, A2};  // gids 0, 1, 2: A1B owned by A1's owner, A2B by B's owner
++  } else {
++    bodies = makeCluster(6.0, md.spins, md.periodic);
++  }
+   const int n = static_cast<int>(bodies.size());
+   const float dt = md.hertz ? 1e-4f : 1e-2f;
+-  const int steps = md.hertz ? 40 : 50;
++  const int steps = md.hertz ? 40 : (md.name == "tri" ? 3 : 50);
+   const int sub = md.hertz ? 25 : 1;  // Hertz: substeps per recorded step
+   const D3 g = md.gravity ? D3{0.0, 0.0, -10.0} : D3{0, 0, 0};
+ 
+   const bool per3 = md.periodic;
+   const std::vector<int> gids = ownedOf(bodies, LO, L, GX, per3, rank, size);
++  if (md.name == "tri") {
++    std::printf("REVIEW rank %d owns", rank);
++    for (int g : gids) std::printf(" %d", g);
++    std::printf("\n");
++  }
+   // A periodic box carries a ghost layer on every face the cluster straddles.
+   Simulation sim(per3 ? 4 * n + 64 : 2 * n + 64);
+   sim.setDomain(L, L, L, per3, per3, per3);
+@@ -368,7 +390,11 @@ static int runCluster(const Mode& md, int rank, int size) {
+   sim.setDt(dt);
+   sim.setGravity(static_cast<float>(g[0]), static_cast<float>(g[1]), static_cast<float>(g[2]));
+   sim.setSolverIterations(20, md.velIters);
+-  sim.setMaterialParams(0.5f, 0.0f, md.friction ? 0.4f : 0.0f);
++  {
++    const char* ee = std::getenv("REVIEW_E");
++    sim.setMaterialParams(ee ? static_cast<float>(std::atof(ee)) : 0.5f, 0.0f,
++                          md.friction ? 0.4f : 0.0f);
++  }
+   if (md.gravity)
+     sim.setStabilizationMode("off");  // one-sided stabilization is a momentum sink by design
+   if (md.hertz) {
+@@ -412,6 +438,7 @@ static int runCluster(const Mode& md, int rank, int size) {
+   Sums Sprev = S0;
+   int fail = 0;
+   const int nOwned = static_cast<int>(gids.size());
++  std::vector<double> keHist;
+   for (int s = 1; s <= steps; ++s) {
+     if (md.hertz)
+       sim.stepHertzMpi(sub, 0.3f);
+@@ -426,6 +453,18 @@ static int runCluster(const Mode& md, int rank, int size) {
+     if (static_cast<int>(nx.m.size()) != nOwned)
+       fail = 1;  // the per-body velocity-phase record assumes fixed ownership
+     const Sums S = globalSums(nx);
++    {  // REVIEW: kinetic energy in the CoM frame (translational + rotational)
++      double kl = 0;
++      for (int i = 0; i < static_cast<int>(nx.m.size()); ++i) {
++        const D3 v = at(nx.v, i), w = at(nx.w, i), sp = spin(nx, i);
++        kl += 0.5 * nx.m[i] * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) +
++              0.5 * (sp[0] * w[0] + sp[1] * w[1] + sp[2] * w[2]);
++      }
++      double kg = 0;
++      MPI_Allreduce(&kl, &kg, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
++      kg -= 0.5 * (S.P[0] * S.P[0] + S.P[1] * S.P[1] + S.P[2] * S.P[2]) / M;
++      keHist.push_back(kg);
++    }
+     const double t = static_cast<double>(s) * sub * dt;
+     D3 ep, ex, el, ec;
+     const D3 Ln = angular(nx, S), Lc = angularCm(nx, S);
+@@ -476,6 +515,13 @@ static int runCluster(const Mode& md, int rank, int size) {
+           "dLcm=%.3e dLvel=%.3e ghosts=%d ovl=%.3e\n",
+           md.name.c_str(), size, thr, n, steps, dP, dX, dXpos, dL, dLcm, dLvel, totGhost, ovl);
+   }
++  if (rank == 0) {
++    std::printf("KE mode=%s np=%d", md.name.c_str(), size);
++    for (std::size_t k = 0; k < keHist.size(); ++k)
++      if (k < 5 || (k + 1) % 5 == 0)
++        std::printf(" s%zu=%.6e", k + 1, keHist[k]);
++    std::printf("\n");
++  }
+   if (!md.dump.empty())
+     dumpState(sim, gids, md.dump, rank, size);
+   if (kGate && (!(dP < kTolP) || !(dX < kTolX) || (!md.hertz && !(dLvel < kTolL))))
+@@ -570,7 +616,7 @@ int main(int argc, char** argv) {
+       fail = runPerf(mode == "perf_pgs", rank, size);
+     else if (mode == "cluster" || mode == "cluster_friction" || mode == "cluster_pgs" ||
+              mode == "cluster_posonly" || mode == "hertz" || mode == "cluster_sync3" ||
+-             mode == "cluster_norot" || mode == "cluster_periodic")
++             mode == "cluster_norot" || mode == "cluster_periodic" || mode == "tri")
+       fail = runCluster(md, rank, size);
+     else {
+       if (rank == 0)

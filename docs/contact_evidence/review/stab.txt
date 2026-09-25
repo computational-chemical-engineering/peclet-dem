@@ -1,0 +1,24 @@
+-- multilevel np=1
+MOMENTUM mode=cluster_pgs np=1 thr=1 N=925 steps=50 dP=8.002e-07 dX=4.082e-07 dXpos=2.156e-07 dLvel=1.431e-08 ghosts=0 ovl=2.198e-02
+-- multilevel np=2
+MOMENTUM mode=cluster_pgs np=2 thr=1 N=925 steps=50 dP=7.864e-07 dX=5.261e-07 dXpos=3.727e-07 dLvel=8.662e-09 ghosts=228 ovl=2.450e-02
+-- multilevel np=4
+MOMENTUM mode=cluster_pgs np=4 thr=1 N=925 steps=50 dP=7.835e-07 dX=4.949e-07 dXpos=2.369e-07 dLvel=1.818e-08 ghosts=500 ovl=2.480e-02
+-- multilevel np=8
+MOMENTUM mode=cluster_pgs np=8 thr=1 N=925 steps=50 dP=7.925e-07 dX=5.353e-07 dXpos=3.022e-07 dLvel=1.483e-08 ghosts=862 ovl=2.466e-02
+-- escalate np=1
+MOMENTUM mode=cluster_pgs np=1 thr=1 N=925 steps=50 dP=7.943e-07 dX=4.679e-07 dXpos=1.413e-07 dLvel=1.198e-08 ghosts=0 ovl=2.196e-02
+-- escalate np=2
+MOMENTUM mode=cluster_pgs np=2 thr=1 N=925 steps=50 dP=7.907e-07 dX=4.274e-07 dXpos=1.989e-07 dLvel=1.083e-08 ghosts=228 ovl=2.450e-02
+-- escalate np=4
+MOMENTUM mode=cluster_pgs np=4 thr=1 N=925 steps=50 dP=7.828e-07 dX=3.856e-07 dXpos=2.178e-07 dLvel=1.285e-08 ghosts=499 ovl=2.481e-02
+-- escalate np=8
+MOMENTUM mode=cluster_pgs np=8 thr=1 N=925 steps=50 dP=7.966e-07 dX=5.392e-07 dXpos=2.440e-07 dLvel=2.248e-08 ghosts=868 ovl=2.467e-02
+-- ordered np=1
+MOMENTUM mode=cluster_pgs np=1 thr=1 N=925 steps=50 dP=7.898e-07 dX=5.127e-07 dXpos=1.450e-07 dLvel=2.450e-08 ghosts=0 ovl=2.198e-02
+-- ordered np=2
+MOMENTUM mode=cluster_pgs np=2 thr=1 N=925 steps=50 dP=7.865e-07 dX=5.052e-07 dXpos=1.464e-07 dLvel=1.647e-08 ghosts=228 ovl=2.448e-02
+-- ordered np=4
+MOMENTUM mode=cluster_pgs np=4 thr=1 N=925 steps=50 dP=7.786e-07 dX=3.875e-07 dXpos=2.640e-07 dLvel=1.002e-08 ghosts=498 ovl=2.479e-02
+-- ordered np=8
+MOMENTUM mode=cluster_pgs np=8 thr=1 N=925 steps=50 dP=7.951e-07 dX=6.220e-07 dXpos=3.232e-07 dLvel=1.879e-08 ghosts=865 ovl=2.466e-02

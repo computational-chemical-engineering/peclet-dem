@@ -1,0 +1,110 @@
+== dem-review
+-- e=0.5 axis=0 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=2.202e-08 ghosts=0 ovl=7.451e-09
+KE mode=tri np=1 s1=1.379044e-01 s2=1.379044e-01 s3=1.379044e-01
+-- e=0.5 axis=0 np=2
+REVIEW rank 0 owns 0 2
+REVIEW rank 1 owns 1
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=2.202e-08 ghosts=3 ovl=0.000e+00
+KE mode=tri np=2 s1=1.379044e-01 s2=1.379044e-01 s3=1.379044e-01
+-- e=0.5 axis=1 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=2.202e-08 ghosts=0 ovl=7.451e-09
+KE mode=tri np=1 s1=1.379044e-01 s2=1.379044e-01 s3=1.379044e-01
+-- e=0.5 axis=1 np=2
+REVIEW rank 0 owns
+REVIEW rank 1 owns 0 1 2
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=2.202e-08 ghosts=3 ovl=7.451e-09
+KE mode=tri np=2 s1=1.379044e-01 s2=1.379044e-01 s3=1.379044e-01
+-- e=0.5 axis=2 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=2.202e-08 ghosts=0 ovl=7.451e-09
+KE mode=tri np=1 s1=1.379044e-01 s2=1.379044e-01 s3=1.379044e-01
+-- e=0.5 axis=2 np=2
+REVIEW rank 0 owns 2
+REVIEW rank 1 owns 0 1
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=0.000e+00 ghosts=3 ovl=0.000e+00
+KE mode=tri np=2 s1=2.906943e-01 s2=2.906943e-01 s3=2.906943e-01
+-- e=0.8 axis=0 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=2.980e-08 dLvel=4.192e-09 ghosts=0 ovl=5.588e-09
+KE mode=tri np=1 s1=2.459280e-01 s2=2.459280e-01 s3=2.459280e-01
+-- e=0.8 axis=0 np=2
+REVIEW rank 0 owns 0 2
+REVIEW rank 1 owns 1
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=2.980e-08 dLvel=4.192e-09 ghosts=3 ovl=1.304e-08
+KE mode=tri np=2 s1=2.459280e-01 s2=2.459280e-01 s3=2.459280e-01
+-- e=0.8 axis=1 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=2.980e-08 dLvel=4.192e-09 ghosts=0 ovl=5.588e-09
+KE mode=tri np=1 s1=2.459280e-01 s2=2.459280e-01 s3=2.459280e-01
+-- e=0.8 axis=1 np=2
+REVIEW rank 0 owns
+REVIEW rank 1 owns 0 1 2
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=2.980e-08 dLvel=4.192e-09 ghosts=3 ovl=5.588e-09
+KE mode=tri np=2 s1=2.459280e-01 s2=2.459280e-01 s3=2.459280e-01
+-- e=0.8 axis=2 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=2.980e-08 dLvel=4.192e-09 ghosts=0 ovl=5.588e-09
+KE mode=tri np=1 s1=2.459280e-01 s2=2.459280e-01 s3=2.459280e-01
+-- e=0.8 axis=2 np=2
+REVIEW rank 0 owns 2
+REVIEW rank 1 owns 0 1
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=0.000e+00 ghosts=3 ovl=0.000e+00
+KE mode=tri np=2 s1=5.545528e-01 s2=5.545528e-01 s3=5.545528e-01
+== dem-review-before
+-- e=0.5 axis=0 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=2.202e-08 ghosts=0 ovl=7.451e-09
+KE mode=tri np=1 s1=1.379044e-01 s2=1.379044e-01 s3=1.379044e-01
+-- e=0.5 axis=0 np=2
+REVIEW rank 0 owns 0 2
+REVIEW rank 1 owns 1
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=1.063e-08 ghosts=3 ovl=0.000e+00
+KE mode=tri np=2 s1=1.379044e-01 s2=1.379044e-01 s3=1.379044e-01
+-- e=0.5 axis=1 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=2.202e-08 ghosts=0 ovl=7.451e-09
+KE mode=tri np=1 s1=1.379044e-01 s2=1.379044e-01 s3=1.379044e-01
+-- e=0.5 axis=1 np=2
+REVIEW rank 0 owns
+REVIEW rank 1 owns 0 1 2
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=2.202e-08 ghosts=3 ovl=7.451e-09
+KE mode=tri np=2 s1=1.379044e-01 s2=1.379044e-01 s3=1.379044e-01
+-- e=0.5 axis=2 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=0.000e+00 dLvel=2.202e-08 ghosts=0 ovl=7.451e-09
+KE mode=tri np=1 s1=1.379044e-01 s2=1.379044e-01 s3=1.379044e-01
+-- e=0.5 axis=2 np=2
+REVIEW rank 0 owns 2
+REVIEW rank 1 owns 0 1
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=1.421e-01 dLvel=1.016e-01 ghosts=3 ovl=0.000e+00
+KE mode=tri np=2 s1=1.889797e-01 s2=1.889797e-01 s3=1.889797e-01
+-- e=0.8 axis=0 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=2.980e-08 dLvel=4.192e-09 ghosts=0 ovl=5.588e-09
+KE mode=tri np=1 s1=2.459280e-01 s2=2.459280e-01 s3=2.459280e-01
+-- e=0.8 axis=0 np=2
+REVIEW rank 0 owns 0 2
+REVIEW rank 1 owns 1
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=2.980e-08 dLvel=2.059e-08 ghosts=3 ovl=0.000e+00
+KE mode=tri np=2 s1=2.459280e-01 s2=2.459280e-01 s3=2.459280e-01
+-- e=0.8 axis=1 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=2.980e-08 dLvel=4.192e-09 ghosts=0 ovl=5.588e-09
+KE mode=tri np=1 s1=2.459280e-01 s2=2.459280e-01 s3=2.459280e-01
+-- e=0.8 axis=1 np=2
+REVIEW rank 1 owns 0 1 2
+REVIEW rank 0 owns
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=2.980e-08 dLvel=4.192e-09 ghosts=3 ovl=5.588e-09
+KE mode=tri np=2 s1=2.459280e-01 s2=2.459280e-01 s3=2.459280e-01
+-- e=0.8 axis=2 np=1
+REVIEW rank 0 owns 0 1 2
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=2.980e-08 dLvel=4.192e-09 ghosts=0 ovl=5.588e-09
+KE mode=tri np=1 s1=2.459280e-01 s2=2.459280e-01 s3=2.459280e-01
+-- e=0.8 axis=2 np=2
+REVIEW rank 0 owns 2
+REVIEW rank 1 owns 0 1
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=2.046e-01 dLvel=1.463e-01 ghosts=3 ovl=0.000e+00
+KE mode=tri np=2 s1=3.397533e-01 s2=3.397533e-01 s3=3.397533e-01

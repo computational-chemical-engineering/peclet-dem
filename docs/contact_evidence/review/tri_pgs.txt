@@ -1,0 +1,12 @@
+-- PGS e=0.5 np=1
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=1.177e-08 dLvel=1.333e-08 ghosts=0 ovl=0.000e+00
+KE mode=tri np=1 s1=1.042666e-01 s2=1.042666e-01 s3=1.042666e-01
+-- PGS e=0.5 np=2
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=5.774e-08 dLvel=4.204e-10 ghosts=3 ovl=0.000e+00
+KE mode=tri np=2 s1=1.039959e-01 s2=1.039959e-01 s3=1.039959e-01
+-- PGS e=0.8 np=1
+MOMENTUM mode=tri np=1 thr=1 N=3 steps=3 dP=2.854e-08 dLvel=7.276e-08 ghosts=0 ovl=2.980e-08
+KE mode=tri np=1 s1=2.234173e-01 s2=2.234173e-01 s3=2.234173e-01
+-- PGS e=0.8 np=2
+MOMENTUM mode=tri np=2 thr=1 N=3 steps=3 dP=1.099e-07 dLvel=3.979e-10 ghosts=3 ovl=0.000e+00
+KE mode=tri np=2 s1=2.228976e-01 s2=2.228976e-01 s3=2.228975e-01
