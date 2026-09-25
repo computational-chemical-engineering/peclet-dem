@@ -733,8 +733,11 @@ inline void decayBodyOrphanKokkos(Kokkos::View<float*, CpMem> orphan,
 /// physical carrier); boundary pairs (wall endpoint) credit everything to the particle. The
 /// carried event peak joins by max. Key components are keyIdx identities: REAL slots on the
 /// single-GPU path (direct index); global ids under MPI — resolved through the sorted
-/// (gidSorted, slotSorted) map (an endpoint owned by another rank simply isn't found here; that
-/// rank's redundant ledger copy credits it).
+/// (gidSorted, slotSorted) map over owned + ghost slots. Under MPI the pair's bank lives only in
+/// its owning rank's ledger (docs/mpi_momentum_conservation.md §4.6): a credit to a ghost endpoint
+/// is delivered to that body's owner by the velocity reverse at the next sync, and an endpoint
+/// that has left this rank's halo is not found (it gets the conservative half, and that half is
+/// dropped).
 inline void scatterOrphanBanksKokkos(Kokkos::View<const unsigned long long*, CpMem> prevKeys,
                                      Kokkos::View<const float*, CpMem> prevRestBank,
                                      Kokkos::View<const float*, CpMem> prevRestVPeak,

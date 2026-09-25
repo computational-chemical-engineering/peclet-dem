@@ -16,15 +16,17 @@
 ///   * SoloForceHooks — every hook a no-op/identity; `demStepHertz` compiles to the historical
 ///     single-GPU engine (validated bit-for-bit on the Serial backend).
 ///   * MpiForceHooks (step_solve_mpi.hpp, PECLET_DEM_MPI) — domain-decomposed explicit DEM in the
-///   classical
-///     MD mold: at every pair-list rebuild the halo re-gathers ghosts in a band of
+///     classical MD mold: at every pair-list rebuild the halo re-gathers ghosts in a band of
 ///     (pair cutoff + skin); between rebuilds only the ghost STATE (pos/vel/angVel/quat) is
 ///     forwarded owner->ghost each step. Every pair touching an owned particle is present
 ///     rank-locally (broadphase emits owned-ghost pairs once), forces on ghost slots are discarded
-///     (the neighbour rank computes the mirrored pair itself — the same exact-redundant pattern as
-///     the impulse engine), and only owned particles integrate. The rebuild decision, the skin and
-///     the initial cache-validity flag are Allreduced so the collective gather/forward schedule is
-///     identical on all ranks.
+///     (the neighbour rank evaluates the mirrored pair itself from the same synced state, so the
+///     two halves are equal and opposite and momentum is conserved), and only owned particles
+///     integrate. The impulse (XPBD) engine does NOT work this way: its contacts are solved by one
+///     owner each, with ghost -> owner reverse accumulation (docs/mpi_momentum_conservation.md),
+///     because an iterative solve of the two copies does not stay equal and opposite. The rebuild
+///     decision, the skin and the initial cache-validity flag are Allreduced so the collective
+///     gather/forward schedule is identical on all ranks.
 ///
 /// Per-pair history (e.g. the Mindlin shear spring xi) is keyed by GLOBAL particle id — stable
 /// across halo rebuilds and ownership migration; the migration pack carries each particle's slice
