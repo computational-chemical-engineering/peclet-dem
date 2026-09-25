@@ -80,14 +80,47 @@
 //   friction_pair_pgs the same under free fall (g != 0: the PGS friction cone, manifold midpoint).
 //   cluster_friction also prints a FRIC line: the mean |dist| / R of the friction-active body-body
 //                     contacts and their mean count per step.
+//
+// REPORT-ONLY modes of docs/contact_solve_framework.md WO-0 (never gated: tolOf returns -1; the
+// framework's gates G1-G7 read their lines):
+//   tri               the review scene (docs/contact_evidence/review): unit spheres A1 (-0.42,
+//                     0.45), B (0.45, 0), A2 (-0.42, -0.45) in the (axis, axis+1) plane, A1 and A2
+//                     moving at 1 along --axis toward B, g = 0, frictionless, 3 steps; the rank
+//                     faces at 0 split A1/A2 from B
+//   tri_pgs           tri under free fall (g != 0: the warm-started PGS path), --vel-iters
+//   cluster_e09, cluster_e10   cluster with restitution 0.9 / 1.0
+//   cluster_poisson   cluster_pgs with the Poisson restitution model
+//   cluster_multilevel, cluster_escalate, cluster_ordered, cluster_onesided   cluster_pgs with that
+//                     stabilization mode instead of 'off'
+//   hub_pgs           hub under free fall (g != 0)
+//   ring_mini         27 hollow cylinders (outer diameter 1, height 1.5, wall 0.18, unit mass
+//                     through the shape registry) on a jittered 3 x 3 x 3 lattice at spacing 0.9
+//                     about the cluster centre, orientations uniformly random (mt19937(11)),
+//                     cluster-recipe velocities, g = 0, friction 0.02, pos/vel iterations 20/8,
+//                     dt 1e-2, 10 steps: per-point position-graph degrees far above 64
 // Options (after the mode): --dump=<path>, --dt=<dt>, --posit=<position iterations>,
 // --hub=<scale>, --delta=<overlap / R>, --solo (single-rank demStep via Simulation::step instead
-// of step_mpi; np = 1 only).
+// of step_mpi; np = 1 only), --e=<normal restitution> (default 0.5; cluster_e09/_e10 set theirs),
+// --steps=<n> (overrides the mode's step count), --vel-iters=<n> (velocity iterations),
+// --axis=<0|1|2> (tri: the approach axis), --relabel=<seed> (seed 0 = identity; otherwise the body
+// list is std::shuffle'd with std::mt19937(seed) before the gids are assigned, which samples
+// another serial Gauss-Seidel order of the same physical scene).
 //
-// Output: one parseable line per run,
+// Output: parseable lines per run,
 //   MOMENTUM mode=.. np=.. thr=.. N=.. steps=.. dP=.. dX=.. dXpos=.. dL=.. dLcm=.. dLvel=.. ovl=..
+//   KE mode=.. np=.. thr=.. s1=.. s2=..      the centre-of-mass-frame kinetic energy (translational
+//            + rotational, host double, Allreduced) after every (recorded) step
+//   CONFLICTS mode=.. np=.. thr=.. vel=.. pos=.. degVel=.. degPos=.. colVel=.. colPos=..
+//            (not hertz) the same-colour pairs of the rank-local velocity (manifold) and position
+//            (contact) colourings of each step -- sum over (body slot, colour) of (count - 1), the
+//            quantity Simulation::debugColoringConflicts counts, tallied on the host over the items
+//            the step coloured -- the largest per-body-slot degree and the colour count, each the
+//            maximum over steps and ranks; leftVel / leftPos count the items the step left
+//            uncoloured (-1, the count-averaged fallback's set), maximum over steps and ranks
 // ovl is the maximum over the steps of the Allreduce-MAX of max_overlap (the position loop's last
 // residual; it under-reports the committed overlap but is measured the same way before and after).
+// Angular momentum and rotational energy use the world-frame inertia R diag(1/invI) R^T of the
+// orientation (x, y, z, w); for isotropic bodies (spheres) that is exactly the scalar I w.
 //
 // Optional second argument --dump=<path>: after the last step rank 0 writes every owned body of
 // every rank, sorted by its global body index (the index into the test's body list, which is the
@@ -177,6 +210,7 @@ static double norm(const D3& a) {
 
 struct Body {
   float x[3], v[3], w[3], scale;
+  float q[4] = {0.0f, 0.0f, 0.0f, 1.0f};  // orientation (x, y, z, w); loaded for ring_mini only
 };
 
 // Owned bodies of this rank under the equal-cell ORB (the decomposition initMpi builds).
@@ -223,6 +257,24 @@ static void load(Simulation& sim, const std::vector<Body>& b, const std::vector<
   sim.setAngularVelocities(w);
   sim.setInvMass(im);
   sim.setInvInertia(ii);
+}
+
+// Non-spherical bodies: the shape registry's own mass and inertia (setPositions stamps unit mass
+// and shape 0's inverse inertia), plus the orientations.
+static void loadShaped(Simulation& sim, const std::vector<Body>& b, const std::vector<int>& gids) {
+  std::vector<float> p, v, w, s, q;
+  for (int g : gids) {
+    p.insert(p.end(), {b[g].x[0], b[g].x[1], b[g].x[2]});
+    v.insert(v.end(), {b[g].v[0], b[g].v[1], b[g].v[2]});
+    w.insert(w.end(), {b[g].w[0], b[g].w[1], b[g].w[2]});
+    s.push_back(b[g].scale);
+    q.insert(q.end(), {b[g].q[0], b[g].q[1], b[g].q[2], b[g].q[3]});
+  }
+  sim.setPositions(p);
+  sim.setScales(s);
+  sim.setVelocities(v);
+  sim.setAngularVelocities(w);
+  sim.setQuaternions(q);
 }
 
 // A dense random cluster: jittered cubic lattice (spacing = base diameter, so the polydisperse
@@ -304,12 +356,67 @@ static std::vector<Body> makeHub(float hubScale) {
   return b;
 }
 
+// The review's tri scene (docs/contact_evidence/review): A1 and A2 approach B along `axis` at 1;
+// gids 0 (A1), 1 (B), 2 (A2). The ORB faces at 0 put A1/A2 and B on different ranks at np >= 2.
+static std::vector<Body> makeTri(int axis) {
+  const int k = axis, t = (k + 1) % 3;
+  auto mk = [&](float a, float b) {
+    Body q{};
+    q.x[k] = a;
+    q.x[t] = b;
+    q.scale = 1.0f;
+    return q;
+  };
+  Body A1 = mk(-0.42f, 0.45f), B = mk(0.45f, 0.0f), A2 = mk(-0.42f, -0.45f);
+  A1.v[k] = A2.v[k] = 1.0f;
+  return {A1, B, A2};
+}
+
+// ring_mini: hollow cylinders (outer diameter 1, height 1.5, wall 0.18) on a 3 x 3 x 3 lattice at
+// spacing 0.9 about the cluster centre, jittered by 0.05 uniform per axis; velocities by the
+// makeCluster recipe (drift + 1.5 N(0,1) - r / r_max, r the lattice offset, r_max its corner
+// distance), no spins; positions and velocities from makeCluster's stream, the orientations
+// (uniformly random unit quaternions: normalised 4-D Gaussians) from std::mt19937(11).
+static constexpr float kRingD = 1.0f, kRingH = 1.5f, kRingWall = 0.18f, kRingSpacing = 0.9f;
+static std::vector<Body> makeRingMini() {
+  std::mt19937 rng(20260925u), qrng(11u);
+  std::uniform_real_distribution<float> uni(-1.0f, 1.0f);
+  std::normal_distribution<float> gauss(0.0f, 1.0f), qgauss(0.0f, 1.0f);
+  const D3 c{0.3, -0.2, 0.1};
+  const float drift[3] = {0.7f, -0.4f, 0.3f};
+  const double h = kRingSpacing, rMax = h * std::sqrt(3.0);
+  std::vector<Body> b;
+  for (int k = -1; k <= 1; ++k)
+    for (int j = -1; j <= 1; ++j)
+      for (int i = -1; i <= 1; ++i) {
+        const D3 r{i * h, j * h, k * h};
+        Body q{};
+        for (int d = 0; d < 3; ++d) {
+          q.x[d] = static_cast<float>(c[d] + r[d] + 0.05 * kRingD * uni(rng));
+          q.v[d] = drift[d] + 1.5f * gauss(rng) - static_cast<float>(r[d] / rMax);
+        }
+        q.scale = 1.0f;
+        float nn = 0.0f;
+        for (float& e : q.q) {
+          e = qgauss(qrng);
+          nn += e * e;
+        }
+        nn = std::sqrt(nn);
+        for (float& e : q.q)
+          e /= nn;
+        b.push_back(q);
+      }
+  return b;
+}
+
 // Rank-local colouring diagnostics of the last step: over the contacts / manifolds the step
 // coloured (colour >= -1; the caller filled both colour arrays with -3 before the step, so the
 // entries the step did not colour -- the non-owned visible ones under MPI -- are skipped), the
 // largest per-body degree and the same-colour pairs, sum over (body, colour) of (count - 1).
 struct ColorDiag {
   int degC = 0, degM = 0, confC = 0, confM = 0;
+  int colC = 0, colM = 0;    // colours used (largest colour + 1)
+  int leftC = 0, leftM = 0;  // items the step left uncoloured (-1): the count-averaged fallback
 };
 static void markColors(ProbeSim& sim) {
   Kokkos::deep_copy(sim.parts().contactColor, -3);
@@ -326,7 +433,7 @@ static ColorDiag colorDiag(const ProbeSim& sim) {
   auto hmc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.manifoldColor);
   auto hr = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.realIndices);
   ColorDiag g;
-  auto tally = [](std::vector<std::pair<int, int>>& e, int& deg, int& conf) {
+  auto tally = [](std::vector<std::pair<int, int>>& e, int& deg, int& conf, int& col, int& left) {
     std::sort(e.begin(), e.end());
     std::vector<int> d;
     for (std::size_t i = 0; i < e.size(); ++i) {
@@ -336,7 +443,11 @@ static ColorDiag colorDiag(const ProbeSim& sim) {
       ++d[b];
       if (i > 0 && e[i].second >= 0 && e[i] == e[i - 1])
         ++conf;
+      col = std::max(col, e[i].second + 1);
     }
+    left = 0;
+    for (const auto& x : e)
+      left += x.second == -1;
     for (int x : d)
       deg = std::max(deg, x);
   };
@@ -357,8 +468,8 @@ static ColorDiag colorDiag(const ProbeSim& sim) {
     if (hm(i).bodyB >= 0)
       em.push_back({hr(hm(i).bodyB), col});
   }
-  tally(ec, g.degC, g.confC);
-  tally(em, g.degM, g.confM);
+  tally(ec, g.degC, g.confC, g.colC, g.leftC);
+  tally(em, g.degM, g.confM, g.colM, g.leftM);
   return g;
 }
 
@@ -366,20 +477,44 @@ struct Sums {
   double m = 0, P[3] = {0, 0, 0}, mx[3] = {0, 0, 0}, Lo[3] = {0, 0, 0};
 };
 struct State {
-  std::vector<float> x, v, w, m, invI;
+  std::vector<float> x, v, w, m, invI, q;
 };
 static State readState(const Simulation& s) {
-  State st{s.getPositions(), s.getVelocities(), s.getAngularVelocities(), s.getMasses(),
-           s.getInvInertia()};
+  State st{s.getPositions(), s.getVelocities(), s.getAngularVelocities(),
+           s.getMasses(),    s.getInvInertia(), s.getQuaternions()};
   return st;
 }
 static D3 at(const std::vector<float>& a, int i) {
   return {a[3 * i], a[3 * i + 1], a[3 * i + 2]};
 }
-static D3 spin(const State& st, int i) {  // I w for isotropic inertia
-  const double iI = st.invI[3 * i];
-  const D3 w = at(st.w, i);
-  return iI > 0 ? D3{w[0] / iI, w[1] / iI, w[2] / iI} : D3{0, 0, 0};
+// World-frame angular momentum I w of body i of `orient` (its inverse body inertia and
+// orientation) spinning at w. Isotropic inertia (spheres): the scalar w / invI, bit for bit the
+// historical formula. Otherwise R diag(1/invI) R^T w with R the rotation of the unit quaternion
+// (x, y, z, w) -- the frame the solver applies invInertia in (rotateVector).
+static D3 spinOf(const State& orient, int i, const D3& w) {
+  const double i0 = orient.invI[3 * i], i1 = orient.invI[3 * i + 1], i2 = orient.invI[3 * i + 2];
+  if (i0 == i1 && i1 == i2)
+    return i0 > 0 ? D3{w[0] / i0, w[1] / i0, w[2] / i0} : D3{0, 0, 0};
+  const double qx = orient.q[4 * i], qy = orient.q[4 * i + 1], qz = orient.q[4 * i + 2],
+               qw = orient.q[4 * i + 3];
+  const double R[3][3] = {
+      {1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)},
+      {2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)},
+      {2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)}};
+  const double inv[3] = {i0, i1, i2};
+  D3 b{0, 0, 0}, out{0, 0, 0};
+  for (int k = 0; k < 3; ++k) {  // body frame: R^T w, scaled by the body inertia
+    for (int d = 0; d < 3; ++d)
+      b[k] += R[d][k] * w[d];
+    b[k] = inv[k] > 0 ? b[k] / inv[k] : 0.0;
+  }
+  for (int d = 0; d < 3; ++d)
+    for (int k = 0; k < 3; ++k)
+      out[d] += R[d][k] * b[k];
+  return out;
+}
+static D3 spin(const State& st, int i) {  // I w
+  return spinOf(st, i, at(st.w, i));
 }
 
 // Global sums over owned bodies (host double, Allreduce).
@@ -435,7 +570,8 @@ static D3 velocityPhaseTorque(const State& a, const State& b, const D3& g, doubl
       xp[d] = x[d] + (v0[d] + g[d] * dt) * dt - Xpred[d];
       dv[d] = v1[d] - v0[d] - g[d] * dt;
     }
-    const D3 c = cross(xp, dv), s0 = spin(a, i), s1 = spin(b, i);
+    // Both at the orientation the phase solves at (frozen in the velocity phase).
+    const D3 c = cross(xp, dv), s0 = spin(a, i), s1 = spinOf(a, i, at(b.w, i));
     for (int d = 0; d < 3; ++d)
       loc[d] += a.m[i] * c[d] + (s1[d] - s0[d]);
   }
@@ -458,6 +594,14 @@ struct Mode {
   float dt = 0.0f;        // --dt: override the mode's dt (steps scaled to keep the duration)
   int posIters = 20;      // --posit
   float delta = 0.05f;    // --delta (friction_pair): overlap / R
+  // WO-0 report-only options (docs/contact_solve_framework.md §8)
+  float restitution = 0.5f;  // --e
+  int steps = 0;             // --steps: > 0 overrides the mode's step count
+  int axis = 0;              // --axis (tri)
+  unsigned relabel = 0;      // --relabel: 0 = identity
+  bool tri = false, ring = false, poisson = false;
+  bool reportOnly = false;  // the WO-0 modes: never fail today
+  std::string stab;         // stabilization mode set after the gravity rule's 'off' (empty = keep)
 };
 
 // Gather every rank's owned bodies to rank 0 and write them sorted by global body index (see the
@@ -514,13 +658,20 @@ static void dumpState(const Simulation& sim, const std::vector<int>& gids, const
 
 static int runCluster(const Mode& md, int rank, int size) {
   const bool hub = md.hubScale > 0.0f;
-  const std::vector<Body> bodies =
-      hub ? makeHub(md.hubScale) : makeCluster(6.0, md.spins, md.periodic);
+  std::vector<Body> bodies = md.tri    ? makeTri(md.axis)
+                             : md.ring ? makeRingMini()
+                             : hub     ? makeHub(md.hubScale)
+                                       : makeCluster(6.0, md.spins, md.periodic);
+  if (md.relabel != 0) {  // another serial order of the same scene: permute before the gids
+    std::mt19937 perm(md.relabel);
+    std::shuffle(bodies.begin(), bodies.end(), perm);
+  }
   const int n = static_cast<int>(bodies.size());
   const float dt0 = md.hertz ? 1e-4f : 1e-2f;
   const float dt = md.dt > 0.0f ? md.dt : dt0;
-  const int steps0 = md.hertz ? 40 : (hub ? 20 : 50);
-  const int steps = static_cast<int>(std::lround(steps0 * dt0 / dt));  // same duration
+  const int steps0 = md.hertz ? 40 : (hub ? 20 : (md.tri ? 3 : (md.ring ? 10 : 50)));
+  const int steps =
+      md.steps > 0 ? md.steps : static_cast<int>(std::lround(steps0 * dt0 / dt));  // same duration
   const int sub = md.hertz ? 25 : 1;  // Hertz: substeps per recorded step
   const D3 g = md.gravity ? D3{0.0, 0.0, -10.0} : D3{0, 0, 0};
 
@@ -537,19 +688,29 @@ static int runCluster(const Mode& md, int rank, int size) {
   sim.setDomainMinMax(peclet::dem::F3{-16.0f, -16.0f, -16.0f},
                       peclet::dem::F3{16.0f, 16.0f, 16.0f});
   sim.setGlobalScale(1.0f);
-  sim.setSphereShape(RAD);
+  if (md.ring)  // outer radius D/2; unit mass, the shape's own inertia (setPositions stamps both)
+    sim.initializeShape(peclet::dem::HOLLOW_CYLINDER, 0.5f * kRingD, kRingH, kRingWall);
+  else
+    sim.setSphereShape(RAD);
   sim.setDt(dt);
   sim.setGravity(static_cast<float>(g[0]), static_cast<float>(g[1]), static_cast<float>(g[2]));
   sim.setSolverIterations(md.posIters, md.velIters);
-  sim.setMaterialParams(0.5f, 0.0f, md.friction ? 0.4f : 0.0f);
+  sim.setMaterialParams(md.restitution, 0.0f, md.ring ? 0.02f : (md.friction ? 0.4f : 0.0f));
   if (md.jacobi)
     sim.setVelocityUseGS(false);
   if (md.gravity)
     sim.setStabilizationMode("off");  // one-sided stabilization is a momentum sink by design
+  if (!md.stab.empty())
+    sim.setStabilizationMode(md.stab);
+  if (md.poisson)
+    sim.setRestitutionModel("poisson");
   if (md.hertz) {
     sim.setHertzMaterial(0, 1.0e5f, 0.25f);
   }
-  load(sim, bodies, gids);
+  if (md.ring)
+    loadShaped(sim, bodies, gids);
+  else
+    load(sim, bodies, gids);
   if (!md.solo) {
     const std::tuple<double, double, double> origin{LO, LO, LO}, dsize{L, L, L};
     const std::tuple<long, long, long> gsize{GX, GX, GX};
@@ -557,7 +718,8 @@ static int runCluster(const Mode& md, int rank, int size) {
     sim.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);
     sim.enableMpiStep(0.0, md.syncEvery, md.forwardRotation);
   }
-  ColorDiag cd;  // hub: max over steps (rank-local)
+  ColorDiag cd;                // max over steps (rank-local); every XPBD mode
+  std::vector<double> keHist;  // CoM-frame kinetic energy after every (recorded) step
   double fricDist =
       0.0;  // cluster_friction: sum over steps of mean |dist| / R of friction contacts
   long fricCount = 0, fricGap = 0;
@@ -594,20 +756,24 @@ static int runCluster(const Mode& md, int rank, int size) {
   int fail = 0;
   const int nOwned = static_cast<int>(gids.size());
   for (int s = 1; s <= steps; ++s) {
-    if (hub)
-      markColors(sim);
+    if (!md.hertz)
+      markColors(sim);  // only the items the step colours carry a colour >= -1 afterwards
     if (md.hertz)
       sim.stepHertzMpi(sub, 0.3f);
     else if (md.solo)
       sim.step(1);
     else
       sim.stepMpi(1);
-    if (hub) {
+    if (!md.hertz) {
       const ColorDiag c = colorDiag(sim);
       cd.degC = std::max(cd.degC, c.degC);
       cd.degM = std::max(cd.degM, c.degM);
       cd.confC = std::max(cd.confC, c.confC);
       cd.confM = std::max(cd.confM, c.confM);
+      cd.colC = std::max(cd.colC, c.colC);
+      cd.colM = std::max(cd.colM, c.colM);
+      cd.leftC = std::max(cd.leftC, c.leftC);
+      cd.leftM = std::max(cd.leftM, c.leftM);
     }
     if (md.friction &&
         !md.hertz) {  // friction-active body-body contacts (their |dist| = lever gap)
@@ -637,6 +803,17 @@ static int runCluster(const Mode& md, int rank, int size) {
     if (static_cast<int>(nx.m.size()) != nOwned)
       fail = 1;  // the per-body velocity-phase record assumes fixed ownership
     const Sums S = globalSums(nx);
+    {  // kinetic energy in the CoM frame (translational + rotational), host double
+      double kl = 0.0, kg = 0.0;
+      for (int i = 0; i < static_cast<int>(nx.m.size()); ++i) {
+        const D3 v = at(nx.v, i), w = at(nx.w, i), sp = spin(nx, i);
+        kl += 0.5 * nx.m[i] * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) +
+              0.5 * (sp[0] * w[0] + sp[1] * w[1] + sp[2] * w[2]);
+      }
+      MPI_Allreduce(&kl, &kg, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+      kg -= 0.5 * (S.P[0] * S.P[0] + S.P[1] * S.P[1] + S.P[2] * S.P[2]) / M;
+      keHist.push_back(kg);
+    }
     const double t = static_cast<double>(s) * sub * dt;
     D3 ep, ex, el, ec;
     const D3 Ln = angular(nx, S), Lc = angularCm(nx, S);
@@ -682,6 +859,22 @@ static int runCluster(const Mode& md, int rank, int size) {
     if (kFollowupGate && (sm[0] > 0 || sm[1] > 0))
       fail = 1;
   }
+  if (!md.hertz) {  // max over steps (above) and ranks
+    const int loc[8] = {cd.confM, cd.confC, cd.degM, cd.degC, cd.colM, cd.colC, cd.leftM, cd.leftC};
+    int mx[8];
+    MPI_Allreduce(loc, mx, 8, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    if (rank == 0)
+      std::printf(
+          "CONFLICTS mode=%s np=%d thr=%d vel=%d pos=%d degVel=%d degPos=%d colVel=%d "
+          "colPos=%d leftVel=%d leftPos=%d\n",
+          md.name.c_str(), size, thr, mx[0], mx[1], mx[2], mx[3], mx[4], mx[5], mx[6], mx[7]);
+  }
+  if (rank == 0) {
+    std::printf("KE mode=%s np=%d thr=%d", md.name.c_str(), size, thr);
+    for (std::size_t k = 0; k < keHist.size(); ++k)
+      std::printf(" s%zu=%.9e", k + 1, keHist[k]);
+    std::printf("\n");
+  }
   if (md.friction && !md.hertz && rank == 0 && size == 1)
     std::printf(
         "FRIC mode=%s dt=%.4g posit=%d meanFricDist/R=%.3e meanFricContacts=%.1f "
@@ -714,7 +907,7 @@ static int runCluster(const Mode& md, int rank, int size) {
     if (rank == 0)
       std::fprintf(stderr, "GATE: %s exceeds its conservation thresholds\n", md.name.c_str());
   }
-  if (hub && !kFollowupGate)
+  if ((hub || md.reportOnly) && !kFollowupGate)
     fail = 0;  // report-only (a non-finite state is printed above, not failed)
   return fail;
 }
@@ -869,6 +1062,8 @@ int main(int argc, char** argv) {
     const std::string mode = (argc > 1) ? argv[1] : "cluster";
     Mode md;
     md.name = mode;
+    int velItersFlag = -1;  // --vel-iters: applied after the mode's own default below
+    bool restitutionFlag = false;
     for (int a = 2; a < argc; ++a) {
       if (std::strncmp(argv[a], "--dump=", 7) == 0)
         md.dump = argv[a] + 7;
@@ -882,7 +1077,24 @@ int main(int argc, char** argv) {
         md.delta = std::stof(argv[a] + 8);
       else if (std::strcmp(argv[a], "--solo") == 0)
         md.solo = true;
+      else if (std::strncmp(argv[a], "--e=", 4) == 0) {
+        md.restitution = std::stof(argv[a] + 4);
+        restitutionFlag = true;
+      } else if (std::strncmp(argv[a], "--steps=", 8) == 0)
+        md.steps = std::stoi(argv[a] + 8);
+      else if (std::strncmp(argv[a], "--vel-iters=", 12) == 0)
+        velItersFlag = std::stoi(argv[a] + 12);
+      else if (std::strncmp(argv[a], "--axis=", 7) == 0)
+        md.axis = std::stoi(argv[a] + 7);
+      else if (std::strncmp(argv[a], "--relabel=", 10) == 0)
+        md.relabel = static_cast<unsigned>(std::stoul(argv[a] + 10));
     }
+    if (md.axis < 0 || md.axis > 2) {
+      if (rank == 0)
+        std::fprintf(stderr, "--axis must be 0, 1 or 2\n");
+      md.axis = 0;
+    }
+
     if (md.solo && size != 1) {
       if (rank == 0)
         std::fprintf(stderr, "--solo needs np = 1\n");
@@ -914,12 +1126,43 @@ int main(int argc, char** argv) {
         md.velIters = 0;
     } else if (mode == "friction_pair_pgs") {
       md.gravity = true;
+    } else if (mode == "tri") {
+      md.tri = true;
+    } else if (mode == "tri_pgs") {
+      md.tri = md.gravity = true;
+    } else if (mode == "cluster_e09" || mode == "cluster_e10") {
+      if (!restitutionFlag)
+        md.restitution = mode == "cluster_e09" ? 0.9f : 1.0f;
+    } else if (mode == "cluster_poisson") {
+      md.friction = md.spins = md.gravity = md.poisson = true;
+    } else if (mode == "cluster_multilevel" || mode == "cluster_escalate" ||
+               mode == "cluster_ordered" || mode == "cluster_onesided") {
+      md.friction = md.spins = md.gravity = true;
+      md.stab = mode.substr(8);  // "multilevel" | "escalate" | "ordered" | "onesided"
+    } else if (mode == "hub_pgs") {
+      if (md.hubScale <= 0.0f)
+        md.hubScale = 10.0f;
+      md.gravity = true;
+    } else if (mode == "ring_mini") {
+      md.ring = true;
     }
+    if (velItersFlag >= 0)
+      md.velIters = velItersFlag;
+    md.reportOnly = mode == "tri" || mode == "tri_pgs" || mode == "cluster_e09" ||
+                    mode == "cluster_e10" || mode == "cluster_poisson" ||
+                    mode == "cluster_multilevel" || mode == "cluster_escalate" ||
+                    mode == "cluster_ordered" || mode == "cluster_onesided" || mode == "hub_pgs" ||
+                    mode == "ring_mini";
     if (mode == "perf_gas" || mode == "perf_pgs")
       fail = runPerf(mode == "perf_pgs", rank, size);
     else if (mode == "friction_pair" || mode == "friction_pair_pgs")
       fail = runFrictionPair(md, rank, size);
-    else if (mode == "hub" || mode == "hub_posonly")
+    else if (mode == "hub" || mode == "hub_posonly" || mode == "hub_pgs")
+      fail = runCluster(md, rank, size);
+    else if (mode == "tri" || mode == "tri_pgs" || mode == "cluster_e09" || mode == "cluster_e10" ||
+             mode == "cluster_poisson" || mode == "cluster_multilevel" ||
+             mode == "cluster_escalate" || mode == "cluster_ordered" ||
+             mode == "cluster_onesided" || mode == "ring_mini")
       fail = runCluster(md, rank, size);
     else if (mode == "cluster" || mode == "cluster_friction" || mode == "cluster_pgs" ||
              mode == "cluster_posonly" || mode == "hertz" || mode == "cluster_sync3" ||

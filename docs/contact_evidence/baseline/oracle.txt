@@ -1,0 +1,30 @@
+ORACLE mode=oracle_closed np=1 thr=1 steps=50 required=10693 owned=10694 missing=0 dup=0 extra=0 firstMiss=0 firstDup=0 firstExtra=0
+OK (np=1)
+ORACLE mode=oracle_shear np=1 thr=1 steps=50 required=9701 owned=9705 missing=0 dup=0 extra=0 firstMiss=0 firstDup=0 firstExtra=0
+OK (np=1)
+ORACLE mode=oracle_periodic np=1 thr=1 steps=50 required=10481 owned=10483 missing=0 dup=0 extra=0 firstMiss=0 firstDup=0 firstExtra=0
+OK (np=1)
+ORACLE mode=oracle_closed np=2 thr=1 steps=50 required=10696 owned=10696 missing=0 dup=0 extra=0 firstMiss=0 firstDup=0 firstExtra=0
+OK (np=2)
+ORACLE mode=oracle_shear np=2 thr=1 steps=50 required=9682 owned=9686 missing=592 dup=0 extra=0 firstMiss=8 firstDup=0 firstExtra=0
+  first missing pair (step 8): gid 15 -- gid 2056, image (+0, +0, +0)
+OK (np=2)
+ORACLE mode=oracle_periodic np=2 thr=1 steps=50 required=10493 owned=10486 missing=12 dup=0 extra=0 firstMiss=1 firstDup=0 firstExtra=0
+  first missing pair (step 1): gid 56 -- gid 4031, image (-1, +0, -1)
+OK (np=2)
+ORACLE mode=oracle_closed np=4 thr=1 steps=50 required=10696 owned=10698 missing=0 dup=0 extra=0 firstMiss=0 firstDup=0 firstExtra=0
+OK (np=4)
+ORACLE mode=oracle_shear np=4 thr=1 steps=50 required=9674 owned=9608 missing=718 dup=0 extra=0 firstMiss=2 firstDup=0 firstExtra=0
+  first missing pair (step 2): gid 56 -- gid 1024, image (+0, +0, +0)
+OK (np=4)
+ORACLE mode=oracle_periodic np=4 thr=1 steps=50 required=10510 owned=10483 missing=30 dup=0 extra=0 firstMiss=1 firstDup=0 firstExtra=0
+  first missing pair (step 1): gid 56 -- gid 3071, image (-1, +0, -1)
+OK (np=4)
+ORACLE mode=oracle_closed np=8 thr=1 steps=50 required=10698 owned=10699 missing=0 dup=0 extra=0 firstMiss=0 firstDup=0 firstExtra=0
+OK (np=8)
+ORACLE mode=oracle_shear np=8 thr=1 steps=50 required=9681 owned=9616 missing=737 dup=0 extra=0 firstMiss=2 firstDup=0 firstExtra=0
+  first missing pair (step 2): gid 56 -- gid 1024, image (+0, +0, +0)
+OK (np=8)
+ORACLE mode=oracle_periodic np=8 thr=1 steps=50 required=10485 owned=10468 missing=20 dup=0 extra=0 firstMiss=2 firstDup=0 firstExtra=0
+  first missing pair (step 2): gid 448 -- gid 2503, image (+0, +0, +0)
+OK (np=8)

@@ -907,6 +907,11 @@ class Simulation : public ShapeRegistry {
   }
   int rank() const { return halo_->rank(); }
   int numGhost() const { return halo_->numGhost(); }
+  /// TEST-ONLY, C++ only: when on, every distributed XPBD substep copies its owned contacts (after
+  /// the ownership partition) and the owned predicted state to host buffers
+  /// (debugCapturedContacts(): the last substep's). Never changes numerics.
+  void debugCaptureContacts(bool on) { P_.debugCapture = on; }
+  const DebugContactCapture& debugCapturedContacts() const { return P_.debugCaptured; }
 #endif  // PECLET_DEM_MPI
 
   // SDF grid (get_sdf_grid): Eikonal reconstruction over the domain, flat x-fastest, negative

@@ -1,0 +1,137 @@
+# (1) test edits inert: pristine e90caff test binary vs WO-0 tests on pristine src (inert_test.sh; OMP 1)
+dump cluster_friction_np1 IDENT
+lines cluster_friction_np1 IDENT
+dump cluster_jacobi_np1 IDENT
+lines cluster_jacobi_np1 IDENT
+dump cluster_norot_np1 IDENT
+lines cluster_norot_np1 IDENT
+dump cluster_np1 IDENT
+lines cluster_np1 IDENT
+dump cluster_np4 IDENT
+lines cluster_np4 IDENT
+dump cluster_periodic_np1 IDENT
+lines cluster_periodic_np1 IDENT
+dump cluster_periodic_solo IDENT
+lines cluster_periodic_solo IDENT
+dump cluster_pgs_np1 IDENT
+lines cluster_pgs_np1 IDENT
+dump cluster_pgs_np4 IDENT
+lines cluster_pgs_np4 IDENT
+dump cluster_posonly_np1 IDENT
+lines cluster_posonly_np1 IDENT
+dump cluster_sync3_np1 IDENT
+lines cluster_sync3_np1 IDENT
+lines friction_pair IDENT
+lines friction_pair_pgs IDENT
+dump hertz_np1 IDENT
+lines hertz_np1 IDENT
+dump hub_np1 IDENT
+lines hub_np1 IDENT
+dump hub_posonly_np1 IDENT
+lines hub_posonly_np1 IDENT
+dump hub_solo IDENT
+lines hub_solo IDENT
+EXIT cases=17 dumpdiff=0 linediff=0
+
+# (2) capture hook inert: WO-0 tests on pristine src (prehook) vs WO-0 tests + src hook, capture off (posthook); dumps.sh, np 1 OMP 1 (+ np 4 cluster, cluster_pgs)
+dump cluster_e09.np1.omp1.dump IDENT
+dump cluster_e10.np1.omp1.dump IDENT
+dump cluster_escalate.np1.omp1.dump IDENT
+dump cluster_friction.np1.omp1.dump IDENT
+dump cluster_jacobi.np1.omp1.dump IDENT
+dump cluster_multilevel.np1.omp1.dump IDENT
+dump cluster_norot.np1.omp1.dump IDENT
+dump cluster.np1.omp1.dump IDENT
+dump cluster.np4.omp1.dump IDENT
+dump cluster_onesided.np1.omp1.dump IDENT
+dump cluster_ordered.np1.omp1.dump IDENT
+dump cluster_periodic.np1.omp1.dump IDENT
+dump cluster_periodic_solo.np1.omp1.dump IDENT
+dump cluster_pgs.np1.omp1.dump IDENT
+dump cluster_pgs.np4.omp1.dump IDENT
+dump cluster_poisson.np1.omp1.dump IDENT
+dump cluster_posonly.np1.omp1.dump IDENT
+dump cluster_sync3.np1.omp1.dump IDENT
+dump hertz.np1.omp1.dump IDENT
+dump hub.np1.omp1.dump IDENT
+dump hub_pgs.np1.omp1.dump IDENT
+dump hub_pgs_solo.np1.omp1.dump IDENT
+dump hub_posonly.np1.omp1.dump IDENT
+dump hub_posonly_solo.np1.omp1.dump IDENT
+dump hub_solo.np1.omp1.dump IDENT
+dump ring_mini.np1.omp1.dump IDENT
+dump ring_mini_solo.np1.omp1.dump IDENT
+dump tri.np1.omp1.dump IDENT
+dump tri_pgs.np1.omp1.dump IDENT
+lines cluster_e09.np1.omp1.log IDENT
+lines cluster_e10.np1.omp1.log IDENT
+lines cluster_escalate.np1.omp1.log IDENT
+lines cluster_friction.np1.omp1.log IDENT
+lines cluster_jacobi.np1.omp1.log IDENT
+lines cluster_multilevel.np1.omp1.log IDENT
+lines cluster_norot.np1.omp1.log IDENT
+lines cluster.np1.omp1.log IDENT
+lines cluster.np4.omp1.log IDENT
+lines cluster_onesided.np1.omp1.log IDENT
+lines cluster_ordered.np1.omp1.log IDENT
+lines cluster_periodic.np1.omp1.log IDENT
+lines cluster_periodic_solo.np1.omp1.log IDENT
+lines cluster_pgs.np1.omp1.log IDENT
+lines cluster_pgs.np4.omp1.log IDENT
+lines cluster_poisson.np1.omp1.log IDENT
+lines cluster_posonly.np1.omp1.log IDENT
+lines cluster_sync3.np1.omp1.log IDENT
+lines hertz.np1.omp1.log IDENT
+lines hub.np1.omp1.log IDENT
+lines hub_pgs.np1.omp1.log IDENT
+lines hub_pgs_solo.np1.omp1.log IDENT
+lines hub_posonly.np1.omp1.log IDENT
+lines hub_posonly_solo.np1.omp1.log IDENT
+lines hub_solo.np1.omp1.log IDENT
+lines ring_mini.np1.omp1.log IDENT
+lines ring_mini_solo.np1.omp1.log IDENT
+lines tri.np1.omp1.log IDENT
+lines tri_pgs.np1.omp1.log IDENT
+
+# (3) oracle capture on vs --capture=0 (final-state dumps), and test_ownership_mpi pre-existing modes: pristine binary vs WO-0 binary (stdout)
+IDENT oracle_closed np1 114688
+IDENT oracle_shear np1 114688
+IDENT oracle_periodic np1 114688
+IDENT oracle_closed np2 114688
+IDENT oracle_shear np2 114688
+IDENT oracle_periodic np2 114688
+IDENT oracle_closed np4 114688
+IDENT oracle_shear np4 114688
+IDENT oracle_periodic np4 114688
+IDENT oracle_closed np8 114688
+IDENT oracle_shear np8 114688
+IDENT oracle_periodic np8 114688
+oracle on/off: 12 cases diff=0
+ownership pristine vs new: 29 cases diff=0
+
+# (4) build_base baseline dumps vs prehook dumps
+dump cluster_e09.np1.omp1.dump IDENT
+dump cluster_e10.np1.omp1.dump IDENT
+dump cluster_escalate.np1.omp1.dump IDENT
+dump cluster_friction.np1.omp1.dump IDENT
+dump cluster_jacobi.np1.omp1.dump IDENT
+dump cluster_multilevel.np1.omp1.dump IDENT
+dump cluster.np1.omp1.dump IDENT
+dump cluster_onesided.np1.omp1.dump IDENT
+dump cluster_ordered.np1.omp1.dump IDENT
+dump cluster_periodic.np1.omp1.dump IDENT
+dump cluster_periodic_solo.np1.omp1.dump IDENT
+dump cluster_pgs.np1.omp1.dump IDENT
+dump cluster_poisson.np1.omp1.dump IDENT
+dump cluster_posonly.np1.omp1.dump IDENT
+dump hertz.np1.omp1.dump IDENT
+dump hub.np1.omp1.dump IDENT
+dump hub_pgs.np1.omp1.dump IDENT
+dump hub_pgs_solo.np1.omp1.dump IDENT
+dump hub_posonly.np1.omp1.dump IDENT
+dump hub_posonly_solo.np1.omp1.dump IDENT
+dump hub_solo.np1.omp1.dump IDENT
+dump ring_mini.np1.omp1.dump IDENT
+dump ring_mini_solo.np1.omp1.dump IDENT
+dump tri.np1.omp1.dump IDENT
+dump tri_pgs.np1.omp1.dump IDENT

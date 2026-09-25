@@ -12,12 +12,26 @@
 
 #include <cstdint>
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "contact_preprocessing.hpp"  // ContactC, ManifoldC
 #include "integration.hpp"            // Domain, V3/V4/Vf/Vi
 #include "narrowphase.hpp"            // ShapeDesc, PlaneP
 
 namespace peclet::dem {
+
+/// TEST-ONLY host capture of one distributed substep's contact ownership (C++ only; filled by
+/// demStepMpi when Particles::debugCapture is set, never read by the step): the owned contacts
+/// [0, ncOwned) after the partition and the owned predicted state they were detected on.
+struct DebugContactCapture {
+  // per owned contact: global ids of bodyA / bodyB (-1 for a wall), the periodic image of each
+  // body's slot (integer box lengths per axis; 0 for an owned row and on a closed axis) and dist
+  std::vector<int> gidA, gidB, imageA, imageB;  // image*: 3 per contact
+  std::vector<float> dist;
+  // per owned body: global id, predicted position (3), world radius
+  std::vector<int> gid;
+  std::vector<float> posPred, rad;
+};
 
 struct Particles {
   // --- per-particle state (size = capacity) ---
@@ -331,6 +345,10 @@ struct Particles {
   // and the overlap (position) solve — correct coupled multi-contact impulses + non-penetration,
   // default; false = count-averaged Jacobi (the legacy robust path, still used by step_mpi).
   bool velocityUseGS = true;
+
+  // TEST-ONLY contact capture (Simulation::debugCaptureContacts; see DebugContactCapture).
+  bool debugCapture = false;
+  DebugContactCapture debugCaptured;
 
   // nPlanes is the plane-array CAPACITY; numPlanes (the live count) stays 0 until planes are added.
   void allocate(int cap, int maxPairs_, int maxContacts_, int nShapes, int nShell, int nPlanes) {

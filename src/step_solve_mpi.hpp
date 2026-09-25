@@ -81,6 +81,46 @@ inline double xpbdContactReach(float rMax) {
   return 2.1 * static_cast<double>(rMax);
 }
 
+/// TEST-ONLY (Simulation::debugCaptureContacts): host copies of the owned contacts [0, ncOwned)
+/// -- global ids, each slot's periodic image (the halo's shift of a ghost slot in box lengths),
+/// dist -- and of the owned predicted positions + radii, into P.debugCaptured. Reads only.
+inline void debugCaptureOwnedContacts(Particles& P, const ParticleHalo& halo, int ncOwned) {
+  DebugContactCapture& cap = P.debugCaptured;
+  const int no = P.numReal;
+  auto hc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.contacts);
+  auto hg = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.gid);
+  auto hp = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.posPred);
+  auto hr = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.rad);
+  const std::vector<float> shift = halo.debugGhostShiftsBySlot();
+  const double box[3] = {static_cast<double>(P.domain.max.x) - P.domain.min.x,
+                         static_cast<double>(P.domain.max.y) - P.domain.min.y,
+                         static_cast<double>(P.domain.max.z) - P.domain.min.z};
+  auto image = [&](int slot, std::vector<int>& out) {
+    for (int d = 0; d < 3; ++d) {
+      const float sh = slot < no ? 0.0f : shift[3 * static_cast<std::size_t>(slot - no) + d];
+      out.push_back(sh == 0.0f ? 0 : static_cast<int>(std::lround(sh / box[d])));
+    }
+  };
+  cap = DebugContactCapture{};
+  for (int i = 0; i < ncOwned; ++i) {
+    const ContactC& c = hc(i);
+    cap.gidA.push_back(hg(c.bodyA));
+    cap.gidB.push_back(c.bodyB >= 0 ? hg(c.bodyB) : -1);
+    image(c.bodyA, cap.imageA);
+    if (c.bodyB >= 0)
+      image(c.bodyB, cap.imageB);
+    else
+      cap.imageB.insert(cap.imageB.end(), {0, 0, 0});
+    cap.dist.push_back(c.dist);
+  }
+  for (int i = 0; i < no; ++i) {
+    cap.gid.push_back(hg(i));
+    for (int d = 0; d < 3; ++d)
+      cap.posPred.push_back(hp(i, d));
+    cap.rad.push_back(hr(i));
+  }
+}
+
 /// One distributed XPBD DEM substep. The periodic ghost generation of the single-rank step is
 /// replaced by a cross-rank gather (halo.gather, ghosts carrying REAL mass + the owner's gid /
 /// material / grounded level), then the FULL modern solve sequence runs through demSolveContacts
@@ -152,6 +192,8 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   // the manifolds reduced owned-first. The solve runs on [0, ncOwned) / [0, nmOwned); the
   // visible counts stay in P.contactCount / P.manifoldCount for the getters.
   const int ncOwned = partitionContactsKokkos(P.contacts, nc, halo.contactOwnership(P));
+  if (P.debugCapture)
+    debugCaptureOwnedContacts(P, halo, ncOwned);
   int nmOwned = 0;
   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot,
                                   ncOwned, &nmOwned);

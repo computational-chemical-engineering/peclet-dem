@@ -30,12 +30,14 @@
 //   * every ghost equals its owner afterwards (velocities verbatim; positions up to the periodic
 //     shift, a multiple of the box length per axis);
 //   * a second reconciliation with no writes changes no owned row, bit for bit.
+// oracle_{closed,shear,periodic}: the report-only dynamic visibility oracle (see runOracle).
 // Build with -DPECLET_DEM_MPI.
 #include <mpi.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <Kokkos_Core.hpp>
@@ -296,11 +298,20 @@ static Scene makeScene(int size, bool drift, float jitterOverride = -1.0f) {
   return sc;
 }
 
-// Run gather + broad/narrow phase + partition on `comm` for the bodies `mine`; return the owned
-// active keys and (for the diagnostic) every visible active key.
-static void ownedKeys(const Scene& sc, const std::vector<int>& mine, bool periodic, MPI_Comm comm,
-                      std::vector<unsigned long long>& owned,
-                      std::vector<unsigned long long>& visible) {
+// One contact of the narrow phase, by global ids: the partner's periodic image relative to bodyA
+// (integer box lengths; filled only when every partner's owner row is local, i.e. on
+// MPI_COMM_SELF -- the oracle's serial reference), dist, and whether this rank owns it.
+struct CRec {
+  unsigned a, b;  // gid of bodyA, gid of bodyB (0xFFFFFFFF: a wall)
+  int img[3];     // image of bodyB's slot minus image of bodyA's slot
+  float dist;
+  bool owned;
+};
+
+// Run gather + broad/narrow phase + partition on `comm` for the bodies `mine` (gids = mine) and
+// return every contact the narrow phase reports on this rank.
+static void detectContacts(const Scene& sc, const std::vector<int>& mine, bool periodic,
+                           MPI_Comm comm, std::vector<CRec>& out) {
   const int no = static_cast<int>(mine.size());
   ProbeSim sim(8 * static_cast<int>(sc.x.size()) + 64);
   sim.setDomain(static_cast<float>(GX), static_cast<float>(GX), static_cast<float>(GX), periodic,
@@ -337,22 +348,53 @@ static void ownedKeys(const Scene& sc, const std::vector<int>& mine, bool period
       peclet::dem::partitionContactsKokkos(P.contacts, nc, halo.contactOwnership(P));
   auto hc = Kokkos::create_mirror_view(P.contacts);
   auto hg = Kokkos::create_mirror_view(P.gid);
+  auto hx = Kokkos::create_mirror_view(P.posPred);
   Kokkos::deep_copy(hc, P.contacts);
   Kokkos::deep_copy(hg, P.gid);
+  Kokkos::deep_copy(hx, P.posPred);
+  // Owner row of each gid present locally (for the image of a slot: slot - owner row, in box
+  // lengths; a ghost copy is its owner's position plus the periodic shift).
+  std::map<int, int> row;
+  for (int i = 0; i < no; ++i)
+    row[hg(i)] = i;
+  auto image = [&](int slot, int d) {
+    if (slot < no)
+      return 0;
+    const auto it = row.find(hg(slot));
+    if (it == row.end())
+      return 0;
+    return static_cast<int>(std::lround((hx(slot, d) - hx(it->second, d)) / double(GX)));
+  };
   for (int i = 0; i < nc; ++i) {
     const auto& c = hc(i);
-    if (c.dist > 0.0f)
-      continue;
-    const unsigned a = static_cast<unsigned>(hg(c.bodyA));
-    const unsigned b = c.bodyB >= 0 ? static_cast<unsigned>(hg(c.bodyB)) : 0xFFFFFFFFu;
-    if (a == b)
-      continue;  // a body against its own periodic image (never owned)
-    const unsigned long long k = peclet::dem::pairKeyFromGids(a, b);
-    visible.push_back(k);
-    if (i < ncOwned)
-      owned.push_back(k);
+    CRec r;
+    r.a = static_cast<unsigned>(hg(c.bodyA));
+    r.b = c.bodyB >= 0 ? static_cast<unsigned>(hg(c.bodyB)) : 0xFFFFFFFFu;
+    for (int d = 0; d < 3; ++d)
+      r.img[d] = c.bodyB >= 0 ? image(c.bodyB, d) - image(c.bodyA, d) : 0;
+    r.dist = c.dist;
+    r.owned = i < ncOwned;
+    out.push_back(r);
   }
   P.numParticles = P.numReal;
+}
+
+// The owned active keys and (for the diagnostic) every visible active key of detectContacts.
+static void ownedKeys(const Scene& sc, const std::vector<int>& mine, bool periodic, MPI_Comm comm,
+                      std::vector<unsigned long long>& owned,
+                      std::vector<unsigned long long>& visible) {
+  std::vector<CRec> cs;
+  detectContacts(sc, mine, periodic, comm, cs);
+  for (const CRec& c : cs) {
+    if (c.dist > 0.0f)
+      continue;
+    if (c.a == c.b)
+      continue;  // a body against its own periodic image (never owned)
+    const unsigned long long k = peclet::dem::pairKeyFromGids(c.a, c.b);
+    visible.push_back(k);
+    if (c.owned)
+      owned.push_back(k);
+  }
 }
 
 static std::vector<unsigned long long> gatherKeys(const std::vector<unsigned long long>& mine,
@@ -710,6 +752,225 @@ static int runMissedPeriodic(int rank, int size) {
   return (kMissedGate && lost > 0) ? 1 : 0;
 }
 
+// ---- REPORT-ONLY: the dynamic visibility oracle (docs/contact_solve_framework.md WO-0 item 3;
+// the gate G5 once the framework lands: missing = dup = extra = 0 at every step) ----
+// oracle_{closed,shear,periodic}: the lattice of makeScene (radii 1 +- 0.1 R), owners at the
+// original positions, advanced by step_mpi for 50 steps with rebalance_every = 0 (dt 1e-2, g = 0,
+// e = 0.5, frictionless, pos/vel iterations 20/8, the API's unit masses). closed: weak jitter,
+// at rest; shear: the same plus v_x = 0.2 (z - GX/2) in units of R per step, i.e. 0.2 (z - GX/2)
+// / dt; periodic: every axis periodic, strong jitter 0.3, at rest. After every step each rank's
+// owned contacts of the substep (Simulation::debugCaptureContacts: global ids, each slot's
+// periodic image, dist) and its owned predicted positions + radii are gathered to rank 0, which
+// runs the same narrow phase on MPI_COMM_SELF over the gathered predicted state (periodic
+// self-ghosts included) and compares pairs keyed by (min gid, max gid, image of the max-gid body
+// relative to the min-gid body):
+//   required = serial pairs with dist < margin - 1e-4 R_max (margin = 0.1 R_max, the step's)
+//   missing  = required pairs owned by no rank; dup = pairs owned more than once;
+//   extra    = owned pairs that are not a serial pair with dist < margin + 1e-4 R_max.
+// One ORACLE line per run: the maximum of each over the steps and the first step it was > 0.
+// Options: --dump=<path> (final committed state, records {int32 gid; float32 pos[3], vel[3]}
+// sorted by lattice index), --capture=0 (run without the capture and without the comparison: the
+// capture's inertness check).
+static constexpr bool kOracleGate = false;
+
+using OKey = std::array<int, 5>;  // min gid, max gid, image (3)
+static bool canonicalKey(int a, int b, const int img[3], OKey& k) {
+  if (a < 0 || b < 0 || a == b)
+    return false;  // a wall, or a body against its own image
+  if (a < b)
+    k = {a, b, img[0], img[1], img[2]};
+  else
+    k = {b, a, -img[0], -img[1], -img[2]};
+  return true;
+}
+
+template <typename T>
+static std::vector<T> gatherTo0(const std::vector<T>& mine, MPI_Datatype type, int rank, int size) {
+  const int n = static_cast<int>(mine.size());
+  std::vector<int> cnt(size), off(size, 0);
+  MPI_Gather(&n, 1, MPI_INT, cnt.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+  int tot = 0;
+  if (rank == 0)
+    for (int r = 0; r < size; ++r) {
+      off[r] = tot;
+      tot += cnt[r];
+    }
+  std::vector<T> all(rank == 0 ? tot : 0);
+  MPI_Gatherv(mine.data(), n, type, all.data(), cnt.data(), off.data(), type, 0, MPI_COMM_WORLD);
+  return all;
+}
+
+static int runOracle(const std::string& which, int rank, int size, const std::string& dump,
+                     bool capture) {
+  const bool periodic = which == "periodic", shear = which == "shear";
+  const Scene sc = makeScene(size, false, periodic ? 0.3f : -1.0f);
+  const float dt = 1e-2f;
+  const int steps = 50;
+  std::vector<int> mine;
+  for (int g = 0; g < static_cast<int>(sc.x.size()); ++g)
+    if (sc.owner[g] == rank)
+      mine.push_back(g);
+  const int no = static_cast<int>(mine.size());
+  ProbeSim sim(8 * static_cast<int>(sc.x.size()) + 64);
+  sim.setDomain(static_cast<float>(GX), static_cast<float>(GX), static_cast<float>(GX), periodic,
+                periodic, periodic);
+  sim.setGlobalScale(1.0f);
+  sim.setSphereShape(kRad);
+  sim.setDt(dt);
+  sim.setGravity(0.0f, 0.0f, 0.0f);
+  sim.setSolverIterations(20, 8);
+  sim.setMaterialParams(0.5f, 0.0f, 0.0f);
+  {
+    std::vector<float> xyz, sc3, v;
+    for (int g : mine) {
+      xyz.insert(xyz.end(), {sc.x[g][0], sc.x[g][1], sc.x[g][2]});
+      sc3.push_back(sc.scale[g]);
+      const float vx = shear ? 0.2f * (sc.x[g][2] - 0.5f * GX) / dt : 0.0f;
+      v.insert(v.end(), {vx, 0.0f, 0.0f});
+    }
+    sim.setPositions(xyz);
+    sim.setScales(sc3);
+    sim.setVelocities(v);
+  }
+  sim.initMpi({0.0, 0.0, 0.0}, {(double)GX, (double)GX, (double)GX}, {GX, GX, GX},
+              {periodic, periodic, periodic}, MPI_COMM_WORLD);
+  sim.enableMpiStep(0.0, 1, true, /*rebalance_every=*/0);
+  sim.debugCaptureContacts(capture);
+
+  int mx[3] = {0, 0, 0}, first[3] = {0, 0, 0}, reqMax = 0, ownedMax = 0;
+  std::array<int, 5> firstMissKey{-1, -1, 0, 0, 0};
+  for (int s = 1; s <= steps; ++s) {
+    sim.stepMpi(1);
+    if (!capture)
+      continue;
+    const peclet::dem::DebugContactCapture& cap = sim.debugCapturedContacts();
+    std::vector<int> ci;
+    std::vector<float> cf, bf;
+    std::vector<int> bi;
+    for (std::size_t i = 0; i < cap.gidA.size(); ++i) {
+      ci.insert(ci.end(), {cap.gidA[i], cap.gidB[i]});
+      for (int d = 0; d < 3; ++d)
+        ci.push_back(cap.imageB[3 * i + d] - cap.imageA[3 * i + d]);
+      cf.push_back(cap.dist[i]);
+    }
+    for (std::size_t i = 0; i < cap.gid.size(); ++i) {
+      bi.push_back(cap.gid[i]);
+      bf.insert(bf.end(),
+                {cap.posPred[3 * i], cap.posPred[3 * i + 1], cap.posPred[3 * i + 2], cap.rad[i]});
+    }
+    const std::vector<int> aci = gatherTo0(ci, MPI_INT, rank, size);
+    const std::vector<float> acf = gatherTo0(cf, MPI_FLOAT, rank, size);
+    const std::vector<int> abi = gatherTo0(bi, MPI_INT, rank, size);
+    const std::vector<float> abf = gatherTo0(bf, MPI_FLOAT, rank, size);
+    if (rank != 0)
+      continue;
+    // The serial reference over the gathered predicted state (index = global id).
+    const int nb = static_cast<int>(abi.size());
+    Scene ser;
+    ser.x.resize(nb);
+    ser.scale.resize(nb);
+    std::vector<int> all(nb);
+    float rMax = 0.0f;
+    for (int k = 0; k < nb; ++k) {
+      const int g = abi[k];
+      ser.x[g] = {abf[4 * k], abf[4 * k + 1], abf[4 * k + 2]};
+      ser.scale[g] = abf[4 * k + 3] / kRad;  // world radius = scale * 1 * kRad (a power of two)
+      rMax = std::max(rMax, abf[4 * k + 3]);
+    }
+    for (int g = 0; g < nb; ++g)
+      all[g] = g;
+    std::vector<CRec> cs;
+    detectContacts(ser, all, periodic, MPI_COMM_SELF, cs);
+    const float margin = 0.1f * rMax;
+    const double tol = 1e-4 * rMax;
+    std::map<OKey, float> serial;  // key -> smallest dist over its contacts / twins
+    for (const CRec& c : cs) {
+      OKey k;
+      const int b = c.b == 0xFFFFFFFFu ? -1 : static_cast<int>(c.b);
+      if (!canonicalKey(static_cast<int>(c.a), b, c.img, k))
+        continue;
+      const auto it = serial.find(k);
+      if (it == serial.end() || c.dist < it->second)
+        serial[k] = c.dist;
+    }
+    std::map<OKey, int> owned;
+    for (std::size_t i = 0; i < acf.size(); ++i) {
+      OKey k;
+      if (canonicalKey(aci[5 * i], aci[5 * i + 1], &aci[5 * i + 2], k))
+        ++owned[k];
+    }
+    int miss = 0, dup = 0, extra = 0, req = 0;
+    for (const auto& [k, d] : serial)
+      if (d < margin - tol) {
+        ++req;
+        if (!owned.count(k)) {
+          if (miss == 0 && first[0] == 0)
+            firstMissKey = k;
+          ++miss;
+        }
+      }
+    for (const auto& [k, n] : owned) {
+      if (n > 1)
+        ++dup;
+      const auto it = serial.find(k);
+      if (it == serial.end() || !(it->second < margin + tol))
+        ++extra;
+    }
+    const int cur[3] = {miss, dup, extra};
+    for (int q = 0; q < 3; ++q) {
+      mx[q] = std::max(mx[q], cur[q]);
+      if (cur[q] > 0 && first[q] == 0)
+        first[q] = s;
+    }
+    reqMax = std::max(reqMax, req);
+    ownedMax = std::max(ownedMax, static_cast<int>(owned.size()));
+  }
+  const int thr = Kokkos::DefaultHostExecutionSpace().concurrency();
+  if (rank == 0 && capture) {
+    std::printf(
+        "ORACLE mode=oracle_%s np=%d thr=%d steps=%d required=%d owned=%d missing=%d dup=%d "
+        "extra=%d firstMiss=%d firstDup=%d firstExtra=%d\n",
+        which.c_str(), size, thr, steps, reqMax, ownedMax, mx[0], mx[1], mx[2], first[0], first[1],
+        first[2]);
+    if (first[0] > 0)
+      std::printf("  first missing pair (step %d): gid %d -- gid %d, image (%+d, %+d, %+d)\n",
+                  first[0], firstMissKey[0], firstMissKey[1], firstMissKey[2], firstMissKey[3],
+                  firstMissKey[4]);
+  }
+  if (!dump.empty()) {  // final committed state, sorted by lattice index (fixed ownership)
+    const std::vector<float> x = sim.getPositions(), v = sim.getVelocities();
+    std::vector<float> rec;
+    for (int i = 0; i < no; ++i) {
+      float g;
+      const std::int32_t gi = mine[i];
+      std::memcpy(&g, &gi, 4);
+      rec.insert(rec.end(),
+                 {g, x[3 * i], x[3 * i + 1], x[3 * i + 2], v[3 * i], v[3 * i + 1], v[3 * i + 2]});
+    }
+    const std::vector<float> allr = gatherTo0(rec, MPI_FLOAT, rank, size);
+    if (rank == 0) {
+      const int nr = static_cast<int>(allr.size() / 7);
+      std::vector<int> order(nr);
+      for (int k = 0; k < nr; ++k)
+        order[k] = k;
+      auto gidOf = [&](int k) {
+        std::int32_t g;
+        std::memcpy(&g, &allr[7 * static_cast<std::size_t>(k)], 4);
+        return g;
+      };
+      std::sort(order.begin(), order.end(), [&](int a, int b) { return gidOf(a) < gidOf(b); });
+      if (std::FILE* f = std::fopen(dump.c_str(), "wb")) {
+        for (int k : order)
+          std::fwrite(&allr[7 * static_cast<std::size_t>(k)], 4, 7, f);
+        std::fclose(f);
+      }
+    }
+  }
+  int bad = (kOracleGate && (mx[0] > 0 || mx[1] > 0 || mx[2] > 0)) ? 1 : 0;
+  MPI_Bcast(&bad, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  return bad;
+}
+
 int main(int argc, char** argv) {
   MPI_Init(&argc, &argv);
   Kokkos::initialize(argc, argv);
@@ -734,7 +995,17 @@ int main(int argc, char** argv) {
       fail = runMissedDriftLattice(rank, size);
     else if (mode == "missed_periodic")
       fail = runMissedPeriodic(rank, size);
-    else {
+    else if (mode == "oracle_closed" || mode == "oracle_shear" || mode == "oracle_periodic") {
+      std::string dump;
+      bool capture = true;
+      for (int a = 2; a < argc; ++a) {
+        if (std::strncmp(argv[a], "--dump=", 7) == 0)
+          dump = argv[a] + 7;
+        else if (std::strcmp(argv[a], "--capture=0") == 0)
+          capture = false;
+      }
+      fail = runOracle(mode.substr(7), rank, size, dump, capture);
+    } else {
       if (rank == 0)
         std::fprintf(stderr, "unknown mode %s\n", mode.c_str());
       fail = 1;

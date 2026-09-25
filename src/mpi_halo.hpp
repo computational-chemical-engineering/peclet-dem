@@ -1158,6 +1158,24 @@ class ParticleHalo {
     return ContactOwnership{rank_, numReal_, P.gid, ghostSource_, copyOffsets_, copyRanks_};
   }
 
+  /// TEST-ONLY (Simulation::debugCaptureContacts): the periodic image shift of every ghost slot
+  /// of the current topology, host copy indexed by slot - numReal (x, y, z per ghost; the shift
+  /// the forwards add to its positions, 0 on a closed axis). Reads only.
+  std::vector<float> debugGhostShiftsBySlot() const {
+    std::vector<float> out(3 * static_cast<std::size_t>(numGhost_ > 0 ? numGhost_ : 0), 0.0f);
+    if (numGhost_ <= 0)
+      return out;
+    auto hs = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), shiftDev_);
+    auto hk = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), ghostSlot_);
+    for (int g = 0; g < numGhost_; ++g) {
+      const int s = hk(g);
+      out[3 * s] = hs(g).x;
+      out[3 * s + 1] = hs(g).y;
+      out[3 * s + 2] = hs(g).z;
+    }
+    return out;
+  }
+
   // ---- ghost -> owner reconciliation (docs/mpi_momentum_conservation.md §2.3) ----
   // Every sync below is COLLECTIVE (a reverse, then a forward, over a possibly one-sided
   // topology): it may be skipped only when this rank neither sends nor receives (exchanges()),

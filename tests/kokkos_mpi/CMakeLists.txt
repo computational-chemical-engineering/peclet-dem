@@ -129,6 +129,25 @@ foreach(np 1 2 4 8)
   endforeach()
 endforeach()
 _dem_mpi_test(followup_missed_drift_lattice_np4 4 test_ownership_mpi missed_drift_lattice)
+# docs/contact_solve_framework.md WO-0: report-only instrumentation of the contact-solve framework
+# (KE per step, CONFLICTS per step, the tri / ring_mini / stabilization scenes; the dynamic
+# visibility oracle). None of them fails today; the framework's gates read their lines.
+foreach(np 1 2 4)
+  foreach(mode cluster_e09 cluster_e10 cluster_poisson cluster_multilevel cluster_escalate
+               cluster_ordered cluster_onesided hub_pgs ring_mini)
+    _dem_mpi_test(followup_${mode}_np${np} ${np} test_momentum_mpi ${mode})
+  endforeach()
+endforeach()
+foreach(np 1 2)  # three bodies: A1/A2 and B on two ranks
+  foreach(mode tri tri_pgs)
+    _dem_mpi_test(followup_${mode}_np${np} ${np} test_momentum_mpi ${mode})
+  endforeach()
+endforeach()
+foreach(np 1 2 4 8)
+  foreach(mode oracle_closed oracle_shear oracle_periodic)
+    _dem_mpi_test(followup_${mode}_np${np} ${np} test_ownership_mpi ${mode})
+  endforeach()
+endforeach()
 # migrate_to_weights(w, align) == flow's aligned partition: also at np = 8, where the budget's
 # alignment and the "fewer aligned boxes than ranks" rejection both differ from np <= 4.
 _dem_mpi_test(align_np8 8 test_align_mpi)
