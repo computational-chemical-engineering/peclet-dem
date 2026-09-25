@@ -108,6 +108,27 @@ foreach(np 1 2 4 8)
     _dem_mpi_test(ownership_${mode}_np${np} ${np} test_ownership_mpi ${mode})
   endforeach()
 endforeach()
+# followup_*: REPORT-ONLY reproductions of the four defects in docs/contact_evidence/FOLLOWUPS.md
+# (they print the numbers and never fail; each source has a kFollowupGate / kMissedGate constant
+# that turns the report into a gate once the defect is fixed). hub / hub_posonly: a grain of 10 R
+# touching ~300 unit grains, far above the colourings' 63-colour cap (same-colour pairs at the hub).
+# friction_pair(_pgs): the legacy friction pass's couple -delta n x J_t on one sliding pair (and its
+# absence on the PGS cone). missed_drift_pair / missed_drift_lattice: pairs no rank sees once both
+# bodies drifted out of their owners' blocks (rebalance_every = 0). missed_periodic: pairs that wrap
+# an undecomposed periodic axis while crossing a rank face (one image per particle and rank).
+foreach(np 1 2 4)
+  foreach(mode hub hub_posonly)
+    _dem_mpi_test(followup_${mode}_np${np} ${np} test_momentum_mpi ${mode})
+  endforeach()
+endforeach()
+_dem_mpi_test(followup_friction_pair_np1 1 test_momentum_mpi friction_pair)
+_dem_mpi_test(followup_friction_pair_pgs_np1 1 test_momentum_mpi friction_pair_pgs)
+foreach(np 1 2 4 8)
+  foreach(mode missed_drift_pair missed_periodic)
+    _dem_mpi_test(followup_${mode}_np${np} ${np} test_ownership_mpi ${mode})
+  endforeach()
+endforeach()
+_dem_mpi_test(followup_missed_drift_lattice_np4 4 test_ownership_mpi missed_drift_lattice)
 # migrate_to_weights(w, align) == flow's aligned partition: also at np = 8, where the budget's
 # alignment and the "fewer aligned boxes than ranks" rejection both differ from np <= 4.
 _dem_mpi_test(align_np8 8 test_align_mpi)

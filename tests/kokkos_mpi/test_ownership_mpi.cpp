@@ -230,7 +230,7 @@ struct Scene {
   std::vector<float> scale;
   std::vector<int> owner;  // ORB owner at the ORIGINAL position (the partition is fixed)
 };
-static Scene makeScene(int size, bool drift) {
+static Scene makeScene(int size, bool drift, float jitterOverride = -1.0f) {
   std::mt19937 rng(777u);
   std::uniform_real_distribution<float> uni(-1.0f, 1.0f);
   BlockDecomposer<3> dec(static_cast<std::size_t>(size), IVec<3>{GX, GX, GX});
@@ -241,7 +241,7 @@ static Scene makeScene(int size, bool drift) {
   // that NO rank reports -- a pair wrapping across a decomposed AND an undecomposed periodic axis
   // at once needs a second image of the partner on the same destination rank, and core's halo
   // keeps one. That gap predates the ownership rule and is outside it; see AFTER.md.)
-  const float jitter = drift ? 0.3f : 0.04f;
+  const float jitter = jitterOverride >= 0.0f ? jitterOverride : (drift ? 0.3f : 0.04f);
   for (int k = 0; k < GX; ++k)
     for (int j = 0; j < GX; ++j)
       for (int i = 0; i < GX; ++i) {
@@ -439,6 +439,277 @@ static int runExactlyOnce(const std::string& which, int rank, int size) {
   return fail;
 }
 
+// ---- REPORT-ONLY: pairs that NO rank sees (docs/contact_evidence/FOLLOWUPS.md, defect 4) ----
+// Each mode builds a scene with a fixed owner per particle, runs the distributed step's contact
+// detection (gather at the XPBD band + broad/narrow phase, ownedKeys) on every rank and the same
+// detection on the whole set on MPI_COMM_SELF, and counts the serial active pairs that are not
+// VISIBLE on any rank (so no rank can solve them, whatever the ownership rule). It never fails
+// today; when the halo supplies every pair, kMissedGate = true makes a missed pair a failure.
+static constexpr bool kMissedGate = false;
+
+// Serial active pairs, and the union of the pairs visible on any rank (on rank 0).
+static void visibleVsSerial(const Scene& sc, bool periodic, int rank, int size,
+                            std::vector<unsigned long long>& serial,
+                            std::vector<unsigned long long>& missed) {
+  std::vector<int> mine, every;
+  for (int g = 0; g < static_cast<int>(sc.x.size()); ++g) {
+    every.push_back(g);
+    if (sc.owner[g] == rank)
+      mine.push_back(g);
+  }
+  std::vector<unsigned long long> owned, visible;
+  ownedKeys(sc, mine, periodic, MPI_COMM_WORLD, owned, visible);
+  std::sort(visible.begin(), visible.end());
+  visible.erase(std::unique(visible.begin(), visible.end()), visible.end());
+  std::vector<unsigned long long> all = gatherKeys(visible, rank, size);
+  serial.clear();
+  missed.clear();
+  if (rank != 0)
+    return;
+  std::vector<unsigned long long> so, sv;
+  ownedKeys(sc, every, periodic, MPI_COMM_SELF, so, sv);
+  std::sort(sv.begin(), sv.end());
+  sv.erase(std::unique(sv.begin(), sv.end()), sv.end());
+  serial = sv;
+  std::sort(all.begin(), all.end());
+  for (auto k : sv)
+    if (!std::binary_search(all.begin(), all.end(), k))
+      missed.push_back(k);
+}
+
+// Distance from x to block r (closed: no images).
+static double gapToBlock(const BlockDecomposer<3>& dec, int r, const std::array<float, 3>& x) {
+  const auto b = dec.block(static_cast<std::size_t>(r));
+  double d2 = 0.0;
+  for (int d = 0; d < 3; ++d) {
+    const double lo = b.origin[d], hi = b.origin[d] + b.size[d];
+    const double gap = x[d] < lo ? lo - x[d] : (x[d] > hi ? x[d] - hi : 0.0);
+    d2 += gap * gap;
+  }
+  return std::sqrt(d2);
+}
+
+static void printBlocks(const BlockDecomposer<3>& dec, int size) {
+  for (int r = 0; r < size; ++r) {
+    const auto b = dec.block(static_cast<std::size_t>(r));
+    std::printf("  block %d: [%ld,%ld) x [%ld,%ld) x [%ld,%ld)\n", r, (long)b.origin[0],
+                (long)(b.origin[0] + b.size[0]), (long)b.origin[1], (long)(b.origin[1] + b.size[1]),
+                (long)b.origin[2], (long)(b.origin[2] + b.size[2]));
+  }
+}
+
+// (a) drift, minimal geometry: two touching unit grains A (owner r) and B (owner s) across the
+// shared face of two face-adjacent blocks (axis a, at coordinate F), both moved a distance y past
+// the common upper end of the two blocks on a second axis b (as if advected with
+// rebalance_every = 0). r receives B only while B is within `band` of block r, s receives A only
+// while A is within `band` of block s; with the centres F -+ d/2 both distances are
+// sqrt((d/2)^2 + y^2), so the pair is lost once y > sqrt(band^2 - d^2/4).
+static int runMissedDriftPair(int rank, int size) {
+  BlockDecomposer<3> dec(static_cast<std::size_t>(size), IVec<3>{GX, GX, GX});
+  int r = -1, s = -1, a = -1, bax = -1;
+  for (int i = 0; i < size && r < 0; ++i)
+    for (int j = 0; j < size && r < 0; ++j) {
+      if (i == j)
+        continue;
+      const auto bi = dec.block(i), bj = dec.block(j);
+      for (int ax = 0; ax < 3 && r < 0; ++ax) {
+        if (bi.origin[ax] + bi.size[ax] != bj.origin[ax])
+          continue;
+        bool same = true;
+        for (int o = 0; o < 3; ++o)
+          if (o != ax && (bi.origin[o] != bj.origin[o] || bi.size[o] != bj.size[o]))
+            same = false;
+        if (!same)
+          continue;
+        for (int o = 0; o < 3 && r < 0; ++o)
+          if (o != ax && bi.origin[o] + bi.size[o] < GX) {
+            r = i;
+            s = j;
+            a = ax;
+            bax = o;
+          }
+      }
+    }
+  if (rank == 0) {
+    std::printf("  missed_drift_pair np=%d layout:\n", size);
+    printBlocks(dec, size);
+  }
+  if (r < 0) {
+    if (rank == 0)
+      std::printf(
+          "  missed_drift_pair np=%d: no two face-adjacent blocks end below the domain on a second "
+          "axis -- a drifted pair is always within the band of one owner here (closed box)\n",
+          size);
+    return 0;
+  }
+  const auto br = dec.block(r);
+  const double F = br.origin[a] + br.size[a];
+  const double top = br.origin[bax] + br.size[bax];
+  int third = 3 - a - bax;
+  const double mid = br.origin[third] + 0.5 * br.size[third];
+  const double dsep = 2.0 * kRad - 0.02;  // touching, overlap 0.02
+  const double band = peclet::dem::xpbdContactReach(kRad);
+  const double yStar = std::sqrt(band * band - 0.25 * dsep * dsep);
+  if (rank == 0)
+    std::printf(
+        "  missed_drift_pair np=%d: A owner %d, B owner %d, face axis %d at %.1f, drift axis %d "
+        "past "
+        "%.1f; R = %.2f, band = %.4f, |AB| = %.3f, predicted loss for y > %.4f (= %.3f R)\n",
+        size, r, s, a, F, bax, top, kRad, band, dsep, yStar, yStar / kRad);
+  int lostTot = 0;
+  for (double yR : {0.0, 0.5, 1.0, 1.5, 1.8, 1.85, 1.86, 1.9, 2.0, 3.0}) {
+    Scene sc;
+    std::array<float, 3> pa{}, pb{};
+    pa[a] = static_cast<float>(F - 0.5 * dsep);
+    pb[a] = static_cast<float>(F + 0.5 * dsep);
+    pa[bax] = pb[bax] = static_cast<float>(top + yR * kRad);
+    pa[third] = pb[third] = static_cast<float>(mid);
+    sc.x = {pa, pb};
+    sc.scale = {1.0f, 1.0f};
+    sc.owner = {r, s};
+    std::vector<unsigned long long> serial, missed;
+    visibleVsSerial(sc, false, rank, size, serial, missed);
+    if (rank == 0) {
+      std::printf(
+          "  MISSED mode=drift_pair np=%d y/R=%.2f serial=%zu missed=%zu dist(A,block s)=%.4f "
+          "dist(B,block r)=%.4f\n",
+          size, yR, serial.size(), missed.size(), gapToBlock(dec, s, pa), gapToBlock(dec, r, pb));
+      lostTot += static_cast<int>(missed.size());
+    }
+  }
+  MPI_Bcast(&lostTot, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  return (kMissedGate && lostTot > 0) ? 1 : 0;
+}
+
+// (a) drift, lattice: the weak-jitter closed lattice of exactly_once_closed, owners at the
+// original positions, then every particle translated by D along x (a uniform advection with
+// rebalance_every = 0; particles leaving [0, GX) are dropped). Counts the pairs no rank sees.
+static int runMissedDriftLattice(int rank, int size) {
+  BlockDecomposer<3> dec(static_cast<std::size_t>(size), IVec<3>{GX, GX, GX});
+  const Scene base = makeScene(size, false);
+  int lostTot = 0;
+  for (double DR : {0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0}) {
+    Scene sc;
+    for (std::size_t g = 0; g < base.x.size(); ++g) {
+      std::array<float, 3> q = base.x[g];
+      q[0] += static_cast<float>(DR * kRad);
+      if (q[0] >= GX)
+        continue;
+      sc.x.push_back(q);
+      sc.scale.push_back(base.scale[g]);
+      sc.owner.push_back(base.owner[g]);
+    }
+    std::vector<unsigned long long> serial, missed;
+    visibleVsSerial(sc, false, rank, size, serial, missed);
+    if (rank == 0) {
+      std::printf("  MISSED mode=drift_lattice np=%d D/R=%.1f N=%zu serial=%zu missed=%zu\n", size,
+                  DR, sc.x.size(), serial.size(), missed.size());
+      if (!missed.empty()) {
+        const unsigned ga = static_cast<unsigned>(missed[0] >> 32),
+                       gb = static_cast<unsigned>(missed[0] & 0xFFFFFFFFu);
+        const auto &xa = sc.x[ga], &xb = sc.x[gb];
+        std::printf(
+            "    e.g. gid %u (owner %d) at (%.3f, %.3f, %.3f) and gid %u (owner %d) at (%.3f, "
+            "%.3f, %.3f): dist(a, block %d) = %.3f, dist(b, block %d) = %.3f, band %.3f\n",
+            ga, sc.owner[ga], xa[0], xa[1], xa[2], gb, sc.owner[gb], xb[0], xb[1], xb[2],
+            sc.owner[gb], gapToBlock(dec, sc.owner[gb], xa), sc.owner[ga],
+            gapToBlock(dec, sc.owner[ga], xb), peclet::dem::xpbdContactReach(1.1f * kRad));
+      }
+      lostTot += static_cast<int>(missed.size());
+    }
+  }
+  MPI_Bcast(&lostTot, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  return (kMissedGate && lostTot > 0) ? 1 : 0;
+}
+
+// (b) periodic, strong jitter: the lattice with jitter 0.3 (as exactly_once_drift, no
+// displacement) in a box periodic on every axis. For each missed pair prints the owners, the
+// minimum-image separation, which axes it wraps and which are decomposed, and, for each owner's
+// block, the image of the partner the halo sends (the single nearest one per axis,
+// withinRcutOfBlock) versus the image the pair needs, and whether the needed image is inside the
+// band (imagesWithinRcutOfBlock): a needed image inside the band but not sent is an image-
+// enumeration gap, one outside the band a band-width gap.
+static int runMissedPeriodic(int rank, int size) {
+  BlockDecomposer<3> dec(static_cast<std::size_t>(size), IVec<3>{GX, GX, GX});
+  const Scene sc = makeScene(size, false, 0.3f);  // the strong jitter, no displacement
+  peclet::core::halo::DomainMap<3> map;
+  for (int d = 0; d < 3; ++d) {
+    map.origin[d] = 0.0;
+    map.cellSize[d] = 1.0;
+    map.periodic[d] = true;
+  }
+  peclet::core::halo::ParticleMigrator<3> mig;
+  mig.init(dec, rank, map, MPI_COMM_WORLD);
+  std::vector<unsigned long long> serial, missed;
+  visibleVsSerial(sc, true, rank, size, serial, missed);
+  if (rank == 0) {
+    std::printf("  missed_periodic np=%d layout:\n", size);
+    printBlocks(dec, size);
+    std::printf("  MISSED mode=periodic np=%d serial=%zu missed=%zu\n", size, serial.size(),
+                missed.size());
+    const double band = peclet::dem::xpbdContactReach(1.1f * kRad);  // global R_max = 1.1 R
+    for (auto k : missed) {
+      const unsigned ga = static_cast<unsigned>(k >> 32),
+                     gb = static_cast<unsigned>(k & 0xFFFFFFFFu);
+      const int ra = sc.owner[ga], rb = sc.owner[gb];
+      const auto &xa = sc.x[ga], &xb = sc.x[gb];
+      // minimum-image separation b - a and the wrap per axis
+      double sep[3], d2 = 0.0;
+      int wrap[3];
+      for (int d = 0; d < 3; ++d) {
+        double s = xb[d] - xa[d];
+        wrap[d] = 0;
+        if (s > 0.5 * GX) {
+          s -= GX;
+          wrap[d] = -1;
+        } else if (s < -0.5 * GX) {
+          s += GX;
+          wrap[d] = 1;
+        }
+        sep[d] = s;
+        d2 += s * s;
+      }
+      std::printf(
+          "    pair gid %u (owner %d) (%.3f, %.3f, %.3f) -- gid %u (owner %d) (%.3f, %.3f, "
+          "%.3f): |sep| = %.3f, wrap of b per axis (%+d, %+d, %+d) x GX\n",
+          ga, ra, xa[0], xa[1], xa[2], gb, rb, xb[0], xb[1], xb[2], std::sqrt(d2), wrap[0], wrap[1],
+          wrap[2]);
+      // What each owner receives of the other, versus what the pair needs.
+      for (int side = 0; side < 2; ++side) {
+        const int dst = side == 0 ? ra : rb;   // receiving rank
+        const auto& xs = side == 0 ? xb : xa;  // the partner it must receive
+        int need[3];
+        for (int d = 0; d < 3; ++d)
+          need[d] = side == 0 ? wrap[d] : -wrap[d];
+        peclet::core::Vec<3> v{xs[0], xs[1], xs[2]}, img;
+        const bool sent = mig.withinRcutOfBlock(v, dst, band, img);
+        int got[3];
+        for (int d = 0; d < 3; ++d)
+          got[d] = static_cast<int>(std::lround((img[d] - v[d]) / GX));
+        std::vector<peclet::core::Vec<3>> shifts;
+        mig.imagesWithinRcutOfBlock(v, dst, band, /*allowIdentity=*/true, shifts);
+        bool needInBand = false;
+        for (const auto& sh : shifts) {
+          bool eq = true;
+          for (int d = 0; d < 3; ++d)
+            if (std::lround(sh[d] / GX) != need[d])
+              eq = false;
+          needInBand = needInBand || eq;
+        }
+        std::printf(
+            "      rank %d receives gid %u: %s, image (%+d, %+d, %+d); needs (%+d, %+d, %+d), "
+            "which is %s the band (%zu images qualify)%s\n",
+            dst, side == 0 ? gb : ga, sent ? "sent" : "NOT sent", got[0], got[1], got[2], need[0],
+            need[1], need[2], needInBand ? "INSIDE" : "outside", shifts.size(),
+            dst == (side == 0 ? rb : ra) ? " [same rank: a periodic self-ghost]" : "");
+      }
+    }
+  }
+  int lost = static_cast<int>(missed.size());
+  MPI_Bcast(&lost, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  return (kMissedGate && lost > 0) ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
   MPI_Init(&argc, &argv);
   Kokkos::initialize(argc, argv);
@@ -457,6 +728,12 @@ int main(int argc, char** argv) {
       fail = runExactlyOnce("periodic", rank, size);
     else if (mode == "exactly_once_drift")
       fail = runExactlyOnce("drift", rank, size);
+    else if (mode == "missed_drift_pair")
+      fail = runMissedDriftPair(rank, size);
+    else if (mode == "missed_drift_lattice")
+      fail = runMissedDriftLattice(rank, size);
+    else if (mode == "missed_periodic")
+      fail = runMissedPeriodic(rank, size);
     else {
       if (rank == 0)
         std::fprintf(stderr, "unknown mode %s\n", mode.c_str());

@@ -62,6 +62,28 @@
 //                     conserved quantities of a periodic box): dX, dXpos and dLvel print n/a.
 //   perf_gas / perf_pgs  timing only (not a ctest): N = 20000, fully periodic, ms/step
 //
+// REPORT-ONLY modes of docs/contact_evidence/FOLLOWUPS.md (never gated; kFollowupGate below):
+//   hub               defect 1 (colour overflow): one grain of scale --hub=S (default 10, radius
+//                     S R) at the cluster centre, touching a shell of ~2.5 (S+1)^2 unit grains
+//                     (scale 1 +- 0.1) that move inward; g = 0, frictionless, velocity solve on.
+//                     The hub's contact degree is far above 63, so the colourings give several
+//                     of its contacts colour 62 (same-colour pairs at one body). Prints a HUB
+//                     line: the largest per-body degree of the rank-local colouring graphs and the
+//                     same-colour pairs per body (velConf / posConf, max over steps, summed over
+//                     ranks; a valid colouring has 0).
+//   hub_posonly       the same with the velocity solve off (the dem default).
+//   friction_pair     defect 2 (legacy-friction couple): two unit spheres sliding past each other
+//                     at an overlap --delta=d (in R, at the predicted positions the velocity phase
+//                     solves at) with a normal approach, g = 0 (the legacy friction pass). One
+//                     step; prints the measured velocity-phase angular impulse about the origin
+//                     and the prediction (p_A - p_B) x J_t = -delta n x J_t. np = 1 only.
+//   friction_pair_pgs the same under free fall (g != 0: the PGS friction cone, manifold midpoint).
+//   cluster_friction also prints a FRIC line: the mean |dist| / R of the friction-active body-body
+//                     contacts and their mean count per step.
+// Options (after the mode): --dump=<path>, --dt=<dt>, --posit=<position iterations>,
+// --hub=<scale>, --delta=<overlap / R>, --solo (single-rank demStep via Simulation::step instead
+// of step_mpi; np = 1 only).
+//
 // Output: one parseable line per run,
 //   MOMENTUM mode=.. np=.. thr=.. N=.. steps=.. dP=.. dX=.. dXpos=.. dL=.. dLcm=.. dLvel=.. ovl=..
 // ovl is the maximum over the steps of the Allreduce-MAX of max_overlap (the position loop's last
@@ -99,8 +121,20 @@
 using peclet::core::IVec;
 using peclet::dem::Simulation;
 
+// Simulation with its Particles exposed, for the report-only colouring / contact diagnostics.
+struct ProbeSim : Simulation {
+  using Simulation::Simulation;
+  const peclet::dem::Particles& parts() const { return P_; }
+  peclet::dem::Particles& parts() { return P_; }
+};
+
 // ---- the conservation gate (G1) ----
 static constexpr bool kGate = true;
+// ---- the FOLLOWUPS report-only modes (hub*, friction_pair*): never fail today. When the colour
+// overflow is fixed, the gate is velConf == posConf == 0 for hub / hub_posonly at every np and
+// thread count; when the friction couple is fixed, |dLz_meas| <= 1e-6 |dLz_pred| for
+// friction_pair. ----
+static constexpr bool kFollowupGate = false;
 // Per-mode thresholds (max over runs; < 0 = not gated). dLvel for the XPBD modes, dL for hertz.
 struct Tol {
   double dP, dX, dXpos, dL, dLvel;
@@ -235,6 +269,99 @@ static std::vector<Body> makeCluster(double ballRadius, bool spins, bool periodi
   return b;
 }
 
+// Defect 1 scene (FOLLOWUPS.md): a grain of scale `hubScale` at the cluster centre with a shell of
+// unit grains on Fibonacci points, each overlapping the hub by ~0.02-0.07, moving inward at
+// 1 + 0.3 N(0,1) on top of a common drift. Deterministic; every rank builds the same set.
+static std::vector<Body> makeHub(float hubScale) {
+  std::mt19937 rng(20260926u);
+  std::uniform_real_distribution<float> uni(-1.0f, 1.0f);
+  std::normal_distribution<float> gauss(0.0f, 1.0f);
+  const D3 c{0.3, -0.2, 0.1};
+  const float drift[3] = {0.7f, -0.4f, 0.3f};
+  const double rs = hubScale * RAD + RAD - 0.02;  // shell centre distance
+  const int ns = static_cast<int>(2.5 * (rs / RAD) * (rs / RAD));
+  std::vector<Body> b;
+  Body h{};
+  for (int d = 0; d < 3; ++d) {
+    h.x[d] = static_cast<float>(c[d]);
+    h.v[d] = drift[d];
+  }
+  h.scale = hubScale;
+  b.push_back(h);
+  const double golden = 3.14159265358979 * (3.0 - std::sqrt(5.0));
+  for (int k = 0; k < ns; ++k) {
+    const double z = 1.0 - 2.0 * (k + 0.5) / ns, r = std::sqrt(1.0 - z * z), ph = golden * k;
+    const D3 dir{r * std::cos(ph), r * std::sin(ph), z};
+    const float speed = 1.0f + 0.3f * gauss(rng);
+    Body q{};
+    for (int d = 0; d < 3; ++d) {
+      q.x[d] = static_cast<float>(c[d] + rs * dir[d]);
+      q.v[d] = drift[d] - speed * static_cast<float>(dir[d]);
+    }
+    q.scale = 1.0f + 0.1f * uni(rng);
+    b.push_back(q);
+  }
+  return b;
+}
+
+// Rank-local colouring diagnostics of the last step: over the contacts / manifolds the step
+// coloured (colour >= -1; the caller filled both colour arrays with -3 before the step, so the
+// entries the step did not colour -- the non-owned visible ones under MPI -- are skipped), the
+// largest per-body degree and the same-colour pairs, sum over (body, colour) of (count - 1).
+struct ColorDiag {
+  int degC = 0, degM = 0, confC = 0, confM = 0;
+};
+static void markColors(ProbeSim& sim) {
+  Kokkos::deep_copy(sim.parts().contactColor, -3);
+  Kokkos::deep_copy(sim.parts().manifoldColor, -3);
+}
+static ColorDiag colorDiag(const ProbeSim& sim) {
+  const peclet::dem::Particles& P = sim.parts();
+  int nc = 0, nm = 0;
+  Kokkos::deep_copy(nc, P.contactCount);
+  Kokkos::deep_copy(nm, P.manifoldCount);
+  auto hc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.contacts);
+  auto hcc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.contactColor);
+  auto hm = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.manifolds);
+  auto hmc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.manifoldColor);
+  auto hr = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.realIndices);
+  ColorDiag g;
+  auto tally = [](std::vector<std::pair<int, int>>& e, int& deg, int& conf) {
+    std::sort(e.begin(), e.end());
+    std::vector<int> d;
+    for (std::size_t i = 0; i < e.size(); ++i) {
+      const int b = e[i].first;
+      if (b >= static_cast<int>(d.size()))
+        d.resize(b + 1, 0);
+      ++d[b];
+      if (i > 0 && e[i].second >= 0 && e[i] == e[i - 1])
+        ++conf;
+    }
+    for (int x : d)
+      deg = std::max(deg, x);
+  };
+  std::vector<std::pair<int, int>> ec, em;  // (body slot, colour)
+  for (int i = 0; i < nc; ++i) {
+    const int col = hcc(i);
+    if (col < -1)
+      continue;
+    ec.push_back({hc(i).bodyA, col});
+    if (hc(i).bodyB >= 0)
+      ec.push_back({hc(i).bodyB, col});
+  }
+  for (int i = 0; i < nm; ++i) {
+    const int col = hmc(i);
+    if (col < -1)
+      continue;
+    em.push_back({hr(hm(i).bodyA), col});
+    if (hm(i).bodyB >= 0)
+      em.push_back({hr(hm(i).bodyB), col});
+  }
+  tally(ec, g.degC, g.confC);
+  tally(em, g.degM, g.confM);
+  return g;
+}
+
 struct Sums {
   double m = 0, P[3] = {0, 0, 0}, mx[3] = {0, 0, 0}, Lo[3] = {0, 0, 0};
 };
@@ -325,6 +452,12 @@ struct Mode {
   int syncEvery = 1;
   bool forwardRotation = true;
   std::string dump;  // --dump=<path>: final-state dump (empty = none)
+  // FOLLOWUPS report-only options
+  float hubScale = 0.0f;  // > 0: the hub scene (makeHub) instead of the cluster
+  bool solo = false;      // --solo: Simulation::step (single-rank demStep), np = 1
+  float dt = 0.0f;        // --dt: override the mode's dt (steps scaled to keep the duration)
+  int posIters = 20;      // --posit
+  float delta = 0.05f;    // --delta (friction_pair): overlap / R
 };
 
 // Gather every rank's owned bodies to rank 0 and write them sorted by global body index (see the
@@ -380,17 +513,26 @@ static void dumpState(const Simulation& sim, const std::vector<int>& gids, const
 }
 
 static int runCluster(const Mode& md, int rank, int size) {
-  const std::vector<Body> bodies = makeCluster(6.0, md.spins, md.periodic);
+  const bool hub = md.hubScale > 0.0f;
+  const std::vector<Body> bodies =
+      hub ? makeHub(md.hubScale) : makeCluster(6.0, md.spins, md.periodic);
   const int n = static_cast<int>(bodies.size());
-  const float dt = md.hertz ? 1e-4f : 1e-2f;
-  const int steps = md.hertz ? 40 : 50;
+  const float dt0 = md.hertz ? 1e-4f : 1e-2f;
+  const float dt = md.dt > 0.0f ? md.dt : dt0;
+  const int steps0 = md.hertz ? 40 : (hub ? 20 : 50);
+  const int steps = static_cast<int>(std::lround(steps0 * dt0 / dt));  // same duration
   const int sub = md.hertz ? 25 : 1;  // Hertz: substeps per recorded step
   const D3 g = md.gravity ? D3{0.0, 0.0, -10.0} : D3{0, 0, 0};
 
   const bool per3 = md.periodic;
-  const std::vector<int> gids = ownedOf(bodies, LO, L, GX, per3, rank, size);
+  std::vector<int> gids;
+  if (md.solo)
+    for (int i = 0; i < n; ++i)
+      gids.push_back(i);
+  else
+    gids = ownedOf(bodies, LO, L, GX, per3, rank, size);
   // A periodic box carries a ghost layer on every face the cluster straddles.
-  Simulation sim(per3 ? 4 * n + 64 : 2 * n + 64);
+  ProbeSim sim(per3 ? 4 * n + 64 : 2 * n + 64);
   sim.setDomain(L, L, L, per3, per3, per3);
   sim.setDomainMinMax(peclet::dem::F3{-16.0f, -16.0f, -16.0f},
                       peclet::dem::F3{16.0f, 16.0f, 16.0f});
@@ -398,7 +540,7 @@ static int runCluster(const Mode& md, int rank, int size) {
   sim.setSphereShape(RAD);
   sim.setDt(dt);
   sim.setGravity(static_cast<float>(g[0]), static_cast<float>(g[1]), static_cast<float>(g[2]));
-  sim.setSolverIterations(20, md.velIters);
+  sim.setSolverIterations(md.posIters, md.velIters);
   sim.setMaterialParams(0.5f, 0.0f, md.friction ? 0.4f : 0.0f);
   if (md.jacobi)
     sim.setVelocityUseGS(false);
@@ -408,11 +550,17 @@ static int runCluster(const Mode& md, int rank, int size) {
     sim.setHertzMaterial(0, 1.0e5f, 0.25f);
   }
   load(sim, bodies, gids);
-  const std::tuple<double, double, double> origin{LO, LO, LO}, dsize{L, L, L};
-  const std::tuple<long, long, long> gsize{GX, GX, GX};
-  const std::tuple<bool, bool, bool> per{per3, per3, per3};
-  sim.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);
-  sim.enableMpiStep(0.0, md.syncEvery, md.forwardRotation);
+  if (!md.solo) {
+    const std::tuple<double, double, double> origin{LO, LO, LO}, dsize{L, L, L};
+    const std::tuple<long, long, long> gsize{GX, GX, GX};
+    const std::tuple<bool, bool, bool> per{per3, per3, per3};
+    sim.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);
+    sim.enableMpiStep(0.0, md.syncEvery, md.forwardRotation);
+  }
+  ColorDiag cd;  // hub: max over steps (rank-local)
+  double fricDist =
+      0.0;  // cluster_friction: sum over steps of mean |dist| / R of friction contacts
+  long fricCount = 0, fricGap = 0;
 
   State st = readState(sim);
   const Sums S0 = globalSums(st);
@@ -446,10 +594,40 @@ static int runCluster(const Mode& md, int rank, int size) {
   int fail = 0;
   const int nOwned = static_cast<int>(gids.size());
   for (int s = 1; s <= steps; ++s) {
+    if (hub)
+      markColors(sim);
     if (md.hertz)
       sim.stepHertzMpi(sub, 0.3f);
+    else if (md.solo)
+      sim.step(1);
     else
       sim.stepMpi(1);
+    if (hub) {
+      const ColorDiag c = colorDiag(sim);
+      cd.degC = std::max(cd.degC, c.degC);
+      cd.degM = std::max(cd.degM, c.degM);
+      cd.confC = std::max(cd.confC, c.confC);
+      cd.confM = std::max(cd.confM, c.confM);
+    }
+    if (md.friction &&
+        !md.hertz) {  // friction-active body-body contacts (their |dist| = lever gap)
+      const peclet::dem::Particles& P = sim.parts();
+      int nc = 0;
+      Kokkos::deep_copy(nc, P.contactCount);
+      auto hc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.contacts);
+      double sd = 0.0;
+      int k = 0, kg = 0;
+      for (int i = 0; i < nc; ++i)
+        if (hc(i).bodyB >= 0 && hc(i).friction_lambda_n > 0.0f) {
+          sd += std::fabs(hc(i).dist);
+          ++k;
+          kg += hc(i).dist > 0.0f;  // a gap (speculative) contact inside the broad-phase margin
+        }
+      if (k > 0)
+        fricDist += sd / k / RAD;
+      fricCount += k;
+      fricGap += kg;
+    }
     {
       float o = sim.maxOverlap(), og = o;
       MPI_Allreduce(&o, &og, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
@@ -489,9 +667,27 @@ static int runCluster(const Mode& md, int rank, int size) {
     st = nx;
     Sprev = S;
   }
-  int ghosts = sim.numGhost(), totGhost = 0;
+  int ghosts = md.solo ? 0 : sim.numGhost(), totGhost = 0;
   MPI_Allreduce(&ghosts, &totGhost, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   const int thr = Kokkos::DefaultHostExecutionSpace().concurrency();
+  if (hub) {
+    int loc[4] = {cd.degC, cd.degM, cd.confC, cd.confM}, mx[2], sm[2];
+    MPI_Allreduce(loc, mx, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(loc + 2, sm, 2, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    if (rank == 0)
+      std::printf(
+          "HUB mode=%s np=%d thr=%d solo=%d hubScale=%.1f N=%d maxDegContacts=%d "
+          "maxDegManifolds=%d posConf=%d velConf=%d\n",
+          md.name.c_str(), size, thr, md.solo ? 1 : 0, md.hubScale, n, mx[0], mx[1], sm[0], sm[1]);
+    if (kFollowupGate && (sm[0] > 0 || sm[1] > 0))
+      fail = 1;
+  }
+  if (md.friction && !md.hertz && rank == 0 && size == 1)
+    std::printf(
+        "FRIC mode=%s dt=%.4g posit=%d meanFricDist/R=%.3e meanFricContacts=%.1f "
+        "gapFraction=%.3f\n",
+        md.name.c_str(), dt, md.posIters, fricDist / steps, static_cast<double>(fricCount) / steps,
+        fricCount > 0 ? static_cast<double>(fricGap) / fricCount : 0.0);
   if (rank == 0) {
     if (md.hertz)
       std::printf(
@@ -518,7 +714,96 @@ static int runCluster(const Mode& md, int rank, int size) {
     if (rank == 0)
       std::fprintf(stderr, "GATE: %s exceeds its conservation thresholds\n", md.name.c_str());
   }
+  if (hub && !kFollowupGate)
+    fail = 0;  // report-only (a non-finite state is printed above, not failed)
   return fail;
+}
+
+// ---- FOLLOWUPS defect 2: the legacy friction pass's couple on one sliding pair (np = 1) ----
+// Unit spheres A (gid 0) and B (gid 1) on the x axis, approaching along x at vn and sliding along
+// y at vt, placed so that at the predicted positions x + v dt (where the narrow phase and the
+// velocity phase work) they overlap by delta. One step of Simulation::step. The friction impulse
+// J_t acts at p_A on A and at p_B = p_A - dist n on B (dist = -delta, n from B to A), so the
+// velocity phase changes the angular momentum by (p_A - p_B) x J_t = -delta n x J_t. The normal
+// impulse is central (the manifold carries the common midpoint), so this couple is the whole
+// velocity-phase dL. friction_pair_pgs runs the same under free fall: the PGS cone, which applies
+// J_t at the manifold midpoint on both bodies.
+static int runFrictionPair(const Mode& md, int rank, int size) {
+  if (size != 1) {
+    if (rank == 0)
+      std::printf("FRICPAIR mode=%s: np = 1 only, skipped\n", md.name.c_str());
+    return 0;
+  }
+  const float dt = md.dt > 0.0f ? md.dt : 1e-2f;
+  const float vn = 0.2f, vt = 1.0f, mu = 0.4f;
+  const D3 g = md.gravity ? D3{0.0, 0.0, -10.0} : D3{0, 0, 0};
+  const double delta = md.delta * RAD;
+  const double d0 = 2.0 * RAD - delta + vn * dt;  // separation now; 2R - delta after the predict
+  std::vector<Body> b(2);
+  b[0] = Body{
+      {static_cast<float>(-0.5 * d0), 0.0f, 0.0f}, {0.5f * vn, 0.5f * vt, 0.0f}, {0, 0, 0}, 1.0f};
+  b[1] = Body{
+      {static_cast<float>(0.5 * d0), 0.0f, 0.0f}, {-0.5f * vn, -0.5f * vt, 0.0f}, {0, 0, 0}, 1.0f};
+  ProbeSim sim(64);
+  sim.setDomain(L, L, L, false, false, false);
+  sim.setDomainMinMax(peclet::dem::F3{-16.0f, -16.0f, -16.0f},
+                      peclet::dem::F3{16.0f, 16.0f, 16.0f});
+  sim.setGlobalScale(1.0f);
+  sim.setSphereShape(RAD);
+  sim.setDt(dt);
+  sim.setGravity(static_cast<float>(g[0]), static_cast<float>(g[1]), static_cast<float>(g[2]));
+  sim.setSolverIterations(md.posIters, 8);
+  sim.setMaterialParams(0.5f, 0.0f, mu);
+  if (md.gravity)
+    sim.setStabilizationMode("off");
+  load(sim, b, {0, 1});
+  const State s0 = readState(sim);
+  sim.step(1);
+  const State s1 = readState(sim);
+  // Contact actually seen (dist at the predicted positions).
+  float dist = 0.0f;
+  {
+    const peclet::dem::Particles& P = sim.parts();
+    int nc = 0;
+    Kokkos::deep_copy(nc, P.contactCount);
+    auto hc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.contacts);
+    for (int i = 0; i < nc; ++i)
+      if (hc(i).bodyB >= 0)
+        dist = hc(i).dist;
+  }
+  // Velocity-phase angular impulse about the origin, lever arms at the predicted positions.
+  D3 dL{0, 0, 0}, xp[2], dv[2];
+  for (int i = 0; i < 2; ++i) {
+    const D3 x = at(s0.x, i), v0 = at(s0.v, i), v1 = at(s1.v, i);
+    for (int d = 0; d < 3; ++d) {
+      xp[i][d] = x[d] + (v0[d] + g[d] * dt) * dt;
+      dv[i][d] = v1[d] - v0[d] - g[d] * dt;
+    }
+    const D3 c = cross(xp[i], dv[i]), sp0 = spin(s0, i), sp1 = spin(s1, i);
+    for (int d = 0; d < 3; ++d)
+      dL[d] += s0.m[i] * c[d] + (sp1[d] - sp0[d]);
+  }
+  // n from B to A; J on A, tangential part.
+  D3 n{xp[0][0] - xp[1][0], xp[0][1] - xp[1][1], xp[0][2] - xp[1][2]};
+  const double sep = norm(n);
+  for (int d = 0; d < 3; ++d)
+    n[d] /= sep;
+  D3 J{s0.m[0] * dv[0][0], s0.m[0] * dv[0][1], s0.m[0] * dv[0][2]};
+  const double jn = J[0] * n[0] + J[1] * n[1] + J[2] * n[2];
+  D3 Jt{J[0] - jn * n[0], J[1] - jn * n[1], J[2] - jn * n[2]};
+  const D3 nxJ = cross(n, Jt);
+  const D3 pred{static_cast<double>(dist) * nxJ[0], static_cast<double>(dist) * nxJ[1],
+                static_cast<double>(dist) * nxJ[2]};  // (p_A - p_B) x J_t, p_A - p_B = dist n
+  const double pp = pred[0] * pred[0] + pred[1] * pred[1] + pred[2] * pred[2];
+  const double ratio = pp > 0 ? (dL[0] * pred[0] + dL[1] * pred[1] + dL[2] * pred[2]) / pp : 0.0;
+  std::printf(
+      "FRICPAIR mode=%s dt=%.4g delta/R=%.4f dist/R=%.4e |Jn|=%.4e |Jt|=%.4e |dL|=%.4e "
+      "|pred|=%.4e dL.pred/|pred|^2=%.4f\n",
+      md.name.c_str(), dt, md.delta, dist / RAD, std::fabs(jn), norm(Jt), norm(dL), std::sqrt(pp),
+      ratio);
+  if (kFollowupGate && norm(dL) > 1e-6 * std::sqrt(pp))
+    return 1;
+  return 0;
 }
 
 // ---- timing (not a ctest): the distributed XPBD step at N = 20000, fully periodic ----
@@ -584,8 +869,25 @@ int main(int argc, char** argv) {
     const std::string mode = (argc > 1) ? argv[1] : "cluster";
     Mode md;
     md.name = mode;
-    if (argc > 2 && std::strncmp(argv[2], "--dump=", 7) == 0)
-      md.dump = argv[2] + 7;
+    for (int a = 2; a < argc; ++a) {
+      if (std::strncmp(argv[a], "--dump=", 7) == 0)
+        md.dump = argv[a] + 7;
+      else if (std::strncmp(argv[a], "--dt=", 5) == 0)
+        md.dt = std::stof(argv[a] + 5);
+      else if (std::strncmp(argv[a], "--posit=", 8) == 0)
+        md.posIters = std::stoi(argv[a] + 8);
+      else if (std::strncmp(argv[a], "--hub=", 6) == 0)
+        md.hubScale = std::stof(argv[a] + 6);
+      else if (std::strncmp(argv[a], "--delta=", 8) == 0)
+        md.delta = std::stof(argv[a] + 8);
+      else if (std::strcmp(argv[a], "--solo") == 0)
+        md.solo = true;
+    }
+    if (md.solo && size != 1) {
+      if (rank == 0)
+        std::fprintf(stderr, "--solo needs np = 1\n");
+      md.solo = false;
+    }
     if (mode == "cluster") {
     } else if (mode == "cluster_friction") {
       md.friction = md.spins = true;
@@ -605,9 +907,20 @@ int main(int argc, char** argv) {
       md.forwardRotation = false;
     } else if (mode == "cluster_periodic") {
       md.periodic = true;
+    } else if (mode == "hub" || mode == "hub_posonly") {
+      if (md.hubScale <= 0.0f)
+        md.hubScale = 10.0f;
+      if (mode == "hub_posonly")
+        md.velIters = 0;
+    } else if (mode == "friction_pair_pgs") {
+      md.gravity = true;
     }
     if (mode == "perf_gas" || mode == "perf_pgs")
       fail = runPerf(mode == "perf_pgs", rank, size);
+    else if (mode == "friction_pair" || mode == "friction_pair_pgs")
+      fail = runFrictionPair(md, rank, size);
+    else if (mode == "hub" || mode == "hub_posonly")
+      fail = runCluster(md, rank, size);
     else if (mode == "cluster" || mode == "cluster_friction" || mode == "cluster_pgs" ||
              mode == "cluster_posonly" || mode == "hertz" || mode == "cluster_sync3" ||
              mode == "cluster_norot" || mode == "cluster_periodic" || mode == "cluster_jacobi")
