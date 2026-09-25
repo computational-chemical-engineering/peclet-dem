@@ -1488,3 +1488,20 @@ max overlap < 1e-4 R:
   each kernel actually applies. Re-verify this after WO-3 changes the position sweep to per-pair.
 - **S5: the WO-0 `debugCaptureContacts` hook in `src` (+83 lines) is accepted.** It was proved
   inert: 127/127 comparisons identical.
+- **S6: wall units get a wall id (option c).** This settles the WO-3 stop of 2026-09-25. §4.3
+  defines a wall unit as "one body and one wall", but `pairKey` (`contact_preprocessing.hpp:396`)
+  gives every boundary contact of a body the same key, and `ContactC::bodyB` is -1 for every wall.
+  The decisions:
+  - **Encoding.** A wall contact carries `bodyB = -1 - wallIndex`. `wallIndex` is unique across the
+    analytic planes and the SDF walls of the scene, and stable across steps. Every test for "is a
+    wall" becomes `bodyB < 0`: audit every `== -1` / `!= -1` / `>= 0` use. `ContactC` does not
+    change size. If an existing encoding already uses negative `bodyB` values other than -1, STOP.
+  - **Keys.** Units are keyed by (body, wallIndex). The manifold-reduction key and its segments
+    stay EXACTLY as today (`pairKey` unchanged), so that np 1 spheres and analytic walls remain
+    byte-identical (§0). Unit construction uses its own key, or a secondary sort key within a
+    segment.
+  - **Acceptance, in addition to WO-3's own:** byte-identity at np 1 for the sphere scenes with
+    2–3 simultaneous wall contacts, i.e. a sphere in a box corner and the drum. Add such a dump if
+    WO-0 has none.
+  - Rejected: (a) units = the sort's segments, which changes np 1 spheres at box edges and corners;
+    (b) one unit per wall contact, which pushes ring beds in containers onto hub copies.
