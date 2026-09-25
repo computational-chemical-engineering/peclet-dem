@@ -16,9 +16,11 @@
 #ifndef DEM_CONTACT_PREPROCESSING_HPP
 #define DEM_CONTACT_PREPROCESSING_HPP
 
+#include <cstddef>
 #include <cstdint>
 #include <Kokkos_Core.hpp>
 #include <Kokkos_Sort.hpp>
+#include <utility>
 
 #include "dem_portable.hpp"  // F4, cross3
 
@@ -400,10 +402,16 @@ KOKKOS_INLINE_FUNCTION std::uint64_t pairKey(const ContactC& c) {
   return (static_cast<std::uint64_t>(u) << 32) | v;
 }
 
-/// Decode the canonical (bodyA, bodyB) from a pair key (bodyB = -1 for boundary).
+/// Distributed step: bit 63 of a manifold-reduction key marks a contact this rank sees but does
+/// not own (docs/mpi_momentum_conservation.md §2.2), so the sort puts the owned manifolds first.
+/// Slots are < 2^31, so no single-rank key ever has it set.
+inline constexpr std::uint64_t kNonOwnedPairBit = 1ull << 63;
+
+/// Decode the canonical (bodyA, bodyB) from a pair key (bodyB = -1 for boundary). Bit 63
+/// (kNonOwnedPairBit) is masked: the identity on every key below 2^63.
 KOKKOS_INLINE_FUNCTION void decodeKey(std::uint64_t key, int& bodyA, int& bodyB) {
   const unsigned v = static_cast<unsigned>(key & 0xFFFFFFFFu);
-  bodyA = static_cast<int>(key >> 32);
+  bodyA = static_cast<int>((key >> 32) & 0x7FFFFFFFu);
   bodyB = (v == 0xFFFFFFFFu) ? -1 : static_cast<int>(v);
 }
 
@@ -447,15 +455,66 @@ KOKKOS_INLINE_FUNCTION ManifoldC transformContact(const ContactC& c) {
   return m;
 }
 
+/// Stable partition of contacts [0, n) by `owns(contact)`: the owned ones first, [0, ncOwned),
+/// then the rest, each part in its old relative order (distributed step,
+/// docs/mpi_momentum_conservation.md §2.2). One exclusive scan + one scatter into a scratch copy;
+/// with every contact owned (np = 1 on a closed domain) the contacts are unchanged bit for bit.
+/// Returns ncOwned.
+template <class Owns>
+inline int partitionContactsKokkos(Kokkos::View<ContactC*, CpMem> contacts, int n,
+                                   const Owns& owns) {
+  if (n == 0)
+    return 0;
+  CpExec space;
+  Kokkos::View<int*, CpMem> before(
+      Kokkos::view_alloc(space, "peclet::dem::cp::partBefore", Kokkos::WithoutInitializing), n);
+  Kokkos::View<ContactC*, CpMem> ct = contacts;
+  int ncOwned = 0;
+  Kokkos::parallel_scan(
+      "peclet::dem::cp::partScan", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int i, int& run, const bool final) {
+        const int f = owns(ct(i)) ? 1 : 0;
+        if (final)
+          before(i) = run;  // exclusive
+        run += f;
+      },
+      ncOwned);
+  Kokkos::View<ContactC*, CpMem> part(
+      Kokkos::view_alloc(space, "peclet::dem::cp::part", Kokkos::WithoutInitializing), n);
+  const int no = ncOwned;
+  Kokkos::parallel_for(
+      "peclet::dem::cp::partScatter", Kokkos::RangePolicy<CpExec>(space, 0, n),
+      KOKKOS_LAMBDA(int i) {
+        const bool f = owns(ct(i));
+        part(f ? before(i) : no + (i - before(i))) = ct(i);
+      });
+  Kokkos::deep_copy(space,
+                    Kokkos::subview(contacts, std::pair<std::size_t, std::size_t>(
+                                                  0, static_cast<std::size_t>(n))),
+                    part);
+  space.fence();
+  return ncOwned;
+}
+
 /// Reduce `n` contacts to manifolds (one per unique canonical pair). outManifolds must hold at
 /// least the number of unique pairs; returns that count (also written to outCount).
+///
+/// Distributed step (docs/mpi_momentum_conservation.md §2.2): with `numOwnedContacts` >= 0 the
+/// contacts at index >= numOwnedContacts (not owned by this rank, after partitionContactsKokkos)
+/// get kNonOwnedPairBit in their key, so the sort puts the owned manifolds first, [0, nmOwned) in
+/// their old relative order, and the non-owned ones after them; `*numOwnedManifolds` receives
+/// nmOwned. The defaults reproduce the single-rank reduction exactly.
 inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, int n,
                                            Kokkos::View<ManifoldC*, CpMem> outManifolds,
                                            Kokkos::View<int, CpMem> outCount,
-                                           Kokkos::View<int*, CpMem> contactSlot = {}) {
+                                           Kokkos::View<int*, CpMem> contactSlot = {},
+                                           int numOwnedContacts = -1,
+                                           int* numOwnedManifolds = nullptr) {
   CpExec space;
   if (n == 0) {
     Kokkos::deep_copy(space, outCount, 0);
+    if (numOwnedManifolds)
+      *numOwnedManifolds = 0;
     return 0;
   }
 
@@ -464,9 +523,11 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
       Kokkos::view_alloc(space, "peclet::dem::cp::keys", Kokkos::WithoutInitializing), n);
   Kokkos::View<int*, CpMem> perm(
       Kokkos::view_alloc(space, "peclet::dem::cp::perm", Kokkos::WithoutInitializing), n);
+  const int nOwnedC = numOwnedContacts;
   Kokkos::parallel_for(
       "peclet::dem::cp::key", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
-        keys(i) = pairKey(contacts(i));
+        keys(i) = pairKey(contacts(i)) |
+                  ((nOwnedC >= 0 && i >= nOwnedC) ? kNonOwnedPairBit : std::uint64_t{0});
         perm(i) = i;
       });
 
@@ -487,6 +548,19 @@ inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> 
           segId(p) = run - 1;  // 0-based segment index
       },
       numSeg);
+  if (numOwnedManifolds) {  // owned segment leaders (their keys carry no kNonOwnedPairBit)
+    Kokkos::View<std::uint64_t*, CpMem> kk = keys;
+    int nOwnedM = 0;
+    Kokkos::parallel_reduce(
+        "peclet::dem::cp::ownedSegs", Kokkos::RangePolicy<CpExec>(space, 0, n),
+        KOKKOS_LAMBDA(int p, int& cnt) {
+          const bool leader = (p == 0) || (kk(p) != kk(p - 1));
+          if (leader && (kk(p) & kNonOwnedPairBit) == 0)
+            ++cnt;
+        },
+        nOwnedM);
+    *numOwnedManifolds = nOwnedM;
+  }
 
   // 4. Initialise one manifold per segment (canonical ids from the key, sums zero).
   Kokkos::View<std::uint64_t*, CpMem> k = keys;

@@ -101,9 +101,12 @@ endforeach()
 # ownership: the owner-exclusive contact scheme's building blocks (docs/mpi_momentum_conservation.md).
 # reverse_*: ghost -> owner reconciliation of ParticleHalo -- exact integer sums onto the owners,
 # ghost == owner afterwards, and a second sync with no writes changes nothing (closed; periodic on
-# every axis, so periodic self-ghosts appear at np = 1).
+# every axis, so periodic self-ghosts appear at np = 1). exactly_once_*: every active contact is
+# owned by exactly one rank -- no key owned twice, the owned union equals the serial active set
+# (closed; periodic; drift = particles displaced out of their owner's block, pairs one owner sees).
 foreach(np 1 2 4 8)
-  foreach(mode reverse_closed reverse_periodic)
+  foreach(mode reverse_closed reverse_periodic exactly_once_closed exactly_once_periodic
+               exactly_once_drift)
     _dem_mpi_test(ownership_${mode}_np${np} ${np} test_ownership_mpi ${mode})
   endforeach()
 endforeach()

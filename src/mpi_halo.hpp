@@ -122,6 +122,45 @@ struct MigratePack {
   float hertzSnWall[Particles::kHertzMaxWalls];
 };
 
+// Which rank solves a contact (docs/mpi_momentum_conservation.md §2.1): EXACTLY ONE of the ranks
+// that see it. On this rank, slots [0, numReal) are owned and the rest are ghosts; for a ghost
+// slot g, ghostSource(g - numReal) is the rank it came from (this rank for a periodic
+// self-ghost); for an owned slot o, copyRanks[copyOffsets(o), copyOffsets(o+1)) are the ranks o
+// is ghosted to (cross-rank only). A contact between an owned o and a ghost g is owned here when
+// the ghost's owner cannot see the pair (it does not hold o as a ghost), else by the owner of the
+// lower-gid body; a body against its own periodic image is never owned. A wall contact belongs to
+// its body's owner. Built by ParticleHalo::contactOwnership over the current topology.
+struct ContactOwnership {
+  int rank;
+  int numReal;
+  Kokkos::View<const int*, CpMem> gid, ghostSource, copyOffsets, copyRanks;
+  KOKKOS_INLINE_FUNCTION bool operator()(const ContactC& c) const {
+    const int a = c.bodyA, b = c.bodyB;
+    if (b < 0)
+      return a < numReal;  // wall contact: its body's owner
+    const bool ao = a < numReal, bo = b < numReal;
+    if (ao && bo)
+      return true;  // both owned here
+    if (!ao && !bo)
+      return false;  // cannot occur (queries come from owned bodies); defensive
+    const int o = ao ? a : b, g = ao ? b : a;
+    if (gid(o) == gid(g))
+      return false;  // a body against its own periodic image
+    const int s = ghostSource(g - numReal);
+    if (s != rank) {
+      bool partnerSees = false;
+      for (int k = copyOffsets(o); k < copyOffsets(o + 1); ++k)
+        if (copyRanks(k) == s) {
+          partnerSees = true;
+          break;
+        }
+      if (!partnerSees)
+        return true;  // the partner's owner cannot see this pair
+    }
+    return gid(o) < gid(g);  // both owners see it (or a self-image twin): the lower gid's owner
+  }
+};
+
 // Ghost -> owner reverse payloads (docs/mpi_momentum_conservation.md §2.3). A ghost's accumulated
 // change since its baseline -- exactly what this rank's owned contacts wrote into it -- is summed
 // onto its owner by core's ParticleHalo<3>::reverse, which accumulates through
@@ -1019,6 +1058,11 @@ class ParticleHalo {
     haloPackF4(field, ownedF4_, numReal_);
     dev_.forward(ownedF4_, ghostF4_);
     haloUnpackF4(field, ghostF4_, ghostSlot_, numReal_, numGhost_);
+  }
+
+  /// The contact-ownership rule over the current topology (see ContactOwnership).
+  ContactOwnership contactOwnership(const Particles& P) const {
+    return ContactOwnership{rank_, numReal_, P.gid, ghostSource_, copyOffsets_, copyRanks_};
   }
 
   // ---- ghost -> owner reconciliation (docs/mpi_momentum_conservation.md §2.3) ----
