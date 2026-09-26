@@ -80,22 +80,78 @@ thread count and `sync_every`, and the velocity phase conserves angular momentum
 serial model does. `sync_every=M` sets how many sweeps pass between reconciliations: conservation
 does not depend on it; larger M means more lag at rank faces and fewer messages.
 Interior contacts keep the serial Gauss–Seidel order; a contact across a rank face sees its far
-body as of the last reconciliation, so trajectories agree with single-rank statistically, not
-bit-for-bit (numbers under *What is validated*). `forward_rotation=False` skips the ghost
-angular-velocity and quaternion forwards (spheres).
+body as of the last reconciliation. The fixed point every projection-form phase converges to is
+the coupled (serial) solution for any consistent copy count `k` (`docs/contact_solve_framework.md`
+§1.3 P4): run to a forced, generous iteration count with every adaptive stop disabled, np 2/4/8
+converge to np 1 to the float floor. At the default, finite adaptive-stop budget, trajectories
+agree with single-rank statistically, not bit-for-bit (numbers under *What is validated*).
+`forward_rotation=False` skips the ghost angular-velocity and quaternion forwards (spheres).
 
 Under Poisson (event-level) restitution two ranks can draw from one body's orphan account within
-one reconciliation interval, each bounded by its own view of the balance; the owner clamps the
-delivered balance at 0 (docs/mpi_momentum_conservation.md, R5).
+one reconciliation interval; each active copy holds its *share* `B/k` of the owner's balance under
+mass splitting (*Bodies updated in several places*, below), the owner reduces the shares back to a
+single balance at every sync, and the clamp at 0 still applies (docs/mpi_momentum_conservation.md,
+R5; `docs/contact_solve_framework.md` §13.3).
 
-The count-averaged solves divide a body's summed correction by its per-body contact count: the
-legacy friction pass, the Jacobi A/B (`set_velocity_solver('jacobi')`) and the colour-saturation
-fallbacks of the Gauss–Seidel loops. Each rank counts only the contacts it owns, so before every
-such divide the ghosts' partial counts are summed onto their owners and the totals forwarded back
-(`syncFrictionCounts`, `syncContactCounts`): every copy of a body divides by the serial count.
-The saturation fallback is decided per rank, so its activation is voted in the same
-`MPI_Allreduce` as the loop's stop residual (no extra message); the count exchange then runs on
-every rank, only in iterations where some rank has uncoloured leftovers.
+The legacy friction pass stays a **raw, count-averaged Jacobi sync**, unaffected by the copies
+framework below because it runs after the phase's own reconciliation, on settled state: each rank
+counts only the contacts it owns, the ghosts' partial counts are summed onto their owners and
+forwarded back (`syncFrictionCounts`), and every copy of a body divides by the serial count. The
+**`'jacobi'` diagnostic (`set_velocity_solver('jacobi')`) is mass-split, not count-averaged**:
+every contact is its own copy, solved against masses `m/count` (velocity and position both), and
+the true-mass deltas are summed with factor 1 — conservative like every other projection-form
+phase, unlike the `min(1, 2/count)` / `1/count` count-averaged forms it replaced. The colouring's
+old count-averaged "leftover" fallback is gone with it: a colouring with edges still uncoloured
+after every vertex above 32 active edges has been split into local mass-split copies
+(`docs/contact_solve_framework.md` §4) throws an invariant violation on every rank, never silent
+fallback work.
+
+### Bodies updated in several places
+
+A body written from more than one place during a substep — several ranks holding it, or (locally,
+even at np 1) more than 32 contact edges landing on it in one colouring — is represented by
+**copies**, and every contact's impulse is owned once, by exactly one copy
+(`docs/contact_solve_framework.md` §0–§5). Every **projection-form** update — warm-started PGS with
+cone and Poisson release, the overlap projection, every stabilization mode, the multilevel cycle,
+and the mass-split `'jacobi'` diagnostic — **mass-splits** its copies (`m/k`, `I/k`, the exact
+active count `k`) and reconciles them by the mean at every sync: conservative at every iterate,
+with the coupled (serial) solution as its fixed point for any consistent `k`. The **event-form**
+`g = 0` one-shot restitution sweep gets the opposite treatment, **exclusive holding**: a greedy
+rank colouring (`C <= 64`) picks exactly one holder rank per shared body each sync interval, only
+the holder's contacts fire, and the run is then a legal serial Gauss–Seidel order that inherits
+every serial property exactly, including conservation and each firing's non-increasing energy —
+mass-splitting the one-shot instead compounds restitution (measured: 14–18 % kinetic energy lost
+per substep on a dense cluster at `e = 0.9`/`1.0`) and is rejected. The Gauss–Seidel colourings
+never exceed 64 colours: a vertex above 32 active edges gets local mass-split copies, round-robin
+over its edges, and the phase is recoloured — the palette lemma then guarantees every colouring
+completes, so the old count-averaged fallback for an uncolourable leftover is gone. Visibility —
+every pair within contact reach seen by **both** bodies' owners — needs a ghost band of
+`reach + S + P` (`S = 0.25 R_max` drift slack, `P` the Verlet skin or else the substep's predicted
+displacement), a migration to current blocks whenever a body drifts more than `S` from its owner's
+block (voted inside the existing radius `Allreduce`, so no extra message), and **every** periodic
+image within that band, not just one.
+
+| phase | form | policy | notes |
+|---|---|---|---|
+| Warm start | known impulses | applied on true masses before copies are seeded | none |
+| One-shot restitution, `g = 0` (colored GS) | event | **X** — one holder rank per sync interval; local hub copies mass-split (M) | reproduces serial to 0.03 % |
+| PGS normal + cone + Poisson release, `g != 0` | projection | **M**, `ω_vel = 1` | |
+| Stabilization (one-sided, escalate, ordered) | projection | **M** | |
+| Multilevel: fine sweep + coarse cycle | projection + coarse accelerator | **M**; a folded hub's copies are one coarse vertex of mass `a·m/k` | |
+| Legacy friction (`g = 0`, no gravity, or Jacobi A/B) | explicit Jacobi pass, raw sync | count-averaged (unaffected by copies) | single application point (midpoint); world-frame inverse inertia |
+| Overlap projection (position phase) | projection (POCS, never over-relaxed: `ω_pos = 1`) | **M** | multi-point pairs solved as one unit |
+| Poisson bank / orphan scatter | bookkeeping | true masses; credit only by the pair's owner | |
+| `'jacobi'` diagnostic | projection, mass-split | every contact its own copy, `k` = global contact count | |
+| Hertz–Mindlin | explicit, redundant on both owners | unchanged; needs symmetric visibility + canonical pair orientation | |
+
+**Validated** (`docs/contact_evidence/IMPL_A.md`; gates G1 conservation, G2 energy, G5 visibility
+oracle, G6 race-freedom):
+- conservation: `dP` ~1e-9 to 1e-8 at np 1–8 across the gated scenes;
+- the review's 3-body scene: kinetic energy at np 2–8 equals np 1 exactly (0.2459 at `e = 0.8`);
+- the visibility oracles: `missing = dup = 0` on closed, sheared and periodic scenes, at np 1–8;
+- np 1 is byte-identical to before, except the named changes (non-spherical position sweeps, any
+  colouring that used to fail, the `'jacobi'` diagnostic, `g = 0` runs with body–body friction, and
+  periodic runs).
 
 ### What is validated
 - `tests/kokkos_mpi/` — the distributed Kokkos `demStep`/`rebalance` ctests, run under `mpirun` at
@@ -132,8 +188,6 @@ every rank, only in iterations where some rank has uncoloured leftovers.
 - **The predicted position must be *forwarded*, not copied from the committed position** at gather time:
   `predict_velocity` already advances `posPred = pos + v·dt`, so copying would leave ghosts one
   predict-step stale and systematically dissipate energy at the boundary.
-- **A periodic axis only works distributed if it is split across ≥2 ranks** (a rank never ghosts to
-  itself for the cross-rank wrap; undecomposed periodic axes use the local self-ghosts instead).
 - **The MPI call sequence must be identical on every rank — never gate an exchange on a rank-local
   condition.** The halo is not symmetric: a rank can owe ghosts to a neighbour that owes it none.
   Skipping the forwards on `numGhost == 0` deadlocked the step whenever such a rank existed
@@ -142,16 +196,33 @@ every rank, only in iterations where some rank has uncoloured leftovers.
   rebuild is an NBX collective and one rank's particles can cross the skin while its neighbours'
   rest). `tests/kokkos_mpi/test_halo_schedule_mpi.cpp` (`one_sided_xpbd`, `one_sided_hertz`,
   `skin_divergent`, ctest TIMEOUT 120 s) pins both.
-- **The ghost band must cover the contact reach, over the GLOBAL maximum radius** (2026-09-24).
-  The XPBD narrow phase reports a pair while the gap is below the margin 0.1 R_max, so a partner
-  across a block face can sit up to 2 R_max + 0.1 R_max from it. The step uses
-  `max(rcut, 2.1 R_max_global)` (Allreduce MAX, re-evaluated every step, growth included) and the
-  margin is 0.1 R_max_global on every rank; the ghost lists are rebuilt whenever the band changes.
-  Before, the default band was one rank-local radius, an explicit `rcut = 2r` missed the margin,
-  a polydisperse run's ranks disagreed on the margin, and a larger band or skin reused lists built
-  with the old one -- each resolved a cross-face pair on one side only.
-  `tests/kokkos_mpi/test_ghost_band_mpi.cpp` (`band_change`, `default_band`, `margin`,
-  `explicit_rcut`) pins all four against `MPI_COMM_SELF`.
+- **The ghost band must cover contact reach plus drift slack plus prediction, over the GLOBAL
+  maximum radius**: `band = max(rcut, reach + S + P)`, `reach = 2.1 R_max`, `S = 0.25 R_max` drift
+  slack, `P` = the Verlet skin or else the substep's predicted displacement
+  (`docs/contact_solve_framework.md` §5.1; Allreduce MAX, re-evaluated every step, growth
+  included). A body drifting more than `S` outside its owner's block triggers `migrateToBlocks`
+  before the next gather — a vote folded into the same `Allreduce` as the band, so it costs no
+  extra message. Before the drift slack existed, the default band was `2.1 R_max` with no margin
+  for motion between gathers, so a fast or infrequently-regathered body's partner could fall
+  outside it; an explicit `rcut = 2r` missed the margin entirely, and a polydisperse run's ranks
+  used to disagree on it. `tests/kokkos_mpi/test_ghost_band_mpi.cpp` (`band_change`,
+  `default_band`, `margin`, `explicit_rcut`) and `test_missed_drift_*` pin the band and the vote
+  against `MPI_COMM_SELF` and an O(N^2) oracle.
+- **Ghost selection and the drift vote measure distance on the domain-clamped ownership
+  coordinate on non-periodic axes, not the raw position** (S20, 2026-09-26): a body outside an
+  unwalled, non-periodic boundary is still projected onto the domain box before its distance to a
+  block is computed, in both the halo topology build and the vote, or a partner across a block
+  face is silently never sent (measured: 121–122 missing pairs at np 4/8 in a sheared, unwalled
+  domain before the fix; `oracle_shear` now gates `missing = dup = 0`).
+- **Every periodic axis sends every image within the band, not just one** (`allImages`, core's
+  `ParticleHaloTopology::build`, opt-in and additive — default off, byte-identical, for every
+  other consumer). A periodic self-image pair is owned by whichever twin's real body has the lower
+  gid when both twins exist on the rank, and outright by whichever twin is present when the drift
+  slack has moved a body's owner across the periodic face and only one twin survives. A periodic
+  axis still only ghosts across the wrap when it is split across ≥2 ranks (a rank never ghosts to
+  itself for the cross-rank wrap; an undecomposed periodic axis uses the local self-ghosts
+  instead), but a decomposed axis now sees every image a body needs: `oracle_periodic`'s
+  missing/dup count is 0 at every np, against 13–27 missing before.
 
 ### Load rebalancing
 With `rebalance_every=N` (or an explicit `sim.rebalance()`), the decomposition is recomputed by

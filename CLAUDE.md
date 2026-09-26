@@ -30,7 +30,16 @@ judgement call in the moment.
 - **Wall SDF sign convention is `val − residual`** (container convention), never `val + residual`.
 - **Particle data layout is plain Kokkos SoA Views** with the backend-default layout — not `float4`,
   not a CaSoA variant.
-- **The velocity solve uses the over-relaxed `min(1, 2/count)` average**, not a raw Jacobi sum.
+- **A body touched from several places is solved through copies** (`docs/contact_solve_framework.md`):
+  mass split (`m/k`, exact active count, mean reconciliation) for PGS and the overlap projection;
+  exclusive holding (one rank per sync interval) for the `g = 0` one-shot restitution sweep. Never
+  raw-sum ghost increments in the one-shot, never mass-split the one-shot (it compounds
+  restitution), never force a colour. **Superseded** (2026-09-25, §12 S2 / WO-2): the old bullet
+  here was "the velocity solve uses the over-relaxed `min(1, 2/count)` average, not a raw Jacobi
+  sum" — that was the `'jacobi'` diagnostic's count-averaging, and it is now mass-split Jacobi:
+  conservative, and at a fixed iteration budget more dissipative than the form it replaced.
+- **The overlap projection sweeps whole contact pairs**, and **colourings never exceed 64
+  colours**: hubs get local copies.
 - **The PGS friction bound comes from the converged normal accumulator**, never from the live
   approach value.
 - **Sleeping is an `invMassEff` swap around the solve call**, not a per-manifold mechanism.
@@ -150,14 +159,38 @@ collective), and any new kernel that writes body state during the solve must wri
 slots only as the partner half of an impulse pair: the reverse delivers exactly what is
 there. `ghost_band_*` no longer pins one thread.
 
-**The distributed XPBD ghost band is `max(rcut, 2.1 R_max)` over the GLOBAL max radius** (2026-09-24;
-`step_solve_mpi.hpp` `demStepMpi`, `xpbdContactReach`). The narrow phase reports a pair while the
-gap is below the margin 0.1 R_max, so a cross-face partner can sit 2 R_max + margin from the face;
-both owners must see it or the pair is resolved on one side. So `rcut` is only a LOWER bound
-(default 0 = exactly the reach; `rcut = 2r` used to miss the margin), the margin is global too (a
-rank-local one made polydisperse ranks disagree on a pair), and a band change rebuilds the ghost
-lists. Every XPBD distributed run whose rcut was below 2.1 R_max, or with polydisperse grains,
-changed at that commit; `tests/kokkos_mpi/test_ghost_band_mpi.cpp` holds the four layouts.
+Since 2026-09-25 (`docs/contact_solve_framework.md`):
+- `openVelocityPhase` exchanges the active-copy counts `k` and holder masks with the warm-start
+  increments;
+- every later sync applies the mean for `k > 1` in projection phases;
+- the `g = 0` one-shot fires a rank-shared body's contacts only on its holder rank (a `gate` per
+  manifold);
+- the velocity phase maps every ghost image of a body to one slot (`realIndices`, set in
+  `demStepMpi`, not in `gather`).
+
+**The distributed XPBD ghost band is `max(rcut, 2.1 R_max + 0.25 R_max + P)`** (`P` = the Verlet
+skin, else the substep's predicted displacement; `step_solve_mpi.hpp` `demStepMpi`,
+`docs/contact_solve_framework.md` §5.1), and the step migrates to the current blocks when any body
+is more than `0.25 R_max` outside its block (a vote folded into the existing radius `Allreduce`, so
+no extra message). Both owners then see every pair. The narrow phase reports a pair while the gap
+is below the margin `0.1 R_max`, so a cross-face partner can sit `2.1 R_max` from the face before
+any allowance for motion between gathers; `rcut` is only a LOWER bound (default 0 = exactly the
+reach), the margin is global (a rank-local one made polydisperse ranks disagree on a pair), and a
+band or a migration rebuilds the ghost lists. `tests/kokkos_mpi/test_ghost_band_mpi.cpp` and
+`test_missed_drift_*` hold the layouts.
+
+**Ownership is not fixed across a run — the drift vote can migrate a body mid-run** (WO-7,
+2026-09-26). A body more than `0.25 R_max` outside its owner's block triggers `migrateToBlocks`
+(above), so a body's owning rank, and its slot, can change between steps. **Tests and any code
+that pairs a body's state across a step must identify it by global id (gid), never by the setup's
+owned-list index** (§12 S22) — the fixed-ownership assumption is gone. **Cross-rank Hertz pair
+lists are canonically oriented, lower gid first** (§12 S21): the Mindlin spring's sign depends on
+pair order, and a gid-keyed history carry through migration used to hand one rank the wrong sign
+after a drift migration (measured dP 9.1e-4 with friction until fixed; at np 1, gid equals slot
+and the broad phase already emits lower-first, so it is byte-identical there). Ghost selection and
+the drift vote measure distance on the **domain-clamped** ownership coordinate on non-periodic
+axes, not the raw position (§12 S20), so a body outside an unwalled boundary is still ghosted
+across the nearest block face instead of silently dropped.
 
 ## The two API tiers (QUALITY_PLAN §3.F, D2 — landed 2026-09-08)
 

@@ -117,6 +117,18 @@ an environment variable:
 `set_solver_iterations(pos, vel)` caps both loops. **`velocityIterations` defaults to 0** — no
 velocity solve, hence no restitution — while `positionIterations` defaults to 10.
 
+**Every per-contact update is one of two forms** (`docs/contact_solve_framework.md` §0–§1): a
+**projection-form** update whose target is fixed for the phase (PGS normal, cone, Poisson release,
+the overlap projection, every stabilization mode, multilevel, the mass-split `'jacobi'`
+diagnostic), or the **event-form** `g = 0` one-shot, whose target is the *current* iterate and
+which is applied only while the pair is still approaching. A body touched from more than one place
+during a substep — several ranks under MPI, or more than 32 contact edges in one colouring even at
+np 1 — is represented by copies: a projection-form phase mass-splits them (`m/k`, `I/k`, mean
+reconciliation, conservative at every iterate), while the one-shot instead holds each shared body
+exclusively on one rank per sync interval, so the run stays a legal serial Gauss–Seidel order. See
+[mpi.md](mpi.md#bodies-updated-in-several-places) for the distributed mechanics and the per-phase
+policy table.
+
 ---
 
 ## 4. Velocity phase — contact dynamics
@@ -138,9 +150,15 @@ $\text{realA} > \text{realB}$ guard. With effective inverse mass
 $w = |\mathbf{N}_{sum}|^2 m^{-1} + \boldsymbol\tau^{T}\mathbf{I}_{world}^{-1}\boldsymbol\tau$ per
 body and $w_{total} = w_A + w_B$, the impulse is $\lambda = (-e\,v_n - v_n)/w_{total}$, scattered
 atomically as $\Delta\mathbf{v} = \lambda\,\mathbf{N}_{sum}m^{-1}$ and the matching angular delta
-through $\mathbf{I}_{world}^{-1}$.
+through $\mathbf{I}_{world}^{-1}$. Its target depends on the *current* iterate (event form): under
+MPI a rank-shared body is held exclusively by one rank per sync interval (a `gate` per manifold,
+`docs/contact_solve_framework.md` §1.4) rather than mass-split, so the distributed run stays a
+legal serial Gauss–Seidel order and every firing is an exact, non-increasing-energy binary
+collision — mass-averaging this update instead compounds restitution (measured 14–18 % kinetic
+energy lost per substep on a dense cluster) and is rejected.
 
-On top of that, with gravity on:
+On top of that, with gravity on (the warm-started PGS statics path, projection form throughout —
+mass-split M under MPI):
 
 - **Persistent contacts.** A pair already in contact last substep is *loaded*, not impacting, so it
   gets $e = 0$ (the impulse still cancels the approach — pure inelastic support). A pile's static
@@ -165,24 +183,37 @@ On top of that, with gravity on:
   Outside it (no gravity, or the Jacobi A/B) the legacy four-kernel cluster of
   `src/solver_friction.hpp` runs instead: `computePlaneLoadKokkos` (one-shot wall normal load),
   `accumulateNormalImpulseKokkos` (body-body force-chain load), `countFrictionContactsKokkos` and a
-  single count-averaged, Coulomb-clamped `solveContactFrictionKokkos` sweep. A frictional **wall**
-  drives friction even when the body-body material is frictionless; the default body-body material
-  is frictionless.
+  single count-averaged, Coulomb-clamped `solveContactFrictionKokkos` sweep — a raw sync,
+  unaffected by the copies framework, that runs after the phase's own reconciliation on settled
+  state. A frictional **wall** drives friction even when the body-body material is frictionless;
+  the default body-body material is frictionless. Every per-contact velocity computation in this
+  legacy pass acts at the contact's single midpoint (`rA_mid`/`rB_mid`, the same arms the manifold
+  path already used), not the two surface points: applying $\pm J_t$ at two different points
+  created a spurious couple `dist · n × J_t` (measured ratio 1.000 before the fix), which broke
+  angular momentum and changes every `g = 0` run with body–body friction. It also rotates the
+  inverse inertia to the world frame ($R\,\mathbf{I}^{-1}\,R^T$) before applying a torque, instead
+  of using the body-frame tensor directly — the earlier form changed a hand-worked ring–ring
+  impulse's angular momentum by 32 % of the applied torque, against 4.5e-11 after the fix; an
+  isotropy guard skips the rotation for isotropic inertia, so spheres stay byte-identical.
 - **Adaptive stop.** `maxApproach` records the largest *applied* correction; the loop ends when it
   falls below a tolerance well under the resting floor (meaningful increments are $\sim g\Delta t$,
   one chain link per sweep — stopping at the resting floor starves deep chains, measured: a
   113-layer pile plateaued at $v_z \approx -5$). `positionIterations`/`velocityIterations` are the
   caps. Distributed, the residual is `MPI_Allreduce(MAX)`-ed so every rank breaks together.
-- **Colour-mask saturation fallback.** Manifolds the colouring could not place (interpenetration
-  degree > 62, only in pathologically crushed regions) are applied with the count-averaged Jacobi
-  pass, so deep overlap still resolves instead of being silently skipped.
+- **Colouring never falls back.** The graph coloring never forces a colour past 64: a vertex with
+  more than 32 active edges is split into local mass-split copies (round-robin over its edges) and
+  the phase is recoloured, which is guaranteed to place every edge (the palette lemma,
+  `docs/contact_solve_framework.md` §1.6). A manifold the colouring still cannot place after that
+  is an invariant violation and throws — the old count-averaged-Jacobi fallback for
+  interpenetration degree > 62 is gone.
 
 ### Stabilization pass
 
 The main sweeps are fully **momentum-conserving** (Guendelman staged solve, side flags zero), so
 impact, discharge and shear see correct physics. Only if they leave an unconverged residual — a
 collapsing column needs about one sweep per layer to carry its weight to the floor, which is
-unaffordable — does the stabilization pass run, selected by `set_stabilization(mode)`:
+unaffordable — does the stabilization pass run, selected by `set_stabilization(mode)`. Every mode
+is a projection-form update (mass-split M under MPI):
 
 | mode | what runs |
 |---|---|
@@ -207,6 +238,12 @@ for the next warm start and the Coulomb bound. Its stop criterion is the **quasi
 full residual is dominated by ballistic contacts in flowing scenes, and gating on it burns the whole
 extra budget every substep (an over-convergence brake on discharge, measured −7 %).
 
+A mass-split hub's `s` copies are folded to one value before the coarse cycle and re-seeded after,
+so between folds they move together; the coarse cycle must then treat them as **one** vertex
+carrying their *combined* mass `a·m/k` (the true mass `m` at np 1, where `a = k = s`), never each
+copy's own split mass `m/k` — else the coarse impulse under-counts the body's inertia by a factor
+of `s` and momentum leaks at every cycle (`docs/contact_solve_framework.md` §13.2).
+
 ---
 
 ## 5. Re-integration
@@ -227,10 +264,15 @@ So the contact-resolved velocity does feed the position state.
 
 *File: `src/solver_position.hpp`.*
 
-Pure geometric projection: no dissipation, no velocity impulses. The **contact** graph (not the
-manifold graph) is coloured once, with the same incremental-colouring policy as the velocity phase,
-and `solvePositionColoredGSKokkos` sweeps it as colored Gauss–Seidel. For a contact between $A$ and
-$B$ (or a static wall) the linearised non-penetration constraint on the surface points is
+Pure geometric projection: no dissipation, no velocity impulses. A contact pair with more than one
+contact point (rings, hollow cylinders) is coloured and swept as one **unit** — every point of the
+pair, in original-index order, inside one colouring edge and one work item — instead of per point;
+a single-point unit is today's exact edge and arithmetic, so spheres and analytic walls stay
+bitwise, while a ring bed's colour count drops from 79–613 per-point edges to about 5–20 pairs
+(`docs/contact_solve_framework.md` §4.3). Beyond that the **contact** graph (of units) is coloured
+once, with the same incremental-colouring policy as the velocity phase, and
+`solvePositionColoredGSKokkos` sweeps it as colored Gauss–Seidel. For a contact between $A$ and $B$
+(or a static wall) the linearised non-penetration constraint on the surface points is
 
 $$ C(\mathbf{x}) = (\mathbf{p}_A^{surf} - \mathbf{p}_B^{surf})\cdot\mathbf{n} \ge 0 $$
 
@@ -245,9 +287,24 @@ $\Delta\mathbf{q} \approx \tfrac12(\mathbf{I}^{-1}(\mathbf{r}\times\mathbf{n})\D
 
 The loop stops once the deepest penetration falls below `posTol = 1e-4 * base_radius *
 global_scale` (~0.01 % of a radius), capped at `positionIterations`; distributed, that residual is
-Allreduce-MAXed too. Two fallbacks keep the older **Jacobi** form of the same projection
-(`solvePositionKokkos` + `applyUpdatesKokkos`, corrections count-averaged by each body's constraint
-count): the colour-mask saturation leftovers, and the whole phase when the Jacobi A/B is selected.
+Allreduce-MAXed too. Selecting the Jacobi A/B (`set_velocity_solver('jacobi')`) runs the whole
+phase through the older **Jacobi** form of the same projection (`solvePositionKokkos` +
+`applyUpdatesKokkos`), but this is now **mass-split**, not count-averaged: every contact is its own
+copy, solved against `m/count`, and the true-mass deltas are summed with factor 1
+(`docs/contact_solve_framework.md` §3.1). The colouring's own count-averaged fallback for
+uncoloured leftovers is gone; a vertex above 32 active edges gets local mass-split copies and is
+recoloured instead (above), and an edge still uncolourable after that throws.
+
+This projection is applied only while $C < 0$ and never retracted, so it is **non-accumulated
+POCS** (Agmon–Motzkin–Schoenberg), not the velocity phase's accumulated, retractable PGS form —
+and it is therefore **never over-relaxed**: every copy solves at $\omega_{pos} = 1$. Over-relaxing a
+projection that cannot take a push back leaves a permanent overshoot proportional to
+$(\omega_{eff} - 1)|C|$: $\omega = 1.5$ on mass-split copies was measured to separate an isolated
+periodic wrap pair by $1.5\times$ its true gap, and every leaf of a mass-split hub by $0.5\times$
+its overlap clear — both a spurious injection of potential energy, since position corrections do
+not feed velocities in dem (`docs/contact_solve_framework.md` §13.1). The velocity phase's PGS
+normal keeps its over-relaxation hook (its multiplier is accumulated and clamped, so an overshoot
+there is legitimately retractable).
 
 > `sim.max_overlap` is this loop's **last-iteration residual**, so it under-reports the committed
 > overlap. `sim.compute_overlaps()` re-runs broad + narrow phase on the committed state and is the
@@ -282,7 +339,7 @@ angular velocities are rescaled at the end of the step (the packing-annealing pr
 |---|---|---|
 | `set_cuda_graphs(enabled)` | `diagnostics` | CUDA-graph capture + replay of each solver iteration loop; the step is host-submission-bound (measured ~3300 launches / ~11 ms per step at 25 k), replay collapses that into one. **Bit-identical**, inert off CUDA and on the distributed step. |
 | `set_fused_sweeps('auto'\|'on'\|'off')` | `diagnostics` | a whole colour sweep — and where eligible the whole adaptive loop — as ONE kernel behind software grid barriers (`src/solver_fused.hpp`). `'auto'` uses it exactly where graph replay is unavailable. **Bit-identical**. |
-| `set_velocity_solver('gauss_seidel'\|'jacobi')` | `diagnostics` | selects the colored-GS or the legacy count-averaged Jacobi solves. **Changes results.** |
+| `set_velocity_solver('gauss_seidel'\|'jacobi')` | `diagnostics` | selects the colored-GS or the mass-split Jacobi diagnostic (velocity and position both; conservative, more dissipative than Gauss–Seidel at a fixed iteration count). **Changes results.** |
 | `set_incremental_coloring(enabled)` | `Simulation` | warm-started colouring; **changes results** (sweep order), which is why it is public. |
 | `set_verlet_skin(frac)` | `Simulation` | broadphase cache; identical contact *set*, different order ⇒ run-to-run scatter at float precision. |
 | `set_sleeping(...)`, `set_stabilization(...)`, `set_restitution_model(...)` | `Simulation` | physics/algorithm choices; each documented above. |
@@ -315,7 +372,13 @@ ownership migration; the migration pack carries each particle's slice.
 
 ## 10. Distributed form
 
-`step_mpi` / `step_hertz_mpi` run the **same drivers** with the MPI hooks. XPBD (`step_mpi`): every
+`step_mpi` / `step_hertz_mpi` run the **same drivers** with the MPI hooks. Cross-rank Hertz pair
+lists are **canonically oriented, lower global id first**: the Mindlin spring's tangential
+displacement $\boldsymbol\xi$ is the displacement of `pairs(idx, 0)` relative to `pairs(idx, 1)`
+and changes sign with the order, so the two owners of a cross-rank pair must agree on it, or a
+gid-keyed history carry through migration hands one rank the wrong sign (measured: dP 9.1e-4 with
+friction, starting at the first drift migration, before the fix). At np 1, gid equals slot and the
+broad phase already emits lower-first, so this is byte-identical there. XPBD (`step_mpi`): every
 contact is solved by exactly one rank (the only owner that sees it, else the lower-gid body's
 owner), the colouring and sweeps stay rank-local over that rank's owned contacts and owned + ghost
 bodies, the partner half of every impulse lands in the ghost slot, and at every sync (every
