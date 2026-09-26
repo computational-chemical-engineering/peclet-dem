@@ -507,3 +507,24 @@ residual is 4.16e-3 against the tolerance 0.02 vRest = 4e-3 and the consensus 1.
 dominated by the sweep's own corrections, so the stop iteration, G7f and every np 1 dump are
 unchanged (the note expected more iterations at interfaces). The mechanism is in place and
 collective-safe; its effect is nil where measured.
+
+## WO-5b: world-frame inverse inertia in legacy friction (§12 S15), verified 2026-09-26
+
+The implementing agent was interrupted by a usage limit, so the session verified the change itself.
+Host load 0.3. Reference: a build of 0ea32ba (WO-5) in `../dem-ref5`. Raw outputs are in the
+session scratchpad, `wo5b/`.
+
+- **np 1 byte identity against WO-5 (`wo5_dumps.sh`):** 45 of 47 mode dumps are identical. The 2
+  that differ are `ring_mini` and `ring_mini_solo`, i.e. non-spherical, the named change. The S6
+  wall scenes and the multilevel pile, 9 of 9, are identical.
+- **`ring_mini` dLvel, np 1 / 2 / 4 / 8, OMP 1:**
+  - before (WO-5): 5.3e-4 / 8.6e-4 / 4.3e-4 / 3.4e-4
+  - after: 3.6e-8 / 3.8e-8 / 2.0e-8 / 3.4e-8
+
+  This matches INVESTIGATION_WO5 (2–4e-8). dP ≤ 2.3e-8. The overlap is 0.247 / 0.226 / 0.212 /
+  0.291, against 0.250 / 0.215 / 0.220 / 0.289 before.
+- **The hand-worked ring–ring impulse test** (tests/kokkos/test_solver_friction.cpp) passes. All
+  7 friction ctests pass.
+- **Position path** (`solver_position.hpp`): the world-frame form is applied for consistency.
+  `deltaQuat` is never committed (`applyUpdatesKokkos` commits `deltaPos` only), so it changes no
+  result today.

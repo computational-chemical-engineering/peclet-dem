@@ -1221,9 +1221,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   if (legacyFriction) {
     countFrictionContactsKokkos(P.contacts, nc, P.realIndices, P.planeFriction);
     hooks.syncFrictionCounts(P);
-    solveContactFrictionKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
-                               P.realIndices, P.planeFriction, P.frictionDynamic, P.deltaVel,
-                               P.deltaAngVel);
+    // World-frame inverse inertia at the phase's frozen orientation P.quat (§12 S15).
+    solveContactFrictionKokkos(P.contacts, nc, P.invMass, P.invInertia, P.quat, P.velPred,
+                               P.angVelPred, P.realIndices, P.planeFriction, P.frictionDynamic,
+                               P.deltaVel, P.deltaAngVel);
     applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
     if constexpr (Hooks::distributed)
       hooks.syncVelocities(P);  // publish the friction velocity update to the ghosts

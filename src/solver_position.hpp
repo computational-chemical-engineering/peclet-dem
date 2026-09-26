@@ -24,6 +24,15 @@ KOKKOS_INLINE_FUNCTION float computeW(F3 r, F3 dir, float invM, F3 invI) {
   const F3 rn = cross3v(r, dir);
   return invM + rn.x * rn.x * invI.x + rn.y * rn.y * invI.y + rn.z * rn.z * invI.z;
 }
+// I_world^-1 v = R diag(invI) R^T v for the body-frame principal inverse inertia invI at the
+// orientation q (docs/contact_solve_framework.md §12 S15). Isotropic invI (spheres) has no
+// principal frame and returns the component-wise product verbatim (bit-identical).
+KOKKOS_INLINE_FUNCTION F3 worldInvInertiaTimes(F3 v, F3 invI, F4 q) {
+  if (invI.x == invI.y && invI.y == invI.z)
+    return F3{v.x * invI.x, v.y * invI.y, v.z * invI.z};
+  const F3 b = invRotateVector(q, v);
+  return rotateVector(q, F3{b.x * invI.x, b.y * invI.y, b.z * invI.z});
+}
 KOKKOS_INLINE_FUNCTION F4 deltaQuat(F3 dTheta, F4 q) {
   return F4{0.5f * (dTheta.x * q.w + dTheta.y * q.z - dTheta.z * q.y),
             0.5f * (dTheta.y * q.w + dTheta.z * q.x - dTheta.x * q.z),
@@ -131,9 +140,14 @@ inline void solvePositionKokkos(
         Kokkos::atomic_add(&deltaPos(idA, 1), n.y * dLambda * invMassA);
         Kokkos::atomic_add(&deltaPos(idA, 2), n.z * dLambda * invMassA);
         {
+          // World-frame inverse inertia (§12 S15; isotropic: the component-wise form verbatim).
+          // NOTE: deltaQuat is never applied (applyUpdatesKokkos commits deltaPos only), so this
+          // rotation changes no result today.
           const F3 rn = cross3v(rA, n);
-          const F3 dTheta{rn.x * invIA.x * dLambda, rn.y * invIA.y * dLambda,
-                          rn.z * invIA.z * dLambda};
+          const bool iso = invIA.x == invIA.y && invIA.y == invIA.z;
+          const F3 dTheta =
+              iso ? F3{rn.x * invIA.x * dLambda, rn.y * invIA.y * dLambda, rn.z * invIA.z * dLambda}
+                  : detail::worldInvInertiaTimes(scale3(rn, dLambda), invIA, qA);
           const F4 dq = detail::deltaQuat(dTheta, qA);
           Kokkos::atomic_add(&deltaQuat(idA, 0), dq.x);
           Kokkos::atomic_add(&deltaQuat(idA, 1), dq.y);
@@ -145,8 +159,10 @@ inline void solvePositionKokkos(
           Kokkos::atomic_add(&deltaPos(idB, 1), -n.y * dLambda * invMassB);
           Kokkos::atomic_add(&deltaPos(idB, 2), -n.z * dLambda * invMassB);
           const F3 rn = cross3v(rB, n);
-          const F3 dTheta{-rn.x * invIB.x * dLambda, -rn.y * invIB.y * dLambda,
-                          -rn.z * invIB.z * dLambda};
+          const bool iso = invIB.x == invIB.y && invIB.y == invIB.z;
+          const F3 dTheta = iso ? F3{-rn.x * invIB.x * dLambda, -rn.y * invIB.y * dLambda,
+                                     -rn.z * invIB.z * dLambda}
+                                : detail::worldInvInertiaTimes(scale3(rn, -dLambda), invIB, qB);
           const F4 dq = detail::deltaQuat(dTheta, qB);
           Kokkos::atomic_add(&deltaQuat(idB, 0), dq.x);
           Kokkos::atomic_add(&deltaQuat(idB, 1), dq.y);

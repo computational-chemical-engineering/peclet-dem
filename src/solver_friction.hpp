@@ -19,6 +19,7 @@
 
 #include "dem_portable.hpp"
 #include "solver_position.hpp"  // ContactC, detail::computeW, CpExec/CpMem
+#include "solver_velocity.hpp"  // detail::genInvMass (the world-frame inverse inertia)
 
 namespace peclet::dem {
 
@@ -152,12 +153,22 @@ inline void countFrictionContactsKokkos(Kokkos::View<const ContactC*, CpMem> con
 
 /// One count-averaged Coulomb friction sweep. Zeros the delta arrays first, then accumulates the
 /// tangential impulse (clamped by mu*normal-load, divided by the larger contact count) into them.
+///
+/// The torque r x t is a WORLD-frame vector and invInertia is the body-frame principal inverse
+/// inertia, so both the effective mass and the angular velocity change go through the world
+/// inverse inertia R diag(invI) R^T of the phase's frozen orientation `quat` (R from the unit
+/// quaternion), exactly as every other velocity kernel does (detail::genInvMass, invRotateVector /
+/// rotateVector; docs/contact_solve_framework.md §12 S15). Applying the body-frame diagonal to the
+/// world torque directly broke angular momentum by up to 32 % of the applied torque on one
+/// ring-ring impulse. Isotropic inverse inertia (spheres) has no principal frame: its branch keeps
+/// the component-wise arithmetic verbatim, so sphere runs are byte-identical.
 inline void solveContactFrictionKokkos(
     Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
-    Kokkos::View<const float* [3], CpMem> velPred, Kokkos::View<const float* [3], CpMem> angVelPred,
-    Kokkos::View<const int*, CpMem> realIdx, FrManifoldCounts planeFriction, float frictionDynamic,
-    Kokkos::View<float* [3], CpMem> deltaVel, Kokkos::View<float* [3], CpMem> deltaAngVel) {
+    Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<const float* [3], CpMem> velPred,
+    Kokkos::View<const float* [3], CpMem> angVelPred, Kokkos::View<const int*, CpMem> realIdx,
+    FrManifoldCounts planeFriction, float frictionDynamic, Kokkos::View<float* [3], CpMem> deltaVel,
+    Kokkos::View<float* [3], CpMem> deltaAngVel) {
   CpExec space;
   Kokkos::deep_copy(space, deltaVel, 0.0f);
   Kokkos::deep_copy(space, deltaAngVel, 0.0f);
@@ -196,9 +207,20 @@ inline void solveContactFrictionKokkos(
         const F3 t = scale3(vt, 1.0f / vt_len);
 
         const F3 rnA = cross3v(rA, t), rnB = cross3v(rB, t);
-        const float w_t = invMA + invMB + rnA.x * rnA.x * invIA.x + rnA.y * rnA.y * invIA.y +
-                          rnA.z * rnA.z * invIA.z + rnB.x * rnB.x * invIB.x +
-                          rnB.y * rnB.y * invIB.y + rnB.z * rnB.z * invIB.z;
+        // Isotropic inverse inertia at an end (spheres; a wall end is 0): no principal frame.
+        const bool isoA = invIA.x == invIA.y && invIA.y == invIA.z;
+        const bool isoB = invIB.x == invIB.y && invIB.y == invIB.z;
+        F4 qA{0, 0, 0, 1}, qB{0, 0, 0, 1};
+        if (!isoA)
+          qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
+        if (!isoB)
+          qB = F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)};
+        const float w_t = (isoA && isoB)
+                              ? invMA + invMB + rnA.x * rnA.x * invIA.x + rnA.y * rnA.y * invIA.y +
+                                    rnA.z * rnA.z * invIA.z + rnB.x * rnB.x * invIB.x +
+                                    rnB.y * rnB.y * invIB.y + rnB.z * rnB.z * invIB.z
+                              : invMA + invMB + detail::genInvMass(rnA, invIA, qA) +
+                                    detail::genInvMass(rnB, invIB, qB);
         if (w_t < 1e-6f)
           return;
 
@@ -221,16 +243,32 @@ inline void solveContactFrictionKokkos(
         Kokkos::atomic_add(&deltaVel(realA, 0), t.x * lt * invMA);
         Kokkos::atomic_add(&deltaVel(realA, 1), t.y * lt * invMA);
         Kokkos::atomic_add(&deltaVel(realA, 2), t.z * lt * invMA);
-        Kokkos::atomic_add(&deltaAngVel(realA, 0), rnA.x * invIA.x * lt);
-        Kokkos::atomic_add(&deltaAngVel(realA, 1), rnA.y * invIA.y * lt);
-        Kokkos::atomic_add(&deltaAngVel(realA, 2), rnA.z * invIA.z * lt);
+        if (isoA) {
+          Kokkos::atomic_add(&deltaAngVel(realA, 0), rnA.x * invIA.x * lt);
+          Kokkos::atomic_add(&deltaAngVel(realA, 1), rnA.y * invIA.y * lt);
+          Kokkos::atomic_add(&deltaAngVel(realA, 2), rnA.z * invIA.z * lt);
+        } else {  // I_world^-1 (r x t) lt = R diag(invI) R^T (r x t) lt
+          const F3 Jl = invRotateVector(qA, scale3(rnA, lt));
+          const F3 dww = rotateVector(qA, F3{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z});
+          Kokkos::atomic_add(&deltaAngVel(realA, 0), dww.x);
+          Kokkos::atomic_add(&deltaAngVel(realA, 1), dww.y);
+          Kokkos::atomic_add(&deltaAngVel(realA, 2), dww.z);
+        }
         if (idB >= 0) {
           Kokkos::atomic_add(&deltaVel(realB, 0), -t.x * lt * invMB);
           Kokkos::atomic_add(&deltaVel(realB, 1), -t.y * lt * invMB);
           Kokkos::atomic_add(&deltaVel(realB, 2), -t.z * lt * invMB);
-          Kokkos::atomic_add(&deltaAngVel(realB, 0), -rnB.x * invIB.x * lt);
-          Kokkos::atomic_add(&deltaAngVel(realB, 1), -rnB.y * invIB.y * lt);
-          Kokkos::atomic_add(&deltaAngVel(realB, 2), -rnB.z * invIB.z * lt);
+          if (isoB) {
+            Kokkos::atomic_add(&deltaAngVel(realB, 0), -rnB.x * invIB.x * lt);
+            Kokkos::atomic_add(&deltaAngVel(realB, 1), -rnB.y * invIB.y * lt);
+            Kokkos::atomic_add(&deltaAngVel(realB, 2), -rnB.z * invIB.z * lt);
+          } else {
+            const F3 Jl = invRotateVector(qB, scale3(rnB, -lt));
+            const F3 dww = rotateVector(qB, F3{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z});
+            Kokkos::atomic_add(&deltaAngVel(realB, 0), dww.x);
+            Kokkos::atomic_add(&deltaAngVel(realB, 1), dww.y);
+            Kokkos::atomic_add(&deltaAngVel(realB, 2), dww.z);
+          }
         }
       });
   space.fence();
