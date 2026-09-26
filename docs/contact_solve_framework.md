@@ -2314,3 +2314,21 @@ PSOR would have a unique least-displacement fixed point and legitimate over-rela
   keeps its own `MPI_LOR` inside `gather`, instead of folding `D_max` into the vote: with the
   default skin of 0 there is no LOR at all. The band term P is `d_max` when the skin is 0; the halo
   adds the skin itself otherwise.
+- **S23: the periodic self-image rule checks for the twin** (WO-9, session, 2026-09-26).
+  - The old rule for a contact between an owned body and a periodic self-ghost was "the lower gid
+    solves". It assumed both twins exist on the rank: (a, b-image) and (b, a-image).
+  - Under the drift slack a body can be owned from across a periodic face. Its partner then has no
+    self-image on the rank, only one orientation is visible, and nobody solved the pair.
+    `oracle_periodic` np 4: gid 2884 at y = 15.97, owned by the block y ∈ [0, 8), against 2885 at
+    y = 0.35.
+  - The fix mirrors the cross-rank partner test: `ContactOwnership` holds a self-image CSR
+    (`selfOffsets` / `selfImage` from the topology's self tail). A self-image contact is owned
+    here outright when the twin image is absent, else by the lower gid.
+- **S24: core gains `FlatTopo::sendShift`** (core 9625788, additive). Each send entry's image is
+  exposed, so dem's image-aware ownership reads it instead of re-deriving core's image enumeration.
+  It is part of the unreleased core 1.3.0.
+- **Release order.** dem's MPI path now calls `ParticleHaloTopology::build(..., allImages)` and
+  reads `sendShift`, which exist only on core main (1.3.0, unreleased). A dem MPI build against the
+  default `PECLET_CORE_TAG` (1.2.x FetchContent) will not compile. Suite development uses the
+  sibling `../core` and is unaffected, and so is the non-MPI wheel. Move `PECLET_CORE_TAG` to the
+  1.3.0 tag once core is published. That is required before any dem release.

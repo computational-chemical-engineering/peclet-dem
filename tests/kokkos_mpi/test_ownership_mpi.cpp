@@ -493,7 +493,7 @@ static int runExactlyOnce(const std::string& which, int rank, int size) {
 // detection on the whole set on MPI_COMM_SELF, and counts the serial active pairs that are not
 // VISIBLE on any rank (so no rank can solve them, whatever the ownership rule). It never fails
 // today; when the halo supplies every pair, kMissedGate = true makes a missed pair a failure.
-static constexpr bool kMissedGate = false;
+static constexpr bool kMissedGate = true;  // WO-9: every periodic image is sent
 // WO-7 (docs/contact_solve_framework.md §5.1): the drift vote + migrateToBlocks + band reach + S + d
 // make every drifted pair visible, so the drift probes are gates. The periodic probe stays
 // report-only until WO-9 (all periodic images).
@@ -914,8 +914,9 @@ static int runOracle(const std::string& which, int rank, int size, const std::st
       if (d < margin - tol) {
         ++req;
         if (!owned.count(k)) {
-          if (miss == 0 && first[0] == 0)
+          if (miss == 0 && first[0] == 0) {
             firstMissKey = k;
+          }
           ++miss;
         }
       }
@@ -978,7 +979,7 @@ static int runOracle(const std::string& which, int rank, int size, const std::st
   }
   // WO-7: closed and sheared scenes are gates (every pair within reach solved exactly once);
   // the periodic scene waits for WO-9 (all periodic images).
-  const bool gateOn = kOracleGate || which != "periodic";
+  const bool gateOn = true;  // WO-9: closed, sheared and periodic are all gates
   // The gate is missing = dup = 0 (docs/contact_solve_framework.md WO-7). `extra` (a pair solved
   // at a gap within 1e-4 R_max beyond the margin on a thread-order / round-off edge) is reported:
   // a speculative contact acts only on approach, so it is not a visibility failure.

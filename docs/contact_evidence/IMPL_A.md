@@ -585,3 +585,25 @@ measured: ms/step in the pinned protocol (WO-11).
 
 The periodic missing pairs (`oracle_periodic`, `missed_periodic`) are WO-9, which depends on core
 `allImages`, and stay report-only.
+
+## WO-9: dem uses every periodic image (session, 2026-09-26)
+
+**Code:**
+- `halo_.build(pv, band, true, /*allImages=*/true)`.
+- `ContactOwnership` is image-aware:
+  - `ghostImage` / `copyImage` from core `FlatTopo::shift` / `sendShift` (S24);
+  - the partner owner must hold this body at the negated image;
+  - the S23 self-image twin test.
+
+**Results:**
+
+| gate | result |
+|---|---|
+| `oracle_periodic`, np 1/2/4/8 | missing = dup = 0. Before: 13 / 27 / 14 at np 2/4/8; with the image rule only, before S23: 0 / 1 / 2. |
+| `missed_periodic`, np 1/2/4/8 | 0 missed (was 2 / 3 at np 2/4) |
+| `exactly_once_periodic`, np 1/2/4/8 | pass |
+| `oracle_closed`, `oracle_shear` | still missing = dup = 0 |
+| gates | `kMissedGate` and every oracle's missing/dup gate are on |
+| np 1 byte identity vs WO-7 | 47/47 mode dumps + 9/9 wall and pile scenes (all-images is inert at np 1) |
+| G4, np 4/8, OMP 1, 3 runs | IDENT for `cluster_periodic` (dP ≤ 2.8e-9), `cluster`, `hertz_shear` |
+| battery (OMP 2, python_mpi run) | 209/209 |

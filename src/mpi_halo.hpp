@@ -132,6 +132,16 @@ struct MigratePack {
   float hertzSnWall[Particles::kHertzMaxWalls];
 };
 
+// Integer periodic image triple, each component in {-1, 0, 1}, packed as sum (c + 1) 4^d; and its
+// negation (the image the partner's owner must hold this body at).
+KOKKOS_INLINE_FUNCTION int imagePack(int x, int y, int z) {
+  return (x + 1) + 4 * (y + 1) + 16 * (z + 1);
+}
+KOKKOS_INLINE_FUNCTION int imageNegate(int p) {
+  const int x = p % 4 - 1, y = (p / 4) % 4 - 1, z = (p / 16) % 4 - 1;
+  return imagePack(-x, -y, -z);
+}
+
 // Which rank solves a contact (docs/mpi_momentum_conservation.md §2.1): EXACTLY ONE of the ranks
 // that see it. On this rank, slots [0, numReal) are owned and the rest are ghosts; for a ghost
 // slot g, ghostSource(g - numReal) is the rank it came from (this rank for a periodic
@@ -144,6 +154,13 @@ struct ContactOwnership {
   int rank;
   int numReal;
   Kokkos::View<const int*, CpMem> gid, ghostSource, copyOffsets, copyRanks;
+  // Image-aware (WO-9, §5.3): ghostImage(g - numReal) is the integer periodic image of ghost slot
+  // g, copyImage(k) that of send entry k (packed per axis as image + 1 in base 4). With every image
+  // sent, "the partner's owner sees the pair" means it holds THIS owned body at the opposite image.
+  Kokkos::View<const int*, CpMem> ghostImage, copyImage;
+  // Periodic self-images (a ghost of this rank's own body): selfImage[selfOffsets(o),
+  // selfOffsets(o+1)) are the images at which owned o is held as a self-ghost here.
+  Kokkos::View<const int*, CpMem> selfOffsets, selfImage;
   KOKKOS_INLINE_FUNCTION bool operator()(const ContactC& c) const {
     const int a = c.bodyA, b = c.bodyB;
     if (b < 0)
@@ -157,10 +174,25 @@ struct ContactOwnership {
     if (gid(o) == gid(g))
       return false;  // a body against its own periodic image
     const int s = ghostSource(g - numReal);
-    if (s != rank) {
+    if (s == rank) {
+      // A self-image contact: its twin (the partner owned here, this body as a self-ghost at the
+      // opposite image) exists only if this rank holds o at that image. A body owned from across
+      // a periodic face (drift slack, §5.1) can have one orientation only -- then this one owns
+      // the pair, as in the cross-rank rule below (§12 S23).
+      const int want = imageNegate(ghostImage(g - numReal));
+      bool twin = false;
+      for (int k = selfOffsets(o); k < selfOffsets(o + 1); ++k)
+        if (selfImage(k) == want) {
+          twin = true;
+          break;
+        }
+      if (!twin)
+        return true;
+    } else {
       bool partnerSees = false;
+      const int want = imageNegate(ghostImage(g - numReal));
       for (int k = copyOffsets(o); k < copyOffsets(o + 1); ++k)
-        if (copyRanks(k) == s) {
+        if (copyRanks(k) == s && copyImage(k) == want) {
           partnerSees = true;
           break;
         }
@@ -1102,7 +1134,11 @@ class ParticleHalo {
       // axis (e.g. z of a 2x2x1 layout) or np=1 -- is its own periodic image on that axis, so the
       // periodic neighbours are local self-ghosts the cross-rank exchange never makes. This
       // supplies them.
-      halo_.build(pv, band, /*includePeriodicSelf=*/true);
+      // allImages (docs/contact_solve_framework.md §5.3, WO-9): EVERY periodic image of a particle
+      // within the band goes to a destination rank, one ghost per image -- a pair that wraps across
+      // an undecomposed periodic axis needs a second image on the same rank, which the one-image
+      // rule dropped (FOLLOWUPS 4b). Reverse sums every image's increment onto the owner.
+      halo_.build(pv, band, /*includePeriodicSelf=*/true, /*allImages=*/true);
       dev_.init(halo_);
       const int ng = static_cast<int>(halo_.numGhost());
       // The halo topology (forward / device self-gather) writes ALL ng ghost slots [no, no+ng); the
@@ -1692,7 +1728,9 @@ class ParticleHalo {
 
   /// The contact-ownership rule over the current topology (see ContactOwnership).
   ContactOwnership contactOwnership(const Particles& P) const {
-    return ContactOwnership{rank_, numReal_, P.gid, ghostSource_, copyOffsets_, copyRanks_};
+    return ContactOwnership{rank_,       numReal_,    P.gid,        ghostSource_,
+                            copyOffsets_, copyRanks_, ghostImage_,  copyImage_,
+                            selfOffsets_, selfImage_};
   }
 
   /// TEST-ONLY (Simulation::debugCaptureContacts): the periodic image shift of every ghost slot
@@ -2164,15 +2202,49 @@ class ParticleHalo {
       ++off[static_cast<std::size_t>(i) + 1];
     for (int i = 0; i < no; ++i)
       off[static_cast<std::size_t>(i) + 1] += off[static_cast<std::size_t>(i)];
+    // Integer image of a shift: round(shift / L) on a periodic axis, 0 otherwise (§5.3).
+    const auto& gsz = dec_.globalSize();
+    auto imageOf = [&](const peclet::core::Vec<3>& sh) {
+      int c[3] = {0, 0, 0};
+      for (int d = 0; d < 3; ++d)
+        if (map_.periodic[d]) {
+          const double L = static_cast<double>(gsz[d]) * map_.cellSize[d];
+          c[d] = static_cast<int>(std::lround(sh[d] / L));
+        }
+      return imagePack(c[0], c[1], c[2]);
+    };
+    std::vector<int> gimg(g1, imagePack(0, 0, 0));
+    for (std::size_t j = 0; j < t.shift.size(); ++j)
+      gimg[static_cast<std::size_t>(hSlot[j])] = imageOf(t.shift[j]);
     std::vector<int> ranks(std::max<std::size_t>(t.sendIdx.size(), 1), -1);
+    std::vector<int> imgs(std::max<std::size_t>(t.sendIdx.size(), 1), imagePack(0, 0, 0));
     std::vector<int> cur(off.begin(), off.end() - 1);
     for (std::size_t k = 0; k < t.sendRanks.size(); ++k)
-      for (int j = t.sendOffsets[k]; j < t.sendOffsets[k + 1]; ++j)
-        ranks[static_cast<std::size_t>(cur[static_cast<std::size_t>(t.sendIdx[j])]++)] =
-            t.sendRanks[k];
+      for (int j = t.sendOffsets[k]; j < t.sendOffsets[k + 1]; ++j) {
+        const std::size_t at = static_cast<std::size_t>(cur[static_cast<std::size_t>(t.sendIdx[j])]++);
+        ranks[at] = t.sendRanks[k];
+        imgs[at] = imageOf(t.sendShift[static_cast<std::size_t>(j)]);
+      }
+    // Self-image CSR over owned rows: the self tail [numReceived, ng) of the topology.
+    std::vector<int> soff(static_cast<std::size_t>(no) + 1, 0);
+    for (const auto i : t.selfIdx)
+      ++soff[static_cast<std::size_t>(i) + 1];
+    for (int i = 0; i < no; ++i)
+      soff[static_cast<std::size_t>(i) + 1] += soff[static_cast<std::size_t>(i)];
+    std::vector<int> simg(std::max<std::size_t>(t.selfIdx.size(), 1), imagePack(0, 0, 0));
+    {
+      std::vector<int> scur(soff.begin(), soff.end() - 1);
+      for (std::size_t j = 0; j < t.selfIdx.size(); ++j)
+        simg[static_cast<std::size_t>(scur[static_cast<std::size_t>(t.selfIdx[j])]++)] =
+            imageOf(t.shift[static_cast<std::size_t>(t.numReceived) + j]);
+    }
+    selfOffsets_ = peclet::core::toDevice(soff, "peclet::dem::halo::selfOffsets");
+    selfImage_ = peclet::core::toDevice(simg, "peclet::dem::halo::selfImage");
     ghostSource_ = peclet::core::toDevice(src, "peclet::dem::halo::ghostSource");
+    ghostImage_ = peclet::core::toDevice(gimg, "peclet::dem::halo::ghostImage");
     copyOffsets_ = peclet::core::toDevice(off, "peclet::dem::halo::copyOffsets");
     copyRanks_ = peclet::core::toDevice(ranks, "peclet::dem::halo::copyRanks");
+    copyImage_ = peclet::core::toDevice(imgs, "peclet::dem::halo::copyImage");
   }
   // Max Euclidean displacement of any owned particle since the last topology build (device reduce +
   // one scalar read-back) — the Verlet-skin reuse criterion.
@@ -2305,7 +2377,8 @@ class ParticleHalo {
   peclet::core::View<VelocityState> ghostVelState_, ownedVelState_;  // fused forwards (rotation)
   peclet::core::View<PositionState> ghostPosState_, ownedPosState_;
   // Ownership maps (§2.1; see buildOwnershipMaps).
-  Kokkos::View<int*, CpMem> ghostSource_, copyOffsets_, copyRanks_;
+  Kokkos::View<int*, CpMem> ghostSource_, copyOffsets_, copyRanks_, ghostImage_, copyImage_,
+      selfOffsets_, selfImage_;
   // Rank-level M (docs/contact_solve_framework.md §13.3): the opening / Poisson forward payloads,
   // the owner seeds [0, numReal) (grow-only), this substep's mode flags (reset by gather), and
   // the velocity slot map (§6.2).
