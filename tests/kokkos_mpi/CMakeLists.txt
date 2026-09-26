@@ -196,6 +196,8 @@ _dem_mutant_exe(test_momentum_mpi_mut4 test_momentum_mpi.cpp 4)
 _dem_mutant_exe(test_ownership_mpi_mut5 test_ownership_mpi.cpp 5)
 _dem_mutant_exe(test_momentum_mpi_mut6 test_momentum_mpi.cpp 6)
 _dem_mutant_exe(test_momentum_mpi_mut7 test_momentum_mpi.cpp 7)
+# G-A4 (docs/contact_physics_followups.md §6): the rigid prolongation drops (Omega - Omega0) x d.
+_dem_mutant_exe(test_momentum_mpi_mut8 test_momentum_mpi.cpp 8)
 _dem_mpi_test(mutant1_ownership_oracle_closed_np2 2 test_ownership_mpi_mut1 oracle_closed)
 _dem_mpi_test(mutant2_momentum_cluster_pgs_np2 2 test_momentum_mpi_mut2 cluster_pgs)
 _dem_mpi_test(mutant2_momentum_hub_pgs_np1 1 test_momentum_mpi_mut2 hub_pgs)
@@ -204,10 +206,11 @@ _dem_mpi_test(mutant4_momentum_tri_np2 2 test_momentum_mpi_mut4 tri --axis=2)
 _dem_mpi_test(mutant5_ownership_missed_drift_lattice_np4 4 test_ownership_mpi_mut5 missed_drift_lattice)
 _dem_mpi_test(mutant6_momentum_hub_ml_np1 1 test_momentum_mpi_mut6 hub_ml)
 _dem_mpi_test(mutant7_momentum_hub_static_np1 1 test_momentum_mpi_mut7 hub_static)
+_dem_mpi_test(mutant8_momentum_hub_ml_np1 1 test_momentum_mpi_mut8 hub_ml)
 foreach(t mutant1_ownership_oracle_closed_np2 mutant2_momentum_cluster_pgs_np2
           mutant2_momentum_hub_pgs_np1 mutant3_momentum_hub_np1 mutant4_momentum_tri_np2
           mutant5_ownership_missed_drift_lattice_np4 mutant6_momentum_hub_ml_np1
-          mutant7_momentum_hub_static_np1)
+          mutant7_momentum_hub_static_np1 mutant8_momentum_hub_ml_np1)
   set_tests_properties(${t} PROPERTIES WILL_FAIL TRUE)
 endforeach()
 

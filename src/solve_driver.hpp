@@ -1119,11 +1119,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
               nullptr, velOv, P.restitutionTarget);
           foldVel();
           if (H.numLevels > 0) {
-            multilevelCoarseCycleKokkos<false>(
-                P.manifolds, nm, P.realIndices, invMassCoarse, P.velPred, P.lambdaAcc,
-                P.maxApproachQS, nBodies, H, S,
-                /*coarseSweeps*/ 2, mlBody, Kokkos::View<const float*, CpMem>(relV), &mlOffs,
-                Kokkos::View<const int*, CpMem>(P.mlBucketPerm), mlFusedP);
+            multilevelCoarseCycleKokkos(P.manifolds, nm, P.realIndices, invMassCoarse, P.velPred,
+                                        P.lambdaAcc, P.maxApproachQS, nBodies, H, S,
+                                        /*coarseSweeps*/ 2, mlBody,
+                                        Kokkos::View<const float*, CpMem>(relV), &mlOffs,
+                                        Kokkos::View<const int*, CpMem>(P.mlBucketPerm), mlFusedP);
             if (velCopiesOn)
               reseedCopiesKokkos(space, VC, P.velPred, P.angVelPred);
           }
@@ -1143,7 +1143,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                   P.frictionDynamic, P.vt0, P.restitutionTangent,
                   Kokkos::View<const float*, CpMem>(P.posImpulse), bankV, relV, vpkC, orphV, orphPk,
                   {}, P.restitutionTarget);
-              mlLoopDone = demLaunchFusedMlLoop<false>(
+              mlLoopDone = demLaunchFusedMlLoop(
                   space, fStab, velPermC, *velFusedP, numColors, P.manifolds, P.realIndices,
                   Kokkos::View<const float*, CpMem>(P.invMass), P.velPred, P.lambdaAcc,
                   P.maxApproachQS, Kokkos::View<const float*, CpMem>(relV), S,

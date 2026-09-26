@@ -130,7 +130,8 @@
 //   hub_ml            the dense shell 3.0 (rs/R)^2 (§12 S10; N = 181), the leaves with dir.z < 0
 //                     approaching the hub at 0.3 (1 + 0.1 N(0,1)), free
 //                     fall, frictionless, stabilization multilevel, velocity iterations 1, 10
-//                     steps: dP <= 5e-6, dX, dXpos <= 3e-5, and the positive controls (velocity
+//                     steps: dP <= 5e-6, dX, dXpos <= 3e-5, dLvel <= 1e-6 (rigid aggregates,
+//                     docs/contact_physics_followups.md §2), and the positive controls (velocity
 //                     hub copies > 0 at np = 1, >= 1 multilevel level, split_stats.mlHubAggregated
 //                     >= 1, each in at least one step; required at np 1 and 2 only, §12 S18)
 //                     -- the coarse cycle at a folded hub
@@ -159,6 +160,8 @@
 //   MOMENTUM mode=.. np=.. thr=.. N=.. steps=.. dP=.. dX=.. dXpos=.. dL=.. dLcm=.. dLvel=.. ovl=..
 //   KE mode=.. np=.. thr=.. s1=.. s2=..      the centre-of-mass-frame kinetic energy (translational
 //            + rotational, host double, Allreduced) after every (recorded) step
+//   KEROT mode=.. np=.. thr=.. ke0=.. s1=..  its rotational part (spin KE) alone; ke0 = the
+//            initial CoM-frame kinetic energy
 //   CONFLICTS mode=.. np=.. thr=.. vel=.. pos=.. degVel=.. degPos=.. colVel=.. colPos=..
 //            (not hertz) the same-colour pairs of the rank-local velocity (manifold) and position
 //            (contact) colourings of each step -- sum over (body slot, colour) of (count - 1), the
@@ -257,15 +260,17 @@ static Tol tolOf(const std::string& mode) {
   if (mode == "hertz_shear" || mode == "hertz_shear_frictionless")  // WO-7: dP <= 1e-6 under drift
     return {1e-6, -1, -1, -1, -1};
   // docs/contact_solve_framework.md §13.6 G1 additions. hub_static: velocities unchanged, the
-  // ABSOLUTE |P| must stay exactly 0 (sum m|v| = 0, no normalized dP). hub_ml: dLvel reported only
-  // (the coarse cycle is translation-only by design).
+  // ABSOLUTE |P| must stay exactly 0 (sum m|v| = 0, no normalized dP).
   // WO-10 (§9, gates on): every mode the framework makes conservative. Measured maxima over np 1..8
   // x OMP 1/8 in IMPL_A.md; thresholds sit ~10-20x above them and far below the broken values.
   if (mode == "hub" || mode == "hub_pgs" || mode == "cluster_poisson" ||
       mode == "cluster_escalate" || mode == "cluster_ordered")  // dP <= 8e-7 (free-fall floor)
     return {5e-6, 1e-5, 1e-5, -1, 1e-6};
-  if (mode == "cluster_multilevel")     // dLvel reported only: the coarse cycle is translation-only
-    return {5e-6, 1e-5, 1e-5, -1, -1};  // (§12 S17, a separate follow-up)
+  // cluster_multilevel / hub_ml: the coarse bodies are rigid 6-DOF aggregates
+  // (docs/contact_physics_followups.md §2, WO-A2), so dLvel is exact to float (translation-only
+  // aggregates gave hub_ml 3.0e-3, cluster_multilevel 1.5e-8 at np 1).
+  if (mode == "cluster_multilevel")
+    return {5e-6, 1e-5, 1e-5, -1, 1e-6};
   if (mode == "hub_posonly")
     return {1e-6, 1e-5, 1e-5, -1, 1e-6};
   if (mode == "cluster_shear" || mode == "cluster_e09" || mode == "cluster_e10" || mode == "tri")
@@ -277,7 +282,7 @@ static Tol tolOf(const std::string& mode) {
   if (mode == "hub_static")
     return {0.0, -1, 3e-5, -1, -1};
   if (mode == "hub_ml")
-    return {5e-6, 3e-5, 3e-5, -1, -1};
+    return {5e-6, 3e-5, 3e-5, -1, 1e-6};
   return {-1, -1, -1, -1, -1};
 }
 static bool within(double v, double tol) {
@@ -1202,6 +1207,8 @@ static int runCluster(const Mode& md, int rank, int size) {
   const std::unordered_map<int, int> sceneOf = sceneIndexByGid(sim, gids);  // for --dump
   ColorDiag cd;                // max over steps (rank-local); every XPBD mode
   std::vector<double> keHist;  // CoM-frame kinetic energy after every (recorded) step
+  // ... and its rotational part (spin KE; R-A1 of docs/contact_physics_followups.md)
+  std::vector<double> keRotHist;
   double fricDist =
       0.0;  // cluster_friction: sum over steps of mean |dist| / R of friction contacts
   long fricCount = 0, fricGap = 0;
@@ -1223,6 +1230,17 @@ static int runCluster(const Mode& md, int rank, int size) {
   };
   const double ke0 = keCm(st, S0);  // before the first step (KEGATE)
   const D3 X0{S0.mx[0] / M, S0.mx[1] / M, S0.mx[2] / M}, V0{S0.P[0] / M, S0.P[1] / M, S0.P[2] / M};
+  double ke0 = 0.0;  // the initial CoM-frame kinetic energy (the KEROT line's reference)
+  {
+    double kl = 0.0;
+    for (int i = 0; i < static_cast<int>(st.m.size()); ++i) {
+      const D3 v = at(st.v, i), w = at(st.w, i), sp = spin(st, i);
+      kl += 0.5 * st.m[i] * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) +
+            0.5 * (sp[0] * w[0] + sp[1] * w[1] + sp[2] * w[2]);
+    }
+    MPI_Allreduce(&kl, &ke0, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    ke0 -= 0.5 * (S0.P[0] * S0.P[0] + S0.P[1] * S0.P[1] + S0.P[2] * S0.P[2]) / M;
+  }
   double pScaleLoc = 0.0, lScaleLoc = 0.0;
   for (int i = 0; i < static_cast<int>(st.m.size()); ++i) {
     const D3 x = at(st.x, i), v = at(st.v, i);
@@ -1325,7 +1343,19 @@ static int runCluster(const Mode& md, int rank, int size) {
     // per-body comparison across a step pairs the two states by gid (velocityPhaseTorque,
     // periodicDisplacement).
     const Sums S = globalSums(nx);
-    keHist.push_back(keCm(nx, S));
+    {  // kinetic energy in the CoM frame (translational + rotational), host double
+      double kl[2] = {0.0, 0.0}, kg[2] = {0.0, 0.0};
+      for (int i = 0; i < static_cast<int>(nx.m.size()); ++i) {
+        const D3 v = at(nx.v, i), w = at(nx.w, i), sp = spin(nx, i);
+        const double kr = 0.5 * (sp[0] * w[0] + sp[1] * w[1] + sp[2] * w[2]);
+        kl[0] += 0.5 * nx.m[i] * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) + kr;
+        kl[1] += kr;
+      }
+      MPI_Allreduce(kl, kg, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+      kg[0] -= 0.5 * (S.P[0] * S.P[0] + S.P[1] * S.P[1] + S.P[2] * S.P[2]) / M;
+      keHist.push_back(kg[0]);
+      keRotHist.push_back(kg[1]);
+    }
     const double t = static_cast<double>(s) * sub * dt;
     D3 ep, ex, el, ec;
     const D3 Ln = angular(nx, S), Lc = angularCm(nx, S);
@@ -1479,6 +1509,10 @@ static int runCluster(const Mode& md, int rank, int size) {
     std::printf("KE mode=%s np=%d thr=%d", md.name.c_str(), size, thr);
     for (std::size_t k = 0; k < keHist.size(); ++k)
       std::printf(" s%zu=%.9e", k + 1, keHist[k]);
+    std::printf("\n");
+    std::printf("KEROT mode=%s np=%d thr=%d ke0=%.9e", md.name.c_str(), size, thr, ke0);
+    for (std::size_t k = 0; k < keRotHist.size(); ++k)
+      std::printf(" s%zu=%.9e", k + 1, keRotHist[k]);
     std::printf("\n");
   }
   // G-C1 (docs/contact_physics_followups.md §6, WO-C1): the converged one-step PGS in the dense

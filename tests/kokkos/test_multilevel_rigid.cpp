@@ -4,11 +4,12 @@
 // omega and a random warm accumulator. ONE coarse cycle on the device (the level geometry of
 // buildMlLevelGeometryKokkos + multilevelCoarseCycleKokkos) against a host DOUBLE reference of the
 // same algebra:
-//   Rot = true : per-group V, Omega and member v, omega within 1e-5 (relative to the largest);
+//   rigid      : per-group V, Omega and member v, omega within 1e-5 (relative to the largest);
 //                |dP| <= 1e-6 sum|J|, |dL| <= 1e-6 sum|J| R_g,max (wall impulses subtracted);
 //                KE_after <= KE_before (1 + 1e-6); a singleton row's w and vn equal the fine PGS
 //                row's within 1e-6 relative.
-//   Rot = false: the translation-only cycle; it must REPRODUCE dL = sum (X_A - X_B) x J (plus the
+//   invI_g = 0 : the translation-only cycle (the release fallback of a singular group, applied to
+//                every group after the build); it must REPRODUCE dL = sum (X_A - X_B) x J (plus the
 //                wall's lever error) -- which proves the dL measurement discriminates.
 #include <algorithm>
 #include <cmath>
@@ -282,7 +283,7 @@ struct RefOut {
   double sumJ = 0;       // sum of |d| |N| over every coarse update
   double rgMax = 0;      // largest member offset |d|
   Vd wallP, wallL;       // the wall's linear / angular impulse on the bodies (true lever)
-  Vd lvlErrL;            // Rot = false: sum of the lever errors (X_A - X_B) x J, ...
+  Vd lvlErrL;            // translation-only: sum of the lever errors (X_A - X_B) x J, ...
 };
 
 RefOut reference(const Scene& s, bool rot) {
@@ -405,12 +406,11 @@ RefOut reference(const Scene& s, bool rot) {
 // ---------------------------------------------------------------- device run
 struct DevOut {
   std::vector<float> vel, ang, lambda, velG, angG;
-  float rowVn = 0, rowW = 0;  // the singleton row at level 1 (Rot only)
+  float rowVn = 0, rowW = 0;  // the singleton row at level 1 (rigid run only)
   std::vector<float> rowVel;  // the level-1 group states the row read (V, Omega of 34 / 35)
 };
 
-template <bool Rot>
-DevOut runDevice(const Scene& s) {
+DevOut runDevice(const Scene& s, bool rot) {
   const int M = static_cast<int>(s.man.size());
   const int ngTot = s.ng1 + s.ng2;
   auto up1 = [](const std::vector<float>& h, const char* name) {
@@ -498,9 +498,11 @@ DevOut runDevice(const Scene& s) {
   }
   if (bad)
     std::printf("  WARNING: %d singular groups\n", bad);
+  if (!rot)
+    Kokkos::deep_copy(S.invIG, 0.0f);  // every group translation-only (the release fallback)
   Kokkos::View<float, CpMem> maxApp("maxApp");
-  multilevelCoarseCycleKokkos<Rot>(man, M, realIdx, invMass, vel, lambda, maxApp, N, H, S, kSweeps,
-                                   body);
+  multilevelCoarseCycleKokkos(man, M, realIdx, invMass, vel, lambda, maxApp, N, H, S, kSweeps,
+                              body);
   Kokkos::fence();
   DevOut o;
   auto down = [](auto d, std::vector<float>& h) {
@@ -520,7 +522,7 @@ DevOut runDevice(const Scene& s) {
   down(lambda, o.lambda);
   down(S.velG, o.velG);
   down(S.angG, o.angG);
-  if constexpr (Rot) {
+  if (rot) {
     // the singleton row at level 1 (grp = the level-1 map), on the coarse state V = v, Omega =
     // omega of the two singleton bodies' INITIAL state (a converged row has vn ~ 0)
     auto grp = S.grp;
@@ -545,13 +547,13 @@ DevOut runDevice(const Scene& s) {
             angG(gB1, c) = sv[9 + c];
           }
         });
-    const MlCoarseSweep<true> f = makeMlCoarseSweep<true>(
-        man, realIdx, S, lambda, maxApp, Kokkos::View<const float*, CpMem>(), body);
+    const MlCoarseSweep f = makeMlCoarseSweep(man, realIdx, S, lambda, maxApp,
+                                              Kokkos::View<const float*, CpMem>(), body);
     Kokkos::View<float[2], CpMem> out("rowOut");
     const int idx = s.singletonIdx;
     Kokkos::parallel_for(
         "row", Kokkos::RangePolicy<CpExec>(0, 1), KOKKOS_LAMBDA(int) {
-          typename MlCoarseSweep<true>::Row r;
+          MlCoarseSweep::Row r;
           if (f.row(idx, 0, r)) {
             out(0) = r.vn;
             out(1) = r.w;
@@ -613,10 +615,10 @@ int main(int argc, char** argv) {
       L = cross(x0, P) + vd(m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z) * lp;
     };
 
-    // ------------------------------------------------ Rot = true: the rigid coarse space
+    // ------------------------------------------------ the rigid coarse space
     {
       const RefOut R = reference(s, true);
-      const DevOut o = runDevice<true>(s);
+      const DevOut o = runDevice(s, true);
       const double eV = relErrV(o.velG, R.V, ngTot), eW = relErrV(o.angG, R.W, ngTot);
       const double ev = relErrV(o.vel, R.v, N), ew = relErrV(o.ang, R.w, N);
       const Budget b1 = budget(s, o.vel, o.ang);
@@ -685,11 +687,11 @@ int main(int argc, char** argv) {
         }
       }
     }
-    // ------------------------------------------------ Rot = false: translation-only
+    // ------------------------------------------------ invI_g = 0: translation-only
     // (discriminates)
     {
       const RefOut R = reference(s, false);
-      const DevOut o = runDevice<false>(s);
+      const DevOut o = runDevice(s, false);
       const double ev = relErrV(o.vel, R.v, N);
       const Budget b1 = budget(s, o.vel, o.ang);
       Vd wP, wL;

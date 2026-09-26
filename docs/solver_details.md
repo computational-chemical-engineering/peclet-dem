@@ -227,10 +227,23 @@ needs bounds what the other passes must deliver) and `'ordered'` (level-ordered 
 from a height-from-floor BFS; measured insufficient for deep columns, kept for A/B).
 
 **Multilevel (GraphMG)** — `src/solver_multilevel.hpp`. Greedy pairwise aggregation over the
-*quasi-static* contact graph builds super-bodies (summed mass, momentum-weighted velocity); fine
-manifolds crossing aggregate boundaries are re-solved with the **aggregate** masses, so a supported
-chain's genuinely huge inertia plays the role the held lower side faked and one coarse impulse
-drains a whole column — while every impulse stays symmetric. Ballistic pairs
+*quasi-static* contact graph builds super-bodies; fine manifolds crossing aggregate boundaries are
+re-solved with the **aggregate** masses and inertias, so a supported chain's genuinely huge inertia
+plays the role the held lower side faked and one coarse impulse drains a whole column — while every
+impulse stays symmetric. The super-bodies are **rigid 6-DOF aggregates**
+(`docs/contact_physics_followups.md` §2): the coarse state $(V_g, \Omega_g)$ is the mass/inertia
+projection of the fine state onto rigid motions ($V_g = \sum \mu v / M_g$,
+$\Omega_g = I_g^{-1} \sum [\mu\, d \times v + J \omega]$, with $d$ a member's offset from the
+group's centre of mass and $I_g = \sum [J + \mu(|d|^2 \mathbb{1} - d d^T)]$, built in double once
+per hierarchy); a crossing row carries the angular arms $T_A = \tau_A + d_A \times N$,
+$T_B = \tau_B - d_B \times N$, so each coarse impulse is the fine manifold's own, applied at its
+contact points; and the prolongation is the rigid motion $\delta v = \delta V + \delta\Omega \times d$,
+$\delta\omega = \delta\Omega$. Linear and angular momentum are therefore exact (to float) and the
+kinetic energy never rises in a coarse step. Translation-only aggregates (before 2026-09-26) are the
+limit $I_g^{-1} \to 0$; they lost angular momentum $(X_A - X_B) \times J$ per crossing impulse
+(`hub_ml` dLvel 3.0e-3). Named consequences: frictionless sphere spins couple to aggregate rotation
+in this mode, and aggregation never crosses a periodic wrap (a periodic image never merges;
+crossing manifolds may still wrap). Ballistic pairs
 ($|v_{n0}| > $ the quasi-static threshold) never aggregate, so an impactor keeps its fine-level
 physics and its rebound; coarse $\lambda$ shares the fine accumulator so the ledger stays consistent
 for the next warm start and the Coulomb bound. Its stop criterion is the **quasi-static** residual

@@ -5,22 +5,27 @@
 /// arrested by plain symmetric PGS (momentum moves ~one layer per sweep) and the one-sided pass
 /// arrests it by DELETING momentum (measured cost: it kills a ballistic impactor's rebound). The
 /// multilevel pass instead accelerates momentum TRANSPORT: greedy pairwise aggregation over the
-/// quasi-static contact graph builds super-bodies (summed mass, momentum-weighted velocity), and
-/// the fine manifolds crossing aggregate boundaries are re-solved with the AGGREGATE masses --
+/// quasi-static contact graph builds super-bodies (rigid 6-DOF aggregates: summed mass and inertia,
+/// the fine state's projection onto rigid motions), and the fine manifolds crossing aggregate
+/// boundaries are re-solved with the AGGREGATE masses and inertias --
 /// the coarse analogue of the held lower side is the genuinely huge inertia of the supported
 /// chain, so a wall contact drains a whole column's momentum in one coarse impulse while every
 /// impulse stays symmetric (exact momentum conservation; the floor/walls are the only sink).
 ///
 /// Structure per trigger (residual above the resting threshold after the main sweeps):
-///   build: L levels of matching (ballistic pairs |vn0| > qsThr and walls never merge; stop when
-///          matching stalls or the group count is small), per-level group masses, and a per-level
+///   build: L levels of matching (ballistic pairs |vn0| > qsThr, walls and periodic images never
+///          merge; stop when matching stalls or the group count is small), per-level group masses,
+///          the rigid geometry (centre of mass, inertia, docs/contact_physics_followups.md §2.3),
+///          and a per-level
 ///          graph coloring of the crossing manifolds (6 bits/level packed into one word per
 ///          manifold; the coloring guarantees group-disjointness within a launch).
 ///   cycle: per iteration, one fine colored-PGS smoothing sweep, then levels fine -> coarse:
-///          restrict (V_g = sum m v / sum m -- momentum-conserving), a few colored coarse PGS
-///          sweeps (translation-only, e = 0, lambda >= 0 on the SHARED fine accumulator so the
-///          force-network ledger stays consistent for warm start + the friction cone's Coulomb
-///          bound), prolongate (v_i += dV_g: uniform per aggregate = mass-proportional impulse).
+///          restrict (V_g = sum m v / sum m, Omega_g = invI_g sum [m d x v + J w] -- the
+///          M-orthogonal projection onto rigid motions), a few colored coarse PGS sweeps (rigid
+///          rows with the contact-point arms, e = 0, lambda >= 0 on the SHARED fine accumulator so
+///          the force-network ledger stays consistent for warm start + the friction cone's Coulomb
+///          bound), prolongate (the rigid motion v_i += dV + dOmega x d_i, w_i += dOmega). Every
+///          coarse impulse is the fine manifold's own, so P and L are exact (§2.6).
 ///
 /// The inequality constraint is respected on every level (Kornhuber-style truncation reduces to:
 /// only compressed/quasi-static contacts aggregate or restrict; lambda >= 0 projection is the
@@ -147,6 +152,14 @@ KOKKOS_INLINE_FUNCTION bool eligible(const ManifoldC& m, int idx,
     return Kokkos::fabs(up) > 0.3f * Kokkos::sqrt(dot3(dx, dx));
   }
   return true;
+}
+
+/// A slot sits at its canonical body's position, bitwise (false for a periodic image).
+KOKKOS_INLINE_FUNCTION bool canonical(const Kokkos::View<const float* [3], CpMem>& posPred,
+                                      const Kokkos::View<const int*, CpMem>& realIdx, int slot) {
+  const int r = realIdx(slot);
+  return posPred(slot, 0) == posPred(r, 0) && posPred(slot, 1) == posPred(r, 1) &&
+         posPred(slot, 2) == posPred(r, 2);
 }
 
 /// Member offset from its group's centre of mass, d_q = fl(fl(x_q - O_g) - c_g) (§2.3 step 2):
@@ -391,6 +404,11 @@ inline ContactHierarchy buildContactHierarchyKokkos(
                 (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
                  (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
               return;
+            // Aggregation never crosses a periodic wrap (§2.3): an image slot's position is
+            // shifted, and an aggregate holding it would have no consistent geometry.
+            if (!mldetail::canonical(posPred, realIdx, m.bodyA) ||
+                !mldetail::canonical(posPred, realIdx, m.bodyB))
+              return;
             const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
             if (gA == gB)
               return;
@@ -412,6 +430,11 @@ inline ContactHierarchy buildContactHierarchyKokkos(
             if (excludeImmovable &&
                 (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
                  (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
+              return;
+            // Aggregation never crosses a periodic wrap (§2.3): an image slot's position is
+            // shifted, and an aggregate holding it would have no consistent geometry.
+            if (!mldetail::canonical(posPred, realIdx, m.bodyA) ||
+                !mldetail::canonical(posPred, realIdx, m.bodyB))
               return;
             const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
             if (gA == gB)
@@ -628,11 +651,11 @@ inline void buildCoarseBucketsKokkos(const ContactHierarchy& H, MlScratch& S, in
 /// the per-colour launch loop and the fused whole-cycle kernel share it verbatim. grp aliases the
 /// composed body -> group map of the CURRENT level (written by the compose phase between sweeps);
 /// off is the level's group-pool offset.
-/// Rot (docs/contact_physics_followups.md §2.4): the coarse bodies are rigid 6-DOF aggregates
-/// (V_g, Omega_g); a crossing row's angular arms are T_A = TauA + d_A x N, T_B = TauB - d_B x N,
-/// and the rotational terms are APPENDED to the translational statements (Rot = false is the
-/// translation-only cycle, statement for statement).
-template <bool Rot>
+/// The coarse bodies are rigid 6-DOF aggregates (docs/contact_physics_followups.md §2.2-§2.4):
+/// (V_g, Omega_g), the M-orthogonal projection of the fine state onto rigid motions; a crossing
+/// row's angular arms are T_A = TauA + d_A x N, T_B = TauB - d_B x N (the fine manifold's own
+/// impulse, applied at its contact points: dL = 0 exactly), and the prolongation is the rigid
+/// motion dV + dOmega x d, dOmega. Translation-only is the limit invI_g -> 0.
 struct MlCoarseSweep {
   Kokkos::View<const ManifoldC*, CpMem> manifolds;
   Kokkos::View<const int*, CpMem> realIdx;
@@ -642,7 +665,7 @@ struct MlCoarseSweep {
   Kokkos::View<float*, CpMem> lambdaAcc;
   Kokkos::View<float, CpMem> maxApproach;
   Kokkos::View<const float*, CpMem> restRel;
-  // the rigid coarse space (§2.3-§2.5; read only when Rot)
+  // the rigid coarse space (§2.3-§2.5)
   MlBodyViews body;
   Kokkos::View<const float* [3], CpMem> originG;
   Kokkos::View<const float* [3], CpMem> comOffG;
@@ -686,28 +709,27 @@ struct MlCoarseSweep {
     const float invMA = invMassG(off + gA);
     const float invMB = (gB >= 0) ? invMassG(off + gB) : 0.0f;
     float w = dot3(Nsum, Nsum) * (invMA + invMB);
-    F3 TA{0, 0, 0}, TB{0, 0, 0};
-    if constexpr (Rot) {
-      // arms about the aggregates' centres of mass (canonical positions: a wrap image's arm is
-      // relative to its own centre, the offset d to the canonical body's group)
-      const F3 dA =
-          mldetail::memberOffset(body.posPred, realIdx(m.bodyA), originG, comOffG, off + gA);
-      TA = add3(F3{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z},
-                cross3v(dA, Nsum));
-      const F3 wA{angG(off + gA, 0), angG(off + gA, 1), angG(off + gA, 2)};
-      vn = vn + dot3(TA, wA);
-      if (gB >= 0) {
-        const F3 dB =
-            mldetail::memberOffset(body.posPred, realIdx(m.bodyB), originG, comOffG, off + gB);
-        TB = sub3(F3{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z},
-                  cross3v(dB, Nsum));
-        const F3 wB{angG(off + gB, 0), angG(off + gB, 1), angG(off + gB, 2)};
-        vn = vn + dot3(TB, wB);
-      }
-      w = w + dot3(TA, mldetail::symMul(invIG, off + gA, TA));
-      if (gB >= 0)
-        w = w + dot3(TB, mldetail::symMul(invIG, off + gB, TB));
+    // The rigid rows: arms about the aggregates' centres of mass, T_A = TauA + d_A x N and
+    // T_B = TauB - d_B x N (canonical positions: a wrap image's arm is relative to its own centre,
+    // the offset d to the canonical body's group), the rotational terms appended to vn and w.
+    const F3 dA =
+        mldetail::memberOffset(body.posPred, realIdx(m.bodyA), originG, comOffG, off + gA);
+    const F3 TA =
+        add3(F3{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z}, cross3v(dA, Nsum));
+    const F3 wA{angG(off + gA, 0), angG(off + gA, 1), angG(off + gA, 2)};
+    vn = vn + dot3(TA, wA);
+    F3 TB{0, 0, 0};
+    if (gB >= 0) {
+      const F3 dB =
+          mldetail::memberOffset(body.posPred, realIdx(m.bodyB), originG, comOffG, off + gB);
+      TB = sub3(F3{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z},
+                cross3v(dB, Nsum));
+      const F3 wB{angG(off + gB, 0), angG(off + gB, 1), angG(off + gB, 2)};
+      vn = vn + dot3(TB, wB);
     }
+    w = w + dot3(TA, mldetail::symMul(invIG, off + gA, TA));
+    if (gB >= 0)
+      w = w + dot3(TB, mldetail::symMul(invIG, off + gB, TB));
     if (w <= 0.0f)
       return false;
     r = Row{gA, gB, Nsum, TA, TB, lenN, vn, sgn, invMA, invMB, w};
@@ -741,22 +763,20 @@ struct MlCoarseSweep {
       velG(off + gB, 1) -= J.y * invMB;
       velG(off + gB, 2) -= J.z * invMB;
     }
-    if constexpr (Rot) {
-      const F3 dwA = mldetail::symMul(invIG, off + gA, scale3(r.TA, lambda));
-      angG(off + gA, 0) += dwA.x;
-      angG(off + gA, 1) += dwA.y;
-      angG(off + gA, 2) += dwA.z;
-      if (gB >= 0) {
-        const F3 dwB = mldetail::symMul(invIG, off + gB, scale3(r.TB, lambda));
-        angG(off + gB, 0) += dwB.x;
-        angG(off + gB, 1) += dwB.y;
-        angG(off + gB, 2) += dwB.z;
-      }
+    const F3 dwA = mldetail::symMul(invIG, off + gA, scale3(r.TA, lambda));
+    angG(off + gA, 0) += dwA.x;
+    angG(off + gA, 1) += dwA.y;
+    angG(off + gA, 2) += dwA.z;
+    if (gB >= 0) {
+      const F3 dwB = mldetail::symMul(invIG, off + gB, scale3(r.TB, lambda));
+      angG(off + gB, 0) += dwB.x;
+      angG(off + gB, 1) += dwB.y;
+      angG(off + gB, 2) += dwB.z;
     }
   }
 
   // ---- restrict / prolong, rotational part (§2.4), shared by the launch path and the fused
-  // kernel; the translational statements stay inline in both (unchanged) ----
+  // kernel (the translational restriction stays inline in both) ----
   /// L_g += mu_q (d_q x v_q) + J_q w_q (3 float atomics per member).
   template <class VV>
   KOKKOS_FUNCTION void restrictAngular(int i, int off, int g, float m, const VV& velPred) const {
@@ -785,7 +805,12 @@ struct MlCoarseSweep {
     const F3 dW{angG(off + g, 0) - angG0(off + g, 0), angG(off + g, 1) - angG0(off + g, 1),
                 angG(off + g, 2) - angG0(off + g, 2)};
     const F3 d = mldetail::memberOffset(body.posPred, i, originG, comOffG, off + g);
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 8
+    const F3 cr{0.0f, 0.0f, 0.0f};  // G-A4 mutant 8: the prolongation drops (Omega - Omega0) x d
+    (void)d;
+#else
     const F3 cr = cross3v(dW, d);
+#endif
     velPred(i, 0) += (velG(off + g, 0) - velG0(off + g, 0)) + cr.x;
     velPred(i, 1) += (velG(off + g, 1) - velG0(off + g, 1)) + cr.y;
     velPred(i, 2) += (velG(off + g, 2) - velG0(off + g, 2)) + cr.z;
@@ -797,28 +822,26 @@ struct MlCoarseSweep {
 
 /// The coarse sweep over the multilevel scratch + the body views (the rigid views stay empty
 /// when the lazy pools are).
-template <bool Rot>
-inline MlCoarseSweep<Rot> makeMlCoarseSweep(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                            Kokkos::View<const int*, CpMem> realIdx,
-                                            const MlScratch& S,
-                                            Kokkos::View<float*, CpMem> lambdaAcc,
-                                            Kokkos::View<float, CpMem> maxApproach,
-                                            Kokkos::View<const float*, CpMem> restRel,
-                                            const MlBodyViews& body) {
-  return MlCoarseSweep<Rot>{manifolds,
-                            realIdx,
-                            Kokkos::View<const int*, CpMem>(S.grp),
-                            S.velG,
-                            Kokkos::View<const float*, CpMem>(S.invMassG),
-                            lambdaAcc,
-                            maxApproach,
-                            restRel,
-                            body,
-                            Kokkos::View<const float* [3], CpMem>(S.originG),
-                            Kokkos::View<const float* [3], CpMem>(S.comOffG),
-                            S.angG,
-                            S.angG0,
-                            Kokkos::View<const float* [6], CpMem>(S.invIG)};
+inline MlCoarseSweep makeMlCoarseSweep(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                       Kokkos::View<const int*, CpMem> realIdx, const MlScratch& S,
+                                       Kokkos::View<float*, CpMem> lambdaAcc,
+                                       Kokkos::View<float, CpMem> maxApproach,
+                                       Kokkos::View<const float*, CpMem> restRel,
+                                       const MlBodyViews& body) {
+  return MlCoarseSweep{manifolds,
+                       realIdx,
+                       Kokkos::View<const int*, CpMem>(S.grp),
+                       S.velG,
+                       Kokkos::View<const float*, CpMem>(S.invMassG),
+                       lambdaAcc,
+                       maxApproach,
+                       restRel,
+                       body,
+                       Kokkos::View<const float* [3], CpMem>(S.originG),
+                       Kokkos::View<const float* [3], CpMem>(S.comOffG),
+                       S.angG,
+                       S.angG0,
+                       Kokkos::View<const float* [6], CpMem>(S.invIG)};
 }
 
 /// Host-POD description of a built hierarchy for the fused coarse-cycle kernel (fixed-size
@@ -849,9 +872,8 @@ struct MlFusedCtx {
 /// is the launch path's, verbatim (shared MlCoarseSweep::solveOne; the restrict's atomic-add
 /// ordering is nondeterministic in BOTH paths). This one launch replaces the ~2,000 tiny
 /// launches per step the coarse cycle was measured to emit at 25k.
-template <bool Rot>
 __device__ inline void demMlCoarseCycleDevice(
-    const MlCoarseSweep<Rot>& f, const Kokkos::View<const int*, CpMem>& parent,
+    const MlCoarseSweep& f, const Kokkos::View<const int*, CpMem>& parent,
     const Kokkos::View<const float*, CpMem>& invMass,
     const Kokkos::View<float* [3], CpMem>& velPred, const Kokkos::View<float* [3], CpMem>& velG0,
     const Kokkos::View<const float*, CpMem>& massG, const Kokkos::View<int*, CpMem>& grpW,
@@ -868,8 +890,7 @@ __device__ inline void demMlCoarseCycleDevice(
     demGridBarrier(bar, k++);
     for (int g = tid; g < ng; g += stride) {  // restrict: reset
       f.velG(off + g, 0) = f.velG(off + g, 1) = f.velG(off + g, 2) = 0.0f;
-      if constexpr (Rot)
-        f.angG(off + g, 0) = f.angG(off + g, 1) = f.angG(off + g, 2) = 0.0f;
+      f.angG(off + g, 0) = f.angG(off + g, 1) = f.angG(off + g, 2) = 0.0f;
     }
     demGridBarrier(bar, k++);
     for (int i = tid; i < meta.numReal; i += stride) {  // restrict: momentum accumulate
@@ -878,8 +899,7 @@ __device__ inline void demMlCoarseCycleDevice(
       Kokkos::atomic_add(&f.velG(off + g, 0), m * velPred(i, 0));
       Kokkos::atomic_add(&f.velG(off + g, 1), m * velPred(i, 1));
       Kokkos::atomic_add(&f.velG(off + g, 2), m * velPred(i, 2));
-      if constexpr (Rot)
-        f.restrictAngular(i, off, g, m, velPred);
+      f.restrictAngular(i, off, g, m, velPred);
     }
     demGridBarrier(bar, k++);
     for (int g = tid; g < ng; g += stride) {  // restrict: normalize + snapshot V0
@@ -888,8 +908,7 @@ __device__ inline void demMlCoarseCycleDevice(
         f.velG(off + g, c) *= invM;
         velG0(off + g, c) = f.velG(off + g, c);
       }
-      if constexpr (Rot)
-        f.normalizeAngular(off + g);
+      f.normalizeAngular(off + g);
     }
     demGridBarrier(bar, k++);
     for (int s = 0; s < meta.coarseSweeps; ++s)
@@ -902,23 +921,14 @@ __device__ inline void demMlCoarseCycleDevice(
           f.solveOne(bkPerm(meta.permBase[lvl - 1] + i2), off);
         demGridBarrier(bar, k++);
       }
-    for (int i = tid; i < meta.numReal; i += stride) {  // prolongate
-      const int g = grpW(i);
-      if constexpr (Rot) {
-        f.prolongRigid(i, off, g, velPred, velG0);
-      } else {
-        velPred(i, 0) += f.velG(off + g, 0) - velG0(off + g, 0);
-        velPred(i, 1) += f.velG(off + g, 1) - velG0(off + g, 1);
-        velPred(i, 2) += f.velG(off + g, 2) - velG0(off + g, 2);
-      }
-    }
+    for (int i = tid; i < meta.numReal; i += stride)  // prolongate: the rigid motion
+      f.prolongRigid(i, off, grpW(i), velPred, velG0);
     demGridBarrier(bar, k++);
   }
 }
 
-template <bool Rot>
 __global__ void demFusedCoarseCycleK(
-    MlCoarseSweep<Rot> f, Kokkos::View<const int*, CpMem> parent,
+    MlCoarseSweep f, Kokkos::View<const int*, CpMem> parent,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<float* [3], CpMem> velPred,
     Kokkos::View<float* [3], CpMem> velG0, Kokkos::View<const float*, CpMem> massG,
     Kokkos::View<int*, CpMem> grpW, Kokkos::View<const int*, CpMem> bkPerm,
@@ -935,10 +945,9 @@ __global__ void demFusedCoarseCycleK(
 /// adaptive stop on-device (same residual, same tolerance — the per-iteration readback and the
 /// graph capture disappear). meta.coarseSweeps, the colour orderings and every per-item body
 /// are the launch path's, verbatim.
-template <bool Rot>
 __global__ void demFusedMlLoopK(
     PGSManifoldSweep fine, Kokkos::View<const int*, CpMem> vPerm,
-    Kokkos::View<const int*, CpMem> vOffs, int vCols, MlCoarseSweep<Rot> f,
+    Kokkos::View<const int*, CpMem> vOffs, int vCols, MlCoarseSweep f,
     Kokkos::View<const int*, CpMem> parent, Kokkos::View<const float*, CpMem> invMass,
     Kokkos::View<float* [3], CpMem> velPred, Kokkos::View<float* [3], CpMem> velG0,
     Kokkos::View<const float*, CpMem> massG, Kokkos::View<int*, CpMem> grpW,
@@ -973,7 +982,6 @@ __global__ void demFusedMlLoopK(
 /// Launch the whole multilevel stabilization loop as one kernel (see demFusedMlLoopK). The
 /// final QS residual stays in maxApproachQS for the host's post-loop read. Returns false when
 /// the fused path cannot run — the caller keeps its host-side iteration loop.
-template <bool Rot>
 inline bool demLaunchFusedMlLoop(
     CpExec& space, const PGSManifoldSweep& fine, Kokkos::View<const int*, CpMem> vPerm,
     const FusedSweepCtx& velCtx, int vCols, Kokkos::View<const ManifoldC*, CpMem> manifolds,
@@ -983,18 +991,18 @@ inline bool demLaunchFusedMlLoop(
     MlScratch& S, Kokkos::View<const int*, CpMem> bkPerm, const MlFusedCtx& ml, int maxIters,
     float tol, const MlBodyViews& body) {
   const int maxGrid =
-      std::min(demFusedMaxGrid(demFusedMlLoopK<Rot>), (static_cast<int>(ml.bar.extent(0)) - 1) / 8);
+      std::min(demFusedMaxGrid(demFusedMlLoopK), (static_cast<int>(ml.bar.extent(0)) - 1) / 8);
   if (maxGrid <= 0 || vCols <= 0 || velCtx.maxBucket <= 0 || ml.maxWork <= 0)
     return false;
-  const MlCoarseSweep<Rot> f =
-      makeMlCoarseSweep<Rot>(manifolds, realIdx, S, lambdaAcc, maxApproachQS, restRel, body);
+  const MlCoarseSweep f =
+      makeMlCoarseSweep(manifolds, realIdx, S, lambdaAcc, maxApproachQS, restRel, body);
   const int work = std::max(velCtx.maxBucket, ml.maxWork);
   const int want = (work + kFusedBlock - 1) / kFusedBlock;
   const int grid = want < maxGrid ? want : maxGrid;
   cudaStream_t str = space.cuda_stream();
   cudaMemsetAsync(ml.bar.data(), 0, (static_cast<std::size_t>(grid) * 8 + 1) * sizeof(unsigned),
                   str);
-  demFusedMlLoopK<Rot><<<grid, kFusedBlock, 0, str>>>(
+  demFusedMlLoopK<<<grid, kFusedBlock, 0, str>>>(
       fine, vPerm, velCtx.offsDev, vCols, f, Kokkos::View<const int*, CpMem>(S.parent), invMass,
       velPred, S.velG0, Kokkos::View<const float*, CpMem>(S.massG), S.grp, bkPerm, ml.offsDev,
       ml.meta, maxIters, tol, maxApproachQS.data(), ml.bar.data());
@@ -1056,7 +1064,6 @@ inline MlFusedCtx demMakeMlFusedCtx(CpExec& space, const ContactHierarchy& H,
   return ctx;
 }
 
-template <bool Rot>
 inline void multilevelCoarseCycleKokkos(
     Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
     Kokkos::View<const int*, CpMem> realIdx, Kokkos::View<const float*, CpMem> invMass,
@@ -1068,11 +1075,11 @@ inline void multilevelCoarseCycleKokkos(
   CpExec space;
   // coarse colored PGS sweeps: e = 0, shared lambda accumulator (the per-manifold body is
   // MlCoarseSweep::solveOne — shared verbatim with the fused kernel)
-  const MlCoarseSweep<Rot> fSweep =
-      makeMlCoarseSweep<Rot>(manifolds, realIdx, S, lambdaAcc, maxApproach, restRel, body);
+  const MlCoarseSweep fSweep =
+      makeMlCoarseSweep(manifolds, realIdx, S, lambdaAcc, maxApproach, restRel, body);
 #ifdef KOKKOS_ENABLE_CUDA
   if (fused && fused->maxWork > 0) {
-    const int maxGrid = std::min(demFusedMaxGrid(demFusedCoarseCycleK<Rot>),
+    const int maxGrid = std::min(demFusedMaxGrid(demFusedCoarseCycleK),
                                  (static_cast<int>(fused->bar.extent(0)) - 1) / 8);
     if (maxGrid > 0) {
       const int want = (fused->maxWork + kFusedBlock - 1) / kFusedBlock;
@@ -1080,7 +1087,7 @@ inline void multilevelCoarseCycleKokkos(
       cudaStream_t str = space.cuda_stream();
       cudaMemsetAsync(fused->bar.data(), 0,
                       (static_cast<std::size_t>(grid) * 8 + 1) * sizeof(unsigned), str);
-      demFusedCoarseCycleK<Rot><<<grid, kFusedBlock, 0, str>>>(
+      demFusedCoarseCycleK<<<grid, kFusedBlock, 0, str>>>(
           fSweep, Kokkos::View<const int*, CpMem>(S.parent), invMass, velPred, S.velG0,
           Kokkos::View<const float*, CpMem>(S.massG), S.grp, bkPerm, fused->offsDev, fused->meta,
           fused->bar.data());
@@ -1109,7 +1116,7 @@ inline void multilevelCoarseCycleKokkos(
           "peclet::dem::ml_cycle_compose", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
           KOKKOS_LAMBDA(int i) { grp(i) = parent(pOff + grp(i)); });
     }
-    {  // restrict: V_g = sum(m v) / sum(m) (momentum-conserving), snapshot V0; Rot: Omega_g =
+    {  // restrict: V_g = sum(m v) / sum(m) (momentum-conserving), snapshot V0; Omega_g =
        // invI_g sum [m d x v + J w] (the M-orthogonal projection onto rigid motions, §2.2)
       auto velG = S.velG;
       auto velG0 = S.velG0;
@@ -1118,8 +1125,7 @@ inline void multilevelCoarseCycleKokkos(
           "peclet::dem::ml_restrict_reset", Kokkos::RangePolicy<CpExec>(space, 0, ng),
           KOKKOS_LAMBDA(int g) {
             velG(off + g, 0) = velG(off + g, 1) = velG(off + g, 2) = 0.0f;
-            if constexpr (Rot)
-              fSweep.angG(off + g, 0) = fSweep.angG(off + g, 1) = fSweep.angG(off + g, 2) = 0.0f;
+            fSweep.angG(off + g, 0) = fSweep.angG(off + g, 1) = fSweep.angG(off + g, 2) = 0.0f;
           });
       Kokkos::parallel_for(
           "peclet::dem::ml_restrict_accum", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
@@ -1129,8 +1135,7 @@ inline void multilevelCoarseCycleKokkos(
             Kokkos::atomic_add(&velG(off + g, 0), m * velPred(i, 0));
             Kokkos::atomic_add(&velG(off + g, 1), m * velPred(i, 1));
             Kokkos::atomic_add(&velG(off + g, 2), m * velPred(i, 2));
-            if constexpr (Rot)
-              fSweep.restrictAngular(i, off, g, m, velPred);
+            fSweep.restrictAngular(i, off, g, m, velPred);
           });
       Kokkos::parallel_for(
           "peclet::dem::ml_restrict_norm", Kokkos::RangePolicy<CpExec>(space, 0, ng),
@@ -1140,8 +1145,7 @@ inline void multilevelCoarseCycleKokkos(
               velG(off + g, c) *= invM;
               velG0(off + g, c) = velG(off + g, c);
             }
-            if constexpr (Rot)
-              fSweep.normalizeAngular(off + g);
+            fSweep.normalizeAngular(off + g);
           });
     }
     for (int s = 0; s < coarseSweeps; ++s) {
@@ -1166,22 +1170,11 @@ inline void multilevelCoarseCycleKokkos(
             });
       }
     }
-    {  // prolongate: every member takes its aggregate's velocity delta (mass-proportional impulse);
-       // Rot: the rigid motion, dV + dOmega x d and dOmega
-      auto velG = S.velG;
+    {  // prolongate: every member takes its aggregate's rigid motion, dV + dOmega x d, dOmega
       auto velG0 = S.velG0;
       Kokkos::parallel_for(
           "peclet::dem::ml_prolongate", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
-          KOKKOS_LAMBDA(int i) {
-            const int g = grp(i);
-            if constexpr (Rot) {
-              fSweep.prolongRigid(i, off, g, velPred, velG0);
-            } else {
-              velPred(i, 0) += velG(off + g, 0) - velG0(off + g, 0);
-              velPred(i, 1) += velG(off + g, 1) - velG0(off + g, 1);
-              velPred(i, 2) += velG(off + g, 2) - velG0(off + g, 2);
-            }
-          });
+          KOKKOS_LAMBDA(int i) { fSweep.prolongRigid(i, off, grp(i), velPred, velG0); });
     }
   }
 }
