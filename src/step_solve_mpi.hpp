@@ -202,7 +202,11 @@ inline MpiDriftVote mpiDriftVote(Particles& P, ParticleHalo& halo) {
   MPI_Comm_size(halo.comm(), &commSize);
   // One rank owns everything: there is no other owner to move a particle to (a migration would be
   // a host round trip that changes nothing).
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 5
+  if (false) {  // G13 mutant 5: the drift vote never migrates
+#else
   if (commSize > 1 && g[1] >= v.slack) {
+#endif
     halo.migrateToBlocks(P);
     ++P.splitStats.driftMigrations;
   }

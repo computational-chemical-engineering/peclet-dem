@@ -194,7 +194,7 @@ static constexpr bool kGate = true;
 // ---- the FOLLOWUPS report-only modes (hub*): never fail today. When the colour overflow is
 // fixed, the gate is velConf == posConf == 0 for hub / hub_posonly at every np and thread count.
 // ----
-static constexpr bool kFollowupGate = false;
+static constexpr bool kFollowupGate = true;  // WO-10: the hub modes are gates
 // ---- friction_pair (FOLLOWUPS defect 2, fixed by the single application point, WO-1): the couple
 // ratio |dL| / |dist n x J_t| <= 1e-2 (docs/contact_solve_framework.md §12 S1: the float floor;
 // before the fix 1.000, after <= 1.3e-3). friction_pair_pgs stays a report-only reference. ----
@@ -228,6 +228,19 @@ static Tol tolOf(const std::string& mode) {
   // docs/contact_solve_framework.md §13.6 G1 additions. hub_static: velocities unchanged, the
   // ABSOLUTE |P| must stay exactly 0 (sum m|v| = 0, no normalized dP). hub_ml: dLvel reported only
   // (the coarse cycle is translation-only by design).
+  // WO-10 (§9, gates on): every mode the framework makes conservative. Measured maxima over np 1..8
+  // x OMP 1/8 in IMPL_A.md; thresholds sit ~10-20x above them and far below the broken values.
+  if (mode == "hub" || mode == "hub_pgs" || mode == "cluster_poisson" ||
+      mode == "cluster_escalate" || mode == "cluster_ordered")  // dP <= 8e-7 (free-fall floor)
+    return {5e-6, 1e-5, 1e-5, -1, 1e-6};
+  if (mode == "cluster_multilevel")  // dLvel reported only: the coarse cycle is translation-only
+    return {5e-6, 1e-5, 1e-5, -1, -1};  // (§12 S17, a separate follow-up)
+  if (mode == "hub_posonly")
+    return {1e-6, 1e-5, 1e-5, -1, 1e-6};
+  if (mode == "cluster_shear" || mode == "cluster_e09" || mode == "cluster_e10" || mode == "tri")
+    return {1e-6, 1e-5, 1e-5, -1, 1e-6};
+  if (mode == "ring_mini")  // dP <= 3.5e-8, dXpos <= 5.5e-6 R, dLvel <= 4e-8 (after WO-5b)
+    return {1e-6, 3e-5, 3e-5, -1, 1e-6};
   if (mode == "hub_static")
     return {0.0, -1, 3e-5, -1, -1};
   if (mode == "hub_ml")
@@ -1305,6 +1318,19 @@ static int runCluster(const Mode& md, int rank, int size) {
     for (std::size_t k = 0; k < keHist.size(); ++k)
       std::printf(" s%zu=%.9e", k + 1, keHist[k]);
     std::printf("\n");
+  }
+  // G2 (docs/contact_solve_framework.md §9, the review's 3-body face scene): under policy X the
+  // distributed g = 0 one-shot is a legal serial Gauss-Seidel order, so the kinetic energy after
+  // the collision equals np 1's on every axis. References: np 1 (every axis, every order).
+  if (md.tri && !keHist.empty()) {
+    const double ref = md.restitution == 0.5f   ? 0.1379044264
+                       : md.restitution == 0.8f ? 0.2459279908
+                                                : -1.0;
+    if (ref > 0.0 && std::fabs(keHist.back() - ref) > 1e-6 * ref) {
+      fail = 1;
+      if (rank == 0)
+        std::fprintf(stderr, "GATE: tri KE %.9e differs from np 1 %.9e\n", keHist.back(), ref);
+    }
   }
   if (md.friction && !md.hertz && rank == 0 && size == 1)
     std::printf(

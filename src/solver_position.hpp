@@ -63,8 +63,10 @@ inline void countPositionJacobiKokkos(Kokkos::View<const ContactC*, CpMem> conta
 /// massSplit (the 'jacobi' diagnostic, §3.1): `constraintCounts` holds the global per-body counts
 /// n of countPositionJacobiKokkos and is only read; each contact's correction is solved against
 /// copies of mass m / n (w~ = n_A w_A + n_B w_B, a wall side 0) and the TRUE-mass deltas are
-/// accumulated, to be applied with factor 1. Off (the default, the GS colour-saturation fallback):
-/// the solve bumps the counts and the caller averages the sum by 1/count.
+/// accumulated, to be applied with factor 1. Off: the solve bumps the counts and the caller
+/// averages the sum by 1/count -- the pre-framework count-averaged Jacobi, kept ONLY for the kernel
+/// unit test against its serial reference; no production path calls it (the colour-saturation
+/// fallbacks were deleted with complete colouring, docs/contact_solve_framework.md §4.2 / §12 S3).
 inline void solvePositionKokkos(
     Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> posPred,
@@ -81,7 +83,7 @@ inline void solvePositionKokkos(
       "peclet::dem::solve_position", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
       KOKKOS_LAMBDA(int idx) {
         if (filt && onlyColor(idx) != colorFilter)
-          return;  // Jacobi fallback pass: only the contacts the colouring could not place
+          return;  // colour filter (kernel unit test only; no production caller)
         const ContactC c = contacts(idx);
         const int idA = c.bodyA, idB = c.bodyB;
         const float invMassA = invMass(idA);
@@ -279,6 +281,10 @@ inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, in
           int col = 0;  // lowest free colour of 64; never forced (§4.2 item 1)
           while (col < kColorPalette && ((forbidden >> col) & 1))
             ++col;
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 3
+          if (col > 62)
+            col = 62;  // G13 mutant 3: the old forced colour 62
+#endif
           if (col == kColorPalette) {
             cColor(idx) = kColorUncolourable;  // no free colour: neither coloured nor remaining
             return;
@@ -446,6 +452,10 @@ inline int colorContactsIncrementalKokkos(
           int col = 0;  // lowest free colour of 64; never forced (§4.2 item 1)
           while (col < kColorPalette && ((forbidden >> col) & 1))
             ++col;
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 3
+          if (col > 62)
+            col = 62;  // G13 mutant 3: the old forced colour 62
+#endif
           if (col == kColorPalette) {
             cColor(idx) = kColorUncolourable;
             return;
@@ -606,7 +616,13 @@ struct PositionContactSweep {
       return;
     // Never over-relaxed (omega_pos = 1, docs/contact_solve_framework.md §13.1): this projection
     // cannot retract an overshoot.
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 7
+    float dLambda = -C / wTotal;
+    if (ov.relax(idA, idB))
+      dLambda *= ov.omega;  // G13 mutant 7: the over-relaxed projection of WO-4
+#else
     const float dLambda = -C / wTotal;
+#endif
     // Position-channel normal load bookkeeping: the friction cone must see the TOTAL normal
     // force; whatever de-penetration flows through this projection (instead of the velocity
     // impulses) is accumulated here, converted to impulse units by the caller, and carried

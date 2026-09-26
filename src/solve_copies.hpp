@@ -119,7 +119,11 @@ inline void buildHubCopiesKokkos(Kokkos::View<const int*, CpMem> eA,
   Kokkos::parallel_scan(
       "peclet::dem::copies_hub_scan", Kokkos::RangePolicy<CpExec>(space, 0, nV),
       KOKKOS_LAMBDA(int v, int& run, const bool final) {
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 3
+        const bool hub = false;  // G13 mutant 3: no hub copies
+#else
         const bool hub = deg(v) > kHubEdgeBudget;
+#endif
         if (final)
           hubId(v) = hub ? run : -1;
         if (hub)
@@ -493,8 +497,13 @@ inline void foldCopiesKokkos(CpExec space, const PhaseCopies& H, Kokkos::View<fl
         }
         float nx[3], nw[3];
         for (int c = 0; c < 3; ++c) {
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 2
+          nx[c] = sx(g, c) + tx[c];  // G13 mutant 2: raw sum of split-mass increments (no 1/k)
+          nw[c] = haveW ? sw(g, c) + tw[c] : 0.0f;
+#else
           nx[c] = sx(g, c) + tx[c] / kf;
           nw[c] = haveW ? sw(g, c) + tw[c] / kf : 0.0f;
+#endif
         }
         const float share = oSum / kf;
         if (haveC) {

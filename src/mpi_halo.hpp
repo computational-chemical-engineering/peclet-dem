@@ -170,6 +170,9 @@ struct ContactOwnership {
       return true;  // both owned here
     if (!ao && !bo)
       return false;  // cannot occur (queries come from owned bodies); defensive
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 1
+    return false;  // G13 mutant 1 (docs/contact_solve_framework.md §9): no cross-rank pair is solved
+#endif
     const int o = ao ? a : b, g = ao ? b : a;
     if (gid(o) == gid(g))
       return false;  // a body against its own periodic image
@@ -815,7 +818,11 @@ inline void haloApplyVelocityIncrementM(V3 velPred, V3 angVelPred, Vf orphan, Vf
           const float kf = static_cast<float>(k), af = static_cast<float>(aVel(i));
           float c2 = 0.0f;  // §12 S14: the owner copy's consensus correction (increment form)
           for (int d = 0; d < 3; ++d) {
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 2
+            const float own = velPred(i, d) - seedV(i, d), mean = af * own + r.v[d];  // G13 mutant 2
+#else
             const float own = velPred(i, d) - seedV(i, d), mean = (af * own + r.v[d]) / kf;
+#endif
             c2 += (mean - own) * (mean - own);
             velPred(i, d) = seedV(i, d) + mean;
             angVelPred(i, d) = seedW(i, d) + (af * (angVelPred(i, d) - seedW(i, d)) + r.w[d]) / kf;
@@ -2104,8 +2111,8 @@ class ParticleHalo {
     dev_.forward(ownedVal_, ghostVal_);
     haloUnpackGhostColumn(P.planeFriction, ghostVal_, ghostSlot_, numReal_, numGhost_);
   }
-  /// Jacobi count-averaging counts (constraintCounts; the velocityUseGS=false solves and the
-  /// colour-saturation fallbacks): each rank counted the contacts it owns at both endpoints, ghost
+  /// Jacobi counts (constraintCounts; the mass-split velocityUseGS=false solves, §3.1): each rank
+  /// counted the contacts it owns at both endpoints, ghost
   /// endpoints included; sum the ghost counts onto the owners, then forward the owners' totals, so
   /// every copy of a body divides by the serial (global) count. Collective over the neighbourhood:
   /// call it only where every rank does (docs/mpi_momentum_conservation.md §4.2).

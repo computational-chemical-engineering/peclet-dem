@@ -95,7 +95,9 @@ endforeach()
 # ones).
 foreach(np 1 2 4 8)
   foreach(mode cluster cluster_friction cluster_pgs cluster_posonly hertz cluster_sync3
-               cluster_norot cluster_periodic cluster_jacobi cluster_shear hertz_shear)
+               cluster_norot cluster_periodic cluster_jacobi cluster_shear hertz_shear
+               hub hub_pgs hub_posonly tri ring_mini cluster_poisson cluster_multilevel
+               cluster_escalate cluster_ordered cluster_e09 cluster_e10)
     _dem_mpi_test(momentum_${mode}_np${np} ${np} test_momentum_mpi ${mode})
   endforeach()
 endforeach()
@@ -164,3 +166,35 @@ endforeach()
 # migrate_to_weights(w, align) == flow's aligned partition: also at np = 8, where the budget's
 # alignment and the "fewer aligned boxes than ranks" rejection both differ from np <= 4.
 _dem_mpi_test(align_np8 8 test_align_mpi)
+
+# G13 mutation negative controls (docs/contact_solve_framework.md §9 G13, §13.6): each mutant is
+# compiled into a dedicated executable with -DPECLET_DEM_TEST_MUTANT=<n> (production never defines
+# it) and its ctest PASSES iff the gate FAILS (WILL_FAIL).
+function(_dem_mutant_exe target src n)
+  add_executable(${target} ${src})
+  target_include_directories(${target} PRIVATE ${_dem_src} ${PECLET_CORE_INCLUDE})
+  target_compile_definitions(${target} PRIVATE PECLET_DEM_MPI PECLET_DEM_TEST_MUTANT=${n})
+  target_link_libraries(${target} PRIVATE ArborX::ArborX Kokkos::kokkos MPI::MPI_CXX)
+endfunction()
+_dem_mutant_exe(test_ownership_mpi_mut1 test_ownership_mpi.cpp 1)
+_dem_mutant_exe(test_momentum_mpi_mut2 test_momentum_mpi.cpp 2)
+_dem_mutant_exe(test_momentum_mpi_mut3 test_momentum_mpi.cpp 3)
+_dem_mutant_exe(test_momentum_mpi_mut4 test_momentum_mpi.cpp 4)
+_dem_mutant_exe(test_ownership_mpi_mut5 test_ownership_mpi.cpp 5)
+_dem_mutant_exe(test_momentum_mpi_mut6 test_momentum_mpi.cpp 6)
+_dem_mutant_exe(test_momentum_mpi_mut7 test_momentum_mpi.cpp 7)
+_dem_mpi_test(mutant1_ownership_oracle_closed_np2 2 test_ownership_mpi_mut1 oracle_closed)
+_dem_mpi_test(mutant2_momentum_cluster_pgs_np2 2 test_momentum_mpi_mut2 cluster_pgs)
+_dem_mpi_test(mutant2_momentum_hub_pgs_np1 1 test_momentum_mpi_mut2 hub_pgs)
+_dem_mpi_test(mutant3_momentum_hub_np1 1 test_momentum_mpi_mut3 hub)
+_dem_mpi_test(mutant4_momentum_tri_np2 2 test_momentum_mpi_mut4 tri --axis=2)
+_dem_mpi_test(mutant5_ownership_missed_drift_lattice_np4 4 test_ownership_mpi_mut5 missed_drift_lattice)
+_dem_mpi_test(mutant6_momentum_hub_ml_np1 1 test_momentum_mpi_mut6 hub_ml)
+_dem_mpi_test(mutant7_momentum_hub_static_np1 1 test_momentum_mpi_mut7 hub_static)
+foreach(t mutant1_ownership_oracle_closed_np2 mutant2_momentum_cluster_pgs_np2
+          mutant2_momentum_hub_pgs_np1 mutant3_momentum_hub_np1 mutant4_momentum_tri_np2
+          mutant5_ownership_missed_drift_lattice_np4 mutant6_momentum_hub_ml_np1
+          mutant7_momentum_hub_static_np1)
+  set_tests_properties(${t} PROPERTIES WILL_FAIL TRUE)
+endforeach()
+

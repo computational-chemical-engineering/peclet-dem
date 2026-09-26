@@ -69,8 +69,10 @@ inline void countVelocityJacobiKokkos(Kokkos::View<const ManifoldC*, CpMem> mani
 /// massSplit (the 'jacobi' diagnostic, §3.1): `velCounts` holds the global per-body counts n of
 /// countVelocityJacobiKokkos and is only read; each manifold is solved against copies of mass
 /// m / n (w~ = n_A w_A + n_B w_B, a wall side 0) and the TRUE-mass deltas are accumulated, to be
-/// applied with factor 1. Off (the default, the GS colour-saturation fallback): the solve bumps
-/// `velCounts` and the caller count-averages the sum.
+/// applied with factor 1. Off: the solve bumps `velCounts` and the caller count-averages the sum
+/// -- the pre-framework count-averaged Jacobi, kept ONLY for the kernel unit test against its
+/// serial reference; no production path calls it (the colour-saturation fallbacks were deleted
+/// with complete colouring, docs/contact_solve_framework.md §4.2 / §12 S3).
 inline void solveVelocityKokkos(
     Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
@@ -92,7 +94,7 @@ inline void solveVelocityKokkos(
       "peclet::dem::solve_velocity", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
       KOKKOS_LAMBDA(int idx) {
         if (filt && onlyColor(idx) != colorFilter)
-          return;  // Jacobi fallback pass: only the manifolds the colouring could not place
+          return;  // colour filter (kernel unit test only; no production caller)
         const ManifoldC m = manifolds(idx);
         if (m.num_points <= 0)
           return;
@@ -396,6 +398,10 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
           int c = 0;  // lowest free colour of 64; never forced (§4.2 item 1)
           while (c < kColorPalette && ((forbidden >> c) & 1))
             ++c;
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 3
+          if (c > 62)
+            c = 62;  // G13 mutant 3: the old forced colour 62
+#endif
           if (c == kColorPalette) {
             mColor(idx) = kColorUncolourable;  // no free colour: neither coloured nor remaining
             return;
@@ -552,6 +558,10 @@ inline int colorManifoldsIncrementalKokkos(
           int c = 0;  // lowest free colour of 64; never forced (§4.2 item 1)
           while (c < kColorPalette && ((forbidden >> c) & 1))
             ++c;
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 3
+          if (c > 62)
+            c = 62;  // G13 mutant 3: the old forced colour 62
+#endif
           if (c == kColorPalette) {
             mColor(idx) = kColorUncolourable;
             return;
@@ -1585,8 +1595,8 @@ inline bool solveVelocityPGSKokkos(
 /// clamped to 1023; ungrounded manifolds land in the last buckets. key = level*64 + colour;
 /// key-sorting a permutation groups each (level, colour) bucket contiguously, and the host
 /// bucket list (begin, end into the permutation) drives the ordered sweeps. Inactive and
-/// uncoloured manifolds (colour < 0: periodic dups, empty, mask-saturation leftovers -- the
-/// main loop's Jacobi fallback owns those) are keyed out entirely.
+/// uncoloured manifolds (colour < 0: periodic dups, empty) are keyed out entirely. (Complete
+/// colouring leaves no active manifold uncoloured: docs/contact_solve_framework.md §4.2.)
 inline void buildLevelColorBucketsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                          int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
                                          Kokkos::View<const int*, CpMem> mColor,

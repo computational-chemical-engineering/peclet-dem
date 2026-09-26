@@ -20,8 +20,8 @@
 ///     `visibleManifolds(nm)` is the whole visible range, read only by the label passes
 ///     (warm-ledger match, grounded / height levels). `allMax` turns each adaptive-stop residual
 ///     into a global MPI_Allreduce(MAX) so all ranks take the same break (a rank-local break
-///     would desynchronise the collective syncs and deadlock); `allMaxAny` folds a vote on a
-///     rank-local fallback (colour-mask saturation) into that same Allreduce.
+///     would desynchronise the collective syncs and deadlock); `allMaxAny` folds a rank-local
+///     vote (the colouring-invariant check, §12 S3) into that same Allreduce.
 ///
 /// `nBodies` is the body-slot span of the solve graph: numReal on the single-GPU path (ghost slots
 /// are realIndices-mapped onto their owners), numReal + numGhost under MPI (ghosts are self-mapped
@@ -628,7 +628,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // has more than one colour (with one colour no two ranks are adjacent, so no body is split
   // across ranks and every contact fires).
   const RankK rk = hooks.rankK();
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 4
+  const bool xOn = false;  // G13 mutant 4: every rank fires every contact
+#else
   const bool xOn = rankM && !usePGS && P.velocityUseGS && rk.numColors > 1;
+#endif
   const float gMagP = Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
                                    P.gravity.z * P.gravity.z);
   const F3 gHat =
@@ -998,7 +1002,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         // mass at a folded hub, not the solve view's m / k (which gained (1 - 1/s) m dV per
         // coarse cycle at a hub that aggregates).
         // Under rank-level M a rank-split vertex has a < k: invMassCoarse = invMass k / max(1, a).
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 6
+        Kokkos::View<const float*, CpMem> invMassCoarse = P.invMassSolve;  // G13 mutant 6
+#else
         Kokkos::View<const float*, CpMem> invMassCoarse = P.invMass;
+#endif
         if (velM) {
           growCopyView(P.invMassCoarse, static_cast<std::size_t>(nBodies),
                        "peclet::dem::invMassCoarse");
@@ -1291,6 +1299,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       markCopySeedsKokkos(PC, P.posPred, {}, {}, {});
       if (PC.nHubs > 0)
         posOv = SlotOverride{PC.slotA, PC.slotB, {}, 1.0f};
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 7
+    posOv = SlotOverride{PC.slotA, PC.slotB, P.splitSlot, 1.5f};  // G13 mutant 7
+#endif
     }
   } else if (posCopiesOn) {
     buildSolveViewsKokkos(P, PC, slotBase + PC.nCopies, P.invMass, P.invInertia);
@@ -1301,6 +1312,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     // The slot overrides only: the overlap projection is never relaxed (§13.1).
     if (PC.nHubs > 0)
       posOv = SlotOverride{PC.slotA, PC.slotB, {}, 1.0f};
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 7
+    posOv = SlotOverride{PC.slotA, PC.slotB, P.splitSlot, 1.5f};  // G13 mutant 7
+#endif
   }
   auto syncPos = [&] {
     if constexpr (Hooks::distributed) {
