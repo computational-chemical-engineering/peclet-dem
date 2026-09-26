@@ -1322,7 +1322,7 @@ static int runCluster(const Mode& md, int rank, int size) {
   // G2 (docs/contact_solve_framework.md §9, the review's 3-body face scene): under policy X the
   // distributed g = 0 one-shot is a legal serial Gauss-Seidel order, so the kinetic energy after
   // the collision equals np 1's on every axis. References: np 1 (every axis, every order).
-  if (md.tri && !keHist.empty()) {
+  if (md.tri && !md.gravity && !keHist.empty()) {  // the g = 0 one-shot scene only
     const double ref = md.restitution == 0.5f   ? 0.1379044264
                        : md.restitution == 0.8f ? 0.2459279908
                                                 : -1.0;
@@ -1466,8 +1466,9 @@ static int runFrictionPair(const Mode& md, int rank, int size) {
 }
 
 // ---- timing (not a ctest): the distributed XPBD step at N = 20000, fully periodic ----
+static int gPerfLattice = 27;  // perf_* lattice side (--perf-g=G; WO-11 size scan)
 static int runPerf(bool pgs, int rank, int size) {
-  const int G = 27;  // 27^3 = 19683 ~ 20000
+  const int G = gPerfLattice;  // default 27: 27^3 = 19683 ~ 20000 (--perf-g=G)
   const double spacing = 1.02 * 2.0 * RAD, box = G * spacing;
   const int gx = 32;
   std::mt19937 rng(7u);
@@ -1663,8 +1664,12 @@ int main(int argc, char** argv) {
                     mode == "cluster_multilevel" || mode == "cluster_escalate" ||
                     mode == "cluster_ordered" || mode == "cluster_onesided" || mode == "hub_pgs" ||
                     mode == "ring_mini";
-    if (mode == "perf_gas" || mode == "perf_pgs")
+    if (mode == "perf_gas" || mode == "perf_pgs") {
+      for (int a = 2; a < argc; ++a)
+        if (std::strncmp(argv[a], "--perf-g=", 9) == 0)
+          gPerfLattice = std::atoi(argv[a] + 9);
       fail = runPerf(mode == "perf_pgs", rank, size);
+    }
     else if (mode == "friction_pair" || mode == "friction_pair_pgs")
       fail = runFrictionPair(md, rank, size);
     else if (mode == "hub" || mode == "hub_posonly" || mode == "hub_pgs" || mode == "hub_static" ||

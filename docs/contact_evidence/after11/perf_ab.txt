@@ -1,0 +1,83 @@
+ 12:36:35 up 136 days,  1:30,  5 users,  load average: 3.20, 5.06, 4.21
+LOAD 3.20, 5.06, 4.21
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=16.403 rep=1 build=before
+LOAD 3.20, 5.06, 4.21
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=20.119 rep=1 build=after
+LOAD 3.50, 5.09, 4.22
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=152.322 rep=2 build=before
+LOAD 5.85, 5.45, 4.38
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=20.211 rep=2 build=after
+LOAD 5.85, 5.45, 4.38
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=16.058 rep=3 build=before
+LOAD 6.83, 5.67, 4.46
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=30.189 rep=3 build=after
+LOAD 6.83, 5.67, 4.46
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=16.086 rep=4 build=before
+LOAD 7.61, 5.90, 4.56
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=19.878 rep=4 build=after
+LOAD 7.61, 5.90, 4.56
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=16.287 rep=5 build=before
+LOAD 8.20, 6.10, 4.64
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=221.694 rep=5 build=after
+LOAD 7.52, 6.25, 4.77
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=8.324 rep=1 build=before
+LOAD 7.52, 6.25, 4.77
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=11.427 rep=1 build=after
+LOAD 7.52, 6.25, 4.77
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=8.318 rep=2 build=before
+LOAD 6.92, 6.14, 4.74
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=11.264 rep=2 build=after
+LOAD 6.92, 6.14, 4.74
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=8.421 rep=3 build=before
+LOAD 6.92, 6.14, 4.74
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=11.670 rep=3 build=after
+LOAD 6.92, 6.14, 4.74
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=8.288 rep=4 build=before
+LOAD 7.00, 6.17, 4.76
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=11.406 rep=4 build=after
+LOAD 7.00, 6.17, 4.76
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=8.213 rep=5 build=before
+LOAD 7.00, 6.17, 4.76
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=11.438 rep=5 build=after
+LOAD 7.00, 6.17, 4.76
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=16.227 rep=1 build=before
+LOAD 7.00, 6.19, 4.77
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=20.218 rep=1 build=after
+LOAD 8.39, 6.52, 4.91
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=16.219 rep=2 build=before
+LOAD 8.39, 6.52, 4.91
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=20.375 rep=2 build=after
+LOAD 9.00, 6.68, 4.97
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=828.944 rep=3 build=before
+LOAD 8.07, 6.74, 5.06
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=20.372 rep=3 build=after
+LOAD 8.07, 6.74, 5.06
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=16.445 rep=4 build=before
+LOAD 7.68, 6.70, 5.06
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=20.701 rep=4 build=after
+LOAD 7.63, 6.70, 5.08
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=16.044 rep=5 build=before
+LOAD 7.63, 6.70, 5.08
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=20.391 rep=5 build=after
+LOAD 7.64, 6.75, 5.12
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=8.352 rep=1 build=before
+LOAD 7.64, 6.75, 5.12
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=11.842 rep=1 build=after
+LOAD 7.64, 6.75, 5.12
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=8.312 rep=2 build=before
+LOAD 8.47, 6.94, 5.19
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=11.729 rep=2 build=after
+LOAD 8.47, 6.94, 5.19
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=8.173 rep=3 build=before
+LOAD 8.47, 6.94, 5.19
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=11.642 rep=3 build=after
+LOAD 8.47, 6.94, 5.19
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=8.406 rep=4 build=before
+LOAD 9.23, 7.12, 5.26
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=11.845 rep=4 build=after
+LOAD 9.23, 7.12, 5.26
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=8.214 rep=5 build=before
+LOAD 9.23, 7.12, 5.26
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=11.763 rep=5 build=after
+EXIT perf
+ 12:40:48 up 136 days,  1:35,  5 users,  load average: 9.23, 7.12, 5.26

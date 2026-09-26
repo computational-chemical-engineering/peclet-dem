@@ -1,0 +1,560 @@
+Internal ctest changing into directory: /home/frankp/Codes/suite/dem-contacts/build_ct
+Test project /home/frankp/Codes/suite/dem-contacts/build_ct
+        Start   1: python_tests
+  1/261 Test   #1: python_tests .................................   Passed  123.22 sec
+        Start   2: python_mpi_validate_exact_np1
+  2/261 Test   #2: python_mpi_validate_exact_np1 ................   Passed    0.77 sec
+        Start   3: python_mpi_validate_exact_np2
+  3/261 Test   #3: python_mpi_validate_exact_np2 ................   Passed    0.74 sec
+        Start   4: python_mpi_validate_exact_np4
+  4/261 Test   #4: python_mpi_validate_exact_np4 ................   Passed    0.73 sec
+        Start   5: python_mpi_validate_periodic_np1
+  5/261 Test   #5: python_mpi_validate_periodic_np1 .............   Passed    0.72 sec
+        Start   6: python_mpi_validate_periodic_np2
+  6/261 Test   #6: python_mpi_validate_periodic_np2 .............   Passed    0.93 sec
+        Start   7: python_mpi_validate_periodic_np4
+  7/261 Test   #7: python_mpi_validate_periodic_np4 .............   Passed    0.95 sec
+        Start   8: python_mpi_verify_distributed_np1
+  8/261 Test   #8: python_mpi_verify_distributed_np1 ............   Passed    2.20 sec
+        Start   9: python_mpi_verify_distributed_np2
+  9/261 Test   #9: python_mpi_verify_distributed_np2 ............   Passed    2.81 sec
+        Start  10: python_mpi_verify_distributed_np4
+ 10/261 Test  #10: python_mpi_verify_distributed_np4 ............   Passed    3.13 sec
+        Start  11: python_mpi_verify_rotating_drum_mpi_np1
+ 11/261 Test  #11: python_mpi_verify_rotating_drum_mpi_np1 ......   Passed   13.45 sec
+        Start  12: python_mpi_verify_rotating_drum_mpi_np2
+ 12/261 Test  #12: python_mpi_verify_rotating_drum_mpi_np2 ......   Passed   21.38 sec
+        Start  13: python_mpi_verify_rotating_drum_mpi_np4
+ 13/261 Test  #13: python_mpi_verify_rotating_drum_mpi_np4 ......   Passed   27.94 sec
+        Start  14: contact_preprocessing
+ 14/261 Test  #14: contact_preprocessing ........................   Passed    0.01 sec
+        Start  15: narrowphase
+ 15/261 Test  #15: narrowphase ..................................   Passed    0.01 sec
+        Start  16: solver_velocity
+ 16/261 Test  #16: solver_velocity ..............................   Passed    0.00 sec
+        Start  17: solver_position
+ 17/261 Test  #17: solver_position ..............................   Passed    0.01 sec
+        Start  18: solver_friction
+ 18/261 Test  #18: solver_friction ..............................   Passed    0.01 sec
+        Start  19: integration
+ 19/261 Test  #19: integration ..................................   Passed    0.00 sec
+        Start  20: periodicity
+ 20/261 Test  #20: periodicity ..................................   Passed    0.00 sec
+        Start  21: thermostat
+ 21/261 Test  #21: thermostat ...................................   Passed    0.00 sec
+        Start  22: coloring_overflow
+ 22/261 Test  #22: coloring_overflow ............................   Passed    0.06 sec
+        Start  23: broadphase_arborx
+ 23/261 Test  #23: broadphase_arborx ............................   Passed    0.03 sec
+        Start  24: pipeline
+ 24/261 Test  #24: pipeline .....................................   Passed    0.01 sec
+        Start  25: migrate_np1
+ 25/261 Test  #25: migrate_np1 ..................................   Passed    0.49 sec
+        Start  26: demstep_jacobi_closed_np1
+ 26/261 Test  #26: demstep_jacobi_closed_np1 ....................   Passed    0.53 sec
+        Start  27: demstep_jacobi_periodic_np1
+ 27/261 Test  #27: demstep_jacobi_periodic_np1 ..................   Passed    0.56 sec
+        Start  28: demstep_modern_np1
+ 28/261 Test  #28: demstep_modern_np1 ...........................   Passed    0.80 sec
+        Start  29: demstep_modern_rebal_np1
+ 29/261 Test  #29: demstep_modern_rebal_np1 .....................   Passed    0.90 sec
+        Start  30: demstep_hertz_np1
+ 30/261 Test  #30: demstep_hertz_np1 ............................   Passed    0.56 sec
+        Start  31: demstep_hertz_rebal_np1
+ 31/261 Test  #31: demstep_hertz_rebal_np1 ......................   Passed    0.55 sec
+        Start  32: rebalance_np1
+ 32/261 Test  #32: rebalance_np1 ................................   Passed    0.58 sec
+        Start  33: halo_schedule_one_sided_xpbd_np1
+ 33/261 Test  #33: halo_schedule_one_sided_xpbd_np1 .............   Passed    0.50 sec
+        Start  34: halo_schedule_one_sided_hertz_np1
+ 34/261 Test  #34: halo_schedule_one_sided_hertz_np1 ............   Passed    0.50 sec
+        Start  35: halo_schedule_skin_divergent_np1
+ 35/261 Test  #35: halo_schedule_skin_divergent_np1 .............   Passed    0.54 sec
+        Start  36: halo_schedule_skin_migrate_reorder_np1
+ 36/261 Test  #36: halo_schedule_skin_migrate_reorder_np1 .......   Passed    0.50 sec
+        Start  37: halo_schedule_skin_empty_rank_np1
+ 37/261 Test  #37: halo_schedule_skin_empty_rank_np1 ............   Passed    0.50 sec
+        Start  38: ghost_band_band_change_np1
+ 38/261 Test  #38: ghost_band_band_change_np1 ...................   Passed    0.51 sec
+        Start  39: ghost_band_default_band_np1
+ 39/261 Test  #39: ghost_band_default_band_np1 ..................   Passed    0.49 sec
+        Start  40: ghost_band_margin_np1
+ 40/261 Test  #40: ghost_band_margin_np1 ........................   Passed    0.51 sec
+        Start  41: ghost_band_explicit_rcut_np1
+ 41/261 Test  #41: ghost_band_explicit_rcut_np1 .................   Passed    0.50 sec
+        Start  42: align_np1
+ 42/261 Test  #42: align_np1 ....................................   Passed    0.57 sec
+        Start  43: migrate_np2
+ 43/261 Test  #43: migrate_np2 ..................................   Passed    0.48 sec
+        Start  44: demstep_jacobi_closed_np2
+ 44/261 Test  #44: demstep_jacobi_closed_np2 ....................   Passed    0.56 sec
+        Start  45: demstep_jacobi_periodic_np2
+ 45/261 Test  #45: demstep_jacobi_periodic_np2 ..................   Passed    0.61 sec
+        Start  46: demstep_modern_np2
+ 46/261 Test  #46: demstep_modern_np2 ...........................   Passed    0.84 sec
+        Start  47: demstep_modern_rebal_np2
+ 47/261 Test  #47: demstep_modern_rebal_np2 .....................   Passed    0.83 sec
+        Start  48: demstep_hertz_np2
+ 48/261 Test  #48: demstep_hertz_np2 ............................   Passed    0.60 sec
+        Start  49: demstep_hertz_rebal_np2
+ 49/261 Test  #49: demstep_hertz_rebal_np2 ......................   Passed    0.61 sec
+        Start  50: rebalance_np2
+ 50/261 Test  #50: rebalance_np2 ................................   Passed    0.65 sec
+        Start  51: halo_schedule_one_sided_xpbd_np2
+ 51/261 Test  #51: halo_schedule_one_sided_xpbd_np2 .............   Passed    0.54 sec
+        Start  52: halo_schedule_one_sided_hertz_np2
+ 52/261 Test  #52: halo_schedule_one_sided_hertz_np2 ............   Passed    0.57 sec
+        Start  53: halo_schedule_skin_divergent_np2
+ 53/261 Test  #53: halo_schedule_skin_divergent_np2 .............   Passed    0.51 sec
+        Start  54: halo_schedule_skin_migrate_reorder_np2
+ 54/261 Test  #54: halo_schedule_skin_migrate_reorder_np2 .......   Passed    0.49 sec
+        Start  55: halo_schedule_skin_empty_rank_np2
+ 55/261 Test  #55: halo_schedule_skin_empty_rank_np2 ............   Passed    0.50 sec
+        Start  56: ghost_band_band_change_np2
+ 56/261 Test  #56: ghost_band_band_change_np2 ...................   Passed    0.50 sec
+        Start  57: ghost_band_default_band_np2
+ 57/261 Test  #57: ghost_band_default_band_np2 ..................   Passed    0.49 sec
+        Start  58: ghost_band_margin_np2
+ 58/261 Test  #58: ghost_band_margin_np2 ........................   Passed    0.51 sec
+        Start  59: ghost_band_explicit_rcut_np2
+ 59/261 Test  #59: ghost_band_explicit_rcut_np2 .................   Passed    0.50 sec
+        Start  60: align_np2
+ 60/261 Test  #60: align_np2 ....................................   Passed    0.52 sec
+        Start  61: migrate_np4
+ 61/261 Test  #61: migrate_np4 ..................................   Passed    0.50 sec
+        Start  62: demstep_jacobi_closed_np4
+ 62/261 Test  #62: demstep_jacobi_closed_np4 ....................   Passed    0.54 sec
+        Start  63: demstep_jacobi_periodic_np4
+ 63/261 Test  #63: demstep_jacobi_periodic_np4 ..................   Passed    0.61 sec
+        Start  64: demstep_modern_np4
+ 64/261 Test  #64: demstep_modern_np4 ...........................   Passed    0.87 sec
+        Start  65: demstep_modern_rebal_np4
+ 65/261 Test  #65: demstep_modern_rebal_np4 .....................   Passed    0.80 sec
+        Start  66: demstep_hertz_np4
+ 66/261 Test  #66: demstep_hertz_np4 ............................   Passed    0.63 sec
+        Start  67: demstep_hertz_rebal_np4
+ 67/261 Test  #67: demstep_hertz_rebal_np4 ......................   Passed    0.66 sec
+        Start  68: rebalance_np4
+ 68/261 Test  #68: rebalance_np4 ................................   Passed    0.62 sec
+        Start  69: halo_schedule_one_sided_xpbd_np4
+ 69/261 Test  #69: halo_schedule_one_sided_xpbd_np4 .............   Passed    0.52 sec
+        Start  70: halo_schedule_one_sided_hertz_np4
+ 70/261 Test  #70: halo_schedule_one_sided_hertz_np4 ............   Passed    0.57 sec
+        Start  71: halo_schedule_skin_divergent_np4
+ 71/261 Test  #71: halo_schedule_skin_divergent_np4 .............   Passed    0.55 sec
+        Start  72: halo_schedule_skin_migrate_reorder_np4
+ 72/261 Test  #72: halo_schedule_skin_migrate_reorder_np4 .......   Passed    0.50 sec
+        Start  73: halo_schedule_skin_empty_rank_np4
+ 73/261 Test  #73: halo_schedule_skin_empty_rank_np4 ............   Passed    0.54 sec
+        Start  74: ghost_band_band_change_np4
+ 74/261 Test  #74: ghost_band_band_change_np4 ...................   Passed    0.50 sec
+        Start  75: ghost_band_default_band_np4
+ 75/261 Test  #75: ghost_band_default_band_np4 ..................   Passed    0.53 sec
+        Start  76: ghost_band_margin_np4
+ 76/261 Test  #76: ghost_band_margin_np4 ........................   Passed    0.50 sec
+        Start  77: ghost_band_explicit_rcut_np4
+ 77/261 Test  #77: ghost_band_explicit_rcut_np4 .................   Passed    0.49 sec
+        Start  78: align_np4
+ 78/261 Test  #78: align_np4 ....................................   Passed    0.56 sec
+        Start  79: momentum_cluster_np1
+ 79/261 Test  #79: momentum_cluster_np1 .........................   Passed    0.72 sec
+        Start  80: momentum_cluster_friction_np1
+ 80/261 Test  #80: momentum_cluster_friction_np1 ................   Passed    0.74 sec
+        Start  81: momentum_cluster_pgs_np1
+ 81/261 Test  #81: momentum_cluster_pgs_np1 .....................   Passed    0.76 sec
+        Start  82: momentum_cluster_posonly_np1
+ 82/261 Test  #82: momentum_cluster_posonly_np1 .................   Passed    0.86 sec
+        Start  83: momentum_hertz_np1
+ 83/261 Test  #83: momentum_hertz_np1 ...........................   Passed    0.63 sec
+        Start  84: momentum_cluster_sync3_np1
+ 84/261 Test  #84: momentum_cluster_sync3_np1 ...................   Passed    0.76 sec
+        Start  85: momentum_cluster_norot_np1
+ 85/261 Test  #85: momentum_cluster_norot_np1 ...................   Passed    0.73 sec
+        Start  86: momentum_cluster_periodic_np1
+ 86/261 Test  #86: momentum_cluster_periodic_np1 ................   Passed    0.86 sec
+        Start  87: momentum_cluster_jacobi_np1
+ 87/261 Test  #87: momentum_cluster_jacobi_np1 ..................   Passed    0.75 sec
+        Start  88: momentum_cluster_shear_np1
+ 88/261 Test  #88: momentum_cluster_shear_np1 ...................   Passed    1.00 sec
+        Start  89: momentum_hertz_shear_np1
+ 89/261 Test  #89: momentum_hertz_shear_np1 .....................   Passed    0.94 sec
+        Start  90: momentum_hub_np1
+ 90/261 Test  #90: momentum_hub_np1 .............................   Passed    0.82 sec
+        Start  91: momentum_hub_pgs_np1
+ 91/261 Test  #91: momentum_hub_pgs_np1 .........................   Passed    0.79 sec
+        Start  92: momentum_hub_posonly_np1
+ 92/261 Test  #92: momentum_hub_posonly_np1 .....................   Passed    0.97 sec
+        Start  93: momentum_tri_np1
+ 93/261 Test  #93: momentum_tri_np1 .............................   Passed    0.49 sec
+        Start  94: momentum_ring_mini_np1
+ 94/261 Test  #94: momentum_ring_mini_np1 .......................   Passed    0.57 sec
+        Start  95: momentum_cluster_poisson_np1
+ 95/261 Test  #95: momentum_cluster_poisson_np1 .................   Passed    0.80 sec
+        Start  96: momentum_cluster_multilevel_np1
+ 96/261 Test  #96: momentum_cluster_multilevel_np1 ..............   Passed    0.72 sec
+        Start  97: momentum_cluster_escalate_np1
+ 97/261 Test  #97: momentum_cluster_escalate_np1 ................   Passed    0.73 sec
+        Start  98: momentum_cluster_ordered_np1
+ 98/261 Test  #98: momentum_cluster_ordered_np1 .................   Passed    0.74 sec
+        Start  99: momentum_cluster_e09_np1
+ 99/261 Test  #99: momentum_cluster_e09_np1 .....................   Passed    0.65 sec
+        Start 100: momentum_cluster_e10_np1
+100/261 Test #100: momentum_cluster_e10_np1 .....................   Passed    0.66 sec
+        Start 101: momentum_cluster_np2
+101/261 Test #101: momentum_cluster_np2 .........................   Passed    0.84 sec
+        Start 102: momentum_cluster_friction_np2
+102/261 Test #102: momentum_cluster_friction_np2 ................   Passed    0.86 sec
+        Start 103: momentum_cluster_pgs_np2
+103/261 Test #103: momentum_cluster_pgs_np2 .....................   Passed    0.82 sec
+        Start 104: momentum_cluster_posonly_np2
+104/261 Test #104: momentum_cluster_posonly_np2 .................   Passed    0.94 sec
+        Start 105: momentum_hertz_np2
+105/261 Test #105: momentum_hertz_np2 ...........................   Passed    0.71 sec
+        Start 106: momentum_cluster_sync3_np2
+106/261 Test #106: momentum_cluster_sync3_np2 ...................   Passed    0.85 sec
+        Start 107: momentum_cluster_norot_np2
+107/261 Test #107: momentum_cluster_norot_np2 ...................   Passed    0.83 sec
+        Start 108: momentum_cluster_periodic_np2
+108/261 Test #108: momentum_cluster_periodic_np2 ................   Passed    0.94 sec
+        Start 109: momentum_cluster_jacobi_np2
+109/261 Test #109: momentum_cluster_jacobi_np2 ..................   Passed    0.89 sec
+        Start 110: momentum_cluster_shear_np2
+110/261 Test #110: momentum_cluster_shear_np2 ...................   Passed    1.27 sec
+        Start 111: momentum_hertz_shear_np2
+111/261 Test #111: momentum_hertz_shear_np2 .....................   Passed    1.21 sec
+        Start 112: momentum_hub_np2
+112/261 Test #112: momentum_hub_np2 .............................   Passed    0.71 sec
+        Start 113: momentum_hub_pgs_np2
+113/261 Test #113: momentum_hub_pgs_np2 .........................   Passed    0.78 sec
+        Start 114: momentum_hub_posonly_np2
+114/261 Test #114: momentum_hub_posonly_np2 .....................   Passed    0.88 sec
+        Start 115: momentum_tri_np2
+115/261 Test #115: momentum_tri_np2 .............................   Passed    0.50 sec
+        Start 116: momentum_ring_mini_np2
+116/261 Test #116: momentum_ring_mini_np2 .......................   Passed    0.61 sec
+        Start 117: momentum_cluster_poisson_np2
+117/261 Test #117: momentum_cluster_poisson_np2 .................   Passed    0.76 sec
+        Start 118: momentum_cluster_multilevel_np2
+118/261 Test #118: momentum_cluster_multilevel_np2 ..............   Passed    0.82 sec
+        Start 119: momentum_cluster_escalate_np2
+119/261 Test #119: momentum_cluster_escalate_np2 ................   Passed    0.79 sec
+        Start 120: momentum_cluster_ordered_np2
+120/261 Test #120: momentum_cluster_ordered_np2 .................   Passed    0.80 sec
+        Start 121: momentum_cluster_e09_np2
+121/261 Test #121: momentum_cluster_e09_np2 .....................   Passed    0.75 sec
+        Start 122: momentum_cluster_e10_np2
+122/261 Test #122: momentum_cluster_e10_np2 .....................   Passed    0.74 sec
+        Start 123: momentum_cluster_np4
+123/261 Test #123: momentum_cluster_np4 .........................   Passed    0.90 sec
+        Start 124: momentum_cluster_friction_np4
+124/261 Test #124: momentum_cluster_friction_np4 ................   Passed    0.93 sec
+        Start 125: momentum_cluster_pgs_np4
+125/261 Test #125: momentum_cluster_pgs_np4 .....................   Passed    0.88 sec
+        Start 126: momentum_cluster_posonly_np4
+126/261 Test #126: momentum_cluster_posonly_np4 .................   Passed    0.96 sec
+        Start 127: momentum_hertz_np4
+127/261 Test #127: momentum_hertz_np4 ...........................   Passed    0.68 sec
+        Start 128: momentum_cluster_sync3_np4
+128/261 Test #128: momentum_cluster_sync3_np4 ...................   Passed    0.93 sec
+        Start 129: momentum_cluster_norot_np4
+129/261 Test #129: momentum_cluster_norot_np4 ...................   Passed    0.96 sec
+        Start 130: momentum_cluster_periodic_np4
+130/261 Test #130: momentum_cluster_periodic_np4 ................   Passed    0.90 sec
+        Start 131: momentum_cluster_jacobi_np4
+131/261 Test #131: momentum_cluster_jacobi_np4 ..................   Passed    0.92 sec
+        Start 132: momentum_cluster_shear_np4
+132/261 Test #132: momentum_cluster_shear_np4 ...................   Passed    1.30 sec
+        Start 133: momentum_hertz_shear_np4
+133/261 Test #133: momentum_hertz_shear_np4 .....................   Passed    1.43 sec
+        Start 134: momentum_hub_np4
+134/261 Test #134: momentum_hub_np4 .............................   Passed    0.71 sec
+        Start 135: momentum_hub_pgs_np4
+135/261 Test #135: momentum_hub_pgs_np4 .........................   Passed    0.68 sec
+        Start 136: momentum_hub_posonly_np4
+136/261 Test #136: momentum_hub_posonly_np4 .....................   Passed    0.86 sec
+        Start 137: momentum_tri_np4
+137/261 Test #137: momentum_tri_np4 .............................   Passed    0.57 sec
+        Start 138: momentum_ring_mini_np4
+138/261 Test #138: momentum_ring_mini_np4 .......................   Passed    0.60 sec
+        Start 139: momentum_cluster_poisson_np4
+139/261 Test #139: momentum_cluster_poisson_np4 .................   Passed    0.87 sec
+        Start 140: momentum_cluster_multilevel_np4
+140/261 Test #140: momentum_cluster_multilevel_np4 ..............   Passed    0.93 sec
+        Start 141: momentum_cluster_escalate_np4
+141/261 Test #141: momentum_cluster_escalate_np4 ................   Passed    0.96 sec
+        Start 142: momentum_cluster_ordered_np4
+142/261 Test #142: momentum_cluster_ordered_np4 .................   Passed    0.88 sec
+        Start 143: momentum_cluster_e09_np4
+143/261 Test #143: momentum_cluster_e09_np4 .....................   Passed    0.71 sec
+        Start 144: momentum_cluster_e10_np4
+144/261 Test #144: momentum_cluster_e10_np4 .....................   Passed    0.78 sec
+        Start 145: momentum_cluster_np8
+145/261 Test #145: momentum_cluster_np8 .........................   Passed    0.94 sec
+        Start 146: momentum_cluster_friction_np8
+146/261 Test #146: momentum_cluster_friction_np8 ................   Passed    1.07 sec
+        Start 147: momentum_cluster_pgs_np8
+147/261 Test #147: momentum_cluster_pgs_np8 .....................   Passed    1.01 sec
+        Start 148: momentum_cluster_posonly_np8
+148/261 Test #148: momentum_cluster_posonly_np8 .................   Passed    1.05 sec
+        Start 149: momentum_hertz_np8
+149/261 Test #149: momentum_hertz_np8 ...........................   Passed    0.73 sec
+        Start 150: momentum_cluster_sync3_np8
+150/261 Test #150: momentum_cluster_sync3_np8 ...................   Passed    0.87 sec
+        Start 151: momentum_cluster_norot_np8
+151/261 Test #151: momentum_cluster_norot_np8 ...................   Passed    1.06 sec
+        Start 152: momentum_cluster_periodic_np8
+152/261 Test #152: momentum_cluster_periodic_np8 ................   Passed    0.95 sec
+        Start 153: momentum_cluster_jacobi_np8
+153/261 Test #153: momentum_cluster_jacobi_np8 ..................   Passed    0.94 sec
+        Start 154: momentum_cluster_shear_np8
+154/261 Test #154: momentum_cluster_shear_np8 ...................   Passed    1.49 sec
+        Start 155: momentum_hertz_shear_np8
+155/261 Test #155: momentum_hertz_shear_np8 .....................   Passed    1.67 sec
+        Start 156: momentum_hub_np8
+156/261 Test #156: momentum_hub_np8 .............................   Passed    0.73 sec
+        Start 157: momentum_hub_pgs_np8
+157/261 Test #157: momentum_hub_pgs_np8 .........................   Passed    0.71 sec
+        Start 158: momentum_hub_posonly_np8
+158/261 Test #158: momentum_hub_posonly_np8 .....................   Passed    0.99 sec
+        Start 159: momentum_tri_np8
+159/261 Test #159: momentum_tri_np8 .............................   Passed    0.53 sec
+        Start 160: momentum_ring_mini_np8
+160/261 Test #160: momentum_ring_mini_np8 .......................   Passed    0.63 sec
+        Start 161: momentum_cluster_poisson_np8
+161/261 Test #161: momentum_cluster_poisson_np8 .................   Passed    0.94 sec
+        Start 162: momentum_cluster_multilevel_np8
+162/261 Test #162: momentum_cluster_multilevel_np8 ..............   Passed    0.97 sec
+        Start 163: momentum_cluster_escalate_np8
+163/261 Test #163: momentum_cluster_escalate_np8 ................   Passed    0.98 sec
+        Start 164: momentum_cluster_ordered_np8
+164/261 Test #164: momentum_cluster_ordered_np8 .................   Passed    0.96 sec
+        Start 165: momentum_cluster_e09_np8
+165/261 Test #165: momentum_cluster_e09_np8 .....................   Passed    0.81 sec
+        Start 166: momentum_cluster_e10_np8
+166/261 Test #166: momentum_cluster_e10_np8 .....................   Passed    0.78 sec
+        Start 167: ownership_reverse_closed_np1
+167/261 Test #167: ownership_reverse_closed_np1 .................   Passed    0.48 sec
+        Start 168: ownership_reverse_periodic_np1
+168/261 Test #168: ownership_reverse_periodic_np1 ...............   Passed    0.49 sec
+        Start 169: ownership_exactly_once_closed_np1
+169/261 Test #169: ownership_exactly_once_closed_np1 ............   Passed    0.63 sec
+        Start 170: ownership_exactly_once_periodic_np1
+170/261 Test #170: ownership_exactly_once_periodic_np1 ..........   Passed    0.64 sec
+        Start 171: ownership_exactly_once_drift_np1
+171/261 Test #171: ownership_exactly_once_drift_np1 .............   Passed    0.61 sec
+        Start 172: ownership_reverse_closed_np2
+172/261 Test #172: ownership_reverse_closed_np2 .................   Passed    0.50 sec
+        Start 173: ownership_reverse_periodic_np2
+173/261 Test #173: ownership_reverse_periodic_np2 ...............   Passed    0.48 sec
+        Start 174: ownership_exactly_once_closed_np2
+174/261 Test #174: ownership_exactly_once_closed_np2 ............   Passed    0.62 sec
+        Start 175: ownership_exactly_once_periodic_np2
+175/261 Test #175: ownership_exactly_once_periodic_np2 ..........   Passed    0.60 sec
+        Start 176: ownership_exactly_once_drift_np2
+176/261 Test #176: ownership_exactly_once_drift_np2 .............   Passed    0.61 sec
+        Start 177: ownership_reverse_closed_np4
+177/261 Test #177: ownership_reverse_closed_np4 .................   Passed    0.56 sec
+        Start 178: ownership_reverse_periodic_np4
+178/261 Test #178: ownership_reverse_periodic_np4 ...............   Passed    0.50 sec
+        Start 179: ownership_exactly_once_closed_np4
+179/261 Test #179: ownership_exactly_once_closed_np4 ............   Passed    0.64 sec
+        Start 180: ownership_exactly_once_periodic_np4
+180/261 Test #180: ownership_exactly_once_periodic_np4 ..........   Passed    0.62 sec
+        Start 181: ownership_exactly_once_drift_np4
+181/261 Test #181: ownership_exactly_once_drift_np4 .............   Passed    0.60 sec
+        Start 182: ownership_reverse_closed_np8
+182/261 Test #182: ownership_reverse_closed_np8 .................   Passed    0.49 sec
+        Start 183: ownership_reverse_periodic_np8
+183/261 Test #183: ownership_reverse_periodic_np8 ...............   Passed    0.51 sec
+        Start 184: ownership_exactly_once_closed_np8
+184/261 Test #184: ownership_exactly_once_closed_np8 ............   Passed    0.65 sec
+        Start 185: ownership_exactly_once_periodic_np8
+185/261 Test #185: ownership_exactly_once_periodic_np8 ..........   Passed    0.64 sec
+        Start 186: ownership_exactly_once_drift_np8
+186/261 Test #186: ownership_exactly_once_drift_np8 .............   Passed    0.66 sec
+        Start 187: followup_hub_np1
+187/261 Test #187: followup_hub_np1 .............................   Passed    0.72 sec
+        Start 188: followup_hub_posonly_np1
+188/261 Test #188: followup_hub_posonly_np1 .....................   Passed    0.86 sec
+        Start 189: followup_hub_np2
+189/261 Test #189: followup_hub_np2 .............................   Passed    0.71 sec
+        Start 190: followup_hub_posonly_np2
+190/261 Test #190: followup_hub_posonly_np2 .....................   Passed    0.88 sec
+        Start 191: followup_hub_np4
+191/261 Test #191: followup_hub_np4 .............................   Passed    0.72 sec
+        Start 192: followup_hub_posonly_np4
+192/261 Test #192: followup_hub_posonly_np4 .....................   Passed    0.99 sec
+        Start 193: followup_friction_pair_np1
+193/261 Test #193: followup_friction_pair_np1 ...................   Passed    0.50 sec
+        Start 194: followup_friction_pair_pgs_np1
+194/261 Test #194: followup_friction_pair_pgs_np1 ...............   Passed    0.48 sec
+        Start 195: followup_missed_drift_pair_np1
+195/261 Test #195: followup_missed_drift_pair_np1 ...............   Passed    0.49 sec
+        Start 196: followup_missed_periodic_np1
+196/261 Test #196: followup_missed_periodic_np1 .................   Passed    0.62 sec
+        Start 197: followup_missed_drift_pair_np2
+197/261 Test #197: followup_missed_drift_pair_np2 ...............   Passed    0.48 sec
+        Start 198: followup_missed_periodic_np2
+198/261 Test #198: followup_missed_periodic_np2 .................   Passed    0.61 sec
+        Start 199: followup_missed_drift_pair_np4
+199/261 Test #199: followup_missed_drift_pair_np4 ...............   Passed    0.49 sec
+        Start 200: followup_missed_periodic_np4
+200/261 Test #200: followup_missed_periodic_np4 .................   Passed    0.65 sec
+        Start 201: followup_missed_drift_pair_np8
+201/261 Test #201: followup_missed_drift_pair_np8 ...............   Passed    0.53 sec
+        Start 202: followup_missed_periodic_np8
+202/261 Test #202: followup_missed_periodic_np8 .................   Passed    0.64 sec
+        Start 203: followup_missed_drift_lattice_np4
+203/261 Test #203: followup_missed_drift_lattice_np4 ............   Passed    1.03 sec
+        Start 204: followup_cluster_e09_np1
+204/261 Test #204: followup_cluster_e09_np1 .....................   Passed    0.64 sec
+        Start 205: followup_cluster_e10_np1
+205/261 Test #205: followup_cluster_e10_np1 .....................   Passed    0.64 sec
+        Start 206: followup_cluster_poisson_np1
+206/261 Test #206: followup_cluster_poisson_np1 .................   Passed    0.77 sec
+        Start 207: followup_cluster_multilevel_np1
+207/261 Test #207: followup_cluster_multilevel_np1 ..............   Passed    0.75 sec
+        Start 208: followup_cluster_escalate_np1
+208/261 Test #208: followup_cluster_escalate_np1 ................   Passed    0.75 sec
+        Start 209: followup_cluster_ordered_np1
+209/261 Test #209: followup_cluster_ordered_np1 .................   Passed    0.75 sec
+        Start 210: followup_cluster_onesided_np1
+210/261 Test #210: followup_cluster_onesided_np1 ................   Passed    0.76 sec
+        Start 211: followup_hub_pgs_np1
+211/261 Test #211: followup_hub_pgs_np1 .........................   Passed    0.76 sec
+        Start 212: followup_ring_mini_np1
+212/261 Test #212: followup_ring_mini_np1 .......................   Passed    0.56 sec
+        Start 213: followup_cluster_e09_np2
+213/261 Test #213: followup_cluster_e09_np2 .....................   Passed    0.73 sec
+        Start 214: followup_cluster_e10_np2
+214/261 Test #214: followup_cluster_e10_np2 .....................   Passed    0.77 sec
+        Start 215: followup_cluster_poisson_np2
+215/261 Test #215: followup_cluster_poisson_np2 .................   Passed    0.84 sec
+        Start 216: followup_cluster_multilevel_np2
+216/261 Test #216: followup_cluster_multilevel_np2 ..............   Passed    0.88 sec
+        Start 217: followup_cluster_escalate_np2
+217/261 Test #217: followup_cluster_escalate_np2 ................   Passed    0.88 sec
+        Start 218: followup_cluster_ordered_np2
+218/261 Test #218: followup_cluster_ordered_np2 .................   Passed    0.84 sec
+        Start 219: followup_cluster_onesided_np2
+219/261 Test #219: followup_cluster_onesided_np2 ................   Passed    0.81 sec
+        Start 220: followup_hub_pgs_np2
+220/261 Test #220: followup_hub_pgs_np2 .........................   Passed    0.70 sec
+        Start 221: followup_ring_mini_np2
+221/261 Test #221: followup_ring_mini_np2 .......................   Passed    0.63 sec
+        Start 222: followup_cluster_e09_np4
+222/261 Test #222: followup_cluster_e09_np4 .....................   Passed    0.79 sec
+        Start 223: followup_cluster_e10_np4
+223/261 Test #223: followup_cluster_e10_np4 .....................   Passed    0.77 sec
+        Start 224: followup_cluster_poisson_np4
+224/261 Test #224: followup_cluster_poisson_np4 .................   Passed    0.92 sec
+        Start 225: followup_cluster_multilevel_np4
+225/261 Test #225: followup_cluster_multilevel_np4 ..............   Passed    0.84 sec
+        Start 226: followup_cluster_escalate_np4
+226/261 Test #226: followup_cluster_escalate_np4 ................   Passed    0.91 sec
+        Start 227: followup_cluster_ordered_np4
+227/261 Test #227: followup_cluster_ordered_np4 .................   Passed    0.94 sec
+        Start 228: followup_cluster_onesided_np4
+228/261 Test #228: followup_cluster_onesided_np4 ................   Passed    0.92 sec
+        Start 229: followup_hub_pgs_np4
+229/261 Test #229: followup_hub_pgs_np4 .........................   Passed    0.75 sec
+        Start 230: followup_ring_mini_np4
+230/261 Test #230: followup_ring_mini_np4 .......................   Passed    0.60 sec
+        Start 231: momentum_hub_static_np1
+231/261 Test #231: momentum_hub_static_np1 ......................   Passed    0.52 sec
+        Start 232: momentum_hub_ml_np1
+232/261 Test #232: momentum_hub_ml_np1 ..........................   Passed    0.62 sec
+        Start 233: momentum_hub_static_np2
+233/261 Test #233: momentum_hub_static_np2 ......................   Passed    0.52 sec
+        Start 234: momentum_hub_ml_np2
+234/261 Test #234: momentum_hub_ml_np2 ..........................   Passed    0.61 sec
+        Start 235: momentum_hub_static_np4
+235/261 Test #235: momentum_hub_static_np4 ......................   Passed    0.54 sec
+        Start 236: momentum_hub_ml_np4
+236/261 Test #236: momentum_hub_ml_np4 ..........................   Passed    0.62 sec
+        Start 237: followup_tri_np1
+237/261 Test #237: followup_tri_np1 .............................   Passed    0.50 sec
+        Start 238: followup_tri_pgs_np1
+238/261 Test #238: followup_tri_pgs_np1 .........................***Failed    0.52 sec
+GATE: tri KE 1.042666066e-01 differs from np 1 1.379044264e-01
+FAILED (np=1)
+CONFLICTS mode=tri_pgs np=1 thr=2 vel=0 pos=0 degVel=2 degPos=2 colVel=3 colPos=3 leftVel=0 leftPos=0 degPosPt=2 ml=0 copiesVel=0 copiesPos=0
+ITERS mode=tri_pgs np=1 thr=2 vel=1 pos=1
+KE mode=tri_pgs np=1 thr=2 s1=1.042666066e-01 s2=1.042666066e-01 s3=1.042666066e-01
+MOMENTUM mode=tri_pgs np=1 thr=2 N=3 steps=3 dP=1.717e-08 dX=2.479e-08 dXpos=2.477e-08 dL=4.777e-06 dLcm=4.777e-06 dLvel=1.333e-08 ghosts=0 ovl=0.000e+00
+DRIFT mode=tri_pgs np=1 migrations=0
+
+        Start 239: followup_tri_np2
+239/261 Test #239: followup_tri_np2 .............................   Passed    0.49 sec
+        Start 240: followup_tri_pgs_np2
+240/261 Test #240: followup_tri_pgs_np2 .........................***Failed    1.01 sec
+GATE: tri KE 1.042666066e-01 differs from np 1 1.379044264e-01
+FAILED (np=2)
+CONFLICTS mode=tri_pgs np=2 thr=2 vel=0 pos=0 degVel=2 degPos=2 colVel=3 colPos=3 leftVel=0 leftPos=0 degPosPt=2 ml=0 copiesVel=0 copiesPos=0
+ITERS mode=tri_pgs np=2 thr=2 vel=1 pos=1
+KE mode=tri_pgs np=2 thr=2 s1=1.042666066e-01 s2=1.042666066e-01 s3=1.042666066e-01
+MOMENTUM mode=tri_pgs np=2 thr=2 N=3 steps=3 dP=1.739e-08 dX=2.380e-08 dXpos=2.378e-08 dL=4.775e-06 dLcm=4.775e-06 dLvel=1.476e-08 ghosts=3 ovl=0.000e+00
+DRIFT mode=tri_pgs np=2 migrations=0
+--------------------------------------------------------------------------
+prterun detected that one or more processes exited with non-zero status,
+thus causing the job to be terminated. The first process to do so was:
+
+   Process name: [prterun-SMM-TRS2-1311980@1,0]
+   Exit code:    1
+--------------------------------------------------------------------------
+
+        Start 241: followup_oracle_closed_np1
+241/261 Test #241: followup_oracle_closed_np1 ...................   Passed    2.24 sec
+        Start 242: followup_oracle_shear_np1
+242/261 Test #242: followup_oracle_shear_np1 ....................   Passed    1.84 sec
+        Start 243: followup_oracle_periodic_np1
+243/261 Test #243: followup_oracle_periodic_np1 .................   Passed    2.46 sec
+        Start 244: followup_oracle_closed_np2
+244/261 Test #244: followup_oracle_closed_np2 ...................   Passed    2.18 sec
+        Start 245: followup_oracle_shear_np2
+245/261 Test #245: followup_oracle_shear_np2 ....................   Passed    1.96 sec
+        Start 246: followup_oracle_periodic_np2
+246/261 Test #246: followup_oracle_periodic_np2 .................   Passed    2.32 sec
+        Start 247: followup_oracle_closed_np4
+247/261 Test #247: followup_oracle_closed_np4 ...................   Passed    2.17 sec
+        Start 248: followup_oracle_shear_np4
+248/261 Test #248: followup_oracle_shear_np4 ....................   Passed    2.26 sec
+        Start 249: followup_oracle_periodic_np4
+249/261 Test #249: followup_oracle_periodic_np4 .................   Passed    2.30 sec
+        Start 250: followup_oracle_closed_np8
+250/261 Test #250: followup_oracle_closed_np8 ...................   Passed    2.40 sec
+        Start 251: followup_oracle_shear_np8
+251/261 Test #251: followup_oracle_shear_np8 ....................   Passed    3.66 sec
+        Start 252: followup_oracle_periodic_np8
+252/261 Test #252: followup_oracle_periodic_np8 .................   Passed    2.46 sec
+        Start 253: align_np8
+253/261 Test #253: align_np8 ....................................   Passed    0.56 sec
+        Start 254: mutant1_ownership_oracle_closed_np2
+254/261 Test #254: mutant1_ownership_oracle_closed_np2 ..........   Passed    3.03 sec
+        Start 255: mutant2_momentum_cluster_pgs_np2
+255/261 Test #255: mutant2_momentum_cluster_pgs_np2 .............   Passed    1.38 sec
+        Start 256: mutant2_momentum_hub_pgs_np1
+256/261 Test #256: mutant2_momentum_hub_pgs_np1 .................   Passed    0.77 sec
+        Start 257: mutant3_momentum_hub_np1
+257/261 Test #257: mutant3_momentum_hub_np1 .....................   Passed    0.70 sec
+        Start 258: mutant4_momentum_tri_np2
+258/261 Test #258: mutant4_momentum_tri_np2 .....................   Passed    0.76 sec
+        Start 259: mutant5_ownership_missed_drift_lattice_np4
+259/261 Test #259: mutant5_ownership_missed_drift_lattice_np4 ...   Passed    1.05 sec
+        Start 260: mutant6_momentum_hub_ml_np1
+260/261 Test #260: mutant6_momentum_hub_ml_np1 ..................   Passed    0.59 sec
+        Start 261: mutant7_momentum_hub_static_np1
+261/261 Test #261: mutant7_momentum_hub_static_np1 ..............   Passed    0.51 sec
+
+99% tests passed, 2 tests failed out of 261
+
+Label Time Summary:
+mpi       = 845.63 sec*proc (249 tests)
+python    = 323.08 sec*proc (13 tests)
+
+Total Test time (real) = 392.61 sec
+
+The following tests FAILED:
+	238 - followup_tri_pgs_np1 (Failed)                     mpi
+	240 - followup_tri_pgs_np2 (Failed)                     mpi
+Errors while running CTest

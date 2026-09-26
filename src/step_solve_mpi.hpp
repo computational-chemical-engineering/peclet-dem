@@ -251,7 +251,9 @@ inline double mpiXpbdBand(const Particles& P, ParticleHalo& halo, double rcut,
 inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEvery,
                        bool forwardRotation) {
   CpExec space;
+  Kokkos::Profiling::pushRegion("dem::vote");
   const MpiDriftVote vote = mpiDriftVote(P, halo);
+  Kokkos::Profiling::popRegion();
   // Broadphase / narrow-phase margin: 0.1 R_max over ALL ranks, so both owners of a cross-face
   // pair report it at the same gap (a rank-local R_max dropped the pair on the rank whose own
   // grains are small while the other kept it).
@@ -276,12 +278,16 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   // 2. Gather ghosts (real mass) from owners over the halo: full state -- including gid,
   //    materialId and the warm grounded level -- into the ghost slots; sets
   //    P.numParticles = numReal + numGhost and self-maps realIndices.
+  Kokkos::Profiling::pushRegion("dem::gather");
   halo.gather(P, band);
+  Kokkos::Profiling::popRegion();
   // The velocity-phase slot map (docs/contact_solve_framework.md §6.2): one velocity slot per body
   // per rank -- a periodic self image maps to the owned slot, other images of one body to its
   // lowest ghost slot. Here, not in gather (the Hertz engine shares gather). Positions stay per
   // slot.
+  Kokkos::Profiling::pushRegion("dem::mapSlots");
   halo.mapVelocitySlots(P);
+  Kokkos::Profiling::popRegion();
 
   fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
 
@@ -289,16 +295,22 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   // the PGS friction bound and the position-channel Coulomb carry read through it).
   // findCollisionsGrow fences + reads the pair count back to host and guarantees np <= P.pairs
   // extent (growing the buffer on overflow) so the narrowphase never reads P.pairs out of bounds.
+  Kokkos::Profiling::pushRegion("dem::broad");
   const int np = findCollisionsGrow(P, margin);
+  Kokkos::Profiling::popRegion();
 
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
+  Kokkos::Profiling::pushRegion("dem::narrow");
   const int nc = narrowPhaseGrow(P, np, margin);
+  Kokkos::Profiling::popRegion();
 
   // Contact ownership (docs/mpi_momentum_conservation.md §2.1-2.2): owned contacts first, then
   // the manifolds reduced owned-first. The solve runs on [0, ncOwned) / [0, nmOwned); the
   // visible counts stay in P.contactCount / P.manifoldCount for the getters.
+  Kokkos::Profiling::pushRegion("dem::ownership");
   const int ncOwned = partitionContactsKokkos(P.contacts, nc, halo.contactOwnership(P));
+  Kokkos::Profiling::popRegion();
   if (P.debugCapture)
     debugCaptureOwnedContacts(P, halo, ncOwned);
   int nmOwned = 0;
@@ -309,8 +321,10 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   // 4-6. The shared modern velocity + position solve, distributed: rank-local colouring over the
   // owned + ghost body slots (nBodies = numParticles; realIndices are self-mapped, so ghost
   // copies evolve in place between reconciliations), persistent-pair keys from the global ids.
+  Kokkos::Profiling::pushRegion("dem::solve");
   demSolveContacts(P, ncOwned, nmOwned, P.numParticles, P.gid,
                    MpiSolveHooks{halo, syncEvery < 1 ? 1 : syncEvery, forwardRotation, nmVisible});
+  Kokkos::Profiling::popRegion();
 
   // 7. Commit (owned results kept; the ghost slots, reconciled by the final sync, are dropped and
   // re-gathered next substep).

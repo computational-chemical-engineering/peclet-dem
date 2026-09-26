@@ -1,0 +1,101 @@
+LOAD 6.33, 4.83, 4.41
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=15.578 rep=1 build=before
+LOAD 7.90, 5.36, 4.60
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=17.650 rep=1 build=after
+PERFDIAG mode=perf_gas np=4 migrations=0 ghostsTotal=9803 ghostsMax=2466 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=1 build=after
+LOAD 7.34, 5.28, 4.58
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=15.035 rep=2 build=before
+LOAD 7.34, 5.28, 4.58
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=18.186 rep=2 build=after
+PERFDIAG mode=perf_gas np=4 migrations=0 ghostsTotal=9802 ghostsMax=2464 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=2 build=after
+LOAD 6.83, 5.21, 4.56
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=15.176 rep=3 build=before
+LOAD 6.83, 5.21, 4.56
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=463.245 rep=3 build=after
+PERFDIAG mode=perf_gas np=4 migrations=0 ghostsTotal=9802 ghostsMax=2464 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=3 build=after
+LOAD 7.02, 5.39, 4.64
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=14.950 rep=4 build=before
+LOAD 7.74, 5.57, 4.70
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=17.432 rep=4 build=after
+PERFDIAG mode=perf_gas np=4 migrations=0 ghostsTotal=9802 ghostsMax=2465 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=4 build=after
+LOAD 7.63, 5.61, 4.73
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=15.097 rep=5 build=before
+LOAD 7.58, 5.64, 4.74
+PERF mode=perf_gas np=4 thr=4 N=19683 ms_per_step=17.655 rep=5 build=after
+PERFDIAG mode=perf_gas np=4 migrations=0 ghostsTotal=9802 ghostsMax=2465 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=5 build=after
+LOAD 7.29, 5.61, 4.73
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=7.849 rep=1 build=before
+LOAD 7.29, 5.61, 4.73
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=9.153 rep=1 build=after
+PERFDIAG mode=perf_gas np=8 migrations=0 ghostsTotal=12565 ghostsMax=1581 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=1 build=after
+LOAD 7.29, 5.61, 4.73
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=8.036 rep=2 build=before
+LOAD 7.99, 5.78, 4.79
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=9.525 rep=2 build=after
+PERFDIAG mode=perf_gas np=8 migrations=0 ghostsTotal=12563 ghostsMax=1581 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=2 build=after
+LOAD 7.99, 5.78, 4.79
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=8.213 rep=3 build=before
+LOAD 7.99, 5.78, 4.79
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=9.149 rep=3 build=after
+PERFDIAG mode=perf_gas np=8 migrations=0 ghostsTotal=12564 ghostsMax=1581 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=3 build=after
+LOAD 7.99, 5.78, 4.79
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=8.049 rep=4 build=before
+LOAD 7.99, 5.78, 4.79
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=9.096 rep=4 build=after
+PERFDIAG mode=perf_gas np=8 migrations=0 ghostsTotal=12563 ghostsMax=1580 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=4 build=after
+LOAD 7.43, 5.70, 4.77
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=7.947 rep=5 build=before
+LOAD 7.43, 5.70, 4.77
+PERF mode=perf_gas np=8 thr=2 N=19683 ms_per_step=9.347 rep=5 build=after
+PERFDIAG mode=perf_gas np=8 migrations=0 ghostsTotal=12565 ghostsMax=1581 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=5 build=after
+LOAD 7.43, 5.70, 4.77
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=15.036 rep=1 build=before
+LOAD 8.08, 5.90, 4.85
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=17.913 rep=1 build=after
+PERFDIAG mode=perf_pgs np=4 migrations=1 ghostsTotal=9784 ghostsMax=2458 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=1 build=after
+LOAD 8.08, 5.90, 4.85
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=15.335 rep=2 build=before
+LOAD 8.08, 5.90, 4.85
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=18.174 rep=2 build=after
+PERFDIAG mode=perf_pgs np=4 migrations=1 ghostsTotal=9783 ghostsMax=2456 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=2 build=after
+LOAD 8.80, 6.08, 4.91
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=14.827 rep=3 build=before
+LOAD 8.80, 6.08, 4.91
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=18.592 rep=3 build=after
+PERFDIAG mode=perf_pgs np=4 migrations=1 ghostsTotal=9782 ghostsMax=2459 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=3 build=after
+LOAD 8.80, 6.08, 4.91
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=167.917 rep=4 build=before
+LOAD 8.17, 6.26, 5.02
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=23.731 rep=4 build=after
+PERFDIAG mode=perf_pgs np=4 migrations=1 ghostsTotal=9782 ghostsMax=2458 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=4 build=after
+LOAD 8.17, 6.26, 5.02
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=15.119 rep=5 build=before
+LOAD 7.60, 6.17, 5.00
+PERF mode=perf_pgs np=4 thr=4 N=19683 ms_per_step=18.423 rep=5 build=after
+PERFDIAG mode=perf_pgs np=4 migrations=1 ghostsTotal=9784 ghostsMax=2457 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=5 build=after
+LOAD 8.03, 6.29, 5.04
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=7.914 rep=1 build=before
+LOAD 8.03, 6.29, 5.04
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=9.741 rep=1 build=after
+PERFDIAG mode=perf_pgs np=8 migrations=1 ghostsTotal=12492 ghostsMax=1619 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=1 build=after
+LOAD 8.03, 6.29, 5.04
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=7.765 rep=2 build=before
+LOAD 8.03, 6.29, 5.04
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=9.542 rep=2 build=after
+PERFDIAG mode=perf_pgs np=8 migrations=1 ghostsTotal=12492 ghostsMax=1635 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=2 build=after
+LOAD 8.18, 6.38, 5.09
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=7.813 rep=3 build=before
+LOAD 8.18, 6.38, 5.09
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=9.707 rep=3 build=after
+PERFDIAG mode=perf_pgs np=8 migrations=1 ghostsTotal=12492 ghostsMax=1622 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=3 build=after
+LOAD 8.18, 6.38, 5.09
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=7.722 rep=4 build=before
+LOAD 7.77, 6.32, 5.08
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=9.598 rep=4 build=after
+PERFDIAG mode=perf_pgs np=8 migrations=1 ghostsTotal=12494 ghostsMax=1637 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=4 build=after
+LOAD 7.77, 6.32, 5.08
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=7.879 rep=5 build=before
+LOAD 7.77, 6.32, 5.08
+PERF mode=perf_pgs np=8 thr=2 N=19683 ms_per_step=9.524 rep=5 build=after
+PERFDIAG mode=perf_pgs np=8 migrations=1 ghostsTotal=12492 ghostsMax=1635 velItersLast=4 posItersLast=8 rebuilds=60 gathers=60 rep=5 build=after
+EXIT perf
