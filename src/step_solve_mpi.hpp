@@ -84,42 +84,52 @@ inline constexpr float kDriftSlack = 0.25f;
 ///   d_i = |v_i| dt + |g + extForce_i invMass_i| dt^2  (bound on predict's centre displacement)
 ///   E_i = dist(x_i, this rank's block, minimum image on periodic axes) + d_i.
 /// `dt` = 0 gives the pure distance (the Hertz rebuild vote on committed positions, §5.5).
+/// One pass also returns the max owned scale (the radius reduction the vote replaces): three Max
+/// reducers in one launch, the per-axis gap inline.
 inline void driftVoteLocalKokkos(const Particles& P, const ParticleHalo::BlockBox box, float dt,
-                                 float& eMax, float& dMax) {
+                                 float& eMax, float& dMax, float* scaleMax = nullptr) {
   const F3 g = P.gravity;
   const auto pos = P.pos;
   const auto vel = P.vel;
   const auto ext = P.extForce;
   const auto invM = P.invMass;
-  float e = 0.0f, d = 0.0f;
+  const auto sc = P.scale;
+  const float lo0 = box.lo.x, lo1 = box.lo.y, lo2 = box.lo.z, hi0 = box.hi.x, hi1 = box.hi.y,
+              hi2 = box.hi.z, L0 = box.period.x, L1 = box.period.y, L2 = box.period.z;
+  float e = 0.0f, d = 0.0f, smax = 0.0f;
   Kokkos::parallel_reduce(
       "peclet::dem::drift_vote", Kokkos::RangePolicy<CpExec>(0, P.numReal),
-      KOKKOS_LAMBDA(int i, float& em, float& dm) {
-        const float ax = g.x + ext(i, 0) * invM(i), ay = g.y + ext(i, 1) * invM(i),
-                    az = g.z + ext(i, 2) * invM(i);
-        const float vv = Kokkos::sqrt(vel(i, 0) * vel(i, 0) + vel(i, 1) * vel(i, 1) +
-                                      vel(i, 2) * vel(i, 2));
-        const float di = vv * dt + Kokkos::sqrt(ax * ax + ay * ay + az * az) * dt * dt;
-        const float x[3] = {pos(i, 0), pos(i, 1), pos(i, 2)};
-        const float lo[3] = {box.lo.x, box.lo.y, box.lo.z}, hi[3] = {box.hi.x, box.hi.y, box.hi.z},
-                    L[3] = {box.period.x, box.period.y, box.period.z};
+      KOKKOS_LAMBDA(int i, float& em, float& dm, float& sm) {
+        const float im = invM(i);
+        const float ax = g.x + ext(i, 0) * im, ay = g.y + ext(i, 1) * im, az = g.z + ext(i, 2) * im;
+        const float v0 = vel(i, 0), v1 = vel(i, 1), v2 = vel(i, 2);
+        const float di = Kokkos::sqrt(v0 * v0 + v1 * v1 + v2 * v2) * dt +
+                         Kokkos::sqrt(ax * ax + ay * ay + az * az) * dt * dt;
         float d2 = 0.0f;
-        for (int k = 0; k < 3; ++k) {
-          auto gap = [&](float xx) { return Kokkos::fmax(0.0f, Kokkos::fmax(lo[k] - xx, xx - hi[k])); };
-          float gk = gap(x[k]);
-          if (L[k] > 0.0f)
-            gk = Kokkos::fmin(gk, Kokkos::fmin(gap(x[k] - L[k]), gap(x[k] + L[k])));
-          d2 += gk * gk;
-        }
+#define PECLET_DEM_DRIFT_AXIS(X, LO, HI, L)                                                        \
+  {                                                                                                \
+    float gk = Kokkos::fmax(0.0f, Kokkos::fmax((LO) - (X), (X) - (HI)));                           \
+    if ((L) > 0.0f) {                                                                              \
+      const float xm = (X) - (L), xp = (X) + (L);                                                  \
+      gk = Kokkos::fmin(gk, Kokkos::fmax(0.0f, Kokkos::fmax((LO) - xm, xm - (HI))));               \
+      gk = Kokkos::fmin(gk, Kokkos::fmax(0.0f, Kokkos::fmax((LO) - xp, xp - (HI))));               \
+    }                                                                                              \
+    d2 += gk * gk;                                                                                 \
+  }
+        PECLET_DEM_DRIFT_AXIS(pos(i, 0), lo0, hi0, L0)
+        PECLET_DEM_DRIFT_AXIS(pos(i, 1), lo1, hi1, L1)
+        PECLET_DEM_DRIFT_AXIS(pos(i, 2), lo2, hi2, L2)
+#undef PECLET_DEM_DRIFT_AXIS
         const float ei = Kokkos::sqrt(d2) + di;
-        if (ei > em)
-          em = ei;
-        if (di > dm)
-          dm = di;
+        em = ei > em ? ei : em;
+        dm = di > dm ? di : dm;
+        sm = sc(i) > sm ? sc(i) : sm;
       },
-      Kokkos::Max<float>(e), Kokkos::Max<float>(d));
+      Kokkos::Max<float>(e), Kokkos::Max<float>(d), Kokkos::Max<float>(smax));
   eMax = e;
   dMax = d;
+  if (scaleMax)
+    *scaleMax = smax;
 }
 
 /// Largest particle radius over ALL ranks (growth included) -- the halo band and the contact
@@ -193,8 +203,10 @@ struct MpiDriftVote {
   float dMax;    // global max predicted displacement of the substep
 };
 inline MpiDriftVote mpiDriftVote(Particles& P, ParticleHalo& halo) {
-  float vote[3] = {P.numReal > 0 ? maxOwnedRadius(P) : 0.0f, 0.0f, 0.0f};
-  driftVoteLocalKokkos(P, halo.blockBox(), P.dt, vote[1], vote[2]);
+  float vote[3] = {0.0f, 0.0f, 0.0f}, smax = 0.0f;
+  driftVoteLocalKokkos(P, halo.blockBox(), P.dt, vote[1], vote[2], &smax);
+  // = maxOwnedRadius(P) on a non-empty rank (same float product), 0 on an empty one.
+  vote[0] = P.numReal > 0 ? smax * P.globalScale * P.baseRadius : 0.0f;
   float g[3];
   MPI_Allreduce(vote, g, 3, MPI_FLOAT, MPI_MAX, halo.comm());
   const MpiDriftVote v{g[0], 0.1f * g[0], kDriftSlack * g[0], g[2]};

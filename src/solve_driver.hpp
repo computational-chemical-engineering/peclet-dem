@@ -298,6 +298,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // later, so no rank is systematically first. Incremented on every rank and every call (np 1
   // included, where it is read by nothing).
   ++P.solveEpoch;
+  Kokkos::Profiling::pushRegion("dem::solve::prep");
   const int nmVisible = hooks.visibleManifolds(nm);
 
   // A frictional wall drives friction even when the body-body material is frictionless.
@@ -470,10 +471,13 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   if (P.velocityUseGS) {
     numPosUnits = buildPositionUnitsKokkos(P.contacts, nc, P.unitStart, P.unitContacts);
     P.numPosUnits = numPosUnits;
-    posUnits = PosUnits{Kokkos::subview(Kokkos::View<const int*, CpMem>(P.unitStart),
-                                        Kokkos::pair<int, int>(0, numPosUnits + 1)),
-                        Kokkos::subview(Kokkos::View<const int*, CpMem>(P.unitContacts),
-                                        Kokkos::pair<int, int>(0, nc))};
+    // All singletons (spheres): the unit map is the identity -- the empty PosUnits, so the
+    // sweeps and passes index contacts directly (no two-level indirection per contact).
+    if (numPosUnits != nc)
+      posUnits = PosUnits{Kokkos::subview(Kokkos::View<const int*, CpMem>(P.unitStart),
+                                          Kokkos::pair<int, int>(0, numPosUnits + 1)),
+                          Kokkos::subview(Kokkos::View<const int*, CpMem>(P.unitContacts),
+                                          Kokkos::pair<int, int>(0, nc))};
     if (incrPosColor) {
       posDidFull = (P.posPrevContactCount <= 0);
       numPosColors = colorContactsIncrementalKokkos(
@@ -849,6 +853,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   P.splitStats.velItersUsed = velLoopDone ? demReadIterCount(P, 0) : 0;
   if (velCons)
     Kokkos::deep_copy(P.maxConsensus, 0.0f);
+  Kokkos::Profiling::popRegion();
+  Kokkos::Profiling::pushRegion("dem::solve::vel");
   for (int it = 0; !velLoopDone && it < P.velocityIterations; ++it) {
     ++P.splitStats.velItersUsed;
     if (legacyFriction)
@@ -917,6 +923,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   }
   if constexpr (Hooks::distributed)
     syncVel();  // final owner->ghost refresh of the main velocity phase
+  Kokkos::Profiling::popRegion();
+  Kokkos::Profiling::pushRegion("dem::solve::stab_fric");
   // STABILIZATION PASS: if the symmetric sweeps could not drain the residual (a collapsing
   // column needs ~one sweep per layer to carry its weight to the floor -- unaffordable), arrest
   // the remaining quasi-static approach with grounded one-sided sweeps. In dynamic scenes the
@@ -1318,6 +1326,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     posOv = SlotOverride{PC.slotA, PC.slotB, P.splitSlot, 1.5f};  // G13 mutant 7
 #endif
   }
+  Kokkos::Profiling::popRegion();
+  Kokkos::Profiling::pushRegion("dem::solve::pos");
   auto syncPos = [&] {
     if constexpr (Hooks::distributed) {
       hooks.syncPositions(P);
@@ -1408,6 +1418,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   if (usePGS && nm > 0)
     commitPosImpulseKokkos(P.posLambdaContact, nc, P.contactSlot, P.manifolds, nm, P.pairKeys,
                            P.prevPairKeys, P.prevPairCount, P.dt, P.vn0, P.prevPosImpulse);
+  Kokkos::Profiling::popRegion();
   (void)space;
 }
 

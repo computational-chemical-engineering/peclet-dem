@@ -733,6 +733,21 @@ inline int buildPositionUnitsKokkos(Kokkos::View<const ContactC*, CpMem> contact
           segId(p) = run - 1;
       },
       numSeg);
+  if (numSeg == n) {
+    // Every unit is one contact (spheres): the leader is the contact itself and the canonical
+    // order is the contact order, so the CSR is the identity -- written directly, without the
+    // second sort. The sweeps then take the empty PosUnits (no indirection; bitwise identical).
+    Kokkos::View<int*, CpMem> us = unitStart;
+    Kokkos::View<int*, CpMem> uc = unitContacts;
+    Kokkos::parallel_for(
+        "peclet::dem::cp::uident", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int p) {
+          us(p) = p;
+          uc(p) = p;
+        });
+    Kokkos::deep_copy(space, Kokkos::subview(unitStart, n), n);
+    space.fence();
+    return n;
+  }
   Kokkos::View<int*, CpMem> segLead(
       view_alloc(space, "peclet::dem::cp::ulead", WithoutInitializing), numSeg);
   Kokkos::deep_copy(space, segLead, n);
