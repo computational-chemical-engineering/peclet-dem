@@ -56,6 +56,10 @@ judgement call in the moment.
 - **An analytic tube's/box's `baseRadius` is its circumscribed radius** (every `baseRadius`/`rad`
   reader is a reach use); the geometric radius made end and corner contacts invisible. **A
   contact's sphere radius is the shape's own** (`params.x`), never the reach radius `rad(i)`.
+- **Shell detection is one-way by default**; `set_shell_detection('two_way')` is the opt-in fix for
+  thin rims/edges invisible between the other body's shell points (cost ×1.6–1.9 per step on ring
+  packings; USER directive: costly refinements are opt-in). Reverse contacts are emitted in the
+  pair's canonical orientation and deliberately not merged; XPBD only (Hertz stays one-way).
 - **`ring_mini` is a conservation scene** (it starts tunnelled: its overlap cannot converge under
   any solver); **`ring_collide` is the ring convergence gate.**
 - **The PGS restitution target is Moreau's**: −e·u⁻ on every closed contact (above the resting
@@ -106,7 +110,8 @@ OMP_PROC_BIND=false`) for any battery — an unbounded pool on the 48-core host 
 **Defaults the legacy scripts tripped over (all confirmed in `src/`):** `velocityIterations` defaults
 to 0 (no velocity solve, so no restitution — call `set_solver_iterations(pos, vel)`), gravity defaults
 to zero, there is no implicit floor at the domain minimum (`add_plane`), and an `(N,4)` positions
-array's 4th column is the INVERSE mass (`w=0` = fixed body).
+array's 4th column is the INVERSE mass, but `w = 0` is remapped to 1 (`dem_bindings.cpp` set_positions),
+so a fixed body needs `set_inv_mass` with 0 after `set_positions`.
 
 **1.0.0 API traps (packages E + F, 2026-09-08).** A stepper called before `set_dt` raises
 `RuntimeError` — there is no default time step, and `relax(n)` is the only exception. Every
