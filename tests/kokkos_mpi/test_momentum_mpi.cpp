@@ -1228,19 +1228,8 @@ static int runCluster(const Mode& md, int rank, int size) {
     kg -= 0.5 * (S.P[0] * S.P[0] + S.P[1] * S.P[1] + S.P[2] * S.P[2]) / M;
     return kg;
   };
-  const double ke0 = keCm(st, S0);  // before the first step (KEGATE)
+  const double ke0 = keCm(st, S0);  // before the first step (KEGATE; the KEROT reference)
   const D3 X0{S0.mx[0] / M, S0.mx[1] / M, S0.mx[2] / M}, V0{S0.P[0] / M, S0.P[1] / M, S0.P[2] / M};
-  double ke0 = 0.0;  // the initial CoM-frame kinetic energy (the KEROT line's reference)
-  {
-    double kl = 0.0;
-    for (int i = 0; i < static_cast<int>(st.m.size()); ++i) {
-      const D3 v = at(st.v, i), w = at(st.w, i), sp = spin(st, i);
-      kl += 0.5 * st.m[i] * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) +
-            0.5 * (sp[0] * w[0] + sp[1] * w[1] + sp[2] * w[2]);
-    }
-    MPI_Allreduce(&kl, &ke0, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    ke0 -= 0.5 * (S0.P[0] * S0.P[0] + S0.P[1] * S0.P[1] + S0.P[2] * S0.P[2]) / M;
-  }
   double pScaleLoc = 0.0, lScaleLoc = 0.0;
   for (int i = 0; i < static_cast<int>(st.m.size()); ++i) {
     const D3 x = at(st.x, i), v = at(st.v, i);
