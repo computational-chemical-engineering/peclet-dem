@@ -75,6 +75,53 @@ struct MpiSolveHooks {
   void restoreOrphanBalance(Particles& P) const { halo.restoreOrphanBalance(P); }
 };
 
+/// Drift slack S = kDriftSlack * R_max (docs/contact_solve_framework.md §5.1, R-F1): the ghost
+/// band carries S beyond the contact reach, and a particle that has drifted S beyond its owner's
+/// block triggers a collective migrateToBlocks.
+inline constexpr float kDriftSlack = 0.25f;
+
+/// The drift vote's rank-local maxima over the owned set (§5.1):
+///   d_i = |v_i| dt + |g + extForce_i invMass_i| dt^2  (bound on predict's centre displacement)
+///   E_i = dist(x_i, this rank's block, minimum image on periodic axes) + d_i.
+/// `dt` = 0 gives the pure distance (the Hertz rebuild vote on committed positions, §5.5).
+inline void driftVoteLocalKokkos(const Particles& P, const ParticleHalo::BlockBox box, float dt,
+                                 float& eMax, float& dMax) {
+  const F3 g = P.gravity;
+  const auto pos = P.pos;
+  const auto vel = P.vel;
+  const auto ext = P.extForce;
+  const auto invM = P.invMass;
+  float e = 0.0f, d = 0.0f;
+  Kokkos::parallel_reduce(
+      "peclet::dem::drift_vote", Kokkos::RangePolicy<CpExec>(0, P.numReal),
+      KOKKOS_LAMBDA(int i, float& em, float& dm) {
+        const float ax = g.x + ext(i, 0) * invM(i), ay = g.y + ext(i, 1) * invM(i),
+                    az = g.z + ext(i, 2) * invM(i);
+        const float vv = Kokkos::sqrt(vel(i, 0) * vel(i, 0) + vel(i, 1) * vel(i, 1) +
+                                      vel(i, 2) * vel(i, 2));
+        const float di = vv * dt + Kokkos::sqrt(ax * ax + ay * ay + az * az) * dt * dt;
+        const float x[3] = {pos(i, 0), pos(i, 1), pos(i, 2)};
+        const float lo[3] = {box.lo.x, box.lo.y, box.lo.z}, hi[3] = {box.hi.x, box.hi.y, box.hi.z},
+                    L[3] = {box.period.x, box.period.y, box.period.z};
+        float d2 = 0.0f;
+        for (int k = 0; k < 3; ++k) {
+          auto gap = [&](float xx) { return Kokkos::fmax(0.0f, Kokkos::fmax(lo[k] - xx, xx - hi[k])); };
+          float gk = gap(x[k]);
+          if (L[k] > 0.0f)
+            gk = Kokkos::fmin(gk, Kokkos::fmin(gap(x[k] - L[k]), gap(x[k] + L[k])));
+          d2 += gk * gk;
+        }
+        const float ei = Kokkos::sqrt(d2) + di;
+        if (ei > em)
+          em = ei;
+        if (di > dm)
+          dm = di;
+      },
+      Kokkos::Max<float>(e), Kokkos::Max<float>(d));
+  eMax = e;
+  dMax = d;
+}
+
 /// Largest particle radius over ALL ranks (growth included) -- the halo band and the contact
 /// reach must not depend on which grains a rank happens to own. An empty rank contributes nothing
 /// (maxOwnedRadius's scale-1 fallback would inflate the maximum of a run of smaller grains).
@@ -83,6 +130,8 @@ inline float globalMaxRadius(const Particles& P, MPI_Comm comm) {
   MPI_Allreduce(&r, &g, 1, MPI_FLOAT, MPI_MAX, comm);
   return g > 0.0f ? g : maxOwnedRadius(P);
 }
+
+
 
 /// The XPBD narrow phase's reach: it reports a pair while the gap is below the broadphase margin
 /// (0.1 R_max), i.e. at centre distance < r_i + r_j + margin, so a partner of a body across a
@@ -132,6 +181,39 @@ inline void debugCaptureOwnedContacts(Particles& P, const ParticleHalo& halo, in
   }
 }
 
+/// The XPBD drift vote (docs/contact_solve_framework.md §5.1), run at the top of every
+/// distributed substep: ONE Allreduce(MAX) of {R_max owned, E_max, d_max}; if some particle is S
+/// beyond its owner's block (or would be after predict), every particle moves to the rank whose
+/// current block holds it (collective migrateToBlocks). Everything after it depends only on the
+/// reduced values, so the schedule is identical on every rank.
+struct MpiDriftVote {
+  float rMax;    // global max radius (pre-growth)
+  float margin;  // 0.1 R_max: the broad/narrow-phase margin
+  float slack;   // S = kDriftSlack R_max
+  float dMax;    // global max predicted displacement of the substep
+};
+inline MpiDriftVote mpiDriftVote(Particles& P, ParticleHalo& halo) {
+  float vote[3] = {P.numReal > 0 ? maxOwnedRadius(P) : 0.0f, 0.0f, 0.0f};
+  driftVoteLocalKokkos(P, halo.blockBox(), P.dt, vote[1], vote[2]);
+  float g[3];
+  MPI_Allreduce(vote, g, 3, MPI_FLOAT, MPI_MAX, halo.comm());
+  const MpiDriftVote v{g[0], 0.1f * g[0], kDriftSlack * g[0], g[2]};
+  if (g[1] >= v.slack) {
+    halo.migrateToBlocks(P);
+    ++P.splitStats.driftMigrations;
+  }
+  return v;
+}
+/// The XPBD ghost band: reach + S + P, P the Verlet skin when on (the halo adds it itself), else
+/// the substep's predicted displacement d_max (the topology is rebuilt every gather then). `rcut`
+/// stays a lower bound. Reads the post-growth global R_max (one Allreduce, as before).
+inline double mpiXpbdBand(const Particles& P, ParticleHalo& halo, double rcut,
+                          const MpiDriftVote& v) {
+  return std::max(rcut, xpbdContactReach(globalMaxRadius(P, halo.comm())) +
+                            static_cast<double>(v.slack) +
+                            (halo.verletSkin() > 0.0f ? 0.0 : static_cast<double>(v.dMax)));
+}
+
 /// One distributed XPBD DEM substep. The periodic ghost generation of the single-rank step is
 /// replaced by a cross-rank gather (halo.gather, ghosts carrying REAL mass + the owner's gid /
 /// material / grounded level), then the FULL modern solve sequence runs through demSolveContacts
@@ -161,10 +243,11 @@ inline void debugCaptureOwnedContacts(Particles& P, const ParticleHalo& halo, in
 inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEvery,
                        bool forwardRotation) {
   CpExec space;
+  const MpiDriftVote vote = mpiDriftVote(P, halo);
   // Broadphase / narrow-phase margin: 0.1 R_max over ALL ranks, so both owners of a cross-face
   // pair report it at the same gap (a rank-local R_max dropped the pair on the rank whose own
   // grains are small while the other kept it).
-  const float margin = 0.1f * globalMaxRadius(P, halo.comm());
+  const float margin = vote.margin;
 
   if (P.growthFactor != -1.0f && P.growthRate != 0.0f) {
     P.growthFactor *= std::exp(P.growthRate * P.dt);
@@ -173,7 +256,7 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   }
   if (P.growthFactor > 0.0f)
     updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
-  const double band = std::max(rcut, xpbdContactReach(globalMaxRadius(P, halo.comm())));
+  const double band = mpiXpbdBand(P, halo, rcut, vote);
 
   // 1. Predict velocity on the owned set (no ghosts yet -> numParticles == numReal).
   P.numParticles = P.numReal;
@@ -242,6 +325,7 @@ struct MpiForceHooks {
   static constexpr bool distributed = true;
   ParticleHalo& halo;
   double band;
+  float slack;  // drift slack S = kDriftSlack R_max (§5.5)
   float allMax(float v) const {
     float g = v;
     MPI_Allreduce(&v, &g, 1, MPI_FLOAT, MPI_MAX, halo.comm());
@@ -253,6 +337,21 @@ struct MpiForceHooks {
     return g;
   }
   void gatherGhosts(Particles& P) const {
+    // The drift vote at every pair-list rebuild (docs/contact_solve_framework.md §5.5): if some
+    // particle sits S or more beyond its owner's block (committed positions; the list criterion
+    // covers motion until the next rebuild), move every particle to its current block first. The
+    // live Mindlin springs ride the migration pack (gid-keyed) exactly as in a rebalance.
+    float e = 0.0f, d = 0.0f;
+    driftVoteLocalKokkos(P, halo.blockBox(), 0.0f, e, d);
+    if (allMax(e) >= slack) {
+      halo.migrateToBlocks(P);
+      ++P.splitStats.driftMigrations;
+      // The owned force accumulators are zeroed as they are consumed (integrate), the ghost ones
+      // only at the start of each step (clearGhostScratch) and then left holding the discarded
+      // ghost halves. A migration turns former ghost slots into owned ones: clear the owned range
+      // so no stale ghost force is integrated (measured: dP 1e-8 -> 9e-4 at the first migration).
+      zeroForceScratchKokkos(P.deltaVel, P.deltaAngVel, 0, P.numReal);
+    }
     halo.invalidateTopology();  // fresh band + fresh positions at every pair rebuild
     halo.gather(P, band);
     fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
@@ -274,12 +373,14 @@ struct MpiForceHooks {
 /// non-periodic domains only (matching the single-GPU engine).
 inline void demStepHertzMpi(Particles& P, ParticleHalo& halo, float dt, int nsteps,
                             float skinFrac) {
-  // Ghost band = worst-case pair cutoff (2 R_max,global) + skin. The driver's skin is
-  // skinFrac * R_min,global <= skinFrac * R_max,global, so this band bounds it.
-  float maxR = maxOwnedRadius(P), maxRg = maxR;
+  // Ghost band = worst-case pair cutoff (2 R_max,global) + skin + drift slack S (§5.5). The
+  // driver's skin is skinFrac * R_min,global <= skinFrac * R_max,global, so this band bounds it;
+  // S covers a partner up to S beyond its owner's block (the rebuild vote keeps it there).
+  float maxR = P.numReal > 0 ? maxOwnedRadius(P) : 0.0f, maxRg = maxR;
   MPI_Allreduce(&maxR, &maxRg, 1, MPI_FLOAT, MPI_MAX, halo.comm());
-  const double band = (2.0 + skinFrac) * static_cast<double>(maxRg);
-  demStepForce(P, dt, nsteps, skinFrac, HertzMindlinLaw{}, MpiForceHooks{halo, band});
+  const float slack = kDriftSlack * maxRg;
+  const double band = (2.0 + skinFrac) * static_cast<double>(maxRg) + static_cast<double>(slack);
+  demStepForce(P, dt, nsteps, skinFrac, HertzMindlinLaw{}, MpiForceHooks{halo, band, slack});
   P.numParticles = P.numReal;  // restore owned-only active count for getters
 }
 

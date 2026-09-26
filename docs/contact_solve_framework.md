@@ -2275,3 +2275,42 @@ PSOR would have a unique least-displacement fixed point and legitimate over-rela
   then share a colour and write the body in the same interval, which breaks X1. Colouring a
   superset of the conflict graph is always safe; its only cost is a larger C. The colouring is
   greedy in rank order, uses the minimum image on periodic axes, and throws when C > 64.
+- **S20: ghost selection and the drift vote use the ownership coordinate** (WO-7, session,
+  2026-09-26).
+  - The trigger: in the sheared oracle, bodies left the non-periodic, unwalled domain (x = −2.3).
+  - Ownership clamps such a body onto the boundary cells (core `ParticleMigrator::cellOf`), but
+    both the vote and core's halo measured the distance to the finite block box. A partner across
+    a block face was therefore never sent: 121 pairs missing at np 4/8.
+  - The fix, in dem:
+    - `ParticleHalo::gather` builds the topology from positions clamped onto the domain on
+      non-periodic axes;
+    - `blockBox()` gives boundary blocks a semi-infinite extent on those axes.
+  - Why it is safe:
+    - clamping is a projection onto a convex box, so it never lengthens a distance, and the
+      visibility proof holds on clamped coordinates;
+    - ghosts forward their true positions, and the image shift on a non-periodic axis is 0 either
+      way.
+  - After the fix: `oracle_shear` and `oracle_closed` have missing = dup = 0 at np 1/2/4/8.
+- **S21: Hertz pair lists are canonically oriented, lower gid first** (WO-7, session, 2026-09-26).
+  - The Mindlin spring ξ is the tangential displacement of `pairs(idx, 0)` relative to
+    `pairs(idx, 1)`, so it changes sign with the order.
+  - The two owners of a cross-rank pair store opposite orientations, because owned slots precede
+    ghosts. A gid-keyed carry through migration then handed one rank the wrong sign.
+  - Measured in `hertz_shear`:
+    - frictionless: dP 4e-8, conserved;
+    - with friction: dP 9.1e-4 at np 2/4/8, starting at the first drift migration;
+    - with the carry cap raised to 64: identical, so eviction was not the cause.
+  - The fix: `hertz_carry` swaps each pair to lower gid first. At np 1, gid equals slot and the
+    broad phase already emits lower-first, so the result is byte-identical.
+  - After the fix, `hertz_shear` dP is 2.5–3.7e-8 at np 2/4/8 through 18 migrations.
+  - This was latent before WO-7 for any mid-run migration, including `rebalance`.
+  - A second fix went in with it: owned force accumulators are cleared after a drift migration in
+    the Hertz loop, because former ghost slots held discarded ghost halves.
+- **S22: the tests identify bodies by gid, never by the setup's owned list** (WO-7). Ownership is
+  not fixed any more. `velocityPhaseTorque`, `periodicDisplacement` and `dumpState` pair the two
+  states of a body by gid, and the fixed-ownership assertion is gone. `SplitStats::driftMigrations`
+  is cumulative.
+- **Deviation from §5.1 (recorded, performance-neutral at the default).** The Verlet-skin rebuild
+  keeps its own `MPI_LOR` inside `gather`, instead of folding `D_max` into the vote: with the
+  default skin of 0 there is no LOR at all. The band term P is `d_max` when the skin is 0; the halo
+  adds the skin itself otherwise.

@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -120,6 +121,9 @@ struct MigratePack {
   int srcRank;  // the sending rank: arrivals are re-ordered by it (see the file note)
   unsigned char materialId, groundedLevel, numWarm, numHertz;
   float orphan, orphanVPeak;  // Poisson orphan account rides with its body across ownership
+  // External force / torque (a coupled run sets them before step_mpi; a drift migration inside
+  // the call must carry them -- docs/contact_solve_framework.md §5.2).
+  F3 extForce, extTorque;
   WarmPairEntry warm[kWarmCarryMax];
   // Force-engine (Hertz–Mindlin) history: the particle's slice of the cached pair list's Mindlin
   // springs plus its per-(particle, wall) shear history + lagged wall patch stiffness.
@@ -1079,8 +1083,21 @@ class ParticleHalo {
       auto hpos = Kokkos::create_mirror_view(P.pos);
       Kokkos::deep_copy(hpos, P.pos);
       std::vector<peclet::core::Vec<3>> pv(static_cast<std::size_t>(no));
-      for (int i = 0; i < no; ++i)
-        pv[i] = peclet::core::Vec<3>{hpos(i, 0), hpos(i, 1), hpos(i, 2)};
+      // Ghost SELECTION runs on the ownership coordinate: on a non-periodic axis a position
+      // outside the domain is clamped onto it, exactly as core's cellOf clamps it for ownership
+      // (docs/contact_solve_framework.md §5, §12 S20). Clamping is a projection onto a convex box,
+      // so it never lengthens a distance: every pair within the reach stays within the band of
+      // its partner's owner. The ghosts' forwarded positions are the true ones (the image shift
+      // on a non-periodic axis is 0 either way).
+      const auto& gsz = dec_.globalSize();
+      for (int i = 0; i < no; ++i) {
+        double q[3] = {hpos(i, 0), hpos(i, 1), hpos(i, 2)};
+        for (int d = 0; d < 3; ++d)
+          if (!map_.periodic[d])
+            q[d] = std::clamp(q[d], map_.origin[d],
+                              map_.origin[d] + static_cast<double>(gsz[d]) * map_.cellSize[d]);
+        pv[i] = peclet::core::Vec<3>{q[0], q[1], q[2]};
+      }
       // includePeriodicSelf: a rank that owns a full (undecomposed) periodic axis -- a "x1" ORB
       // axis (e.g. z of a 2x2x1 layout) or np=1 -- is its own periodic image on that axis, so the
       // periodic neighbours are local self-ghosts the cross-rank exchange never makes. This
@@ -1174,6 +1191,54 @@ class ParticleHalo {
     unpackState(P, pos, payload, newN);
     return (int)newN;
   }
+  /// Move every owned particle to the rank whose CURRENT block contains its (wrapped) position:
+  /// rebalance() without the ORB re-init (docs/contact_solve_framework.md §5.2). Collective. The
+  /// drift vote of demStepMpi / the Hertz rebuild calls it when some particle has drifted S beyond
+  /// its owner's block, so that every pair within the contact reach stays visible to both owners.
+  /// Same pack / migrate / canonical srcRank order / unpack path as migrateTo; forces a topology
+  /// rebuild.
+  int migrateToBlocks(Particles& P) {
+    std::vector<peclet::core::Vec<3>> pos;
+    std::vector<char> payload;
+    packState(P, pos, payload);
+    const std::size_t newN = mig_.migrate(pos, payload, sizeof(MigratePack));
+    orderArrivalsBySource(pos, payload, newN);
+    if ((int)newN > P.capacity)
+      throw std::runtime_error("ParticleHalo::migrateToBlocks: owned overflow -- rank received " +
+                               std::to_string(newN) + " particles, capacity " +
+                               std::to_string(P.capacity));
+    unpackState(P, pos, payload, newN);
+    haveTopo_ = false;
+    return (int)newN;
+  }
+  /// This rank's block in physical coordinates, plus the periodic box lengths (0 on a
+  /// non-periodic axis): the drift vote's distance-to-block (§5.1).
+  struct BlockBox {
+    F3 lo, hi, period;
+  };
+  BlockBox blockBox() const {
+    const auto blk = dec_.block(static_cast<std::size_t>(rank_));
+    const auto& gs = dec_.globalSize();
+    float lo[3], hi[3], L[3];
+    for (int d = 0; d < 3; ++d) {
+      lo[d] = static_cast<float>(map_.origin[d] +
+                                 static_cast<double>(blk.origin[d]) * map_.cellSize[d]);
+      hi[d] = static_cast<float>(map_.origin[d] + static_cast<double>(blk.origin[d] + blk.size[d]) *
+                                                      map_.cellSize[d]);
+      L[d] = map_.periodic[d]
+                 ? static_cast<float>(static_cast<double>(gs[d]) * map_.cellSize[d])
+                 : 0.0f;
+      // Ownership clamps a position outside a non-periodic domain onto the boundary cells
+      // (core ParticleMigrator::cellOf), so a boundary block owns the half-space beyond it.
+      if (!map_.periodic[d]) {
+        if (blk.origin[d] == 0)
+          lo[d] = -std::numeric_limits<float>::infinity();
+        if (blk.origin[d] + blk.size[d] == gs[d])
+          hi[d] = std::numeric_limits<float>::infinity();
+      }
+    }
+    return BlockBox{F3{lo[0], lo[1], lo[2]}, F3{hi[0], hi[1], hi[2]}, F3{L[0], L[1], L[2]}};
+  }
   // Migrate particles onto an EXTERNALLY-supplied decomposition (dynamic co-rebalancing: the same
   // BlockDecomposer the flow solver redistributes onto). Pure ownership move — counts/state
   // conserved. Must be called at a step boundary. No-op-safe at np=1.
@@ -1249,6 +1314,10 @@ class ParticleHalo {
     auto h_ovp = Kokkos::create_mirror_view(P.bodyOrphanVPeak);
     Kokkos::deep_copy(h_orp, P.bodyOrphan);
     Kokkos::deep_copy(h_ovp, P.bodyOrphanVPeak);
+    auto h_ef = Kokkos::create_mirror_view(P.extForce);
+    auto h_et = Kokkos::create_mirror_view(P.extTorque);
+    Kokkos::deep_copy(h_ef, P.extForce);
+    Kokkos::deep_copy(h_et, P.extTorque);
     pos.assign((std::size_t)no, peclet::core::Vec<3>{});
     payload.assign((std::size_t)no * sizeof(MigratePack), 0);
     std::vector<MigratePack> packs((std::size_t)no);
@@ -1273,6 +1342,8 @@ class ParticleHalo {
       m.groundedLevel = h_grd(i);
       m.orphan = h_orp(i);
       m.orphanVPeak = h_ovp(i);
+      m.extForce = F3{h_ef(i, 0), h_ef(i, 1), h_ef(i, 2)};
+      m.extTorque = F3{h_et(i, 0), h_et(i, 1), h_et(i, 2)};
       m.numWarm = 0;
       gidToLocal.emplace(static_cast<unsigned>(h_gid(i)), i);
     }
@@ -1426,6 +1497,10 @@ class ParticleHalo {
     auto h_ovp = Kokkos::create_mirror_view(P.bodyOrphanVPeak);
     Kokkos::deep_copy(h_orp, P.bodyOrphan);  // slots past newN keep defined values
     Kokkos::deep_copy(h_ovp, P.bodyOrphanVPeak);
+    auto h_ef = Kokkos::create_mirror_view(P.extForce);
+    auto h_et = Kokkos::create_mirror_view(P.extTorque);
+    Kokkos::deep_copy(h_ef, P.extForce);
+    Kokkos::deep_copy(h_et, P.extTorque);
     std::vector<WarmPairEntry> ledger;
     ledger.reserve(newN * 4);
     std::vector<HertzPairEntry> hertzLedger;
@@ -1464,6 +1539,12 @@ class ParticleHalo {
       h_grd((int)i) = m.groundedLevel;
       h_orp((int)i) = m.orphan;
       h_ovp((int)i) = m.orphanVPeak;
+      h_ef((int)i, 0) = m.extForce.x;
+      h_ef((int)i, 1) = m.extForce.y;
+      h_ef((int)i, 2) = m.extForce.z;
+      h_et((int)i, 0) = m.extTorque.x;
+      h_et((int)i, 1) = m.extTorque.y;
+      h_et((int)i, 2) = m.extTorque.z;
       for (int s = 0; s < (int)m.numWarm && s < kWarmCarryMax; ++s)
         ledger.push_back(m.warm[s]);
       for (int s = 0; s < (int)m.numHertz && s < kWarmCarryMax; ++s)
@@ -1491,6 +1572,8 @@ class ParticleHalo {
     Kokkos::deep_copy(P.groundedLevel, h_grd);
     Kokkos::deep_copy(P.bodyOrphan, h_orp);
     Kokkos::deep_copy(P.bodyOrphanVPeak, h_ovp);
+    Kokkos::deep_copy(P.extForce, h_ef);
+    Kokkos::deep_copy(P.extTorque, h_et);
 
     // Ledger rebuild: sort by key, dedupe (a pair arrives once per locally-received endpoint; the
     // duplicates carry identical values), clamp to the store capacity, upload sorted + aligned —
@@ -1855,10 +1938,21 @@ class ParticleHalo {
   /// ghost ranks of one body -- §12 S19.) A superset of the conflict graph is safe; its only cost is
   /// C. C <= 64 (the mask is one 64-bit word), else throw.
   void ensureRankColoring(double band) {
-    if (band == colorBand_)
+    // Keyed on the band AND a fingerprint of the decomposition, so every way the blocks can
+    // change (rebalance, migrateTo, migrate_to_weights, a re-init) recolours.
+    const int nb = static_cast<int>(dec_.numBlocks());
+    unsigned long long fp = 1469598103934665603ull;
+    for (int b = 0; b < nb; ++b) {
+      const auto blk = dec_.block(static_cast<std::size_t>(b));
+      for (int d = 0; d < 3; ++d) {
+        fp = (fp ^ static_cast<unsigned long long>(blk.origin[d])) * 1099511628211ull;
+        fp = (fp ^ static_cast<unsigned long long>(blk.size[d])) * 1099511628211ull;
+      }
+    }
+    if (band == colorBand_ && fp == colorFingerprint_)
       return;
     colorBand_ = band;
-    const int nb = static_cast<int>(dec_.numBlocks());
+    colorFingerprint_ = fp;
     const auto& gs = dec_.globalSize();
     std::vector<std::array<double, 6>> box(static_cast<std::size_t>(nb));
     for (int b = 0; b < nb; ++b) {
@@ -2207,6 +2301,7 @@ class ParticleHalo {
   // computed with (-1: stale; reset whenever the decomposition changes).
   int rankColor_ = 0, numRankColors_ = 1;
   double colorBand_ = -1.0;
+  unsigned long long colorFingerprint_ = 0ull;
   peclet::core::View<VelocityState> ghostVelState_, ownedVelState_;  // fused forwards (rotation)
   peclet::core::View<PositionState> ghostPosState_, ownedPosState_;
   // Ownership maps (§2.1; see buildOwnershipMaps).

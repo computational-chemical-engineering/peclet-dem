@@ -74,6 +74,19 @@ inline void hertzRebuildPairs(Particles& P, float skin) {
     Kokkos::parallel_for(
         "peclet::dem::hertz_carry", Kokkos::RangePolicy<CpExec>(space, 0, np),
         KOKKOS_LAMBDA(int idx) {
+          // Canonical orientation: the lower-gid body first. The Mindlin spring xi is the
+          // tangential displacement of pairs(idx, 0) relative to pairs(idx, 1), so it flips sign
+          // with the order; the two owners of a cross-rank pair (owned slots precede ghosts) and
+          // a rank that received the pair by migration would otherwise hold it in different
+          // orientations, and a gid-keyed carry would hand one of them the wrong sign
+          // (docs/contact_solve_framework.md §12 S21; measured: dP 9e-4 in hertz_shear at the
+          // first drift migration). At np 1 gid == slot and the broad phase already emits
+          // (lower, higher): unchanged.
+          const int a0 = pairs(idx, 0), b0 = pairs(idx, 1);
+          if (gid(a0) > gid(b0)) {
+            pairs(idx, 0) = b0;
+            pairs(idx, 1) = a0;
+          }
           const unsigned long long k =
               pairKeyFromGids((unsigned)gid(pairs(idx, 0)), (unsigned)gid(pairs(idx, 1)));
           keys(idx) = k;

@@ -809,7 +809,12 @@ inline void scatterOrphanBanksKokkos(Kokkos::View<const unsigned long long*, CpM
                                      Kokkos::View<float*, CpMem> orphan,
                                      Kokkos::View<float*, CpMem> orphanVPeak,
                                      Kokkos::View<const int*, CpMem> gidSorted = {},
-                                     Kokkos::View<const int*, CpMem> slotSorted = {}) {
+                                     Kokkos::View<const int*, CpMem> slotSorted = {},
+                                     int ownedLimit = -1) {
+  // ownedLimit >= 0 (the distributed step: numReal): credit a dead entry only on the rank that
+  // owns its LOWER-gid endpoint -- with symmetric visibility (§5.1) exactly the pair's owner, so
+  // an entry carried on both endpoints' ranks (migration pack) is credited once
+  // (docs/contact_solve_framework.md §6.3). -1: no restriction (single rank, byte-identical).
   CpExec space;
   const int nMap = static_cast<int>(gidSorted.extent(0));
   const int nBody = static_cast<int>(orphan.extent(0));
@@ -840,6 +845,8 @@ inline void scatterOrphanBanksKokkos(Kokkos::View<const unsigned long long*, CpM
           return (a < nMap && gidSorted(a) == static_cast<int>(id)) ? slotSorted(a) : -1;
         };
         const int sA = resolve(hi);
+        if (ownedLimit >= 0 && !(sA >= 0 && sA < ownedLimit))
+          return;  // not the pair's owner: a stale copy is never credited
         const int sB = (lo != 0xFFFFFFFFu) ? resolve(lo) : -1;
         const float vpk = prevRestVPeak(e);
         float shareA = 1.0f;  // boundary (wall) pair: everything to the particle

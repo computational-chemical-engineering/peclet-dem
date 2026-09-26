@@ -343,8 +343,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   VC.slotBase = PC.slotBase = slotBase;
   {  // mlHubAggregated is the max over the step call's substeps (reset by the step entry points)
     const int mlAgg = P.splitStats.mlHubAggregated;
+    const long long drift = P.splitStats.driftMigrations;  // cumulative (the drift vote, §5.1)
     P.splitStats = SplitStats{};
     P.splitStats.mlHubAggregated = mlAgg;
+    P.splitStats.driftMigrations = drift;
   }
   P.mlLast.numLevels = 0;
   Kokkos::View<int*, CpMem> edgeA, edgeB;  // a failed phase's colouring edges (scratch)
@@ -691,7 +693,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                  Kokkos::View<const float*, CpMem>(P.prevRestVPeak),
                                  Kokkos::View<const unsigned char*, CpMem>(P.prevMatched),
                                  P.prevPairCount, Kokkos::View<const float*, CpMem>(P.invMass),
-                                 P.bodyOrphan, P.bodyOrphanVPeak, gidSorted, slotSorted);
+                                 P.bodyOrphan, P.bodyOrphanVPeak, gidSorted, slotSorted,
+                                 Hooks::distributed ? P.numReal : -1);
       }
     }
     markPersistentManifoldsKokkos(P.manifolds, nm, P.realIndices, keyIdx, P.prevPairKeys,

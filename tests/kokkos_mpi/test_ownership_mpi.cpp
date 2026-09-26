@@ -337,10 +337,16 @@ static void detectContacts(const Scene& sc, const std::vector<int>& mine, bool p
   ParticleHalo halo;
   halo.initMpi({0.0, 0.0, 0.0}, {(double)GX, (double)GX, (double)GX}, {GX, GX, GX},
                {periodic, periodic, periodic}, comm);
-  const float rMax = peclet::dem::globalMaxRadius(P, comm);
-  const float margin = 0.1f * rMax;
+  // The production visibility path (docs/contact_solve_framework.md §5.1): the drift vote (a
+  // particle S beyond its owner's block moves every particle to its current block) and the band
+  // reach + S + d, exactly as demStepMpi runs them.
+  const peclet::dem::MpiDriftVote vote = peclet::dem::mpiDriftVote(P, halo);
+  Kokkos::deep_copy(P.posPred, P.pos);  // a migration carried pos / quat, not the predicted copies
+  Kokkos::deep_copy(P.quatPred, P.quat);
+  const float margin = vote.margin;
   P.numParticles = P.numReal;
-  halo.gather(P, peclet::dem::xpbdContactReach(rMax));
+  halo.gather(P, peclet::dem::mpiXpbdBand(P, halo, 0.0, vote));
+  const int nOwned = P.numReal;  // after a drift migration, not mine.size()
   peclet::dem::fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
   const int np = peclet::dem::findCollisionsGrow(P, margin);
   const int nc = peclet::dem::narrowPhaseGrow(P, np, margin);
@@ -355,10 +361,10 @@ static void detectContacts(const Scene& sc, const std::vector<int>& mine, bool p
   // Owner row of each gid present locally (for the image of a slot: slot - owner row, in box
   // lengths; a ghost copy is its owner's position plus the periodic shift).
   std::map<int, int> row;
-  for (int i = 0; i < no; ++i)
+  for (int i = 0; i < nOwned; ++i)
     row[hg(i)] = i;
   auto image = [&](int slot, int d) {
-    if (slot < no)
+    if (slot < nOwned)
       return 0;
     const auto it = row.find(hg(slot));
     if (it == row.end())
@@ -488,6 +494,10 @@ static int runExactlyOnce(const std::string& which, int rank, int size) {
 // VISIBLE on any rank (so no rank can solve them, whatever the ownership rule). It never fails
 // today; when the halo supplies every pair, kMissedGate = true makes a missed pair a failure.
 static constexpr bool kMissedGate = false;
+// WO-7 (docs/contact_solve_framework.md §5.1): the drift vote + migrateToBlocks + band reach + S + d
+// make every drifted pair visible, so the drift probes are gates. The periodic probe stays
+// report-only until WO-9 (all periodic images).
+static constexpr bool kMissedDriftGate = true;
 
 // Serial active pairs, and the union of the pairs visible on any rank (on rank 0).
 static void visibleVsSerial(const Scene& sc, bool periodic, int rank, int size,
@@ -620,7 +630,7 @@ static int runMissedDriftPair(int rank, int size) {
     }
   }
   MPI_Bcast(&lostTot, 1, MPI_INT, 0, MPI_COMM_WORLD);
-  return (kMissedGate && lostTot > 0) ? 1 : 0;
+  return (kMissedDriftGate && lostTot > 0) ? 1 : 0;
 }
 
 // (a) drift, lattice: the weak-jitter closed lattice of exactly_once_closed, owners at the
@@ -661,7 +671,7 @@ static int runMissedDriftLattice(int rank, int size) {
     }
   }
   MPI_Bcast(&lostTot, 1, MPI_INT, 0, MPI_COMM_WORLD);
-  return (kMissedGate && lostTot > 0) ? 1 : 0;
+  return (kMissedDriftGate && lostTot > 0) ? 1 : 0;
 }
 
 // (b) periodic, strong jitter: the lattice with jitter 0.3 (as exactly_once_drift, no
@@ -966,7 +976,13 @@ static int runOracle(const std::string& which, int rank, int size, const std::st
       }
     }
   }
-  int bad = (kOracleGate && (mx[0] > 0 || mx[1] > 0 || mx[2] > 0)) ? 1 : 0;
+  // WO-7: closed and sheared scenes are gates (every pair within reach solved exactly once);
+  // the periodic scene waits for WO-9 (all periodic images).
+  const bool gateOn = kOracleGate || which != "periodic";
+  // The gate is missing = dup = 0 (docs/contact_solve_framework.md WO-7). `extra` (a pair solved
+  // at a gap within 1e-4 R_max beyond the margin on a thread-order / round-off edge) is reported:
+  // a speculative contact acts only on approach, so it is not a visibility failure.
+  int bad = (gateOn && (mx[0] > 0 || mx[1] > 0 || (kOracleGate && mx[2] > 0))) ? 1 : 0;
   MPI_Bcast(&bad, 1, MPI_INT, 0, MPI_COMM_WORLD);
   return bad;
 }

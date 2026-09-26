@@ -86,6 +86,8 @@ endforeach()
 # velocity and the position phase (XPBD engine, frictionless / friction / free-fall PGS / position
 # phase alone) and for the force-based Hertz engine (per-mode thresholds in the source, §7 G1 of
 # docs/mpi_momentum_conservation.md). np = 8 puts the cluster on the common corner of all blocks.
+# cluster_shear / hertz_shear (WO-7): a shear flow carries bodies several radii out of their owners'
+# blocks -- the drift vote migrates them (both engines), conservation must hold through it.
 # cluster_sync3 / cluster_norot: the friction cluster at sync_every = 3 / forward_rotation = false;
 # cluster_periodic: the cluster on the corner of a fully periodic box (wrap pairs on every axis).
 # cluster_jacobi: the mass-split Jacobi solves (velocityUseGS off; docs/contact_solve_framework.md
@@ -93,7 +95,7 @@ endforeach()
 # ones).
 foreach(np 1 2 4 8)
   foreach(mode cluster cluster_friction cluster_pgs cluster_posonly hertz cluster_sync3
-               cluster_norot cluster_periodic cluster_jacobi)
+               cluster_norot cluster_periodic cluster_jacobi cluster_shear hertz_shear)
     _dem_mpi_test(momentum_${mode}_np${np} ${np} test_momentum_mpi ${mode})
   endforeach()
 endforeach()

@@ -171,6 +171,7 @@
 #include <random>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include "peclet/core/common/types.hpp"
@@ -222,6 +223,8 @@ static Tol tolOf(const std::string& mode) {
     return {1e-6, -1, -1, -1, -1};
   if (mode == "hertz")  // regression guard; today 2.8e-8 / 8.8e-7 / 4.4e-7
     return {1e-6, 1e-5, -1, 1e-5, -1};
+  if (mode == "hertz_shear" || mode == "hertz_shear_frictionless")  // WO-7: dP <= 1e-6 under drift
+    return {1e-6, -1, -1, -1, -1};
   // docs/contact_solve_framework.md §13.6 G1 additions. hub_static: velocities unchanged, the
   // ABSOLUTE |P| must stay exactly 0 (sum m|v| = 0, no normalized dP). hub_ml: dLvel reported only
   // (the coarse cycle is translation-only by design).
@@ -656,11 +659,37 @@ struct Sums {
 };
 struct State {
   std::vector<float> x, v, w, m, invI, q;
+  std::vector<int> gid;  // pairs a body's states across a step (a drift migration moves bodies)
 };
-static State readState(const Simulation& s) {
+static State readState(const ProbeSim& s) {
   State st{s.getPositions(), s.getVelocities(), s.getAngularVelocities(),
-           s.getMasses(),    s.getInvInertia(), s.getQuaternions()};
+           s.getMasses(),    s.getInvInertia(), s.getQuaternions(), {}};
+  const auto& P = s.parts();
+  auto hg = Kokkos::create_mirror_view(P.gid);
+  Kokkos::deep_copy(hg, P.gid);
+  st.gid.resize(st.m.size());
+  for (std::size_t i = 0; i < st.gid.size(); ++i)
+    st.gid[i] = hg(static_cast<int>(i));
   return st;
+}
+// Gather a per-body vector (k values per body) of every rank onto rank 0, in rank order.
+template <class T>
+static std::vector<T> gatherBodies(const std::vector<T>& v, MPI_Datatype t) {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  const int n = static_cast<int>(v.size());
+  std::vector<int> cnt(size), off(size, 0);
+  MPI_Gather(&n, 1, MPI_INT, cnt.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+  int tot = 0;
+  if (rank == 0)
+    for (int r = 0; r < size; ++r) {
+      off[r] = tot;
+      tot += cnt[r];
+    }
+  std::vector<T> all(rank == 0 ? tot : 0);
+  MPI_Gatherv(v.data(), n, t, all.data(), cnt.data(), off.data(), t, 0, MPI_COMM_WORLD);
+  return all;
 }
 static D3 at(const std::vector<float>& a, int i) {
   return {a[3 * i], a[3 * i + 1], a[3 * i + 2]};
@@ -767,8 +796,57 @@ static D3 angularAbout(const State& st, const D3& X, const D3& V) {
 // The velocity phase's angular impulse of one step about X_pred: sum m (x_pred - X_pred) x
 // (dv - g dt) + I dw, with the lever arms at the predicted positions the phase solves at. Local
 // order is fixed (no migration).
-static D3 velocityPhaseTorque(const State& a, const State& b, const D3& g, double dt,
+// sum_i m_i (x_i(b) - x_i(a)), minimum image in a periodic box of side `box`, with a body's two
+// states paired by gid on rank 0 (a drift migration moves bodies between ranks within a step).
+static D3 periodicDisplacement(const State& aLocal, const State& bLocal, double box) {
+  const std::vector<float> ax = gatherBodies(aLocal.x, MPI_FLOAT), bx = gatherBodies(bLocal.x, MPI_FLOAT),
+                           bm = gatherBodies(bLocal.m, MPI_FLOAT);
+  const std::vector<int> ag = gatherBodies(aLocal.gid, MPI_INT), bg = gatherBodies(bLocal.gid, MPI_INT);
+  std::unordered_map<int, int> where;
+  for (int j = 0; j < static_cast<int>(ag.size()); ++j)
+    where[ag[j]] = j;
+  D3 out{0, 0, 0};
+  for (int i = 0; i < static_cast<int>(bg.size()); ++i) {
+    const int j = where.at(bg[i]);
+    for (int d = 0; d < 3; ++d) {
+      double dx = static_cast<double>(bx[3 * i + d]) - ax[3 * j + d];
+      dx -= box * std::round(dx / box);
+      out[d] += bm[i] * dx;
+    }
+  }
+  MPI_Bcast(out.data(), 3, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+  return out;
+}
+static D3 velocityPhaseTorque(const State& aLocal, const State& bLocal, const D3& g, double dt,
                               const D3& Xpred) {
+  // Pair each body's before / after states by gid, on rank 0: a drift migration inside the step
+  // (docs/contact_solve_framework.md §5.1) moves bodies between ranks and reorders them, so the
+  // local index does not identify a body across a step.
+  State a, b;
+  a.x = gatherBodies(aLocal.x, MPI_FLOAT);
+  a.v = gatherBodies(aLocal.v, MPI_FLOAT);
+  a.w = gatherBodies(aLocal.w, MPI_FLOAT);
+  a.m = gatherBodies(aLocal.m, MPI_FLOAT);
+  a.invI = gatherBodies(aLocal.invI, MPI_FLOAT);
+  a.q = gatherBodies(aLocal.q, MPI_FLOAT);
+  a.gid = gatherBodies(aLocal.gid, MPI_INT);
+  const std::vector<float> bv = gatherBodies(bLocal.v, MPI_FLOAT),
+                           bw = gatherBodies(bLocal.w, MPI_FLOAT);
+  const std::vector<int> bg = gatherBodies(bLocal.gid, MPI_INT);
+  b.v.assign(a.v.size(), 0.0f);
+  b.w.assign(a.w.size(), 0.0f);
+  {
+    std::unordered_map<int, int> where;
+    for (int j = 0; j < static_cast<int>(bg.size()); ++j)
+      where[bg[j]] = j;
+    for (int i = 0; i < static_cast<int>(a.gid.size()); ++i) {
+      const int j = where.at(a.gid[i]);
+      for (int d = 0; d < 3; ++d) {
+        b.v[3 * i + d] = bv[3 * j + d];
+        b.w[3 * i + d] = bw[3 * j + d];
+      }
+    }
+  }
   double loc[3] = {0, 0, 0};
   for (int i = 0; i < static_cast<int>(a.m.size()); ++i) {
     const D3 x = at(a.x, i), v0 = at(a.v, i), v1 = at(b.v, i);
@@ -787,8 +865,8 @@ static D3 velocityPhaseTorque(const State& a, const State& b, const D3& g, doubl
     for (int d = 0; d < 3; ++d)
       loc[d] += a.m[i] * c[d] + (s1[d] - s0[d]);
   }
-  D3 out;
-  MPI_Allreduce(loc, out.data(), 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  D3 out{loc[0], loc[1], loc[2]};  // rank 0 holds the sum; the others summed nothing
+  MPI_Bcast(out.data(), 3, MPI_DOUBLE, 0, MPI_COMM_WORLD);
   return out;
 }
 
@@ -813,6 +891,7 @@ struct Mode {
   unsigned relabel = 0;      // --relabel: 0 = identity
   bool tri = false, ring = false, poisson = false;
   bool hubStatic = false, hubMl = false;  // the WO-4b hub scenes (makeHubLast)
+  bool shear = false;  // WO-7: v_x += kShearRate z (bodies drift out of their owners' blocks)
   bool reportOnly = false;                // the WO-0 modes: never fail today
   std::string stab;     // stabilization mode set after the gravity rule's 'off' (empty = keep)
   std::string fused;    // --fused=auto|on|off: diagnostics.set_fused_sweeps (empty = default)
@@ -821,11 +900,47 @@ struct Mode {
 
 // Gather every rank's owned bodies to rank 0 and write them sorted by global body index (see the
 // file note for the record layout).
-static void dumpState(const Simulation& sim, const std::vector<int>& gids, const std::string& path,
-                      int rank, int size) {
+// The scene index ("lattice" / body index of the generator) of every body, keyed by its
+// simulation gid. Ownership is not fixed (the drift vote migrates bodies, WO-7), so a dump must
+// identify a body by its gid, which migration carries, not by the setup's owned list.
+static std::unordered_map<int, int> sceneIndexByGid(const ProbeSim& sim,
+                                                    const std::vector<int>& setupGids) {
+  const auto& P = sim.parts();
+  auto hg = Kokkos::create_mirror_view(P.gid);
+  Kokkos::deep_copy(hg, P.gid);
+  std::vector<int> pairs;  // (sim gid, scene index) in the setup order (setPositions order)
+  for (int i = 0; i < static_cast<int>(setupGids.size()); ++i)
+    pairs.insert(pairs.end(), {static_cast<int>(hg(i)), setupGids[i]});
+  int n = static_cast<int>(pairs.size()), size = 1;
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  std::vector<int> cnt(size), off(size, 0);
+  MPI_Allgather(&n, 1, MPI_INT, cnt.data(), 1, MPI_INT, MPI_COMM_WORLD);
+  int tot = 0;
+  for (int r = 0; r < size; ++r) {
+    off[r] = tot;
+    tot += cnt[r];
+  }
+  std::vector<int> all(tot);
+  MPI_Allgatherv(pairs.data(), n, MPI_INT, all.data(), cnt.data(), off.data(), MPI_INT,
+                 MPI_COMM_WORLD);
+  std::unordered_map<int, int> m;
+  for (int k = 0; k + 1 < tot; k += 2)
+    m[all[k]] = all[k + 1];
+  return m;
+}
+
+static void dumpState(const ProbeSim& sim, const std::unordered_map<int, int>& sceneOf,
+                      const std::string& path, int rank, int size) {
   constexpr int kRec = 14;  // int32 gid + 13 float32
   const std::vector<float> x = sim.getPositions(), v = sim.getVelocities(),
                            w = sim.getAngularVelocities(), q = sim.getQuaternions();
+  std::vector<int> gids(x.size() / 3);  // the scene index of every body owned NOW
+  {
+    auto hg = Kokkos::create_mirror_view(sim.parts().gid);
+    Kokkos::deep_copy(hg, sim.parts().gid);
+    for (std::size_t i = 0; i < gids.size(); ++i)
+      gids[i] = sceneOf.at(hg(static_cast<int>(i)));
+  }
   const int n = static_cast<int>(gids.size());
   std::vector<std::uint32_t> loc(static_cast<std::size_t>(n) * kRec);
   for (int i = 0; i < n; ++i) {
@@ -882,10 +997,17 @@ static int runCluster(const Mode& md, int rank, int size) {
     std::mt19937 perm(md.relabel);
     std::shuffle(bodies.begin(), bodies.end(), perm);
   }
+  // WO-7 drift scenes: a shear flow carries bodies several radii beyond their owners' blocks
+  // over the run (docs/contact_solve_framework.md §5.1 / §5.5, the drift vote).
+  constexpr float kShearRate = 2.0f;
+  if (md.shear)
+    for (Body& b : bodies)
+      b.v[0] += kShearRate * b.x[2];
   const int n = static_cast<int>(bodies.size());
   const float dt0 = md.hertz ? 1e-4f : 1e-2f;
   const float dt = md.dt > 0.0f ? md.dt : dt0;
-  const int steps0 = md.hertz       ? 40
+  const int steps0 = md.shear       ? 200
+                     : md.hertz       ? 40
                      : md.hubStatic ? 1
                      : md.hubMl     ? 10
                                     : (hub ? 20 : (md.tri ? 3 : (md.ring ? 10 : 50)));
@@ -941,7 +1063,9 @@ static int runCluster(const Mode& md, int rank, int size) {
     const std::tuple<bool, bool, bool> per{per3, per3, per3};
     sim.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);
     sim.enableMpiStep(0.0, md.syncEvery, md.forwardRotation);
+    sim.ensureGlobalGids();  // the final (Exscan-rebased) ids before the first snapshot
   }
+  const std::unordered_map<int, int> sceneOf = sceneIndexByGid(sim, gids);  // for --dump
   ColorDiag cd;                // max over steps (rank-local); every XPBD mode
   std::vector<double> keHist;  // CoM-frame kinetic energy after every (recorded) step
   double fricDist =
@@ -988,7 +1112,6 @@ static int runCluster(const Mode& md, int rank, int size) {
   double dXposPer = 0.0;
   Sums Sprev = S0;
   int fail = 0;
-  const int nOwned = static_cast<int>(gids.size());
   for (int s = 1; s <= steps; ++s) {
     if (!md.hertz)
       markColors(sim);  // only the items the step colours carry a colour >= -1 afterwards
@@ -1044,8 +1167,9 @@ static int runCluster(const Mode& md, int rank, int size) {
       ovl = std::max(ovl, static_cast<double>(og));
     }
     const State nx = readState(sim);
-    if (static_cast<int>(nx.m.size()) != nOwned)
-      fail = 1;  // the per-body velocity-phase record assumes fixed ownership
+    // Ownership is NOT fixed since WO-7 (the drift vote migrates bodies inside a step): every
+    // per-body comparison across a step pairs the two states by gid (velocityPhaseTorque,
+    // periodicDisplacement).
     const Sums S = globalSums(nx);
     {  // kinetic energy in the CoM frame (translational + rotational), host double
       double kl = 0.0, kg = 0.0;
@@ -1068,16 +1192,8 @@ static int runCluster(const Mode& md, int rank, int size) {
       ec[d] = Lc[d] - LcmStart[d];
       xposAcc[d] += (S.mx[d] - Sprev.mx[d]) / M - dt * (S.P[d] + Sprev.P[d]) / (2.0 * M);
     }
-    if (md.periodic && static_cast<int>(nx.m.size()) == static_cast<int>(st.m.size())) {
-      const double box = 2.0 * -LO;
-      double loc[3] = {0, 0, 0}, gl[3];
-      for (int i = 0; i < static_cast<int>(nx.m.size()); ++i)
-        for (int d = 0; d < 3; ++d) {
-          double dx = static_cast<double>(nx.x[3 * i + d]) - st.x[3 * i + d];
-          dx -= box * std::round(dx / box);
-          loc[d] += nx.m[i] * dx;
-        }
-      MPI_Allreduce(loc, gl, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    if (md.periodic) {
+      const D3 gl = periodicDisplacement(st, nx, 2.0 * -LO);
       for (int d = 0; d < 3; ++d)
         xposAccPer[d] += gl[d] / M - dt * (S.P[d] + Sprev.P[d]) / (2.0 * M);
       dXposPer = std::max(dXposPer, norm(xposAccPer) / RAD);
@@ -1213,8 +1329,11 @@ static int runCluster(const Mode& md, int rank, int size) {
           "dLcm=%.3e dLvel=%.3e ghosts=%d ovl=%.3e\n",
           md.name.c_str(), size, thr, n, steps, dP, dX, dXpos, dL, dLcm, dLvel, totGhost, ovl);
   }
+  if (rank == 0)  // WO-7: collective drift migrations (the same count on every rank)
+    std::printf("DRIFT mode=%s np=%d migrations=%lld\n", md.name.c_str(), size,
+                static_cast<long long>(sim.parts().splitStats.driftMigrations));
   if (!md.dump.empty())
-    dumpState(sim, gids, md.dump, rank, size);
+    dumpState(sim, sceneOf, md.dump, rank, size);
   const Tol tol = tolOf(md.name);
   if (kGate && !(within(dP, tol.dP) && within(dX, tol.dX) && within(dXpos, tol.dXpos) &&
                  within(dL, tol.dL) && within(dLvel, tol.dLvel))) {
@@ -1442,6 +1561,12 @@ int main(int argc, char** argv) {
       md.jacobi = true;
     } else if (mode == "hertz") {
       md.friction = md.spins = md.hertz = true;
+    } else if (mode == "hertz_shear") {  // WO-7 acceptance: Hertz under drift, 200 steps
+      md.friction = md.spins = md.hertz = md.shear = true;
+    } else if (mode == "hertz_shear_frictionless") {  // isolates the Mindlin history carry
+      md.spins = md.hertz = md.shear = true;
+    } else if (mode == "cluster_shear") {  // the XPBD counterpart (drift vote in demStepMpi)
+      md.friction = md.spins = md.shear = true;
     } else if (mode == "cluster_sync3") {
       md.friction = md.spins = true;
       md.syncEvery = 3;
@@ -1515,7 +1640,8 @@ int main(int argc, char** argv) {
       fail = runCluster(md, rank, size);
     else if (mode == "cluster" || mode == "cluster_friction" || mode == "cluster_pgs" ||
              mode == "cluster_posonly" || mode == "hertz" || mode == "cluster_sync3" ||
-             mode == "cluster_norot" || mode == "cluster_periodic" || mode == "cluster_jacobi")
+             mode == "cluster_norot" || mode == "cluster_periodic" || mode == "cluster_jacobi" ||
+             mode == "hertz_shear" || mode == "cluster_shear" || mode == "hertz_shear_frictionless")
       fail = runCluster(md, rank, size);
     else {
       if (rank == 0)

@@ -558,3 +558,30 @@ The Opus subagents had hit their weekly usage limit, so the session implemented 
 **Not yet measured:** `unfiredSplitContacts` in `perf_gas`. The counter exists under
 `iterCounters`, but `perf_gas` does not print it; that goes into WO-11's evidence. Also not yet
 measured: ms/step in the pinned protocol (WO-11).
+
+## WO-7: drift vote, migrateToBlocks, band reach + S + P, credit rule (session, 2026-09-26)
+
+**Code:**
+- `mpiDriftVote`: one `Allreduce(MAX)` of {R_max, E_max, d_max}, then `migrateToBlocks` when
+  E ≥ S = 0.25 R_max.
+- `mpiXpbdBand`: band = max(rcut, reach + S + d_max).
+- `migrateToBlocks`, with `MigratePack` carrying extForce and extTorque.
+- The Hertz rebuild vote, with band_H = (2 + skinFrac) R + S.
+- The owner-only Poisson credit: `scatterOrphanBanksKokkos(ownedLimit)`.
+- S20 (clamped ghost selection), S21 (canonical Hertz orientation) and S22 (the tests pair bodies
+  by gid).
+
+**Results:**
+
+| gate | result |
+|---|---|
+| `oracle_shear`, `oracle_closed`, np 1/2/4/8 | missing = dup = 0. Before WO-7, `oracle_shear` had 121–122 missing at np 4/8 (WO-0: 592–737). Now GATED: missing and dup; `extra` is reported only. |
+| `missed_drift_pair`, `missed_drift_lattice`, np 2/4/8, shifts to 6 R | 0 missed (was up to 54). `kMissedDriftGate` on. The probe now runs the production vote and band. |
+| `hertz_shear`, np 1/2/4/8, 200 × 25 substeps | dP 2.9e-8 / 2.5e-8 / 2.8e-8 / 3.7e-8, 18 migrations (was 9e-4 before S21) |
+| `cluster_shear` (XPBD), np 1/2/8 | dP ≤ 1.6e-8, dLvel ≤ 1.8e-8, 200 migrations in 200 steps (an extreme shear) |
+| np 1 byte identity vs WO-5 (`wo5_dumps.sh`) | 44/47 mode dumps + 9/9 wall and pile scenes identical. Differences: `ring_mini` ×2 (WO-5b, named) and `cluster_periodic` np 1 under step_mpi (the wider band adds self images; named). The `--solo` (`demStep`) runs are identical. |
+| G4 run-to-run, np 4/8, OMP 1, 3 runs | 12/12 IDENT (`cluster`, `cluster_pgs`, `hub`, `cluster_shear`, `hertz_shear`, `tri`), with 0–200 migrations |
+| battery (OMP 2, python_mpi run) | 209/209 |
+
+The periodic missing pairs (`oracle_periodic`, `missed_periodic`) are WO-9, which depends on core
+`allImages`, and stay report-only.
