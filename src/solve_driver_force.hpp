@@ -162,10 +162,11 @@ struct HertzMindlinLaw {
                                  P.frictionDynamic, P.hertzE, P.hertzNu, dt, P.hertzXi,
                                  P.hertzSnPair, P.deltaVel, P.deltaAngVel);
     else
-      hertzPairForcesKokkos(P.pairs, P.hertzNumPairs, P.pos, P.vel, P.angVel, P.rad, P.invMass,
-                            MatIdView(P.materialId), PairTableView(P.pairMaterials),
-                            P.restitutionNormal, P.frictionDynamic, P.hertzE, P.hertzNu, dt,
-                            P.hertzXi, P.deltaVel, P.deltaAngVel);
+      hertzPairForcesKokkos(
+          P.pairs, P.hertzNumPairs, P.pos, P.vel, P.angVel, P.rad, P.invMass,
+          MatIdView(P.materialId), PairTableView(P.pairMaterials), P.restitutionNormal,
+          P.frictionDynamic, P.hertzE, P.hertzNu, dt, P.hertzXi, P.deltaVel, P.deltaAngVel,
+          Kokkos::View<const float*, CpMem>(P.scale), P.shapeId, P.shapes, P.globalScale);
   }
   void wallForces(Particles& P, float dt, bool hasShapes) const {
     if (P.numWalls > 0 && P.hertzNumWallCand > 0)

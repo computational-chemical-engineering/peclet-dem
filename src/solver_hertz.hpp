@@ -83,6 +83,24 @@ KOKKOS_INLINE_FUNCTION F3 hertzForce(float delta, F3 nhat, F3 vrel, float rStar,
   return add3(scale3(nhat, fn), ft);
 }
 
+/// A body's Hertz sphere radius: a SPHERE shape's own radius, scale * globalScale * params.x (the
+/// radius the XPBD narrow phase probes with); otherwise the world reach radius rad(i). rad(i) is
+/// scale * globalScale * the registry's LARGEST bounding radius (fillWorldRadiiKokkos), so in a
+/// mixture with tubes or boxes (circumscribed radius) it overstates a sphere; alone it is equal,
+/// computed in the same order, bit for bit.
+KOKKOS_INLINE_FUNCTION float hertzSphereRadius(int i, Kokkos::View<const float*, CpMem> rad,
+                                               Kokkos::View<const float*, CpMem> scale,
+                                               ScalarI shapeId,
+                                               Kokkos::View<const ShapeDesc*, CpMem> shapes,
+                                               float globalScale) {
+  if (shapes.extent(0) > 0 && scale.extent(0) > 0) {
+    const ShapeDesc d = shapes(shapeId(i));
+    if (d.type == SPHERE && d.params.x > 0.0f)
+      return scale(i) * globalScale * d.params.x;
+  }
+  return rad(i);
+}
+
 /// Cached-pair forces: overlap from current positions; history resets when a cached pair is
 /// currently separated. Forces/torques accumulate atomically (a body appears in many pairs).
 inline void hertzPairForcesKokkos(
@@ -92,7 +110,9 @@ inline void hertzPairForcesKokkos(
     Kokkos::View<const float*, CpMem> invMass, MatIdView matId, PairTableView pairTable,
     float eGlobal, float muGlobal, Kokkos::View<const float*, CpMem> hertzE,
     Kokkos::View<const float*, CpMem> hertzNu, float dt, Kokkos::View<float* [3], CpMem> xi,
-    Kokkos::View<float* [3], CpMem> force, Kokkos::View<float* [3], CpMem> torque) {
+    Kokkos::View<float* [3], CpMem> force, Kokkos::View<float* [3], CpMem> torque,
+    Kokkos::View<const float*, CpMem> scale = {}, ScalarI shapeId = {},
+    Kokkos::View<const ShapeDesc*, CpMem> shapes = {}, float globalScale = 1.0f) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::hertz_pairs", Kokkos::RangePolicy<CpExec>(space, 0, numPairs),
@@ -101,7 +121,8 @@ inline void hertzPairForcesKokkos(
         const F3 pi = loadF3(pos, i), pj = loadF3(pos, j);
         const F3 dx = sub3(pi, pj);
         const float d = Kokkos::sqrt(dot3(dx, dx));
-        const float ri = rad(i), rj = rad(j);
+        const float ri = hertzSphereRadius(i, rad, scale, shapeId, shapes, globalScale),
+                    rj = hertzSphereRadius(j, rad, scale, shapeId, shapes, globalScale);
         const float delta = ri + rj - d;
         if (delta <= 0.0f || d < 1e-12f) {
           xi(idx, 0) = xi(idx, 1) = xi(idx, 2) = 0.0f;  // contact open: history resets
@@ -162,7 +183,7 @@ inline void hertzWallForcesKokkos(
         const int i = enc / 8;
         const int wi = enc % 8;
         const F3 p = loadF3(pos, i);
-        const float r = rad(i);
+        const float r = hertzSphereRadius(i, rad, scale, shapeId, shapes, globalScale);
         const WallSdf w = walls(wi);
         const int slot = i * maxWalls + wi;
         const int ma = matId(i);
