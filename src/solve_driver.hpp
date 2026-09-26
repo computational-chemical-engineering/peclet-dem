@@ -865,15 +865,17 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         Kokkos::deep_copy(space, P.maxApproach, 0.0f);
         // Rank-level X (§1.4, WO-6): in sync interval t a contact fires only if this rank holds
         // every rank-split endpoint; a non-firing contact still records its approach for the stop.
-        Kokkos::View<const unsigned char*, CpMem> xGate;
+        XGateSpec xGate;  // evaluated inline in the sweep (no separate pass)
         if (xOn) {
           const long long t = P.solveEpoch + it / rk.syncInterval;
-          computeXGateKokkos(P.manifolds, nm, P.realIndices,
-                             Kokkos::View<const unsigned long long*, CpMem>(P.velMask), P.xGate,
-                             rk.color, rk.numColors, t);
-          xGate = P.xGate;
-          if (P.iterCounters)
-            P.splitStats.unfiredSplitContacts += countUnfiredKokkos(xGate, nm);
+          xGate = XGateSpec{Kokkos::View<const unsigned long long*, CpMem>(P.velMask), rk.color,
+                            rk.numColors, t};
+          if (P.iterCounters) {  // diagnostics only: the explicit gate pass, to count the unfired
+            computeXGateKokkos(P.manifolds, nm, P.realIndices,
+                               Kokkos::View<const unsigned long long*, CpMem>(P.velMask), P.xGate,
+                               rk.color, rk.numColors, t);
+            P.splitStats.unfiredSplitContacts += countUnfiredKokkos(P.xGate, nm);
+          }
         }
         solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, invMassVel,
                                      invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,

@@ -1488,7 +1488,7 @@ static int runPerf(bool pgs, int rank, int size) {
       }
   const int n = static_cast<int>(b.size());
   const std::vector<int> gids = ownedOf(b, 0.0, box, gx, true, rank, size);
-  Simulation sim(3 * n + 64);
+  ProbeSim sim(3 * n + 64);
   sim.setDomain(box, box, box, true, true, true);
   sim.setGlobalScale(1.0f);
   sim.setSphereShape(RAD);
@@ -1515,6 +1515,17 @@ static int runPerf(bool pgs, int rank, int size) {
   if (rank == 0)
     std::printf("PERF mode=%s np=%d thr=%d N=%d ms_per_step=%.3f\n", pgs ? "perf_pgs" : "perf_gas",
                 size, thr, n, ms);
+  {  // WO-11 cost diagnostics (read after the timed loop; no effect on the timing)
+    const auto& st = sim.parts().splitStats;
+    int g = sim.numGhost(), gs = 0, gmax = 0;
+    MPI_Allreduce(&g, &gs, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&g, &gmax, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    if (rank == 0)
+      std::printf("PERFDIAG mode=%s np=%d migrations=%lld ghostsTotal=%d ghostsMax=%d "
+                  "velItersLast=%d posItersLast=%d rebuilds=%ld gathers=%ld\n",
+                  pgs ? "perf_pgs" : "perf_gas", size, static_cast<long long>(st.driftMigrations),
+                  gs, gmax, st.velItersUsed, st.posItersUsed, sim.mpiRebuilds(), sim.mpiGathers());
+  }
   return 0;
 }
 
