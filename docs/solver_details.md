@@ -279,11 +279,21 @@ $$ C(\mathbf{x}) = (\mathbf{p}_A^{surf} - \mathbf{p}_B^{surf})\cdot\mathbf{n} \g
 evaluated with the lever arms and normal delta-rotated from the static frame to the predicted one
 ($C \ge 0$ ⇒ inactive, skipped). Contacts are rigid (compliance 0), so
 
-$$ \Delta\lambda = \frac{-C(\mathbf{x}_{pred})}{w_{total}}, \qquad
-   w_i = m_i^{-1} + (\mathbf{r}_i\times\mathbf{n})^{T}\mathbf{I}_i^{-1}(\mathbf{r}_i\times\mathbf{n}) $$
+$$ \Delta\lambda = \frac{-C(\mathbf{x}_{pred})}{\tilde w}, \qquad
+   \tilde w = m_A^{-1} + m_B^{-1} $$
 
-applied as $\Delta\mathbf{x} = \mathbf{n}\Delta\lambda\,m^{-1}$ and
-$\Delta\mathbf{q} \approx \tfrac12(\mathbf{I}^{-1}(\mathbf{r}\times\mathbf{n})\Delta\lambda)\mathbf{q}$.
+applied as $\Delta\mathbf{x} = \mathbf{n}\Delta\lambda\,m^{-1}$ — **translation only**: the phase
+never rotates a body (overlap removal stays decoupled from the velocity update), so the diagonal
+is the translational effective mass of the solve views ($m^{-1}$ is the mass-split $k\,m^{-1}$ of a
+copy; a wall side contributes 0). Before WO-B1 (2026-09-26,
+`docs/contact_physics_followups.md` §3.3) $\tilde w$ also carried a rotational term
+$(\mathbf{r}\times\mathbf{n})^{T}\mathbf{I}^{-1}(\mathbf{r}\times\mathbf{n})$ for a rotation that was
+never applied, built from a world-frame arm and body-frame inertia (not frame-indifferent), which
+overstated the stop metric by $\tilde w/(m_A^{-1}+m_B^{-1})$ (~2.4, up to ~5.6, on tube rows). The
+fixed point does not depend on $\tilde w$ — it is a per-row relaxation — so converged positions are
+unchanged; finite-iteration results of non-spherical bodies and **spinning** spheres (whose
+delta-rotated arm gives $|\mathbf{r}\times\mathbf{n}| \sim R\,\omega\,dt$) changed with it, while a
+non-spinning sphere's term was below half an ulp and it stays bitwise.
 
 The loop stops once the deepest penetration falls below `posTol = 1e-4 * base_radius *
 global_scale` (~0.01 % of a radius), capped at `positionIterations`; distributed, that residual is
@@ -304,7 +314,8 @@ legitimate, $\omega_{pos} = 1.5$ on every contact (np 1 included), and the fixed
 least-displacement solution, so the converged positions agree across rank counts (measured:
 $\max |x_{np N} - x_{np 1}| \le 4.7\times 10^{-5} R$ at np 2/4/8, gated at $10^{-4} R$; the
 non-accumulated POCS it replaced differed by $10^{-2} R$). The stop is the position change
-$\max |d|\,\tilde w$ below $10^{-4} R$ (retractions included); `max_overlap` stays the largest
+$\max |d|\,\tilde w$ below $10^{-4} R$ — the true relative position change of the pair —
+(retractions included); `max_overlap` stays the largest
 violation seen. Dense clusters converge in 2.9× fewer iterations than the old $\omega = 1$
 projection (34 vs 97). The superseded form — applied only while $C < 0$, never retracted, hence
 never over-relaxed ($\omega = 1.5$ on it left a permanent gap of $(\omega_{eff}-1)|C|$, §13.1) —

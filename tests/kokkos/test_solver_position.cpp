@@ -1,9 +1,10 @@
 // Correctness of the Kokkos XPBD position solve (dem::solvePositionKokkos) against a host
 // replication of the identical math. Random bodies + contacts; candidate contacts with a borderline
 // constraint value |C| are dropped so the active/inactive decision is decisive on both host and
-// device (keeps constraint_counts exactly comparable). Compares accumulated delta_pos / delta_quat
-// (within tol), constraint_counts (exact), and max_overlap. Runs on whatever backend Kokkos was
-// built for.
+// device (keeps constraint_counts exactly comparable). Compares accumulated delta_pos (within tol;
+// the diagonal is the translational effective mass invM_A + invM_B, WO-B1), delta_quat (exactly
+// zero: the correction is translation only), constraint_counts (exact), and max_overlap. Runs on
+// whatever backend Kokkos was built for.
 #include <cmath>
 #include <cstdio>
 #include <Kokkos_Core.hpp>
@@ -208,36 +209,19 @@ int main(int argc, char** argv) {
       if (C >= 0.f)
         continue;
       float invMA = invMass[idA], invMB = (idB >= 0) ? invMass[idB] : 0.f;
-      F3 invIA{iIx[idA], iIy[idA], iIz[idA]};
-      F3 invIB = (idB >= 0) ? F3{iIx[idB], iIy[idB], iIz[idB]} : F3{0, 0, 0};
-      float wT = detail::computeW(rA, n, invMA, invIA) + detail::computeW(rB, n, invMB, invIB);
+      // The translational effective mass (docs/contact_physics_followups.md §3.3, WO-B1); the
+      // correction is translation only, so deltaQuat stays exactly zero.
+      float wT = invMA + invMB;
       if (wT < 1e-6f)
         continue;
       float dL = -C / wT;
       rdp[3 * idA] += n.x * dL * invMA;
       rdp[3 * idA + 1] += n.y * dL * invMA;
       rdp[3 * idA + 2] += n.z * dL * invMA;
-      {
-        F3 rn = cross3v(rA, n);
-        // World-frame inverse inertia, as the kernel (§12 S15; isotropic: component-wise).
-        F3 dT = detail::worldInvInertiaTimes(scale3(rn, dL), invIA, qp(idA));
-        F4 dq = detail::deltaQuat(dT, qp(idA));
-        rdq[4 * idA] += dq.x;
-        rdq[4 * idA + 1] += dq.y;
-        rdq[4 * idA + 2] += dq.z;
-        rdq[4 * idA + 3] += dq.w;
-      }
       if (idB >= 0) {
         rdp[3 * idB] += -n.x * dL * invMB;
         rdp[3 * idB + 1] += -n.y * dL * invMB;
         rdp[3 * idB + 2] += -n.z * dL * invMB;
-        F3 rn = cross3v(rB, n);
-        F3 dT = detail::worldInvInertiaTimes(scale3(rn, -dL), invIB, qp(idB));
-        F4 dq = detail::deltaQuat(dT, qp(idB));
-        rdq[4 * idB] += dq.x;
-        rdq[4 * idB + 1] += dq.y;
-        rdq[4 * idB + 2] += dq.z;
-        rdq[4 * idB + 3] += dq.w;
         rcn[idB]++;
       }
       rcn[idA]++;
