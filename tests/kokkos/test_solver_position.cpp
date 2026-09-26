@@ -219,7 +219,8 @@ int main(int argc, char** argv) {
       rdp[3 * idA + 2] += n.z * dL * invMA;
       {
         F3 rn = cross3v(rA, n);
-        F3 dT{rn.x * invIA.x * dL, rn.y * invIA.y * dL, rn.z * invIA.z * dL};
+        // World-frame inverse inertia, as the kernel (§12 S15; isotropic: component-wise).
+        F3 dT = detail::worldInvInertiaTimes(scale3(rn, dL), invIA, qp(idA));
         F4 dq = detail::deltaQuat(dT, qp(idA));
         rdq[4 * idA] += dq.x;
         rdq[4 * idA + 1] += dq.y;
@@ -231,7 +232,7 @@ int main(int argc, char** argv) {
         rdp[3 * idB + 1] += -n.y * dL * invMB;
         rdp[3 * idB + 2] += -n.z * dL * invMB;
         F3 rn = cross3v(rB, n);
-        F3 dT{-rn.x * invIB.x * dL, -rn.y * invIB.y * dL, -rn.z * invIB.z * dL};
+        F3 dT = detail::worldInvInertiaTimes(scale3(rn, -dL), invIB, qp(idB));
         F4 dq = detail::deltaQuat(dT, qp(idB));
         rdq[4 * idB] += dq.x;
         rdq[4 * idB + 1] += dq.y;
