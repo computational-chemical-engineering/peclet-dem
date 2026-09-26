@@ -1,0 +1,59 @@
+cluster_pgs        np1 n=4 dP=8.01e-07 dX=5.45e-07 dXpos=2.35e-07 dLvel=2.17e-08 ovl=2.257e-02 conf=0
+cluster_pgs        np2 n=4 dP=7.91e-07 dX=6.64e-07 dXpos=3.73e-07 dLvel=2.27e-08 ovl=4.287e-02 conf=0
+cluster_pgs        np4 n=4 dP=7.97e-07 dX=5.04e-07 dXpos=2.53e-07 dLvel=1.96e-08 ovl=5.084e-02 conf=0
+cluster_pgs        np8 n=4 dP=7.94e-07 dX=6.01e-07 dXpos=2.93e-07 dLvel=2.50e-08 ovl=5.054e-02 conf=0
+cluster_poisson    np1 n=4 dP=7.98e-07 dX=5.53e-07 dXpos=2.98e-07 dLvel=2.03e-08 ovl=2.247e-02 conf=0 clamps=0
+cluster_poisson    np2 n=4 dP=7.95e-07 dX=6.11e-07 dXpos=2.31e-07 dLvel=2.59e-08 ovl=4.299e-02 conf=0 clamps=0
+cluster_poisson    np4 n=4 dP=7.97e-07 dX=5.83e-07 dXpos=2.59e-07 dLvel=2.09e-08 ovl=5.021e-02 conf=0 clamps=0
+cluster_poisson    np8 n=4 dP=7.92e-07 dX=4.65e-07 dXpos=2.68e-07 dLvel=2.64e-08 ovl=5.009e-02 conf=0 clamps=0
+cluster_multilevel np1 n=4 dP=8.02e-07 dX=6.10e-07 dXpos=4.00e-07 dLvel=1.90e-08 ovl=2.270e-02 conf=0
+cluster_multilevel np2 n=4 dP=7.94e-07 dX=5.49e-07 dXpos=2.09e-07 dLvel=1.77e-08 ovl=4.284e-02 conf=0
+cluster_multilevel np4 n=4 dP=7.91e-07 dX=5.80e-07 dXpos=2.46e-07 dLvel=1.62e-04 ovl=5.080e-02 conf=0
+cluster_multilevel np8 n=4 dP=7.87e-07 dX=5.52e-07 dXpos=3.09e-07 dLvel=6.76e-05 ovl=4.925e-02 conf=0
+cluster_escalate   np1 n=4 dP=8.06e-07 dX=6.20e-07 dXpos=2.34e-07 dLvel=1.66e-08 ovl=2.196e-02 conf=0
+cluster_escalate   np2 n=4 dP=8.04e-07 dX=6.70e-07 dXpos=3.41e-07 dLvel=2.34e-08 ovl=4.330e-02 conf=0
+cluster_escalate   np4 n=4 dP=7.92e-07 dX=5.74e-07 dXpos=3.91e-07 dLvel=1.63e-08 ovl=4.860e-02 conf=0
+cluster_escalate   np8 n=4 dP=7.74e-07 dX=6.14e-07 dXpos=2.99e-07 dLvel=1.96e-08 ovl=4.785e-02 conf=0
+cluster_ordered    np1 n=4 dP=7.94e-07 dX=5.13e-07 dXpos=2.36e-07 dLvel=2.45e-08 ovl=2.264e-02 conf=0
+cluster_ordered    np2 n=4 dP=7.97e-07 dX=4.85e-07 dXpos=2.87e-07 dLvel=1.65e-08 ovl=4.300e-02 conf=0
+cluster_ordered    np4 n=4 dP=7.95e-07 dX=5.94e-07 dXpos=3.37e-07 dLvel=1.39e-08 ovl=4.933e-02 conf=0
+cluster_ordered    np8 n=4 dP=8.05e-07 dX=5.24e-07 dXpos=3.27e-07 dLvel=2.03e-08 ovl=4.930e-02 conf=0
+cluster_posonly    np1 n=4 dP=0.00e+00 dX=5.48e-07 dXpos=5.48e-07 dLvel=0.00e+00 ovl=2.735e-02 conf=0
+cluster_posonly    np2 n=4 dP=0.00e+00 dX=6.71e-07 dXpos=6.71e-07 dLvel=0.00e+00 ovl=4.779e-02 conf=0
+cluster_posonly    np4 n=4 dP=0.00e+00 dX=5.73e-07 dXpos=5.73e-07 dLvel=0.00e+00 ovl=4.604e-02 conf=0
+cluster_posonly    np8 n=4 dP=0.00e+00 dX=9.69e-07 dXpos=9.69e-07 dLvel=0.00e+00 ovl=5.362e-02 conf=0
+hub_pgs            np1 n=4 dP=3.36e-07 dX=2.41e-07 dXpos=2.24e-07 dLvel=6.65e-09 ovl=4.899e-05 conf=0
+hub_pgs            np2 n=4 dP=3.69e-07 dX=2.38e-07 dXpos=2.15e-07 dLvel=1.41e-08 ovl=1.363e-04 conf=0
+hub_pgs            np4 n=4 dP=3.42e-07 dX=3.24e-07 dXpos=2.88e-07 dLvel=6.87e-09 ovl=2.768e-04 conf=0
+hub_pgs            np8 n=4 dP=3.26e-07 dX=2.40e-07 dXpos=2.41e-07 dLvel=9.07e-09 ovl=2.495e-04 conf=0
+hub_posonly        np1 n=4 dP=0.00e+00 dX=9.43e-07 dXpos=9.43e-07 dLvel=0.00e+00 ovl=4.588e-05 conf=0
+hub_posonly        np2 n=4 dP=0.00e+00 dX=2.52e-06 dXpos=2.52e-06 dLvel=0.00e+00 ovl=1.266e-04 conf=0
+hub_posonly        np4 n=4 dP=0.00e+00 dX=2.96e-06 dXpos=2.96e-06 dLvel=0.00e+00 ovl=2.483e-04 conf=0
+hub_posonly        np8 n=4 dP=0.00e+00 dX=3.42e-06 dXpos=3.42e-06 dLvel=0.00e+00 ovl=2.440e-04 conf=0
+hub_static         np1 n=4 dP=0.00e+00 dX=4.42e-08 dXpos=4.42e-08 dLvel=0.00e+00 ovl=3.412e-05 conf=0 gap/d=0.065 res/R=2.4e-06
+hub_static         np2 n=4 dP=0.00e+00 dX=1.98e-07 dXpos=1.98e-07 dLvel=0.00e+00 ovl=4.504e-05 conf=0 gap/d=0.032 res/R=4.5e-05
+hub_static         np4 n=4 dP=0.00e+00 dX=1.64e-07 dXpos=1.64e-07 dLvel=0.00e+00 ovl=4.775e-05 conf=0 gap/d=0.013 res/R=6.2e-05
+hub_static         np8 n=4 dP=0.00e+00 dX=2.70e-07 dXpos=2.70e-07 dLvel=0.00e+00 ovl=4.833e-05 conf=0 gap/d=0.012 res/R=7.7e-05
+hub_ml             np1 n=4 dP=2.06e-07 dX=8.84e-08 dXpos=9.67e-08 dLvel=2.98e-03 ovl=2.023e-03 conf=0 gap/d=2.948 res/R=1.6e-05 ctl=L1A1
+hub_ml             np2 n=4 dP=4.26e-07 dX=1.19e-07 dXpos=1.26e-07 dLvel=3.74e-03 ovl=6.170e-03 conf=0 gap/d=2.956 res/R=2.1e-05 ctl=L1A5
+hub_ml             np4 n=4 dP=2.50e-07 dX=2.68e-07 dXpos=2.48e-07 dLvel=3.60e-07 ovl=1.611e-02 conf=0 gap/d=3.456 res/R=9.9e-07 ctl=L0A0
+hub_ml             np8 n=4 dP=1.82e-07 dX=2.37e-07 dXpos=2.46e-07 dLvel=2.74e-07 ovl=2.203e-02 conf=0 gap/d=3.462 res/R=6.5e-05 ctl=L0A0
+ring_mini          np1 n=4 dP=2.26e-08 dX=4.02e-06 dXpos=4.02e-06 dLvel=7.93e-04 ovl=2.499e-01 conf=0
+ring_mini          np2 n=4 dP=3.52e-08 dX=3.81e-06 dXpos=3.81e-06 dLvel=9.17e-04 ovl=2.476e-01 conf=0
+ring_mini          np4 n=4 dP=1.87e-08 dX=5.49e-06 dXpos=5.49e-06 dLvel=8.74e-04 ovl=2.363e-01 conf=0
+ring_mini          np8 n=4 dP=2.91e-08 dX=3.74e-06 dXpos=3.73e-06 dLvel=6.36e-04 ovl=2.888e-01 conf=0
+ring_mini ovl np2/np1 = 0.99 (ok, S18: <= 3)
+ring_mini ovl np4/np1 = 0.95 (ok, S18: <= 3)
+ring_mini ovl np8/np1 = 1.16 (ok, S18: <= 3)
+--- CUDA np 1 (step_mpi, --solo) x 3
+cluster_pgs        np1 n=6 dP=7.63e-07 dX=5.04e-07 dXpos=2.55e-07 dLvel=2.11e-08 ovl=2.195e-02 conf=0
+cluster_poisson    np1 n=6 dP=7.66e-07 dX=5.62e-07 dXpos=3.95e-07 dLvel=2.18e-08 ovl=2.275e-02 conf=0 clamps=0
+cluster_multilevel np1 n=6 dP=7.65e-07 dX=5.45e-07 dXpos=3.08e-07 dLvel=1.91e-08 ovl=2.309e-02 conf=0
+cluster_escalate   np1 n=6 dP=7.75e-07 dX=5.31e-07 dXpos=2.83e-07 dLvel=1.92e-08 ovl=2.259e-02 conf=0
+cluster_ordered    np1 n=6 dP=7.72e-07 dX=6.07e-07 dXpos=3.60e-07 dLvel=2.44e-08 ovl=2.253e-02 conf=0
+cluster_posonly    np1 n=6 dP=0.00e+00 dX=8.37e-07 dXpos=8.37e-07 dLvel=0.00e+00 ovl=2.737e-02 conf=0
+hub_pgs            np1 n=6 dP=3.90e-07 dX=2.80e-07 dXpos=2.65e-07 dLvel=4.20e-09 ovl=4.880e-05 conf=0
+hub_posonly        np1 n=6 dP=0.00e+00 dX=5.24e-07 dXpos=5.24e-07 dLvel=0.00e+00 ovl=4.682e-05 conf=0
+hub_static         np1 n=6 dP=0.00e+00 dX=1.02e-07 dXpos=1.02e-07 dLvel=0.00e+00 ovl=4.790e-05 conf=0 gap/d=0.058 res/R=4.3e-06
+hub_ml             np1 n=6 dP=2.13e-07 dX=1.25e-07 dXpos=1.32e-07 dLvel=2.98e-03 ovl=2.036e-03 conf=0 gap/d=2.738 res/R=4.4e-05 ctl=L1A1
+ring_mini          np1 n=6 dP=2.23e-08 dX=5.40e-06 dXpos=5.40e-06 dLvel=8.08e-04 ovl=2.341e-01 conf=0

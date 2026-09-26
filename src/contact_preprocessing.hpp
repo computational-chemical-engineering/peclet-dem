@@ -157,15 +157,16 @@ inline void gatherWarmLambdaKokkos(
     int prevCount, Kokkos::View<unsigned long long*, CpMem> outKeys,
     Kokkos::View<float*, CpMem> outWarm, Kokkos::View<float* [3], CpMem> outWarmT,
     Kokkos::View<float*, CpMem> outPosImpulse, Kokkos::View<float*, CpMem> outRestBank,
-    Kokkos::View<float*, CpMem> outRestVPeak, Kokkos::View<unsigned char*, CpMem> outMatched = {}) {
+    Kokkos::View<float*, CpMem> outRestVPeak, Kokkos::View<unsigned char*, CpMem> outMatched = {},
+    bool dedupTwins = true) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::gather_warm", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
       KOKKOS_LAMBDA(int idx) {
         const ManifoldC m = manifolds(idx);
         bool dup = false;
-        if (m.num_points > 0 && m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB))
-          dup = true;
+        if (dedupTwins && m.num_points > 0 && m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB))
+          dup = true;  // periodic dedup (single rank; §4.2 item 2)
         if (m.num_points <= 0 || dup) {
           outKeys(idx) = ~0ull;
           outWarm(idx) = 0.0f;

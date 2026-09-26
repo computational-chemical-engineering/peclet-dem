@@ -228,10 +228,17 @@ inline void buildHubCopiesKokkos(Kokkos::View<const int*, CpMem> eA,
 /// the smallest -- comes first. k = the members with at least one active edge (a copy always has
 /// one). imageShift (empty = none) gives an image slot's periodic shift; a copy takes its hub
 /// vertex's.
+///
+/// identityBodies: every vertex slot is its own body (a copy's body is its hub vertex), so only
+/// hubs form groups. The velocity phase (vertices are realIdx slots; under MPI the §6.2 slot map
+/// makes the other slots of a body aliases, which must not join its group) and the distributed
+/// position phase (raw slots: every image slot is its own copy, reconciled at rank level, §13.3).
+/// On the single-rank velocity phase realIdx is the identity on [0, span), so it is the same
+/// grouping.
 inline void buildCopyGroupsKokkos(Kokkos::View<const int*, CpMem> realIdx, int span, int numReal,
                                   Kokkos::View<const int*, CpMem> deg,
-                                  Kokkos::View<const float* [3], CpMem> imageShift,
-                                  PhaseCopies& H) {
+                                  Kokkos::View<const float* [3], CpMem> imageShift, PhaseCopies& H,
+                                  bool identityBodies = false) {
   CpExec space;
   using Kokkos::view_alloc;
   using Kokkos::WithoutInitializing;
@@ -244,7 +251,8 @@ inline void buildCopyGroupsKokkos(Kokkos::View<const int*, CpMem> realIdx, int s
   Kokkos::parallel_for(
       "peclet::dem::copies_grp_cnt", Kokkos::RangePolicy<CpExec>(space, 0, nQ),
       KOKKOS_LAMBDA(int qi) {
-        const int o = (qi < span) ? realIdx(qi) : realIdx(cb(qi - span));
+        const int o = identityBodies ? ((qi < span) ? qi : cb(qi - span))
+                                     : ((qi < span) ? realIdx(qi) : realIdx(cb(qi - span)));
         Kokkos::atomic_add(&cnt(o), 1);
       });
   Kokkos::View<std::uint64_t*, CpMem> keys(
@@ -254,7 +262,8 @@ inline void buildCopyGroupsKokkos(Kokkos::View<const int*, CpMem> realIdx, int s
       "peclet::dem::copies_grp_keys", Kokkos::RangePolicy<CpExec>(space, 0, nQ),
       KOKKOS_LAMBDA(int qi, int& acc) {
         const int q = (qi < span) ? qi : base + (qi - span);
-        const int o = (qi < span) ? realIdx(qi) : realIdx(cb(qi - span));
+        const int o = identityBodies ? ((qi < span) ? qi : cb(qi - span))
+                                     : ((qi < span) ? realIdx(qi) : realIdx(cb(qi - span)));
         if (cnt(o) >= 2) {
           keys(qi) = (static_cast<std::uint64_t>(static_cast<unsigned>(o)) << 32) |
                      static_cast<unsigned>(q);
@@ -391,11 +400,13 @@ inline void seedCopySlotStateKokkos(Particles& P, const PhaseCopies& H) {
 /// Mark the phase seed sigma of every group and re-seed its members from the base (§4.4 step 6,
 /// and after every rank sync): x(q) = sigma + shift(q); w likewise (velocity, no shift). With
 /// `orphan` (Poisson, velocity) every member's account becomes the share B / k of the base's
-/// balance B, and the peak the base's.
+/// balance B, and the peak the base's. shareFromBase (rank-level M, §13.3): the base already holds
+/// the share B / k_global (set by the opening / rank sync), and every member copies it.
 inline void markCopySeedsKokkos(const PhaseCopies& H, Kokkos::View<float* [3], CpMem> x,
                                 Kokkos::View<float* [3], CpMem> w,
                                 Kokkos::View<float*, CpMem> orphan,
-                                Kokkos::View<float*, CpMem> orphanPeak) {
+                                Kokkos::View<float*, CpMem> orphanPeak,
+                                bool shareFromBase = false) {
   if (H.nGroups <= 0)
     return;
   auto gs = H.groupStart;
@@ -416,7 +427,7 @@ inline void markCopySeedsKokkos(const PhaseCopies& H, Kokkos::View<float* [3], C
         }
         float share = 0.0f, pk = 0.0f;
         if (haveO) {
-          share = orphan(b) / static_cast<float>(gk(g));
+          share = shareFromBase ? orphan(b) : orphan(b) / static_cast<float>(gk(g));
           pk = orphanPeak(b);
         }
         for (int p = gs(g); p < gs(g + 1); ++p) {
@@ -441,9 +452,13 @@ inline void markCopySeedsKokkos(const PhaseCopies& H, Kokkos::View<float* [3], C
 /// inactive member carries no increment of its own, only the re-seeded consensus); the base takes
 /// sigma + T / k and every member is re-seeded to it (plus its shift). w likewise. Orphan accounts
 /// (Poisson): every member takes (sum of the active members' accounts) / k, the peak their max.
+/// With `consensus` (§12 S14) the largest correction the fold applies to an active member's x,
+/// |T / k - (x(q) - sigma - shift(q))| (increment form: exactly 0 once the sweep stops moving the
+/// copies), is atomic-maxed into it; w, orphan and the result are unaffected.
 inline void foldCopiesKokkos(CpExec space, const PhaseCopies& H, Kokkos::View<float* [3], CpMem> x,
                              Kokkos::View<float* [3], CpMem> w, Kokkos::View<float*, CpMem> orphan,
-                             Kokkos::View<float*, CpMem> orphanPeak) {
+                             Kokkos::View<float*, CpMem> orphanPeak,
+                             Kokkos::View<float, CpMem> consensus = {}) {
   if (H.nGroups <= 0)
     return;
   auto gs = H.groupStart;
@@ -455,6 +470,7 @@ inline void foldCopiesKokkos(CpExec space, const PhaseCopies& H, Kokkos::View<fl
   auto sw = H.seedW;
   const bool haveW = w.extent(0) > 0;
   const bool haveO = orphan.extent(0) > 0;
+  const bool haveC = consensus.data() != nullptr;
   Kokkos::parallel_for(
       "peclet::dem::copies_fold", Kokkos::RangePolicy<CpExec>(space, 0, H.nGroups),
       KOKKOS_LAMBDA(int g) {
@@ -481,6 +497,22 @@ inline void foldCopiesKokkos(CpExec space, const PhaseCopies& H, Kokkos::View<fl
           nw[c] = haveW ? sw(g, c) + tw[c] / kf : 0.0f;
         }
         const float share = oSum / kf;
+        if (haveC) {
+          float cmax = 0.0f;
+          for (int p = gs(g); p < gs(g + 1); ++p) {
+            if (!ga(p))
+              continue;
+            const int q = gq(p);
+            float s2 = 0.0f;
+            for (int c = 0; c < 3; ++c) {
+              const float e = tx[c] / kf - (x(q, c) - (sx(g, c) + gsh(p, c)));
+              s2 += e * e;
+            }
+            cmax = Kokkos::fmax(cmax, Kokkos::sqrt(s2));
+          }
+          if (cmax > 0.0f)
+            Kokkos::atomic_max(&consensus(), cmax);
+        }
         for (int p = gs(g); p < gs(g + 1); ++p) {
           const int q = gq(p);
           for (int c = 0; c < 3; ++c) {
@@ -538,6 +570,155 @@ inline void unfoldOrphanKokkos(const PhaseCopies& H, Kokkos::View<float*, CpMem>
         orphan(gq(gs(g))) = s;
       });
   Kokkos::fence();
+}
+
+/// Rank-level activity pass (docs/contact_solve_framework.md §13.3 C4; the distributed step
+/// only), velocity phase: hit(slot) = 1 for every slot that is an end -- through the hub-copy
+/// overrides, else realIdx -- of an owned manifold of colour >= 0 in the final colouring. A
+/// same-value store, so the order of the writers does not matter.
+inline void activityHitVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int nm,
+                                      Kokkos::View<const int*, CpMem> realIdx,
+                                      Kokkos::View<const int*, CpMem> color, SlotOverride ov,
+                                      Kokkos::View<unsigned char*, CpMem> hit, int nSlots) {
+  CpExec space;
+  Kokkos::deep_copy(space, Kokkos::subview(hit, Kokkos::pair<int, int>(0, nSlots)),
+                    static_cast<unsigned char>(0));
+  Kokkos::parallel_for(
+      "peclet::dem::activity_vel", Kokkos::RangePolicy<CpExec>(space, 0, nm), KOKKOS_LAMBDA(int e) {
+        if (color(e) < 0)
+          return;
+        const ManifoldC m = manifolds(e);
+        Kokkos::atomic_store(&hit(ov.slotA(e, realIdx(m.bodyA))), static_cast<unsigned char>(1));
+        if (m.bodyB >= 0)
+          Kokkos::atomic_store(&hit(ov.slotB(e, realIdx(m.bodyB))), static_cast<unsigned char>(1));
+      });
+  space.fence();
+}
+/// The same over the position phase's units (raw slots of the leader contact, through the
+/// overrides).
+inline void activityHitPositionKokkos(Kokkos::View<const ContactC*, CpMem> contacts,
+                                      const PosUnits& units, int nu,
+                                      Kokkos::View<const int*, CpMem> color, SlotOverride ov,
+                                      Kokkos::View<unsigned char*, CpMem> hit, int nSlots) {
+  CpExec space;
+  Kokkos::deep_copy(space, Kokkos::subview(hit, Kokkos::pair<int, int>(0, nSlots)),
+                    static_cast<unsigned char>(0));
+  Kokkos::parallel_for(
+      "peclet::dem::activity_pos", Kokkos::RangePolicy<CpExec>(space, 0, nu), KOKKOS_LAMBDA(int u) {
+        if (color(u) < 0)
+          return;
+        const ContactC c = contacts(units.leader(u));
+        Kokkos::atomic_store(&hit(ov.slotA(u, c.bodyA)), static_cast<unsigned char>(1));
+        if (c.bodyB >= 0)
+          Kokkos::atomic_store(&hit(ov.slotB(u, c.bodyB)), static_cast<unsigned char>(1));
+      });
+  space.fence();
+}
+/// a(q) from the pass (§13.3): hit(q) for a slot outside any group; at a hub base the number of
+/// its group's members (base + copies) that were hit, which also refills groupActive and groupK
+/// (floored at 1, WO-4's local fold divisor). Copy slots get 0 (they are never packed; their
+/// solve mass takes the base's k). a is written on [0, nSlots + H.nCopies).
+inline void finishActivityKokkos(Kokkos::View<const unsigned char*, CpMem> hit, int nSlots,
+                                 PhaseCopies& H, Kokkos::View<int*, CpMem> a) {
+  CpExec space;
+  const int nAll = nSlots + (H.nGroups > 0 ? H.nCopies : 0);
+  Kokkos::parallel_for(
+      "peclet::dem::activity_a", Kokkos::RangePolicy<CpExec>(space, 0, nAll),
+      KOKKOS_LAMBDA(int q) { a(q) = q < nSlots ? static_cast<int>(hit(q)) : 0; });
+  if (H.nGroups > 0) {
+    auto gs = H.groupStart;
+    auto gq = H.groupSlot;
+    auto ga = H.groupActive;
+    auto gk = H.groupK;
+    Kokkos::parallel_for(
+        "peclet::dem::activity_groups", Kokkos::RangePolicy<CpExec>(space, 0, H.nGroups),
+        KOKKOS_LAMBDA(int g) {
+          int n = 0;
+          for (int p = gs(g); p < gs(g + 1); ++p) {
+            const unsigned char h = hit(gq(p));
+            ga(p) = h;
+            n += h;
+          }
+          gk(g) = n > 0 ? n : 1;
+          a(gq(gs(g))) = n;
+        });
+  }
+  space.fence();
+}
+
+/// Solve views under rank-level M (§13.3, §4.5): invMassSolve / invInertiaSolve = k x the body's
+/// masses on every slot in [0, nSlots) (nSlots = slotBase + the phase's copies), with k the
+/// slot's global active copy count kRank (owner-computed, forwarded); a hub copy takes its base's
+/// k. splitSlot = (k > 1). k <= 1 keeps the true masses bit for bit.
+inline void buildSolveViewsRankKKokkos(Particles& P, const PhaseCopies& H, int nSlots,
+                                       Kokkos::View<const float*, CpMem> invMass,
+                                       Kokkos::View<const float* [3], CpMem> invInertia,
+                                       Kokkos::View<const int*, CpMem> kRank) {
+  CpExec space;
+  growCopyView(P.invMassSolve, static_cast<std::size_t>(nSlots), "peclet::dem::invMassSolve");
+  growCopyView(P.invInertiaSolve, static_cast<std::size_t>(nSlots), "peclet::dem::invInertiaSolve");
+  growCopyView(P.splitSlot, static_cast<std::size_t>(nSlots), "peclet::dem::splitSlot");
+  auto ims = P.invMassSolve;
+  auto iis = P.invInertiaSolve;
+  auto spl = P.splitSlot;
+  auto cb = H.copyBase;
+  const int base = H.slotBase;
+  const bool haveCopies = H.nCopies > 0;
+  Kokkos::parallel_for(
+      "peclet::dem::rankk_solve_views", Kokkos::RangePolicy<CpExec>(space, 0, nSlots),
+      KOKKOS_LAMBDA(int q) {
+        const int b = (haveCopies && q >= base) ? cb(q - base) : q;
+        const int k = kRank(b);
+        if (k > 1) {
+          const float kf = static_cast<float>(k);
+          ims(q) = kf * invMass(b);
+          for (int c = 0; c < 3; ++c)
+            iis(q, c) = kf * invInertia(b, c);
+          spl(q) = 1;
+        } else {
+          ims(q) = invMass(b);
+          for (int c = 0; c < 3; ++c)
+            iis(q, c) = invInertia(b, c);
+          spl(q) = 0;
+        }
+      });
+  space.fence();
+}
+
+/// The multilevel coarse vertex's inverse mass (§13.2): invMass(q) (k(q) / max(1, a(q))), the
+/// ratio computed first so that k = a gives invMass bit for bit.
+inline void buildInvMassCoarseKokkos(Kokkos::View<const float*, CpMem> invMass,
+                                     Kokkos::View<const int*, CpMem> k,
+                                     Kokkos::View<const int*, CpMem> a, int n,
+                                     Kokkos::View<float*, CpMem> out) {
+  Kokkos::parallel_for(
+      "peclet::dem::inv_mass_coarse", Kokkos::RangePolicy<CpExec>(0, n), KOKKOS_LAMBDA(int q) {
+        const int aq = a(q) > 1 ? a(q) : 1;
+        const float ratio = static_cast<float>(k(q)) / static_cast<float>(aq);
+        out(q) = invMass(q) * ratio;
+      });
+  Kokkos::fence();
+}
+
+/// Debug-build check (§13.2, §13.5 WO-5 item 4): the vertices with a = 0 that sit in a level-1
+/// multilevel group of >= 2 members (must be none: an inactive copy never joins a coarse edge).
+inline int countInactiveAggregatedKokkos(Kokkos::View<const int*, CpMem> parent, int off, int nV,
+                                         int nGroups1, Kokkos::View<const int*, CpMem> a) {
+  if (nV <= 0 || nGroups1 <= 0)
+    return 0;
+  Kokkos::View<int*, CpMem> cnt("peclet::dem::ml_inact_cnt", nGroups1);
+  Kokkos::parallel_for(
+      "peclet::dem::ml_inact_hist", Kokkos::RangePolicy<CpExec>(0, nV),
+      KOKKOS_LAMBDA(int v) { Kokkos::atomic_add(&cnt(parent(off + v)), 1); });
+  int n = 0;
+  Kokkos::parallel_reduce(
+      "peclet::dem::ml_inact_count", Kokkos::RangePolicy<CpExec>(0, nV),
+      KOKKOS_LAMBDA(int v, int& acc) {
+        if (a(v) == 0 && cnt(parent(off + v)) >= 2)
+          acc += 1;
+      },
+      n);
+  return n;
 }
 
 /// Count the bodies whose group has k > 1 (split_stats).

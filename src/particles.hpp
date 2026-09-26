@@ -59,11 +59,15 @@ struct PhaseCopies {
 /// body's slot) that sit in a level-1 multilevel group of >= 2 members, the max over the substeps
 /// of the last step call (§13.2's positive control). velItersUsed / posItersUsed: the iterations
 /// the last substep's main velocity loop and position loop ran (a device-side loop reports its
-/// count only with Particles::iterCounters on, §12 S12; -1 otherwise).
+/// count only with Particles::iterCounters on, §12 S12; -1 otherwise). orphanClamps (§13.3, the
+/// distributed step): the owner-apply clamp hits of the Poisson orphan balance (B_new < 0 before
+/// max(0, .)), summed over the substeps of the last step call; must stay 0 (the per-copy shares
+/// B / k bound every draw by the balance).
 struct SplitStats {
   int velHubCopies = 0, posHubCopies = 0, lightHubs = 0, splitBodiesVel = 0, splitBodiesPos = 0;
   long long unfiredSplitContacts = 0, driftMigrations = 0;
   int mlHubAggregated = 0, velItersUsed = 0, posItersUsed = 0;
+  int orphanClamps = 0;
 };
 
 struct Particles {
@@ -345,6 +349,12 @@ struct Particles {
   // of it, so the pass ends after ~one cycle instead of burning its full budget as an
   // over-convergence brake on discharge.
   Kokkos::View<float, CpMem> maxApproachQS;
+  // The largest consensus correction since the last stop vote (docs/contact_solve_framework.md
+  // §12 S14): |mean - copy| of any active copy at a local fold (velocity: velPred; position:
+  // posPred) or a rank-level M reconciliation, absolute like the phase's residual. A phase with
+  // copies folds it into its stop vote (the same Allreduce-MAX) and zeroes it after the read; a
+  // phase without copies never writes or reads it.
+  Kokkos::View<float, CpMem> maxConsensus;
 
   // --- static geometry ---
   Kokkos::View<ShapeDesc*, CpMem> shapes;
@@ -396,6 +406,18 @@ struct Particles {
   Kokkos::View<float* [3], CpMem> invInertiaSolve;
   Kokkos::View<unsigned char*, CpMem> splitSlot;
   Kokkos::View<int*, CpMem> vertexDegree;  // scratch: per colouring vertex, active edges
+  // Rank-level M (docs/contact_solve_framework.md §13.3; the distributed step only, recomputed
+  // every substep): per slot the local active copy counts aVel / aPos (the activity pass: 0 or 1
+  // at a vertex outside any group, the group's count at a hub base) and the global active copy
+  // counts kVel / kPos (owner: max(1, a(own) + sum of the ghosts' a), forwarded to the ghosts);
+  // activityHit the pass's per-slot scratch; invMassCoarse the multilevel coarse vertex's inverse
+  // mass invMass k / max(1, a) (§13.2). Grow-only.
+  Kokkos::View<int*, CpMem> aVel, aPos, kVel, kPos;
+  Kokkos::View<unsigned char*, CpMem> activityHit;
+  Kokkos::View<float*, CpMem> invMassCoarse;
+  // split_stats.orphanClamps, accumulated on the device by the owner apply (read by
+  // Simulation::debugSplitStats, reset by the step entry points; no fence in the step).
+  Kokkos::View<int, CpMem> orphanClampCount;
   Kokkos::View<float* [3], CpMem>
       imageShift;  // demStep: posPred(image) - posPred(real) at generation
   // The velocity incremental colouring carries colours by pair key; after a substep coloured
@@ -415,6 +437,10 @@ struct Particles {
   // its iteration count to iterCountDev(0) / (1), read back into splitStats.velItersUsed /
   // posItersUsed. Off (the default): nothing is written or read back, the counters read -1.
   bool iterCounters = false;
+  // TEST-ONLY (Simulation::debugNoAdaptiveStop; §12 S13): every adaptive stop of the contact solve
+  // is disabled, so each loop runs exactly its iteration cap (the votes still run: they are
+  // collective and carry the colouring invariant). Off (the default) changes nothing.
+  bool noAdaptiveStop = false;
   Kokkos::View<int*, CpMem> iterCountDev;
 
   // TEST-ONLY contact capture (Simulation::debugCaptureContacts; see DebugContactCapture).
@@ -546,6 +572,7 @@ struct Particles {
     maxOverlap = Kokkos::View<float, CpMem>("maxOverlap");
     maxApproach = Kokkos::View<float, CpMem>("maxApproach");
     maxApproachQS = Kokkos::View<float, CpMem>("maxApproachQS");
+    maxConsensus = Kokkos::View<float, CpMem>("maxConsensus");
     shapes = Kokkos::View<ShapeDesc*, CpMem>("shapes", nShapes > 0 ? nShapes : 1);
     shell = Kokkos::View<float* [3], CpMem>("shell", nShell > 0 ? nShell : 1);
     planes = Kokkos::View<PlaneP*, CpMem>("planes", nPlanes > 0 ? nPlanes : 1);

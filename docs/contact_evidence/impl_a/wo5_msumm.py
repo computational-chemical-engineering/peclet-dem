@@ -25,3 +25,11 @@ for (m,np_),d in S.items():
     if d['ctl']: x+=' ctl='+','.join(sorted(d['ctl']))
     x+=f" FAIL={d['fail']}" if d['fail'] else ''
     print(x)
+# §12 S18: ring_mini's overlap gate is relative -- np >= 2 ovl <= 3 x np 1 of the same build (hard).
+r1 = S.get(('ring_mini', 1))
+if r1:
+    for np_ in (2, 4, 8):
+        d = S.get(('ring_mini', np_))
+        if d:
+            q = d['ovl'] / r1['ovl']
+            print(f"ring_mini ovl np{np_}/np1 = {q:.2f} ({'ok' if q <= 3 else 'HARD-FAIL'}, S18: <= 3)")

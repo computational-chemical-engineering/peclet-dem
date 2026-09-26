@@ -110,7 +110,8 @@
 //                     fall, frictionless, stabilization multilevel, velocity iterations 1, 10
 //                     steps: dP <= 5e-6, dX, dXpos <= 3e-5, and the positive controls (velocity
 //                     hub copies > 0 at np = 1, >= 1 multilevel level, split_stats.mlHubAggregated
-//                     >= 1, each in at least one step) -- the coarse cycle at a folded hub
+//                     >= 1, each in at least one step; required at np 1 and 2 only, §12 S18)
+//                     -- the coarse cycle at a folded hub
 // Both print HUBGAP (maxGap / delta, residual / R), hub_ml also MLCTRL (the controls).
 // Options (after the mode): --dump=<path>, --dt=<dt>, --posit=<n> / --pos-iters=<n> (position
 // iterations),
@@ -122,7 +123,11 @@
 // loops on CUDA, whose ITERS come from the device counter of §12 S12),
 // --axis=<0|1|2> (tri: the approach axis), --relabel=<seed> (seed 0 = identity; otherwise the body
 // list is std::shuffle'd with std::mt19937(seed) before the gids are assigned, which samples
-// another serial Gauss-Seidel order of the same physical scene).
+// another serial Gauss-Seidel order of the same physical scene), --no-stop (every adaptive stop
+// of the contact solve off, so each loop runs exactly its cap: the convergence gates G7a / G7c,
+// §12 S13; Simulation::debugNoAdaptiveStop, test-only).
+// dLvel measures the velocity phase from the PREDICTED angular velocity (§12 S16): the predict's
+// explicit gyroscopic term is frame rotation, not a contact impulse.
 //
 // Output: parseable lines per run,
 //   MOMENTUM mode=.. np=.. thr=.. N=.. steps=.. dP=.. dX=.. dXpos=.. dL=.. dLcm=.. dLvel=.. ovl=..
@@ -135,6 +140,8 @@
 //            the step coloured -- the largest per-body-slot degree and the colour count, each the
 //            maximum over steps and ranks; leftVel / leftPos count the items the step left
 //            uncoloured (-1, the count-averaged fallback's set), maximum over steps and ranks
+//   ORPHAN mode=.. np=.. thr=.. orphanClamps=..   (Poisson modes) split_stats.orphanClamps summed
+//            over steps and ranks: the owner apply's orphan-balance clamp hits (GATE: must be 0)
 //   ITERS mode=.. np=.. thr=.. vel=.. pos=..   the iterations the LAST step's main velocity and
 //            position loops ran (split_stats velItersUsed / posItersUsed; G7f)
 // ovl is the maximum over the steps of the Allreduce-MAX of max_overlap (the position loop's last
@@ -687,6 +694,35 @@ static D3 spinOf(const State& orient, int i, const D3& w) {
 static D3 spin(const State& st, int i) {  // I w
   return spinOf(st, i, at(st.w, i));
 }
+// The angular velocity predictVelocityKokkos hands the velocity phase (no external torque in these
+// scenes): w + R [-dt invI (wb x I wb)] with wb = R^T w, in double. Isotropic or massless bodies
+// and bodies without inverse inertia keep w exactly (the kernel's own guards).
+static D3 predictedOmega(const State& st, int i, double dt) {
+  const D3 w = at(st.w, i);
+  const double i0 = st.invI[3 * i], i1 = st.invI[3 * i + 1], i2 = st.invI[3 * i + 2];
+  if (!(st.m[i] > 0) || !(i0 > 0 || i1 > 0 || i2 > 0) || (i0 == i1 && i1 == i2))
+    return w;
+  const double qx = st.q[4 * i], qy = st.q[4 * i + 1], qz = st.q[4 * i + 2], qw = st.q[4 * i + 3];
+  const double R[3][3] = {
+      {1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)},
+      {2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)},
+      {2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)}};
+  const double inv[3] = {i0, i1, i2};
+  double wb[3] = {0, 0, 0}, Lb[3];
+  for (int k = 0; k < 3; ++k)
+    for (int d = 0; d < 3; ++d)
+      wb[k] += R[d][k] * w[d];
+  for (int k = 0; k < 3; ++k)
+    Lb[k] = inv[k] > 1e-9 ? wb[k] / inv[k] : 0.0;
+  const double wxL[3] = {wb[1] * Lb[2] - wb[2] * Lb[1], wb[2] * Lb[0] - wb[0] * Lb[2],
+                         wb[0] * Lb[1] - wb[1] * Lb[0]};
+  for (int k = 0; k < 3; ++k)
+    wb[k] -= inv[k] * wxL[k] * dt;
+  D3 out{0, 0, 0};
+  for (int d = 0; d < 3; ++d)
+    out[d] = R[d][0] * wb[0] + R[d][1] * wb[1] + R[d][2] * wb[2];
+  return out;
+}
 
 // Global sums over owned bodies (host double, Allreduce).
 static Sums globalSums(const State& st) {
@@ -741,8 +777,13 @@ static D3 velocityPhaseTorque(const State& a, const State& b, const D3& g, doubl
       xp[d] = x[d] + (v0[d] + g[d] * dt) * dt - Xpred[d];
       dv[d] = v1[d] - v0[d] - g[d] * dt;
     }
-    // Both at the orientation the phase solves at (frozen in the velocity phase).
-    const D3 c = cross(xp, dv), s0 = spin(a, i), s1 = spinOf(a, i, at(b.w, i));
+    // Both at the orientation the phase solves at (frozen in the velocity phase). The baseline
+    // is the PREDICTED omega (docs/contact_solve_framework.md §12 S16): predictVelocityKokkos's
+    // explicit gyroscopic Euler term -dt invI (w x I w) (integration.hpp), replayed in double, is
+    // the free body's frame-rotation compensation, not a contact impulse, so it is not booked to
+    // the velocity phase. Isotropic inertia (spheres) has w x I w = 0: the baseline is w itself.
+    const D3 c = cross(xp, dv), s0 = spinOf(a, i, predictedOmega(a, i, dt)),
+             s1 = spinOf(a, i, at(b.w, i));
     for (int d = 0; d < 3; ++d)
       loc[d] += a.m[i] * c[d] + (s1[d] - s0[d]);
   }
@@ -773,8 +814,9 @@ struct Mode {
   bool tri = false, ring = false, poisson = false;
   bool hubStatic = false, hubMl = false;  // the WO-4b hub scenes (makeHubLast)
   bool reportOnly = false;                // the WO-0 modes: never fail today
-  std::string stab;   // stabilization mode set after the gravity rule's 'off' (empty = keep)
-  std::string fused;  // --fused=auto|on|off: diagnostics.set_fused_sweeps (empty = default)
+  std::string stab;     // stabilization mode set after the gravity rule's 'off' (empty = keep)
+  std::string fused;    // --fused=auto|on|off: diagnostics.set_fused_sweeps (empty = default)
+  bool noStop = false;  // --no-stop: every adaptive stop off, each loop runs its cap (§12 S13, G7)
 };
 
 // Gather every rank's owned bodies to rank 0 and write them sorted by global body index (see the
@@ -873,6 +915,8 @@ static int runCluster(const Mode& md, int rank, int size) {
   sim.setGravity(static_cast<float>(g[0]), static_cast<float>(g[1]), static_cast<float>(g[2]));
   sim.setSolverIterations(md.posIters, md.velIters);
   sim.debugIterationCounters(true);  // ITERS also from a device-side loop (§12 S12; no numerics)
+  if (md.noStop)
+    sim.debugNoAdaptiveStop(true);  // G7a / G7c run with N forced (§12 S13)
   if (!md.fused.empty())
     sim.setFusedSweeps(md.fused);  // bit-identical submission policy (CUDA); exercises S12
   sim.setMaterialParams(md.restitution, 0.0f, md.ring ? 0.02f : (md.friction ? 0.4f : 0.0f));
@@ -936,7 +980,7 @@ static int runCluster(const Mode& md, int rank, int size) {
   // ITERS: the iterations the last step's main velocity / position loops ran (split_stats; the
   // stops are Allreduce-MAXed, so every rank ran the same count); the positive controls of hub_ml
   // (§13.2): hub copies, multilevel levels, mlHubAggregated, each the max over steps and ranks.
-  int itVel = 0, itPos = 0, ctlLevels = 0, ctlAgg = 0;
+  int itVel = 0, itPos = 0, ctlLevels = 0, ctlAgg = 0, orphanClamps = 0;
   D3 xposAcc{0, 0, 0}, lvelAcc{0, 0, 0};
   // Periodic box: the CoM of wrapped positions jumps at a wrap, so the position-phase drift is
   // accumulated from each body's minimum-image displacement (fixed ownership, asserted below).
@@ -973,6 +1017,7 @@ static int runCluster(const Mode& md, int rank, int size) {
       itPos = ss.posItersUsed;
       ctlLevels = std::max(ctlLevels, sim.parts().mlLast.numLevels);
       ctlAgg = std::max(ctlAgg, ss.mlHubAggregated);
+      orphanClamps += ss.orphanClamps;  // this step call's clamp hits (§13.3)
     }
     if (md.friction &&
         !md.hertz) {  // friction-active body-body contacts (their |dist| = lever gap)
@@ -1089,6 +1134,18 @@ static int runCluster(const Mode& md, int rank, int size) {
           md.name.c_str(), size, thr, mx[0], mx[1], mx[2], mx[3], mx[4], mx[5], mx[6], mx[7], mx[8],
           mx[9], mx[10], mx[11]);
   }
+  if (md.poisson) {  // §13.3: the per-copy shares bound every draw by the balance
+    int clampsAll = 0;
+    MPI_Allreduce(&orphanClamps, &clampsAll, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    if (rank == 0)
+      std::printf("ORPHAN mode=%s np=%d thr=%d orphanClamps=%d\n", md.name.c_str(), size, thr,
+                  clampsAll);
+    if (clampsAll != 0) {
+      fail = 1;
+      if (rank == 0)
+        std::fprintf(stderr, "GATE: %s orphan balance clamped (overdraw)\n", md.name.c_str());
+    }
+  }
   if (!md.hertz) {
     int loc[4] = {itVel, itPos, ctlLevels, ctlAgg}, mx[4];
     MPI_Allreduce(loc, mx, 4, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
@@ -1101,8 +1158,11 @@ static int runCluster(const Mode& md, int rank, int size) {
       if (rank == 0)
         std::printf("MLCTRL mode=%s np=%d thr=%d velCopies=%d mlLevels=%d mlHubAggregated=%d\n",
                     md.name.c_str(), size, thr, cvMax, mx[2], mx[3]);
-      // The positive controls (§13.2): the mode fails if it does not test what it claims.
-      if ((size == 1 && cvMax <= 0) || mx[2] < 1 || mx[3] < 1) {
+      // The positive controls (§13.2): the mode fails if it does not test what it claims. They
+      // are required at np 1 and 2 only (§12 S18): at np 4 / 8 every rank sees the whole 181-body
+      // shell but owns too few eligible contacts for the matching to build a level, so there
+      // only conservation is gated.
+      if (size <= 2 && ((size == 1 && cvMax <= 0) || mx[2] < 1 || mx[3] < 1)) {
         fail = 1;
         if (rank == 0)
           std::fprintf(stderr, "GATE: hub_ml positive control failed\n");
@@ -1162,11 +1222,9 @@ static int runCluster(const Mode& md, int rank, int size) {
     if (rank == 0)
       std::fprintf(stderr, "GATE: %s exceeds its conservation thresholds\n", md.name.c_str());
   }
-  // hub_static / hub_ml are GATED at np = 1; at np >= 2 they stay report-only until WO-5 lands
-  // the rank-level mass split (docs/contact_solve_framework.md §13.5 WO-4b).
+  // hub_static / hub_ml are GATED at every np since WO-5 landed the rank-level mass split
+  // (docs/contact_solve_framework.md §13.5 WO-5 acceptance 3).
   const bool gatedHub = md.hubStatic || md.hubMl;
-  if (gatedHub && size > 1)
-    fail = 0;
   if (((hub && !gatedHub) || md.reportOnly) && !kFollowupGate)
     fail = 0;  // report-only (a non-finite state is printed above, not failed)
   return fail;
@@ -1359,6 +1417,8 @@ int main(int argc, char** argv) {
         stabFlag = argv[a] + 7;
       else if (std::strncmp(argv[a], "--fused=", 8) == 0)
         md.fused = argv[a] + 8;
+      else if (std::strcmp(argv[a], "--no-stop") == 0)
+        md.noStop = true;
     }
     if (md.axis < 0 || md.axis > 2) {
       if (rank == 0)

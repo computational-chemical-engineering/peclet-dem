@@ -889,6 +889,8 @@ class Simulation : public ShapeRegistry {
     const double rcut = mpiRcut_;  // demStepMpi widens it to the global contact reach
     ensureGlobalGids();
     P_.splitStats.mlHubAggregated = 0;  // split_stats: max over this call's substeps
+    if (P_.orphanClampCount.data() != nullptr)
+      Kokkos::deep_copy(P_.orphanClampCount, 0);  // split_stats.orphanClamps: this call's sum
     for (int s = 0; s < nsteps; ++s) {
       if (mpiRebalanceEvery_ > 0 && mpiStepCount_ % mpiRebalanceEvery_ == 0)
         halo_->rebalance(P_);
@@ -919,6 +921,10 @@ class Simulation : public ShapeRegistry {
   /// debugSplitStats() (velItersUsed / posItersUsed). Costs one readback per loop when on;
   /// never changes numerics.
   void debugIterationCounters(bool on) { P_.iterCounters = on; }
+  /// TEST-ONLY, C++ only (docs/contact_solve_framework.md §12 S13): disable every adaptive stop
+  /// of the contact solve, so each velocity / stabilization / position loop runs exactly its
+  /// iteration cap. The convergence gates G7a / G7c use it; off (the default) changes nothing.
+  void debugNoAdaptiveStop(bool on) { P_.noAdaptiveStop = on; }
   const DebugContactCapture& debugCapturedContacts() const { return P_.debugCaptured; }
 #endif  // PECLET_DEM_MPI
 
@@ -1092,7 +1098,12 @@ class Simulation : public ShapeRegistry {
   }
   // diagnostics.split_stats() (docs/contact_solve_framework.md §WO-4 item 4): the last substep's
   // body copies.
-  peclet::dem::SplitStats debugSplitStats() const { return P_.splitStats; }
+  peclet::dem::SplitStats debugSplitStats() const {
+    peclet::dem::SplitStats st = P_.splitStats;
+    if (P_.orphanClampCount.data() != nullptr)  // device counter (§13.3): read on demand only
+      Kokkos::deep_copy(st.orphanClamps, P_.orphanClampCount);
+    return st;
+  }
   float maxOverlap() {
     float h;
     Kokkos::deep_copy(h, P_.maxOverlap);

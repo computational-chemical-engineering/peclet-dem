@@ -62,6 +62,13 @@ struct MpiSolveHooks {
   void syncPositions(Particles& P) const { halo.syncPositions(P, forwardRotation); }
   void syncFrictionCounts(Particles& P) const { halo.syncFrictionCounts(P); }
   void syncContactCounts(Particles& P) const { halo.syncContactCounts(P); }
+  // Rank-level M (docs/contact_solve_framework.md §13.3).
+  RankK rankK() const { return RankK{halo.exchanges()}; }
+  void openVelocityPhase(Particles& P, bool poisson) const {
+    halo.openVelocityPhase(P, forwardRotation, poisson);
+  }
+  void openPositionCounts(Particles& P) const { halo.openPositionCounts(P); }
+  void restoreOrphanBalance(Particles& P) const { halo.restoreOrphanBalance(P); }
 };
 
 /// Largest particle radius over ALL ranks (growth included) -- the halo band and the contact
@@ -175,6 +182,11 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   //    materialId and the warm grounded level -- into the ghost slots; sets
   //    P.numParticles = numReal + numGhost and self-maps realIndices.
   halo.gather(P, band);
+  // The velocity-phase slot map (docs/contact_solve_framework.md §6.2): one velocity slot per body
+  // per rank -- a periodic self image maps to the owned slot, other images of one body to its
+  // lowest ghost slot. Here, not in gather (the Hertz engine shares gather). Positions stay per
+  // slot.
+  halo.mapVelocitySlots(P);
 
   fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
 

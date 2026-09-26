@@ -454,3 +454,56 @@ builds the same level and gives 2.6e-4 / 8.5e-5, so it is not the `k / a` rule. 
 **Also not in the note:** `ring_mini`'s G1 dLvel 1e-5 fails at every np and since WO-0 (1.5e-3 at
 np 1); WO-5 does not change it. `contacts` stays at 8b4a5f3; `build_ct` / `build_ct_cuda` hold the
 2dfdee4 binaries.
+
+## WO-5: committed with §12 S13 / S14 / S16 / S18
+
+The parked 2dfdee4 cherry-picked onto `contacts` (8b4a5f3 + note e58d7f1), then:
+- **S14 (the stop residual includes the consensus correction).** A device scalar
+  `Particles::maxConsensus` receives, by atomic max, the largest correction any consensus applies to
+  an ACTIVE copy: the local fold (`foldCopiesKokkos`, `|T/k - (x_q - sigma - shift)|`), the owner row
+  of an M sync (`|mean - own|` in increment form) and every active ghost copy after the forward
+  (`haloGhostConsensus`, `|(x_new - base) - inc/a|`). Velocity phase: `|dv|` of `velPred`
+  (the note's `|v_avg - v_copy|`, absolute like the phase's residual); position phase: `|dx|`.
+  Every loop of a phase with copies (main velocity, one-sided, multilevel, ordered, escalate,
+  position) folds it into its existing stop vote (`max(res, cons)`, the SAME Allreduce-MAX) and zeroes
+  it after the read; a sync's correction therefore enters the next iteration's vote. A phase without
+  copies neither reads nor writes it (np 1 without copies: byte-identical, below).
+- **S13 (G7 with the stops off).** C++-only `Simulation::debugNoAdaptiveStop(bool)`
+  (`Particles::noAdaptiveStop`; test flag `--no-stop`): every adaptive stop, the fused device loops'
+  tolerances included, is skipped; the votes still run (collective, colouring invariant). Not bound
+  to Python; no environment variable.
+- **S16.** `test_momentum_mpi`'s dLvel baseline is the predicted omega (`predictedOmega`: the
+  predict's gyroscopic Euler term replayed in double; isotropic bodies keep w exactly).
+- **S18.** `hub_ml`'s positive controls are required at np 1 and 2 only; ring_mini's and G7e's
+  overlap bounds are `<= 3 x np 1` of the same build (`wo5_msumm.py`, `wo5_g7_s13.py`).
+
+Raw: `impl_a/wo5f_*.txt`; scripts `wo5_matrix.sh`, `wo5_matrix_cuda.sh`, `wo5_g4.sh`,
+`wo5_dumps.sh`, `wo5_g7_s13.sh` / `.py` (G7a with `--axis=2`, which crosses the np 2 face). Host
+load 60-75 (48 cores).
+
+| check | gate | result |
+|---|---|---|
+| 1. G1 matrix np 1/2/4/8 x (OMP 1, OMP 8 x 3), 11 modes | §9 + §13.6 rows | dP <= 8.1e-7 (PGS family), 0 (position-only); dX, dXpos <= 6.7e-7 (clusters), <= 3.4e-6 (hubs), <= 5.5e-6 (ring); CONFLICTS 0; orphanClamps 0. Reported, not gated (S17): `cluster_multilevel` dLvel 1.6e-4 (np 4) / 6.8e-5 (np 8), `hub_ml` 3.0e-3 / 3.7e-3 (np 1 / 2). `ring_mini` dLvel 6.4e-4-9.2e-4: legacy friction's inertia, fixed by WO-5b |
+| 1. same, CUDA np 1 x 3 (step_mpi, `--solo`) | same | dP <= 7.8e-7, dXpos <= 8.4e-7, CONFLICTS 0; hub_static gap 0.058 delta; hub_ml controls L1 A1 |
+| 2. `ring_mini` np 2 / 4 / 8 | dP <= 1e-6, dXpos <= 1e-5 R, CONFLICTS 0, ovl <= 3 x np 1 (S18) | dP <= 3.5e-8, dXpos <= 5.5e-6, CONFLICTS 0; ovl ratio 0.99 / 0.95 / 1.16 |
+| 3. `hub_static` np 2 / 4 / 8 | gap <= 0.15 delta, residual <= 1e-4 R | gap 0.032 / 0.013 / 0.012 delta; residual 4.5e-5 / 6.2e-5 / 7.7e-5 R |
+| 3. `hub_ml` np 2 / 4 / 8 | controls at np <= 2 (S18), dP <= 5e-6 | np 2 L1 A5, dP 4.3e-7; np 4 / 8 (no level, conservation only) dP 2.5e-7 / 1.8e-7 |
+| 4. G3 np 1 OMP 1 vs a build of 8b4a5f3: 24 modes x (step_mpi, `--solo`), 5 S6 scenes, 4 piles | identical but named | **55 / 56 identical**; DIFF only `cluster_periodic` np 1 step_mpi (named): dP 2.71e-9 -> 5.08e-9, CoM drift 9.3e-7 -> 8.5e-7 R, ovl 2.90e-2 -> 6.24e-2, KE s1 2322.8 -> 2330.5, s50 664.7 -> 666.0 |
+| 5. G4 np 4 / 8, OMP 1, 5 runs | identical | 12 / 12 IDENT |
+| 6. G7a `tri_pgs --axis=2 --no-stop`, it 4/8/16/32/64 | non-increasing; <= 1e-3 at 16, <= 1e-5 at 64; KE_np2 <= KE_np1 | 3.5e-2 / 3.64e-3 / 6.29e-5 / 1.41e-7 / 1.41e-7; KE_np2 <= KE_np1 always. Pass |
+| 6. G7c `cluster_pgs --steps=1 --no-stop`, RMS vs np 1 same N, it 8/32/128/256 | non-increasing, <= 1e-3 at 256 (S13) | np 2: 1.3e-1 / 4.0e-2 / 7.8e-4 / 4.6e-5; np 4: 1.7e-1 / 6.3e-2 / 3.2e-3 / 1.0e-4; np 8: 2.2e-1 / 8.0e-2 / 3.6e-3 / 1.2e-4. Pass |
+| 6. G7e ovl, ratio to np 1 (2.70e-2 / 2.19e-2 / 2.06e-2) | <= 3 x np 1 (S18); ratio to the user with R-U4 | `cluster` 1.66 / 1.68 / 1.94; `cluster_pgs` 1.93 / 2.26 / 2.26; `cluster_friction` 2.03 / 2.53 / 2.54. Pass |
+| 6. G7f ITERS ratio, stops on with S14 (np 1: pos 96, vel 116) | np 2 <= 3.5, np 4 / 8 <= 5; report > 2.5 | pos 1.64 / 1.64 / 2.43; vel 1.29 / 1.74 / 1.75 (unchanged by S14, below) |
+| 7. orphanClamps, `cluster_poisson`, every np / OMP, CUDA | 0 | 0 |
+| 8. Stop-A tests, `validate_periodic` np 2 / 4 | pass | pass (battery) |
+| battery (`build_ct`, OMP 2, `-j1`, core Python on PYTHONPATH) | all pass | **201 / 201**; the 12 `python_mpi_*` ran |
+| 9. performance | median <= 1.10 | measured after WO-6 against 8b4a5f3 (brief), below |
+
+**S14 is inert in every gated scene (measured, not assumed).** With a throwaway print in the vote
+(a scratch build, not committed): `cluster_pgs` np 4 `--vel-iters=400` folds a non-zero consensus
+correction into 888 votes, always 0.3-0.6 x the sweep residual; at the stop (iteration 202) the
+residual is 4.16e-3 against the tolerance 0.02 vRest = 4e-3 and the consensus 1.25e-3. `hub` np 1:
+11 of 32 votes carry a fold correction, none above the residual. The consensus correction is
+dominated by the sweep's own corrections, so the stop iteration, G7f and every np 1 dump are
+unchanged (the note expected more iterations at interfaces). The mechanism is in place and
+collective-safe; its effect is nil where measured.

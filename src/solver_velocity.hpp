@@ -40,9 +40,12 @@ KOKKOS_INLINE_FUNCTION float genInvMass(F3 tau, F3 invIlocal, F4 q) {
 /// periodic pair (the solve's realA > realB dedup); a wall side counts nothing. Accumulates into
 /// `counts`, which the caller hands over zeroed (the apply clears it), exactly as the solve's own
 /// count did. Under MPI the caller then makes the counts global (syncContactCounts).
+/// dedupTwins (docs/contact_solve_framework.md §4.2 item 2, §6.2): the single-rank periodic twin
+/// rule (skip realIdx(A) > realIdx(B)); off under MPI, where ownership already excludes the
+/// non-owned twin and the velocity slot map would make the two rules disagree.
 inline void countVelocityJacobiKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
                                       int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
-                                      Kokkos::View<int*, CpMem> counts) {
+                                      Kokkos::View<int*, CpMem> counts, bool dedupTwins = true) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::count_velocity_jacobi", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -53,7 +56,7 @@ inline void countVelocityJacobiKokkos(Kokkos::View<const ManifoldC*, CpMem> mani
         const int realA = realIdx(m.bodyA);
         if (m.bodyB >= 0) {
           const int realB = realIdx(m.bodyB);
-          if (realA > realB)
+          if (dedupTwins && realA > realB)
             return;  // periodic dedup, as in solveVelocityKokkos
           Kokkos::atomic_add(&counts(realB), 1);
         }
@@ -78,7 +81,8 @@ inline void solveVelocityKokkos(
     Kokkos::View<int*, CpMem> velCounts, Kokkos::View<const int*, CpMem> onlyColor = {},
     int colorFilter = 0, Kokkos::View<const unsigned char*, CpMem> persistent = {},
     Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {},
-    Kokkos::View<const unsigned char*, CpMem> grounded = {}, bool massSplit = false) {
+    Kokkos::View<const unsigned char*, CpMem> grounded = {}, bool massSplit = false,
+    bool dedupTwins = true) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -98,7 +102,7 @@ inline void solveVelocityKokkos(
         int realB = idB;
         if (idB >= 0) {
           realB = realIdx(idB);
-          if (realA > realB)
+          if (dedupTwins && realA > realB)
             return;  // periodic dedup
         }
 
@@ -602,7 +606,8 @@ inline void computeVn0Kokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, in
                              Kokkos::View<const float* [3], CpMem> velPred,
                              Kokkos::View<const float* [3], CpMem> angVelPred,
                              Kokkos::View<const int*, CpMem> realIdx, float growthRate,
-                             Kokkos::View<float*, CpMem> vn0, Kokkos::View<float* [3], CpMem> vt0) {
+                             Kokkos::View<float*, CpMem> vn0, Kokkos::View<float* [3], CpMem> vt0,
+                             bool dedupTwins = true) {
   using detail::ld3;
   CpExec space;
   Kokkos::parallel_for(
@@ -613,7 +618,7 @@ inline void computeVn0Kokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, in
           return;
         const int idA = m.bodyA, idB = m.bodyB;
         const int realA = realIdx(idA);
-        if (idB >= 0 && realA > realIdx(idB))
+        if (dedupTwins && idB >= 0 && realA > realIdx(idB))
           return;  // periodic dedup
         const float invN = 1.0f / static_cast<float>(m.num_points);
         const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
@@ -675,7 +680,7 @@ inline void updateRestitutionBankKokkos(
     float growthRate, float restitutionNormal, float restVelThreshold,
     Kokkos::View<const float*, CpMem> vn0, Kokkos::View<const float*, CpMem> lambdaAcc,
     Kokkos::View<const float*, CpMem> restRel, Kokkos::View<float*, CpMem> restBank,
-    Kokkos::View<float*, CpMem> restVPeak) {
+    Kokkos::View<float*, CpMem> restVPeak, bool dedupTwins = true) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -688,7 +693,7 @@ inline void updateRestitutionBankKokkos(
         const int idA = m.bodyA, idB = m.bodyB;
         const int realA = realIdx(idA);
         const int realB = (idB >= 0) ? realIdx(idB) : idB;
-        if (idB >= 0 && realA > realB)
+        if (dedupTwins && idB >= 0 && realA > realB)
           return;  // periodic dedup: the canonical twin owns the bank
         const float invN = 1.0f / static_cast<float>(m.num_points);
         const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
@@ -895,7 +900,8 @@ inline void computeSideFlagsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
                                    Kokkos::View<const float* [3], CpMem> posPred,
                                    Kokkos::View<const float* [3], CpMem> velPred, F3 gHat,
                                    float riseThr, Kokkos::View<unsigned char*, CpMem> sideFlag,
-                                   Kokkos::View<const float*, CpMem> vn0, float approachThr) {
+                                   Kokkos::View<const float*, CpMem> vn0, float approachThr,
+                                   bool dedupTwins = true) {
   using detail::ld3;
   CpExec space;
   Kokkos::parallel_for(
@@ -914,7 +920,7 @@ inline void computeSideFlagsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
         if (Kokkos::fabs(vn0(idx)) > approachThr)
           return;
         const int realA = realIdx(m.bodyA), realB = realIdx(m.bodyB);
-        if (realA > realB)
+        if (dedupTwins && realA > realB)
           return;  // periodic dedup
         const F3 dx = sub3(ldF3(posPred, m.bodyA), ldF3(posPred, m.bodyB));
         const float up = -(dx.x * gHat.x + dx.y * gHat.y + dx.z * gHat.z);  // >0: A above B
@@ -929,12 +935,15 @@ inline void computeSideFlagsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
 }
 
 /// Apply the warm-start impulses up front (order-independent: fixed impulses, atomic adds).
-inline void warmStartApplyKokkos(
-    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
-    Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
-    Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<float* [3], CpMem> velPred,
-    Kokkos::View<float* [3], CpMem> angVelPred, Kokkos::View<const int*, CpMem> realIdx,
-    Kokkos::View<const float*, CpMem> warmP, Kokkos::View<float* [3], CpMem> warmT) {
+inline void warmStartApplyKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                                 Kokkos::View<const float*, CpMem> invMass,
+                                 Kokkos::View<const float* [3], CpMem> invInertia,
+                                 Kokkos::View<const float* [4], CpMem> quat,
+                                 Kokkos::View<float* [3], CpMem> velPred,
+                                 Kokkos::View<float* [3], CpMem> angVelPred,
+                                 Kokkos::View<const int*, CpMem> realIdx,
+                                 Kokkos::View<const float*, CpMem> warmP,
+                                 Kokkos::View<float* [3], CpMem> warmT, bool dedupTwins = true) {
   using detail::ld3;
   CpExec space;
   Kokkos::parallel_for(
@@ -951,7 +960,7 @@ inline void warmStartApplyKokkos(
         const int idA = m.bodyA, idB = m.bodyB;
         const int realA = realIdx(idA);
         const int realB = (idB >= 0) ? realIdx(idB) : idB;
-        if (idB >= 0 && realA > realB)
+        if (dedupTwins && idB >= 0 && realA > realB)
           return;  // periodic dedup (warmP is 0 for dups anyway)
         const float invN = 1.0f / static_cast<float>(m.num_points);
         const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};

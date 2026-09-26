@@ -46,8 +46,8 @@ inline void accumulateNormalImpulseKokkos(Kokkos::View<ContactC*, CpMem> contact
                                           Kokkos::View<const float* [3], CpMem> invInertia,
                                           Kokkos::View<const float* [3], CpMem> velPred,
                                           Kokkos::View<const float* [3], CpMem> angVelPred,
-                                          Kokkos::View<const int*, CpMem> realIdx,
-                                          float growthRate) {
+                                          Kokkos::View<const int*, CpMem> realIdx, float growthRate,
+                                          bool dedupTwins = true) {
   using detail::computeW;
   CpExec space;
   Kokkos::parallel_for(
@@ -75,8 +75,8 @@ inline void accumulateNormalImpulseKokkos(Kokkos::View<ContactC*, CpMem> contact
           return;
         }
         const int realA = realIdx(c.bodyA), realB = realIdx(c.bodyB);
-        if (realA > realB)
-          return;
+        if (dedupTwins && realA > realB)
+          return;  // periodic dedup (single rank; §4.2 item 2)
         const float invMA = invMass(realA), invMB = invMass(realB);
         const F3 invIA = ldF3(invInertia, realA), invIB = ldF3(invInertia, realB);
         F3 rA, rB;

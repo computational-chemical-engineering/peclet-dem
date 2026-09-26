@@ -223,6 +223,7 @@ NB_MODULE(_dem, m) {
             r["ml_hub_aggregated"] = st.mlHubAggregated;
             r["vel_iters_used"] = st.velItersUsed;
             r["pos_iters_used"] = st.posItersUsed;
+            r["orphan_clamps"] = st.orphanClamps;
             return r;
           },
           "Dict of the last substep's body copies (docs/contact_solve_framework.md §4.4): hub "
@@ -233,7 +234,8 @@ NB_MODULE(_dem, m) {
           "multilevel group (max over the last step call's substeps); vel_iters_used / "
           "pos_iters_used: iterations of the last substep's main velocity and position loops "
           "(-1: a device-side loop, whose count is read back only with the C++ diagnostics "
-          "switch debugIterationCounters).")
+          "switch debugIterationCounters); orphan_clamps: clamp hits of the distributed Poisson "
+          "orphan balance over the last step_mpi call (must stay 0).")
       .def(
           "rest_orphan_stats", [](Diagnostics& d) { return d.s->restOrphanStats(); },
           "Poisson-restitution instrument: (sum, max, n_bodies>0) of the per-body orphaned event "
