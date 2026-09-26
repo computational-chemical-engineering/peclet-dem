@@ -98,7 +98,7 @@ foreach(np 1 2 4 8)
   foreach(mode cluster cluster_friction cluster_pgs cluster_posonly hertz cluster_sync3
                cluster_norot cluster_periodic cluster_jacobi cluster_shear hertz_shear
                hub hub_pgs hub_posonly tri ring_mini cluster_poisson cluster_multilevel
-               cluster_escalate cluster_ordered cluster_e09 cluster_e10)
+               cluster_escalate cluster_ordered cluster_e09 cluster_e10 ring_collide)
     _dem_mpi_test(momentum_${mode}_np${np} ${np} test_momentum_mpi ${mode})
   endforeach()
 endforeach()
@@ -220,4 +220,21 @@ foreach(np 2 4 8)
                    ${_mpi_preflags} -- $<TARGET_FILE:test_momentum_mpi> ${np}
                    ${CMAKE_CURRENT_BINARY_DIR}/position_agreement_np${np})
   set_tests_properties(position_agreement_np${np} PROPERTIES PROCESSORS ${np} LABELS mpi)
+endforeach()
+# ring_collide (docs/contact_physics_followups.md §3.4, §6 G-B2, WO-B2): the overlap-free tube
+# scene. Conservation is gated with the momentum_* modes above; here its feasibility -- with the
+# stops on, the position loop converges below a 2000-iteration cap in EVERY step (the
+# tunnelled ring_mini runs to the cap), the committed overlap at the default 20 iterations stays
+# <= 5e-3 -- and the four-step np agreement of the position-only variant to 1e-4 R.
+_dem_mpi_test(ring_collide_converged_np1 1 test_momentum_mpi ring_collide --pos-iters=2000
+              --gate-pos-cap)
+_dem_mpi_test(ring_collide_overlap_np1 1 test_momentum_mpi ring_collide --gate-overlap=5e-3)
+foreach(np 2 4 8)
+  add_test(NAME position_agreement_ring_collide_np${np}
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/position_agreement.sh ${MPIEXEC_EXECUTABLE}
+                   ${_mpi_preflags} -- $<TARGET_FILE:test_momentum_mpi> ${np}
+                   ${CMAKE_CURRENT_BINARY_DIR}/position_agreement_ring_collide_np${np}
+                   ring_collide_posonly)
+  set_tests_properties(position_agreement_ring_collide_np${np} PROPERTIES PROCESSORS ${np}
+                       LABELS mpi)
 endforeach()

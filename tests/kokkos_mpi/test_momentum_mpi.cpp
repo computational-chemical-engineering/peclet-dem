@@ -103,7 +103,23 @@
 //                     through the shape registry) on a jittered 3 x 3 x 3 lattice at spacing 0.9
 //                     about the cluster centre, orientations uniformly random (mt19937(11)),
 //                     cluster-recipe velocities, g = 0, friction 0.02, pos/vel iterations 20/8,
-//                     dt 1e-2, 10 steps: per-point position-graph degrees far above 64
+//                     dt 1e-2, 10 steps: per-point position-graph degrees far above 64. A
+//                     CONSERVATION scene only: it starts tunnelled (85 of 106 contacting pairs
+//                     have a linearised overlap problem with no solution), so its ovl cannot
+//                     converge under any solver and is not a convergence metric
+//                     (docs/contact_physics_followups.md §3.2); the convergence gate is
+//                     ring_collide
+//   ring_collide      the same tubes on a jittered 3 x 3 x 3 lattice at spacing 1.5, orientations
+//                     REJECTION-SAMPLED so the scene starts overlap-free (mt19937(26): a
+//                     normalised 4-D Gaussian quaternion per body, up to 2000 draws; the host
+//                     oracle rejects any shell point of the new body inside a placed body's
+//                     analytic SDF or vice versa, genCylinderShell spacing 0.09), makeRingMini's
+//                     velocities, g = 0, friction 0.02, e 0.5, pos/vel iterations 20/8, dt 1e-2,
+//                     10 steps (docs/contact_physics_followups.md §3.4, WO-B2): GATES
+//                     conservation, and with --gate-pos-cap / --gate-overlap the feasibility
+//                     (G-B2)
+//   ring_collide_posonly   ring_collide with the velocity solve off, 4 steps: the np-agreement
+//                     scene of position_agreement.sh (--no-stop --pos-iters=2000)
 //
 // GATED hub modes of docs/contact_solve_framework.md §13 (WO-4b; np = 1 gated, np >= 2 report-only
 // until WO-5): makeHubLast -- the hub LAST (highest gid), mass scale^3 leaf masses.
@@ -127,6 +143,9 @@
 // --stab=<mode> (overrides the mode's stabilization: off|onesided|multilevel|escalate|ordered),
 // --fused=<auto|on|off> (diagnostics.set_fused_sweeps; 'on' with --solo runs the device-side
 // loops on CUDA, whose ITERS come from the device counter of §12 S12),
+// --gate-pos-cap (fail if the main position loop of any step ran its cap: with stops on and a
+// large --pos-iters, the feasibility gate of ring_collide, G-B2), --gate-overlap=<tol> (np 1:
+// fail if the committed overlap Simulation::computeOverlaps after any step exceeds tol),
 // --axis=<0|1|2> (tri: the approach axis), --relabel=<seed> (seed 0 = identity; otherwise the body
 // list is std::shuffle'd with std::mt19937(seed) before the gids are assigned, which samples
 // another serial Gauss-Seidel order of the same physical scene), --no-stop (every adaptive stop
@@ -149,8 +168,11 @@
 //            uncoloured (-1, the count-averaged fallback's set), maximum over steps and ranks
 //   ORPHAN mode=.. np=.. thr=.. orphanClamps=..   (Poisson modes) split_stats.orphanClamps summed
 //            over steps and ranks: the owner apply's orphan-balance clamp hits (GATE: must be 0)
-//   ITERS mode=.. np=.. thr=.. vel=.. pos=..   the iterations the LAST step's main velocity and
-//            position loops ran (split_stats velItersUsed / posItersUsed; G7f)
+//   ITERS mode=.. np=.. thr=.. vel=.. pos=.. posMax=.. posMed=..   the iterations the LAST
+//            step's main velocity and position loops ran (split_stats velItersUsed /
+//            posItersUsed; G7f), and the position loop's maximum and median over the steps
+//   OVERLAP mode=.. np=1 committed=..   (--gate-overlap) the largest committed overlap over the
+//            steps
 // ovl is the maximum over the steps of the Allreduce-MAX of max_overlap (the position loop's last
 // residual; it under-reports the committed overlap but is measured the same way before and after).
 // Angular momentum and rotational energy use the world-frame inertia R diag(1/invI) R^T of the
@@ -250,6 +272,8 @@ static Tol tolOf(const std::string& mode) {
     return {1e-6, 1e-5, 1e-5, -1, 1e-6};
   if (mode == "ring_mini")  // dP <= 3.5e-8, dXpos <= 5.5e-6 R, dLvel <= 4e-8 (after WO-5b)
     return {1e-6, 3e-5, 3e-5, -1, 1e-6};
+  if (mode == "ring_collide")  // docs/contact_physics_followups.md §6 G-B2
+    return {1e-6, -1, 3e-5, -1, 1e-6};
   if (mode == "hub_static")
     return {0.0, -1, 3e-5, -1, -1};
   if (mode == "hub_ml")
@@ -568,6 +592,74 @@ static std::vector<Body> makeRingMini() {
         nn = std::sqrt(nn);
         for (float& e : q.q)
           e /= nn;
+        b.push_back(q);
+      }
+  return b;
+}
+
+// ring_collide (docs/contact_physics_followups.md §3.4): makeRingMini's lattice at spacing 1.5,
+// its position jitter and velocities (same stream, same recipe), and orientations rejection-
+// sampled from std::mt19937(26) so that no tube starts inside another: a draw is rejected when
+// the host oracle finds a shell point of the new body inside a placed body's analytic SDF, or a
+// placed body's shell point inside the new body's (dist < 0). No fallback: 2000 failed draws
+// abort the setup.
+static constexpr float kRingCollideSpacing = 1.5f;
+static std::vector<Body> makeRingCollide() {
+  using peclet::dem::F3;
+  using peclet::dem::F4;
+  std::mt19937 rng(20260925u), qrng(26u);
+  std::uniform_real_distribution<float> uni(-1.0f, 1.0f);
+  std::normal_distribution<float> gauss(0.0f, 1.0f), qgauss(0.0f, 1.0f);
+  const D3 c{0.3, -0.2, 0.1};
+  const float drift[3] = {0.7f, -0.4f, 0.3f};
+  const double h = kRingCollideSpacing, rMax = h * std::sqrt(3.0);
+  const F4 params{0.5f * kRingD, kRingH, kRingWall, 0.0f};
+  const std::vector<F3> shell =
+      peclet::dem::genCylinderShell(0.5f * kRingD, kRingH, kRingWall, 0.09f);
+  auto toWorld = [](const Body& b, F3 s) {
+    const F3 r = peclet::dem::rotateVector(F4{b.q[0], b.q[1], b.q[2], b.q[3]}, s);
+    return F3{b.x[0] + r.x, b.x[1] + r.y, b.x[2] + r.z};
+  };
+  auto inside = [&](const Body& b, F3 p) {  // p (world) inside b's analytic SDF
+    const F3 d{p.x - b.x[0], p.y - b.x[1], p.z - b.x[2]};
+    const F3 local = peclet::dem::invRotateVector(F4{b.q[0], b.q[1], b.q[2], b.q[3]}, d);
+    return peclet::dem::sdfHollowCylinder(local, params) < 0.0f;
+  };
+  auto overlaps = [&](const Body& a, const Body& b) {  // either shell inside the other's SDF
+    for (const F3& s : shell)
+      if (inside(b, toWorld(a, s)) || inside(a, toWorld(b, s)))
+        return true;
+    return false;
+  };
+  std::vector<Body> b;
+  for (int k = -1; k <= 1; ++k)
+    for (int j = -1; j <= 1; ++j)
+      for (int i = -1; i <= 1; ++i) {
+        const D3 r{i * h, j * h, k * h};
+        Body q{};
+        for (int d = 0; d < 3; ++d) {
+          q.x[d] = static_cast<float>(c[d] + r[d] + 0.05 * kRingD * uni(rng));
+          q.v[d] = drift[d] + 1.5f * gauss(rng) - static_cast<float>(r[d] / rMax);
+        }
+        q.scale = 1.0f;
+        bool placed = false;
+        for (int draw = 0; draw < 2000 && !placed; ++draw) {
+          float nn = 0.0f;
+          for (float& e : q.q) {
+            e = qgauss(qrng);
+            nn += e * e;
+          }
+          nn = std::sqrt(nn);
+          for (float& e : q.q)
+            e /= nn;
+          placed = std::none_of(b.begin(), b.end(), [&](const Body& o) { return overlaps(q, o); });
+        }
+        if (!placed) {
+          std::fprintf(stderr,
+                       "ring_collide: no overlap-free orientation for body %zu in 2000 draws\n",
+                       b.size());
+          MPI_Abort(MPI_COMM_WORLD, 2);
+        }
         b.push_back(q);
       }
   return b;
@@ -920,6 +1012,10 @@ struct Mode {
   int axis = 0;              // --axis (tri)
   unsigned relabel = 0;      // --relabel: 0 = identity
   bool tri = false, ring = false, poisson = false;
+  bool ringCollide = false;   // ring (tube shape) on the overlap-free ring_collide scene
+  bool ringPosOnly = false;   // ring_collide_posonly: velocity solve off, 4 steps
+  bool gatePosCap = false;    // --gate-pos-cap: fail if a step's main position loop ran its cap
+  float gateOverlap = -1.0f;  // --gate-overlap=<tol>: np 1, committed overlap after every step
   bool hubStatic = false, hubMl = false;  // the WO-4b hub scenes (makeHubLast)
   bool shear = false;       // WO-7: v_x += kShearRate z (bodies drift out of their owners' blocks)
   bool reportOnly = false;  // the WO-0 modes: never fail today
@@ -1021,6 +1117,7 @@ static void dumpState(const ProbeSim& sim, const std::unordered_map<int, int>& s
 static int runCluster(const Mode& md, int rank, int size) {
   const bool hub = md.hubScale > 0.0f;
   std::vector<Body> bodies = md.tri                       ? makeTri(md.axis)
+                             : md.ringCollide             ? makeRingCollide()
                              : md.ring                    ? makeRingMini()
                              : (md.hubStatic || md.hubMl) ? makeHubLast(md.hubScale, md.hubMl)
                              : hub                        ? makeHub(md.hubScale)
@@ -1038,11 +1135,12 @@ static int runCluster(const Mode& md, int rank, int size) {
   const int n = static_cast<int>(bodies.size());
   const float dt0 = md.hertz ? 1e-4f : 1e-2f;
   const float dt = md.dt > 0.0f ? md.dt : dt0;
-  const int steps0 = md.shear       ? 200
-                     : md.hertz     ? 40
-                     : md.hubStatic ? 1
-                     : md.hubMl     ? 10
-                                    : (hub ? 20 : (md.tri ? 3 : (md.ring ? 10 : 50)));
+  const int steps0 = md.shear         ? 200
+                     : md.hertz       ? 40
+                     : md.hubStatic   ? 1
+                     : md.hubMl       ? 10
+                     : md.ringPosOnly ? 4
+                                      : (hub ? 20 : (md.tri ? 3 : (md.ring ? 10 : 50)));
   const int steps =
       md.steps > 0 ? md.steps : static_cast<int>(std::lround(steps0 * dt0 / dt));  // same duration
   const int sub = md.hertz ? 25 : 1;  // Hertz: substeps per recorded step
@@ -1154,6 +1252,8 @@ static int runCluster(const Mode& md, int rank, int size) {
   // stops are Allreduce-MAXed, so every rank ran the same count); the positive controls of hub_ml
   // (§13.2): hub copies, multilevel levels, mlHubAggregated, each the max over steps and ranks.
   int itVel = 0, itPos = 0, ctlLevels = 0, ctlAgg = 0, orphanClamps = 0;
+  std::vector<int> itPosSteps;    // every step's main position-loop iterations (max over ranks)
+  double committedOverlap = 0.0;  // --gate-overlap: max over steps of computeOverlaps (np 1)
   D3 xposAcc{0, 0, 0}, lvelAcc{0, 0, 0};
   // Periodic box: the CoM of wrapped positions jumps at a wrap, so the position-phase drift is
   // accumulated from each body's minimum-image displacement (fixed ownership, asserted below).
@@ -1187,6 +1287,7 @@ static int runCluster(const Mode& md, int rank, int size) {
       const peclet::dem::SplitStats ss = sim.debugSplitStats();
       itVel = ss.velItersUsed;
       itPos = ss.posItersUsed;
+      itPosSteps.push_back(ss.posItersUsed);
       ctlLevels = std::max(ctlLevels, sim.parts().mlLast.numLevels);
       ctlAgg = std::max(ctlAgg, ss.mlHubAggregated);
       orphanClamps += ss.orphanClamps;  // this step call's clamp hits (§13.3)
@@ -1215,6 +1316,10 @@ static int runCluster(const Mode& md, int rank, int size) {
       MPI_Allreduce(&o, &og, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
       ovl = std::max(ovl, static_cast<double>(og));
     }
+    // The committed overlap re-measures the committed state with a single-rank probe (no ghosts),
+    // so it is taken at np 1 only.
+    if (md.gateOverlap >= 0.0f && size == 1)
+      committedOverlap = std::max(committedOverlap, static_cast<double>(sim.computeOverlaps()));
     const State nx = readState(sim);
     // Ownership is NOT fixed since WO-7 (the drift vote migrates bodies inside a step): every
     // per-body comparison across a step pairs the two states by gid (velocityPhaseTorque,
@@ -1306,9 +1411,29 @@ static int runCluster(const Mode& md, int rank, int size) {
     MPI_Allreduce(loc, mx, 4, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
     int cv = cd.copiesVel, cvMax = 0;
     MPI_Allreduce(&cv, &cvMax, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    // Per step, the stops are Allreduce-MAXed, so every rank ran the same count; MAX anyway.
+    std::vector<int> ps(itPosSteps.size());
+    if (!itPosSteps.empty())
+      MPI_Allreduce(itPosSteps.data(), ps.data(), static_cast<int>(ps.size()), MPI_INT, MPI_MAX,
+                    MPI_COMM_WORLD);
+    const int posMax = ps.empty() ? 0 : *std::max_element(ps.begin(), ps.end());
+    std::vector<int> sorted = ps;
+    std::sort(sorted.begin(), sorted.end());
+    const std::size_t ns = sorted.size();
+    const double posMed = ns == 0       ? 0.0
+                          : ns % 2 == 1 ? sorted[ns / 2]
+                                        : 0.5 * (sorted[ns / 2 - 1] + sorted[ns / 2]);
     if (rank == 0)
-      std::printf("ITERS mode=%s np=%d thr=%d vel=%d pos=%d\n", md.name.c_str(), size, thr, mx[0],
-                  mx[1]);
+      std::printf("ITERS mode=%s np=%d thr=%d vel=%d pos=%d posMax=%d posMed=%.1f\n",
+                  md.name.c_str(), size, thr, mx[0], mx[1], posMax, posMed);
+    // G-B2 feasibility (docs/contact_physics_followups.md §6): with the stops on, a feasible
+    // overlap problem converges below its cap in EVERY step; ring_mini (tunnelled) runs to it.
+    if (md.gatePosCap && posMax >= md.posIters) {
+      fail = 1;
+      if (rank == 0)
+        std::fprintf(stderr, "GATE: %s position loop ran its cap %d (posMax %d)\n", md.name.c_str(),
+                     md.posIters, posMax);
+    }
     if (md.hubMl) {
       if (rank == 0)
         std::printf("MLCTRL mode=%s np=%d thr=%d velCopies=%d mlLevels=%d mlHubAggregated=%d\n",
@@ -1322,6 +1447,17 @@ static int runCluster(const Mode& md, int rank, int size) {
         if (rank == 0)
           std::fprintf(stderr, "GATE: hub_ml positive control failed\n");
       }
+    }
+  }
+  if (md.gateOverlap >= 0.0f && size == 1) {
+    if (rank == 0)
+      std::printf("OVERLAP mode=%s np=%d committed=%.3e (gate %.1e)\n", md.name.c_str(), size,
+                  committedOverlap, static_cast<double>(md.gateOverlap));
+    if (!(committedOverlap <= md.gateOverlap)) {
+      fail = 1;
+      if (rank == 0)
+        std::fprintf(stderr, "GATE: %s committed overlap %.3e > %.1e\n", md.name.c_str(),
+                     committedOverlap, static_cast<double>(md.gateOverlap));
     }
   }
   if (md.hubStatic || md.hubMl) {
@@ -1625,6 +1761,10 @@ int main(int argc, char** argv) {
         md.noStop = true;
       else if (std::strncmp(argv[a], "--rest-target=", 14) == 0)
         md.restTarget = argv[a] + 14;
+      else if (std::strcmp(argv[a], "--gate-pos-cap") == 0)
+        md.gatePosCap = true;
+      else if (std::strncmp(argv[a], "--gate-overlap=", 15) == 0)
+        md.gateOverlap = std::stof(argv[a] + 15);
     }
     if (md.axis < 0 || md.axis > 2) {
       if (rank == 0)
@@ -1694,6 +1834,11 @@ int main(int argc, char** argv) {
       md.gravity = true;
     } else if (mode == "ring_mini") {
       md.ring = true;
+    } else if (mode == "ring_collide") {
+      md.ring = md.ringCollide = true;
+    } else if (mode == "ring_collide_posonly") {
+      md.ring = md.ringCollide = md.ringPosOnly = true;
+      md.velIters = 0;
     } else if (mode == "hub_static") {  // §13.6: g = 0, velocity solve off, 64 position iterations
       if (md.hubScale <= 0.0f)
         md.hubScale = 10.0f;
@@ -1732,7 +1877,8 @@ int main(int argc, char** argv) {
     else if (mode == "tri" || mode == "tri_pgs" || mode == "cluster_e09" || mode == "cluster_e10" ||
              mode == "cluster_poisson" || mode == "cluster_multilevel" ||
              mode == "cluster_escalate" || mode == "cluster_ordered" ||
-             mode == "cluster_onesided" || mode == "ring_mini")
+             mode == "cluster_onesided" || mode == "ring_mini" || mode == "ring_collide" ||
+             mode == "ring_collide_posonly")
       fail = runCluster(md, rank, size);
     else if (mode == "cluster" || mode == "cluster_friction" || mode == "cluster_pgs" ||
              mode == "cluster_pgs_e" || mode == "cluster_posonly" || mode == "hertz" ||

@@ -3,13 +3,19 @@
 # retractable position projection has a unique fixed point, so the converged positions of one
 # overlap-only substep agree across rank counts: max |x_npN - x_np1| <= 1e-4 R.
 # usage: position_agreement.sh <mpiexec> <preflags...> -- <test_momentum_mpi> <np> <outdir>
+#                              [<mode> [<mode arguments...>]]
+# The mode defaults to cluster_posonly --steps=1 (WO-12). ring_collide_posonly (4 steps of the
+# overlap-free tube scene, docs/contact_physics_followups.md §3.4 / G-B2) extends the claim to
+# multi-point units over several steps: per-step uniqueness plus Lipschitz propagation (R-B8).
 MPI=$1; shift
 PRE=()
 while [ "$1" != "--" ]; do PRE+=("$1"); shift; done
 shift
 BIN=$1; NP=$2; OUT=$3
+shift 3
+if [ $# -eq 0 ]; then set -- cluster_posonly --steps=1; fi
 mkdir -p "$OUT"
-ARGS=(cluster_posonly --steps=1 --no-stop --pos-iters=2000)
+ARGS=("$@" --no-stop --pos-iters=2000)
 "$MPI" -np 1 "${PRE[@]}" "$BIN" "${ARGS[@]}" --dump="$OUT/np1.dump" > "$OUT/np1.log" 2>&1 || exit 1
 "$MPI" -np "$NP" "${PRE[@]}" "$BIN" "${ARGS[@]}" --dump="$OUT/np$NP.dump" > "$OUT/np$NP.log" 2>&1 || exit 1
 python3 - "$OUT/np1.dump" "$OUT/np$NP.dump" <<'PY'
