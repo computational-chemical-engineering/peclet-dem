@@ -26,7 +26,7 @@ from _mpi_common import SKIP, script_main, skip_unless_mpi  # noqa: E402
 if SKIP is None:
     from mpi4py import MPI
     from peclet import dem
-    from peclet.core import mpi as core_mpi
+    from peclet import halo
 
 # M = sync_every (1 = EXACT), R = forward_rotation (1 = forward ghost quaternions). Defaults = EXACT.
 SYNC_EVERY = int(os.environ.get("M", "1"))
@@ -74,8 +74,8 @@ def test_exact_step_matches_serial():
         ref_pos = np.array(ref.get_positions())
 
     # --- distributed: round-robin ownership, migrate + distributed step each step ---
-    mig = core_mpi.ParticleMigrator(origin=dmin, extent=L, cells=[16, 16, 16],
-                                    periodic=[False, False, False])
+    mig = halo.ParticleMigrator(origin=dmin, extent=L, cells=[16, 16, 16],
+                                periodic=[False, False, False])
     mine = np.arange(rank, N, size)
     pos = g_pos[mine].copy()
     vel = g_vel[mine].copy()

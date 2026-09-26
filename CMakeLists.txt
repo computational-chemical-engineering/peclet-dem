@@ -109,6 +109,7 @@ target_link_libraries(dem PRIVATE ArborX::ArborX Kokkos::kokkos)
 
 if(PECLET_DEM_MPI)
   find_package(MPI REQUIRED COMPONENTS CXX)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PecletDemPinMpiexec.cmake)
   target_compile_definitions(dem PRIVATE PECLET_DEM_MPI=1)
   target_link_libraries(dem PRIVATE MPI::MPI_CXX)
   message(STATUS "dem: distributed step ENABLED (MPI)")
@@ -130,7 +131,7 @@ if(PECLET_DEM_BUILD_TESTS)
     add_subdirectory(tests/kokkos_mpi)  # distributed step / migration / rebalance, np = 1, 2, 4 (24)
   endif()
   # Python tests (pytest functions under tests/python) against the module built in this tree. The
-  # MPI-only files under tests/python/mpi skip themselves unless mpi4py + peclet.core.mpi are
+  # MPI-only files under tests/python/mpi skip themselves unless mpi4py + peclet.halo are
   # importable; under PECLET_DEM_MPI they are additionally launched through mpirun at np = 1, 2, 4
   # (each returns 77 = ctest SKIP when the Python MPI stack is missing, never a silent pass).
   add_test(NAME python_tests

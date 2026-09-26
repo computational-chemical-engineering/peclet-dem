@@ -73,7 +73,7 @@ OMP_NUM_THREADS=2 OMP_PROC_BIND=false PYTHONPATH=<core-python-build> \
 | `tests/arborx` | ArborX broad-phase vs an O(N^2) oracle + the full single-rank pipeline | 2 |
 | `tests/kokkos_mpi` (needs `PECLET_DEM_MPI`) | distributed step (XPBD + Hertz engines, closed + periodic, mid-run rebalance) / migration / rebalance vs single-rank, and the collective schedule under rank-divergent layouts (`halo_schedule_*`: one-sided halo, divergent Verlet-skin rebuild, skin reuse across a reordering migration or with empty ranks; a hang = TIMEOUT 120 s) and the ghost band (`ghost_band_*`: a cross-face pair just inside the contact reach vs `MPI_COMM_SELF`), np=1,2,4, and `migrate_to_weights(w, align)` vs flow's aligned partition (`align_*`, np=1,2,4,8); label `mpi` | 55 |
 | `tests/python` | `python_tests` = `pytest tests/python` on the module in the build tree: Hertz + non-spherical Hertz, cone friction (Walton), pair materials, coloured GS (binary exactness, conservation, Enskog cooling, colouring invariant), statics battery, bounce, restitution, SDF particles, hollow-cylinder overlap, growth packing, rotating drum, periodic wrap symmetry; label `python` | 1 |
-| `tests/python/mpi` (needs `PECLET_DEM_MPI`) | `python_mpi_<name>_np{1,2,4}`: exact step vs serial, periodic wrap, cross-rank observables, MPI rotating drum — launched through `mpirun`, on core's `peclet.core.mpi` + mpi4py (put a built `core/python` tree on `PYTHONPATH`; exit 77 = ctest SKIP when that stack is missing); labels `python;mpi` | 12 |
+| `tests/python/mpi` (needs `PECLET_DEM_MPI`) | `python_mpi_<name>_np{1,2,4}`: exact step vs serial, periodic wrap, cross-rank observables, MPI rotating drum — launched through `mpirun`, on core's `peclet.halo` + mpi4py (put a built `core/python` tree on `PYTHONPATH`; exit 77 = ctest SKIP when that stack is missing); labels `python;mpi` | 12 |
 
 Each `tests/<suite>/CMakeLists.txt` still configures standalone (`cmake -S tests/kokkos -B build_kokkos
 -DCMAKE_PREFIX_PATH=... [-DPECLET_CORE_DIR=<suite>/core]`) for a quick single-suite loop. `-DMPIEXEC_PREFLAGS=--oversubscribe`
@@ -272,7 +272,7 @@ were never read by any version of the code (they survived only in comments);
 
 `ci.yml`: `single-rank` (host OpenMP, `OMP_NUM_THREADS=2`, `ctest -LE bench` over kokkos + arborx +
 python, then a configure + one-TU compile against the DEFAULT `PECLET_CORE_TAG` as the stale-pin
-check) and `mpi` (core as the sibling checkout, `peclet.core.mpi` built, `-L mpi` at np=1,2,4
+check) and `mpi` (core as the sibling checkout, `peclet.halo` built, `-L mpi` at np=1,2,4
 oversubscribed, `OMP_NUM_THREADS=1`). `quality.yml`: ruff critical errors + a BLOCKING clang-format
 over `src/` and `tests/` (`.clang-format`; `.clang-tidy` is voro's, informational). Pinned inputs:
 Kokkos 5.1.1 / ArborX v2.1 (cached), nanobind 2.13.0. Watch a push with

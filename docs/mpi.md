@@ -163,7 +163,7 @@ oracle, G6 race-freedom):
   cmake --build build_dev -j && OMP_NUM_THREADS=1 ctest --test-dir build_dev -L mpi --output-on-failure
   ```
   (`tests/kokkos_mpi` also still configures standalone.)
-- `tests/python/mpi/` — the Python drivers on core's `peclet.core.mpi` + mpi4py, registered as the
+- `tests/python/mpi/` — the Python drivers on core's `peclet.halo` + mpi4py, registered as the
   `python_mpi_*_np{1,2,4}` ctests (exit 77 = SKIP when that stack is missing): `test_validate_exact`
   (per-particle vs serial), `test_validate_periodic` (wrap through the split axes: 2-body, corner,
   N-body with resting straddlers), `test_verify_distributed` (elastic energy + settling-pack

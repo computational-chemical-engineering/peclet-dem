@@ -9,7 +9,7 @@ name: CI
 #                   pin) so an unfetchable or header-stale pin fails here, not in the release sdist build.
 #   * mpi         : the same tree with -DPECLET_DEM_MPI=ON, core as the SIBLING checkout (the other
 #                   PecletDeps path): the 24 tests/kokkos_mpi ctests + the 12 mpirun-launched Python
-#                   MPI tests (tests/python/mpi, on core's peclet.core.mpi + mpi4py) at np = 1, 2 and 4
+#                   MPI tests (tests/python/mpi, on core's peclet.halo + mpi4py) at np = 1, 2 and 4
 #                   (np = 4 oversubscribed on the 4-core runner). Missing pieces SKIP (exit 77), never pass.
 # The hosted runners have 4 cores / 16 GB: every job bounds the OpenMP pool (OMP_NUM_THREADS) and runs
 # ctest -j1 — an unbounded pool starved the runner ("The hosted runner lost communication").
@@ -109,7 +109,7 @@ jobs:
         with:
           path: dem
 
-      - name: Checkout core (sibling; the header source AND peclet.core.mpi for the Python MPI tests)
+      - name: Checkout core (sibling; the header source AND peclet.halo for the Python MPI tests)
         uses: actions/checkout@v7
         with:
           repository: computational-chemical-engineering/peclet-core
@@ -148,12 +148,12 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_INSTALL_PREFIX="$PREFIX"
           cmake --install /tmp/arborx/build
 
-      - name: Build peclet.core.mpi (core/python, host)
+      - name: Build peclet.halo (core/python, host)
         working-directory: core
         run: |
           cmake -S python -B python/build -G Ninja -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/deps-install"
-          cmake --build python/build -j --target mpi_bindings
-          PYTHONPATH=$PWD/python/build python3 -c "from peclet.core import mpi; print('peclet.core.mpi OK')"
+          cmake --build python/build -j --target halo_bindings
+          PYTHONPATH=$PWD/python/build python3 -c "from peclet import halo; print('peclet.halo OK')"
 
       - name: Configure + build (module + all tests, PECLET_DEM_MPI, sibling core)
         working-directory: dem

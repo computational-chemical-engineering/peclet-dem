@@ -25,7 +25,7 @@ from _mpi_common import SKIP, script_main, skip_unless_mpi  # noqa: E402
 if SKIP is None:
     from mpi4py import MPI
     from peclet import dem
-    from peclet.core import mpi as core_mpi
+    from peclet import halo
     from peclet.dem import build_wall_sdf
 
 cx, cy, R, Lz = 20.0, 20.0, 15.0, 8.0
@@ -90,7 +90,7 @@ def test_rotating_drum_mpi():
 
     # --- distribute grains by ORB ownership, spin under step_mpi ---
     extent = (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
-    mig = core_mpi.ParticleMigrator(origin=lo, extent=extent, cells=gsize, periodic=periodic)
+    mig = halo.ParticleMigrator(origin=lo, extent=extent, cells=gsize, periodic=periodic)
     mine = np.where(np.array([mig.owner_of(tuple(x)) for x in packed]) == rank)[0]
     p = np.zeros((len(mine), 4), np.float32)
     p[:, :3] = packed[mine]

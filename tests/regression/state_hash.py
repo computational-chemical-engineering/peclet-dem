@@ -3,7 +3,7 @@
 One case per public entry path of ``peclet.dem`` (QUALITY_PLAN §3.G): XPBD ``step`` with island
 sleeping on and off (periodic box with wrap contacts, a floor plane, gravity, friction), ``relax``,
 ``step_hertz`` (Hertz-Mindlin with Mindlin history against an SDF floor), a non-spherical grid-SDF
-shape, and -- when mpi4py + ``peclet.core.mpi`` are importable -- ``step_mpi`` and
+shape, and -- when mpi4py + ``peclet.halo`` are importable -- ``step_mpi`` and
 ``step_hertz_mpi`` at np=1 and np=2 (launched through ``mpirun``, the state gathered to rank 0 and
 sorted by the carried particle id). Every hash is over the contiguous float64 bytes of the final
 positions, velocities and quaternions.
@@ -185,9 +185,9 @@ def case_sdf_shape():
 # ---- MPI cases (run inside `mpirun -np N python state_hash.py --mpi-case NAME`) -----------------
 
 def _mpi_distribute(comm, g_pos, g_vel, periodic):
-    from peclet.core import mpi as core_mpi
-    mig = core_mpi.ParticleMigrator(origin=[0.0] * 3, extent=[L] * 3, cells=[16] * 3,
-                                    periodic=list(periodic))
+    from peclet import halo
+    mig = halo.ParticleMigrator(origin=[0.0] * 3, extent=[L] * 3, cells=[16] * 3,
+                                periodic=list(periodic))
     own = np.array([mig.owner_of(tuple(p)) for p in g_pos])
     mine = np.where(own == comm.rank)[0]
     assert mine.size > 0, f"rank {comm.rank} owns no particles"
@@ -289,7 +289,7 @@ def _mpi_available():
     try:
         import mpi4py  # noqa: F401
         from peclet import dem
-        from peclet.core import mpi as core_mpi  # noqa: F401
+        from peclet import halo  # noqa: F401
         return hasattr(dem.Simulation, "init_mpi")
     except ImportError:
         return False
@@ -343,7 +343,7 @@ def main():
                     hashes[key], n = run_mpi_case(name, np_, outdir, args.mpirun)
                     print(f"{key:22s} n={n:5d}  {hashes[key]}")
         else:
-            print("mpi cases skipped: mpi4py + peclet.core.mpi + a PECLET_DEM_MPI build needed")
+            print("mpi cases skipped: mpi4py + peclet.halo + a PECLET_DEM_MPI build needed")
 
     if args.check:
         with open(os.path.join(outdir, "hashes.json")) as f:

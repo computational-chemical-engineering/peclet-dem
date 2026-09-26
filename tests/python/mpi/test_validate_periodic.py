@@ -23,7 +23,7 @@ from _mpi_common import SKIP, script_main, skip_unless_mpi  # noqa: E402
 if SKIP is None:
     from mpi4py import MPI
     from peclet import dem
-    from peclet.core import mpi as core_mpi
+    from peclet import halo
 
 dmin = [0.0, 0.0, 0.0]
 L = [8.0, 8.0, 8.0]
@@ -39,7 +39,7 @@ class Setup:
     def __init__(self):
         self.comm = MPI.COMM_WORLD
         self.rank, self.size = self.comm.rank, self.comm.size
-        m = core_mpi.ParticleMigrator(origin=dmin, extent=L, cells=gs, periodic=[True, True, True])
+        m = halo.ParticleMigrator(origin=dmin, extent=L, cells=gs, periodic=[True, True, True])
         self.split = []
         for ax in range(3):
             lo = [4.0, 4.0, 4.0]; lo[ax] = 1.0
@@ -100,7 +100,7 @@ class Setup:
             for _ in range(nsteps):
                 s.step()
             ref = np.array(s.get_positions())
-        mig = core_mpi.ParticleMigrator(origin=dmin, extent=L, cells=gs, periodic=list(self.periodic))
+        mig = halo.ParticleMigrator(origin=dmin, extent=L, cells=gs, periodic=list(self.periodic))
         ids = np.arange(g_pos.shape[0])
         own = np.array([mig.owner_of(tuple(p)) for p in g_pos])
         mine = np.where(own == self.rank)[0]

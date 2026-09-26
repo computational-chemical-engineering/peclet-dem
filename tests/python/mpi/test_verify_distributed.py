@@ -25,7 +25,7 @@ from _mpi_common import SKIP, script_main, skip_unless_mpi  # noqa: E402
 if SKIP is None:
     from mpi4py import MPI
     from peclet import dem
-    from peclet.core import mpi as core_mpi
+    from peclet import halo
 
 dmin = [0.0, 0.0, 0.0]
 L = [8.0, 8.0, 8.0]
@@ -89,8 +89,8 @@ def run_distributed(comm, g_pos, g_vel, nsteps, **kw):
     rank = comm.rank
     N = g_pos.shape[0]
     ids = np.arange(N)
-    mig = core_mpi.ParticleMigrator(origin=dmin, extent=L, cells=[16, 16, 16],
-                                    periodic=[False, False, False])
+    mig = halo.ParticleMigrator(origin=dmin, extent=L, cells=[16, 16, 16],
+                                periodic=[False, False, False])
     own = np.array([mig.owner_of(tuple(p)) for p in g_pos])
     mine = np.where(own == rank)[0]
     pos, vel, idd = g_pos[mine].copy(), g_vel[mine].copy(), ids[mine].astype(np.float64)
