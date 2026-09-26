@@ -710,6 +710,24 @@ inline void buildInvMassCoarseKokkos(Kokkos::View<const float*, CpMem> invMass,
   Kokkos::fence();
 }
 
+/// The multilevel coarse vertex's inverse inertia (docs/contact_physics_followups.md §2.5): the
+/// same fraction a / k of the body's inertia as its mass, invInertia(q) (k(q) / max(1, a(q))) per
+/// component, the ratio computed first exactly as buildInvMassCoarseKokkos (k = a gives
+/// invInertia bit for bit).
+inline void buildInvInertiaCoarseKokkos(Kokkos::View<const float* [3], CpMem> invInertia,
+                                        Kokkos::View<const int*, CpMem> k,
+                                        Kokkos::View<const int*, CpMem> a, int n,
+                                        Kokkos::View<float* [3], CpMem> out) {
+  Kokkos::parallel_for(
+      "peclet::dem::inv_inertia_coarse", Kokkos::RangePolicy<CpExec>(0, n), KOKKOS_LAMBDA(int q) {
+        const int aq = a(q) > 1 ? a(q) : 1;
+        const float ratio = static_cast<float>(k(q)) / static_cast<float>(aq);
+        for (int c = 0; c < 3; ++c)
+          out(q, c) = invInertia(q, c) * ratio;
+      });
+  Kokkos::fence();
+}
+
 /// Debug-build check (§13.2, §13.5 WO-5 item 4): the vertices with a = 0 that sit in a level-1
 /// multilevel group of >= 2 members (must be none: an inactive copy never joins a coarse edge).
 inline int countInactiveAggregatedKokkos(Kokkos::View<const int*, CpMem> parent, int off, int nV,

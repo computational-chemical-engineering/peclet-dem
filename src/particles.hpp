@@ -202,6 +202,15 @@ struct Particles {
   Kokkos::View<float*, CpMem> mlMassG;
   Kokkos::View<int*, CpMem> mlGrp;
   Kokkos::View<int*, CpMem> mlMate;
+  // Rigid 6-DOF aggregates (docs/contact_physics_followups.md §2.3; MlScratch documents each):
+  // allocated LAZILY on the first multilevel pass with the group pools' extent (mlAccD: one
+  // level's groups, <= the body count), so the default path allocates nothing.
+  Kokkos::View<float* [3], CpMem> mlOriginG;
+  Kokkos::View<float* [3], CpMem> mlComOffG;
+  Kokkos::View<float* [3], CpMem> mlAngG;
+  Kokkos::View<float* [3], CpMem> mlAngG0;
+  Kokkos::View<float* [6], CpMem> mlInvIG;
+  Kokkos::View<double* [7], CpMem> mlAccD;
   // --- Hertz-Mindlin soft-sphere engine (solver_hertz.hpp): cached Verlet pair list state ---
   Kokkos::View<float* [3], CpMem> hertzXi;                 // per cached pair: Mindlin shear history
   Kokkos::View<unsigned long long*, CpMem> hertzKeys;      // keys of the cached pairs
@@ -432,6 +441,9 @@ struct Particles {
   Kokkos::View<unsigned char*, CpMem> xGate;
   long long solveEpoch = 0;
   Kokkos::View<float*, CpMem> invMassCoarse;
+  // ... and its inverse inertia invInertia k / max(1, a) (docs/contact_physics_followups.md §2.5),
+  // built with invMassCoarse under rank-level M. Grow-only, lazy.
+  Kokkos::View<float* [3], CpMem> invInertiaCoarse;
   // split_stats.orphanClamps, accumulated on the device by the owner apply (read by
   // Simulation::debugSplitStats, reset by the step entry points; no fence in the step).
   Kokkos::View<int, CpMem> orphanClampCount;

@@ -1026,8 +1026,34 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                    P.invMassCoarse);
           invMassCoarse = P.invMassCoarse;
         }
-        MlScratch S{P.mlColorPacked, P.mlParent, P.mlInvMassG, P.mlVelG,
-                    P.mlVelG0,       P.mlMassG,  P.mlGrp,      P.mlMate};
+        // The coarse vertex's inverse inertia is the same fraction
+        // (docs/contact_physics_followups.md §2.5): P.invInertia itself wherever invMassCoarse is
+        // P.invMass.
+        Kokkos::View<const float* [3], CpMem> invInertiaCoarse = P.invInertia;
+        if (velM) {
+          growCopyView(P.invInertiaCoarse, static_cast<std::size_t>(nBodies),
+                       "peclet::dem::invInertiaCoarse");
+          buildInvInertiaCoarseKokkos(P.invInertia, Kokkos::View<const int*, CpMem>(P.kVel),
+                                      Kokkos::View<const int*, CpMem>(P.aVel), nBodies,
+                                      P.invInertiaCoarse);
+          invInertiaCoarse = P.invInertiaCoarse;
+        }
+        // Rigid-aggregate pools (§2.3), allocated on the first multilevel pass only.
+        if (P.mlInvIG.extent(0) != P.mlInvMassG.extent(0)) {
+          const std::size_t ng = P.mlInvMassG.extent(0);
+          const auto wi = Kokkos::WithoutInitializing;
+          P.mlOriginG = Kokkos::View<float* [3], CpMem>(Kokkos::view_alloc(wi, "mlOriginG"), ng);
+          P.mlComOffG = Kokkos::View<float* [3], CpMem>(Kokkos::view_alloc(wi, "mlComOffG"), ng);
+          P.mlAngG = Kokkos::View<float* [3], CpMem>(Kokkos::view_alloc(wi, "mlAngG"), ng);
+          P.mlAngG0 = Kokkos::View<float* [3], CpMem>(Kokkos::view_alloc(wi, "mlAngG0"), ng);
+          P.mlInvIG = Kokkos::View<float* [6], CpMem>(Kokkos::view_alloc(wi, "mlInvIG"), ng);
+        }
+        growCopyView(P.mlAccD, static_cast<std::size_t>(nBodies), "peclet::dem::mlAccD");
+        MlScratch S{P.mlColorPacked, P.mlParent, P.mlInvMassG, P.mlVelG,    P.mlVelG0,
+                    P.mlMassG,       P.mlGrp,    P.mlMate,     P.mlOriginG, P.mlComOffG,
+                    P.mlAngG,        P.mlAngG0,  P.mlInvIG,    P.mlAccD};
+        const MlBodyViews mlBody{Kokkos::View<const float* [3], CpMem>(P.posPred), P.angVelPred,
+                                 Kokkos::View<const float* [4], CpMem>(P.quat), invInertiaCoarse};
         const ContactHierarchy H = buildContactHierarchyKokkos(
             P.manifolds, nm, P.realIndices, Kokkos::View<const int*, CpMem>(P.manifoldColor),
             Kokkos::View<const float*, CpMem>(P.vn0), Kokkos::View<const float* [3], CpMem>(P.vt0),
@@ -1035,7 +1061,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
             invMassCoarse, qsThr, mlGates, nBodies, S, P.bodyWinner, P.bodyColorMask,
             /*excludeImmovable*/ sleepOn,
             sleepOn ? Kokkos::View<const unsigned char*, CpMem>(P.asleep)
-                    : Kokkos::View<const unsigned char*, CpMem>());
+                    : Kokkos::View<const unsigned char*, CpMem>(),
+            mlBody);
         P.mlLast.numLevels = H.numLevels;
 #ifndef NDEBUG
         // Debug build (§13.5 WO-5 item 4): no multi-member coarse group holds an inactive vertex.
@@ -1092,11 +1119,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
               nullptr, velOv, P.restitutionTarget);
           foldVel();
           if (H.numLevels > 0) {
-            multilevelCoarseCycleKokkos(P.manifolds, nm, P.realIndices, invMassCoarse, P.velPred,
-                                        P.lambdaAcc, P.maxApproachQS, nBodies, H, S,
-                                        /*coarseSweeps*/ 2, Kokkos::View<const float*, CpMem>(relV),
-                                        &mlOffs, Kokkos::View<const int*, CpMem>(P.mlBucketPerm),
-                                        mlFusedP);
+            multilevelCoarseCycleKokkos<false>(
+                P.manifolds, nm, P.realIndices, invMassCoarse, P.velPred, P.lambdaAcc,
+                P.maxApproachQS, nBodies, H, S,
+                /*coarseSweeps*/ 2, mlBody, Kokkos::View<const float*, CpMem>(relV), &mlOffs,
+                Kokkos::View<const int*, CpMem>(P.mlBucketPerm), mlFusedP);
             if (velCopiesOn)
               reseedCopiesKokkos(space, VC, P.velPred, P.angVelPred);
           }
@@ -1116,12 +1143,12 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                   P.frictionDynamic, P.vt0, P.restitutionTangent,
                   Kokkos::View<const float*, CpMem>(P.posImpulse), bankV, relV, vpkC, orphV, orphPk,
                   {}, P.restitutionTarget);
-              mlLoopDone = demLaunchFusedMlLoop(
+              mlLoopDone = demLaunchFusedMlLoop<false>(
                   space, fStab, velPermC, *velFusedP, numColors, P.manifolds, P.realIndices,
                   Kokkos::View<const float*, CpMem>(P.invMass), P.velPred, P.lambdaAcc,
                   P.maxApproachQS, Kokkos::View<const float*, CpMem>(relV), S,
                   Kokkos::View<const int*, CpMem>(P.mlBucketPerm), *mlFusedP,
-                  2 * P.velocityIterations, stopsOn ? vRestS : fusedOff);
+                  2 * P.velocityIterations, stopsOn ? vRestS : fusedOff, mlBody);
             } else if (H.numLevels == 0) {
               // aggregation found nothing: the loop is plain fine sweeps on the QS residual
               const FusedLoopSpec spec{2 * P.velocityIterations, stopsOn ? vRestS : fusedOff,
