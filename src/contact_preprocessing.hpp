@@ -700,15 +700,34 @@ struct PosUnits {
 /// unit is the set of contacts of one body pair, or of one body and one wall. Two key sorts: by
 /// unitKey to group (leader = the segment's smallest contact index), then by (leader, contact
 /// index) for the canonical CSR. Returns the unit count; unitStart gets numUnits + 1 entries.
+/// `numManifolds`, when given, is the manifold count of the same contacts: the manifold key
+/// (pairKey, all walls of a body merged; the solved range [0, n) is all owned, so the ownership bit
+/// is constant on it) is never finer than the unit key, so numManifolds == n
+/// already proves every unit is one contact and the identity CSR is written without the key sort
+/// (a serial host sort on the host backends) -- the same result the sort would find.
 inline int buildPositionUnitsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, int n,
                                     Kokkos::View<int*, CpMem> unitStart,
-                                    Kokkos::View<int*, CpMem> unitContacts) {
+                                    Kokkos::View<int*, CpMem> unitContacts, int numManifolds = -1) {
   CpExec space;
   if (n <= 0) {
     Kokkos::deep_copy(space, Kokkos::subview(unitStart, 0), 0);
     space.fence();
     return 0;
   }
+  auto writeIdentity = [&]() {
+    Kokkos::View<int*, CpMem> us = unitStart;
+    Kokkos::View<int*, CpMem> uc = unitContacts;
+    Kokkos::parallel_for(
+        "peclet::dem::cp::uident", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int p) {
+          us(p) = p;
+          uc(p) = p;
+        });
+    Kokkos::deep_copy(space, Kokkos::subview(unitStart, n), n);
+    space.fence();
+    return n;
+  };
+  if (numManifolds == n)
+    return writeIdentity();
   using Kokkos::view_alloc;
   using Kokkos::WithoutInitializing;
   Kokkos::View<std::uint64_t*, CpMem> keys(
@@ -737,16 +756,7 @@ inline int buildPositionUnitsKokkos(Kokkos::View<const ContactC*, CpMem> contact
     // Every unit is one contact (spheres): the leader is the contact itself and the canonical
     // order is the contact order, so the CSR is the identity -- written directly, without the
     // second sort. The sweeps then take the empty PosUnits (no indirection; bitwise identical).
-    Kokkos::View<int*, CpMem> us = unitStart;
-    Kokkos::View<int*, CpMem> uc = unitContacts;
-    Kokkos::parallel_for(
-        "peclet::dem::cp::uident", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int p) {
-          us(p) = p;
-          uc(p) = p;
-        });
-    Kokkos::deep_copy(space, Kokkos::subview(unitStart, n), n);
-    space.fence();
-    return n;
+    return writeIdentity();
   }
   Kokkos::View<int*, CpMem> segLead(
       view_alloc(space, "peclet::dem::cp::ulead", WithoutInitializing), numSeg);

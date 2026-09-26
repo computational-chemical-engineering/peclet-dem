@@ -156,3 +156,57 @@ adaptive stop ends the loop.
 **Gates:** battery 264/264, the 3 new agreement gates included; mutant 7 is redefined as "no
 retraction" and detected. CUDA: the subset passes 59/59; the device loop converges in 33
 iterations (host 34).
+
+## 10. Performance package (2026-09-26 evening): the framework's cost, closed
+
+**Result.** Interleaved three-way A/B against c771e07 and main 0520b21 (`after12/perf_ab3.txt`;
+cores 0–15, min of 3, host load 5–15, ms/step):
+
+| scene | c771e07 | main 0520b21 | this package | new / c771e07 |
+|---|---|---|---|---|
+| N = 157464, gas, np 4×2 | 137.84 | 150.55 | 141.08 | 1.023 |
+| N = 157464, gas, np 8×2 | 64.38 | 69.93 | 65.38 | 1.016 |
+| N = 157464, PGS, np 4×2 | 136.46 | 151.25 | 139.46 | 1.022 |
+| N = 157464, PGS, np 8×2 | 62.74 | 70.37 | 64.71 | 1.031 |
+| N = 19683, gas, np 4×2 | 16.69 | 18.63 | 17.50 | 1.048 |
+| N = 19683, gas, np 8×2 | 10.38 | 11.44 | 10.74 | 1.034 |
+| N = 19683, PGS, np 4×2 | 17.16 | 19.45 | 17.68 | 1.030 |
+| N = 19683, PGS, np 8×2 | 10.44 | 12.26 | 11.06 | 1.060 |
+
+Every change is bit-identical: byte-equal state dumps against main in 29 scenes at np 1/2/4/8 (1
+thread), friction-pair output equal, battery 264/264 host, CUDA build + ctests.
+
+**Where the §7 cost really was.** The kernels were not the problem: summed kernel time at N = 157464
+np 4×2 was 131.3 (c771e07) against 139.5 ms/step (main), and MPI time (a PMPI interposer,
+`after12/pmpi.cpp`) +1.6 ms/step. The rest was host work invisible to a kernel timer; an
+exclusive-host-time Kokkos Tools timer (`after12/ktimer.cpp`: region time minus the kernels and
+child regions inside it) found it:
+
+1. **The position-unit build sorted every contact key on the host** (Kokkos sort_by_key is a
+   serial std::sort on the host backends) only to discover that every unit is one contact:
+   4.9 ms/step. The manifold count already proves it (the manifold key is never finer than the unit
+   key on the owned range), so `buildPositionUnitsKokkos(..., numManifolds)` writes the identity
+   CSR directly when nm == nc.
+2. **`mapVelocitySlots` sorted every owned and ghost gid on the host** each rebuild: 1.8 ms/step.
+   The topology already names the owned row of every self ghost (selfIdx), and a cross-rank ghost's
+   gid is never owned here, so only the cross-rank ghosts are sorted (checked equal to the old map
+   at every gather in 14 scenes × np 2/4/8 before the check was removed).
+3. **The owner-side halo kernels ran over all owned rows at every sync**: seeds, the M applies,
+   the zero fill and the forward packs (~3.7 ms/step at 157k). They now run over the interface rows
+   (every row a forward reads or a reverse writes) plus the k > 1 rows (built once per opening).
+4. **Launch count at small N** (490 against 406 launches/step at 20k np 8; ~9 µs each on 2 OpenMP
+   threads): each M reconciliation is now three dem kernels (MPackZero, MApply with the payload,
+   seeds and owner share, MUnpack with the consensus, ghost share and baseline) around core's
+   reverse and forward, instead of eight.
+
+**What remains** (+2–6 %): the S14 consensus stop's extra velocity iterations (+27 % sweeps, each
+with a sync; principled, registered), MPI waits in the extra syncs, and the drift vote (1 ms/step
+at 157k np 4). The halo topology is rebuilt every step at the default `verlet_skin = 0`
+(pre-existing, O(N_local) host work, ~2.5 ms/step at 157k np 4): `verlet_skin > 0` is the lever
+there, and a device-side topology build the long-term one.
+
+**Also found:** a fresh build tree took ParaView's MPICH `mpiexec` from PATH, so every np ≥ 2
+ctest ran singletons; the mutation controls caught it (mutants 1, 2, 4, 5 "passed"). dem now pins
+the launcher beside mpicxx (`cmake/PecletDemPinMpiexec.cmake`, core's rule). And CI was red since
+f44fba7: clang-format violations (fixed tree-wide, whitespace only) and core 1.2.0's rename of
+`peclet.core.mpi` to `peclet.halo` (the CI job and the Python MPI drivers now use `peclet.halo`).

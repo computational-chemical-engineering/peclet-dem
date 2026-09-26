@@ -469,7 +469,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       usePersistPre && P.velocityUseGS && !Hooks::distributed && !incrColorOff;
   bool posDidFull = false;
   if (P.velocityUseGS) {
-    numPosUnits = buildPositionUnitsKokkos(P.contacts, nc, P.unitStart, P.unitContacts);
+    numPosUnits = buildPositionUnitsKokkos(P.contacts, nc, P.unitStart, P.unitContacts, nm);
     P.numPosUnits = numPosUnits;
     // All singletons (spheres): the unit map is the identity -- the empty PosUnits, so the
     // sweeps and passes index contacts directly (no two-level indirection per contact).
