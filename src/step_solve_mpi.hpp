@@ -198,7 +198,11 @@ inline MpiDriftVote mpiDriftVote(Particles& P, ParticleHalo& halo) {
   float g[3];
   MPI_Allreduce(vote, g, 3, MPI_FLOAT, MPI_MAX, halo.comm());
   const MpiDriftVote v{g[0], 0.1f * g[0], kDriftSlack * g[0], g[2]};
-  if (g[1] >= v.slack) {
+  int commSize = 1;
+  MPI_Comm_size(halo.comm(), &commSize);
+  // One rank owns everything: there is no other owner to move a particle to (a migration would be
+  // a host round trip that changes nothing).
+  if (commSize > 1 && g[1] >= v.slack) {
     halo.migrateToBlocks(P);
     ++P.splitStats.driftMigrations;
   }
@@ -343,7 +347,9 @@ struct MpiForceHooks {
     // live Mindlin springs ride the migration pack (gid-keyed) exactly as in a rebalance.
     float e = 0.0f, d = 0.0f;
     driftVoteLocalKokkos(P, halo.blockBox(), 0.0f, e, d);
-    if (allMax(e) >= slack) {
+    int commSize = 1;
+    MPI_Comm_size(halo.comm(), &commSize);
+    if (allMax(e) >= slack && commSize > 1) {
       halo.migrateToBlocks(P);
       ++P.splitStats.driftMigrations;
       // The owned force accumulators are zeroed as they are consumed (integrate), the ghost ones
