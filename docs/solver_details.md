@@ -168,8 +168,18 @@ mass-split M under MPI):
   migration.
 - **Warm start.** Each manifold's converged push impulse from the previous substep is gathered by
   pair key and applied up front, re-establishing a static force network in roughly one sweep.
-- **Restitution model.** `set_restitution_model('newton')` (default) applies the per-substep Newton
-  rule. `'poisson'` is event-level: a per-pair compression budget is banked and released as a
+- **Restitution target (Moreau).** Each closed contact's separation-velocity target is
+  $-e\,u^-$, with $u^-$ its pre-solve normal velocity, on **every** closed contact with
+  $|u^-| \ge 2\,\Delta t\,|g|$ — approaching or already separating. For a uniform $e$ a
+  converged substep then changes the kinetic energy by
+  $-\tfrac12\frac{1-e}{1+e}\lambda^T W \lambda \le 0$ (zero at $e = 1$). Newton's target (0 for
+  a pre-separating contact) created energy whenever such a contact ended up loaded: +13 % in one
+  step of a dense $e = 1$ cluster. Decided 2026-09-26 (user; `docs/contact_physics_followups.md`
+  §4, WO-C2; evidence `docs/contact_evidence/restitution_law_ab.md`).
+- **Restitution model.** `set_restitution_model('newton')` (default) applies per-substep
+  restitution with the Moreau target above. `'poisson'` keeps Newton's per-substep targets
+  ($-e\,u^-$ on approaching contacts only), whose micro-reflections its bank accounts for, and is
+  event-level: a per-pair compression budget is banked and released as a
   budget-capped separation-velocity target during unloading
   (`updateRestitutionBankKokkos`), with an orphan-transfer pass settling dead pairs' remaining
   budget onto their endpoint bodies. Read the instruments with

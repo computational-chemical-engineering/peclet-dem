@@ -58,6 +58,9 @@ judgement call in the moment.
   contact's sphere radius is the shape's own** (`params.x`), never the reach radius `rad(i)`.
 - **`ring_mini` is a conservation scene** (it starts tunnelled: its overlap cannot converge under
   any solver); **`ring_collide` is the ring convergence gate.**
+- **The PGS restitution target is Moreau's**: −e·u⁻ on every closed contact (above the resting
+  threshold). Newton's 0-for-pre-separating creates energy (+13 % in one step of a dense e = 1
+  cluster); Poisson keeps Newton targets (`docs/contact_physics_followups.md` §4, user 2026-09-26).
 - **Sleeping is an `invMassEff` swap around the solve call**, not a per-manifold mechanism.
 - **Radius and halo sizing derive from `baseRadius*scale*globalScale`** — all three factors.
 - **Distributed contacts are owner-exclusive with reverse accumulation**, not solved redundantly

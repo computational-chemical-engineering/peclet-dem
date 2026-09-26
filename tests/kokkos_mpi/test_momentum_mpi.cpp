@@ -90,12 +90,12 @@
 //   tri_pgs           tri under free fall (g != 0: the warm-started PGS path), --vel-iters
 //   cluster_e09, cluster_e10   cluster with restitution 0.9 / 1.0
 //   cluster_poisson   cluster_pgs with the Poisson restitution model
-//   cluster_pgs_e     GATED (docs/contact_physics_followups.md §6 G-C1, WO-C1): cluster_pgs with
-//                     mu = 0, no spins, stabilization off, --e=<e>, --rest-target=<newton|moreau>,
-//                     ONE step with every adaptive stop off and 2000 velocity iterations (the
-//                     converged PGS). Prints KEGATE (the CoM-frame KE before and after the step).
-//                     Under 'moreau': KE after <= KE before (1 + 1e-5), and at e = 1 also
-//                     >= KE before (1 - 2e-3); under 'newton' the ratio is reported only.
+//   cluster_pgs_e     GATED (docs/contact_physics_followups.md §6 G-C1): cluster_pgs with
+//                     mu = 0, no spins, stabilization off, --e=<e>, ONE step with every adaptive
+//                     stop off and 2000 velocity iterations (the converged PGS). Prints KEGATE (the
+//                     CoM-frame KE before and after the step). The PGS restitution target is
+//                     Moreau's (WO-C2): KE after <= KE before (1 + 1e-5), and at e = 1 also
+//                     >= KE before (1 - 2e-3).
 //   cluster_multilevel, cluster_escalate, cluster_ordered, cluster_onesided   cluster_pgs with that
 //                     stabilization mode instead of 'off'
 //   hub_pgs           hub under free fall (g != 0)
@@ -151,8 +151,7 @@
 // list is std::shuffle'd with std::mt19937(seed) before the gids are assigned, which samples
 // another serial Gauss-Seidel order of the same physical scene), --no-stop (every adaptive stop
 // of the contact solve off, so each loop runs exactly its cap: the convergence gates G7a / G7c,
-// §12 S13; Simulation::debugNoAdaptiveStop, test-only), --rest-target=<newton|moreau>
-// (diagnostics.set_restitution_target: the PGS restitution target law, WO-C1).
+// §12 S13; Simulation::debugNoAdaptiveStop, test-only).
 // dLvel measures the velocity phase from the PREDICTED angular velocity (§12 S16): the predict's
 // explicit gyroscopic term is frame rotation, not a contact impulse.
 //
@@ -1027,8 +1026,7 @@ struct Mode {
   std::string stab;         // stabilization mode set after the gravity rule's 'off' (empty = keep)
   std::string fused;        // --fused=auto|on|off: diagnostics.set_fused_sweeps (empty = default)
   bool noStop = false;  // --no-stop: every adaptive stop off, each loop runs its cap (§12 S13, G7)
-  std::string restTarget;  // --rest-target=newton|moreau (empty = the default, newton)
-  bool keGate = false;     // cluster_pgs_e: the G-C1 KE gate (KEGATE line)
+  bool keGate = false;  // cluster_pgs_e: the G-C1 KE gate (KEGATE line)
 };
 
 // Gather every rank's owned bodies to rank 0 and write them sorted by global body index (see the
@@ -1187,8 +1185,6 @@ static int runCluster(const Mode& md, int rank, int size) {
     sim.setStabilizationMode(md.stab);
   if (md.poisson)
     sim.setRestitutionModel("poisson");
-  if (!md.restTarget.empty())
-    sim.setRestitutionTarget(md.restTarget);  // WO-C1 A/B (default newton: never called)
   if (md.hertz) {
     sim.setHertzMaterial(0, 1.0e5f, 0.25f);
   }
@@ -1504,18 +1500,17 @@ static int runCluster(const Mode& md, int rank, int size) {
       std::printf(" s%zu=%.9e", k + 1, keRotHist[k]);
     std::printf("\n");
   }
-  // G-C1 (docs/contact_physics_followups.md §6, WO-C1): the converged one-step PGS in the dense
-  // frictionless cluster. Moreau's target is energy-consistent for a uniform e (§4.1): KE may
-  // not grow, and at e = 1 it is conserved up to the sub-threshold (e = 0) contacts. Newton's
-  // ratio is reported (it exceeds 1 at e >= 0.9: pre-separating loaded contacts create energy).
+  // G-C1 (docs/contact_physics_followups.md §6): the converged one-step PGS in the dense
+  // frictionless cluster. The PGS restitution target is Moreau's (WO-C2), energy-consistent for a
+  // uniform e (§4.1): KE may not grow, and at e = 1 it is conserved up to the sub-threshold
+  // (e = 0) contacts. (Newton's former target created energy here: +13 % at e = 1.)
   if (md.keGate && !keHist.empty()) {
-    const bool moreau = md.restTarget == "moreau";
     const double ratio = keHist.back() / ke0;
     if (rank == 0)
-      std::printf("KEGATE mode=%s np=%d thr=%d target=%s e=%.3f ke0=%.9e ke1=%.9e ratio=%.9f\n",
-                  md.name.c_str(), size, thr, moreau ? "moreau" : "newton",
-                  static_cast<double>(md.restitution), ke0, keHist.back(), ratio);
-    if (moreau && !(ratio <= 1.0 + 1e-5 && (md.restitution != 1.0f || ratio >= 1.0 - 2e-3))) {
+      std::printf("KEGATE mode=%s np=%d thr=%d e=%.3f ke0=%.9e ke1=%.9e ratio=%.9f\n",
+                  md.name.c_str(), size, thr, static_cast<double>(md.restitution), ke0,
+                  keHist.back(), ratio);
+    if (!(ratio <= 1.0 + 1e-5 && (md.restitution != 1.0f || ratio >= 1.0 - 2e-3))) {
       fail = 1;
       if (rank == 0)
         std::fprintf(stderr, "GATE: Moreau KE ratio %.9f outside the G-C1 bounds (e = %.3f)\n",
@@ -1782,8 +1777,6 @@ int main(int argc, char** argv) {
         md.fused = argv[a] + 8;
       else if (std::strcmp(argv[a], "--no-stop") == 0)
         md.noStop = true;
-      else if (std::strncmp(argv[a], "--rest-target=", 14) == 0)
-        md.restTarget = argv[a] + 14;
       else if (std::strcmp(argv[a], "--gate-pos-cap") == 0)
         md.gatePosCap = true;
       else if (std::strncmp(argv[a], "--gate-overlap=", 15) == 0)

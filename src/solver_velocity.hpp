@@ -1058,8 +1058,8 @@ inline void warmStartApplyKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds
 }
 
 /// One full colored PGS sweep. Per manifold: current approach vtil = s*vn, restitution target
-/// -e*max(vtil0,0) (Newton; Moreau: -e*vtil0, see restTarget) (e via the resting threshold on
-/// vn0), incremental impulse dp = (vtil-target)/w,
+/// -e*vtil0 on every closed contact (Moreau; Poisson mode: Newton's -e*max(vtil0,0)) (e via the
+/// resting threshold on vn0), incremental impulse dp = (vtil-target)/w,
 /// accumulator projection p := max(0, p+dp), apply the applied difference in place. maxApproach
 /// records the largest applied velocity correction (physical units) for the adaptive stop.
 ///
@@ -1118,13 +1118,6 @@ struct PGSManifoldSweep {
   // Hub-copy slot overrides + split relaxation (docs/contact_solve_framework.md §4.4, §4.5);
   // empty = realIdx, no relaxation. Every state access below uses realA / realB.
   SlotOverride ov{};
-  // Restitution target law (docs/contact_physics_followups.md §4, WO-C1; a diagnostics A/B,
-  // Particles::restitutionTarget): 0 = Newton (default) -- -e v0til on a contact APPROACHING
-  // before the solve, 0 on a pre-separating one; 1 = Moreau -- -e v0til on EVERY closed contact
-  // whose pre-solve |vn0| reaches the resting threshold (a pre-separating pair driven into
-  // approach may approach up to e |v0til| before it resists). Moreau is energy-consistent for a
-  // uniform e (§4.1). Never combined with the Poisson bank (the setter refuses, R-C4).
-  int restTarget = 0;
 
   KOKKOS_FUNCTION void solveOne(int idx) const {
     using detail::genInvMass;
@@ -1202,11 +1195,19 @@ struct PGSManifoldSweep {
       // persistent contacts cost more rebound than the bank recovered), and the accounting's pR
       // term deducts every reflection from the owed budget, so the two channels never
       // double-count.
-      float target;
-      if (restTarget == 1)  // Moreau: restitution is already 0 below the threshold / one-sided
-        target = (Kokkos::fabs(vn0(idx)) >= restVelThreshold * lenN) ? -restitution * v0til : 0.0f;
-      else  // Newton (default)
-        target = (v0til > 0.0f) ? -restitution * v0til : 0.0f;
+      //
+      // The restitution target is Moreau's (docs/contact_physics_followups.md §4, decided
+      // 2026-09-26): -e v0til on EVERY closed contact whose pre-solve |vn0| reaches the resting
+      // threshold (restitution is already 0 below it and on one-sided contacts). A pre-separating
+      // pair driven into approach may approach up to e |v0til| before it resists. For a uniform e
+      // one converged substep changes the kinetic energy by -1/2 (1-e)/(1+e) lambda^T W lambda <= 0
+      // (§4.1); Newton's 0 for a pre-separating contact CREATED energy (+13 % in one step of a
+      // dense e = 1 cluster). The Poisson bank (restRel non-empty) keeps Newton's per-substep
+      // targets, whose micro-reflections its accounting relies on (R-C4).
+      const float target =
+          restRel.extent(0) > 0
+              ? ((v0til > 0.0f) ? -restitution * v0til : 0.0f)
+              : ((Kokkos::fabs(vn0(idx)) >= restVelThreshold * lenN) ? -restitution * v0til : 0.0f);
       const float vtil = sgn * vn;
       float dp = (vtil - target) / wTotal;
       if (ov.relax(realA, realB))
@@ -1498,7 +1499,7 @@ inline PGSManifoldSweep makePGSManifoldSweep(
     Kokkos::View<const float*, CpMem> posImpulse, Kokkos::View<float*, CpMem> restBank,
     Kokkos::View<float*, CpMem> restRel, Kokkos::View<const float*, CpMem> restVPeak,
     Kokkos::View<float*, CpMem> restOrphan, Kokkos::View<const float*, CpMem> restOrphanVPeak,
-    SlotOverride ov = {}, int restTarget = 0) {
+    SlotOverride ov = {}) {
   return PGSManifoldSweep{manifolds,
                           invMass,
                           invInertia,
@@ -1524,8 +1525,7 @@ inline PGSManifoldSweep makePGSManifoldSweep(
                           restVPeak,
                           restOrphan,
                           restOrphanVPeak,
-                          ov,
-                          restTarget};
+                          ov};
 }
 
 /// Returns true when the sweep (or, with `loop`, the whole iteration loop) was submitted;
@@ -1548,14 +1548,14 @@ inline bool solveVelocityPGSKokkos(
     Kokkos::View<float*, CpMem> restOrphan = {},
     Kokkos::View<const float*, CpMem> restOrphanVPeak = {},
     Kokkos::View<const int*, CpMem> colorPerm = {}, const std::vector<int>* colorOffs = nullptr,
-    const FusedSweepCtx* fused = nullptr, const FusedLoopSpec* loop = nullptr, SlotOverride ov = {},
-    int restTarget = 0) {
+    const FusedSweepCtx* fused = nullptr, const FusedLoopSpec* loop = nullptr,
+    SlotOverride ov = {}) {
   CpExec space;
   const PGSManifoldSweep f = makePGSManifoldSweep(
       manifolds, invMass, invInertia, quat, velPred, angVelPred, realIdx, growthRate,
       restitutionNormal, restVelThreshold, maxApproach, maxApproachQS, lambdaAcc, vn0, sideFlag,
       lambdaT, frictionDynamic, vt0, restitutionTangent, posImpulse, restBank, restRel, restVPeak,
-      restOrphan, restOrphanVPeak, ov, restTarget);
+      restOrphan, restOrphanVPeak, ov);
   // Fused mode (CUDA): one persistent kernel iterates the colours device-side with a grid
   // barrier between them — same per-manifold math, same colour ordering, bit-identical to the
   // launch loop below (see solver_fused.hpp). Loop mode additionally iterates the whole
