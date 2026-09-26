@@ -35,10 +35,11 @@ inline constexpr int kHubEdgeBudget = 32;
 /// R-F2, legitimate there because the PGS normal multiplier is accumulated and its clamp can
 /// retract an overshoot). The overlap projection is the accumulated, retractable form since WO-12
 /// (projected SOR on each contact's net push at P.positionOmega = 1.5, solver_position.hpp); the
-/// non-accumulated POCS of §13.1 could not retract and was held at omega 1. At omega 1 each update of that old form was an exact projection in the split
-/// metric, the local fold and the rank reconciliation are exact projections onto the consensus
-/// subspaces, and cyclic projection onto these half-spaces and subspaces converges to a feasible
-/// point (Fejer-monotone; which point depends on the order, as for serial POCS).
+/// non-accumulated POCS of §13.1 could not retract and was held at omega 1. At omega 1 each update
+/// of that old form was an exact projection in the split metric, the local fold and the rank
+/// reconciliation are exact projections onto the consensus subspaces, and cyclic projection onto
+/// these half-spaces and subspaces converges to a feasible point (Fejer-monotone; which point
+/// depends on the order, as for serial POCS).
 inline constexpr float kSplitOmegaVelocity = 1.0f;
 
 /// Grow-only (re)allocation of a copy-machinery view to at least n entries.

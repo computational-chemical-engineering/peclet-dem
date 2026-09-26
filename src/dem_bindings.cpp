@@ -820,24 +820,23 @@ NB_MODULE(_dem, m) {
           "Set up the ORB block decomposition + core particle halo for the distributed step on "
           "the global domain (`origin` lower corner, `extent` SIZE, `cells` per axis for the ORB "
           "grid, `periodic` per axis -- the suite's domain quartet).")
-      .def(
-          "enable_mpi_step", &Simulation::enableMpiStep, nb::arg("rcut") = 0.0,
-          nb::arg("sync_every") = 1, nb::arg("forward_rotation") = true,
-          nb::arg("rebalance_every") = 0, nb::arg("verlet_skin") = 0.0,
-          "Enable the distributed step: ghost-band width rcut (a lower bound -- step_mpi widens "
-          "it to the contact reach plus a drift slack and the prediction allowance, "
-          "max(rcut, 2.1 x the global maximum radius + 0.25 x it + P), so the default 0 means "
-          "exactly that), sync_every (the owner/ghost reconciliation interval; conservation is "
-          "exact at any value -- a body updated from several places is solved through copies, "
-          "mass-split for the projection-form phases and exclusively held by one rank per sync "
-          "interval for the g = 0 one-shot restitution sweep -- larger sync_every means more lag, "
-          "fewer messages), rotation forwarding, the load-rebalance interval in steps (0 = fixed "
-          "decomposition; every step also votes, in the same reduction as the band, whether any "
-          "body has drifted more than the slack outside its owner's block, and migrates it if so "
-          "-- ownership is therefore not fixed across a run, and ghost selection uses the "
-          "domain-clamped position on non-periodic axes), and the Verlet ghost-reuse skin (0 = "
-          "rebuild the halo topology every substep; >0 = reuse it until a particle moves > skin, "
-          "and P above is the skin instead of the predicted displacement).")
+      .def("enable_mpi_step", &Simulation::enableMpiStep, nb::arg("rcut") = 0.0,
+           nb::arg("sync_every") = 1, nb::arg("forward_rotation") = true,
+           nb::arg("rebalance_every") = 0, nb::arg("verlet_skin") = 0.0,
+           "Enable the distributed step: ghost-band width rcut (a lower bound -- step_mpi widens "
+           "it to the contact reach plus a drift slack and the prediction allowance, "
+           "max(rcut, 2.1 x the global maximum radius + 0.25 x it + P), so the default 0 means "
+           "exactly that), sync_every (the owner/ghost reconciliation interval; conservation is "
+           "exact at any value -- a body updated from several places is solved through copies, "
+           "mass-split for the projection-form phases and exclusively held by one rank per sync "
+           "interval for the g = 0 one-shot restitution sweep -- larger sync_every means more lag, "
+           "fewer messages), rotation forwarding, the load-rebalance interval in steps (0 = fixed "
+           "decomposition; every step also votes, in the same reduction as the band, whether any "
+           "body has drifted more than the slack outside its owner's block, and migrates it if so "
+           "-- ownership is therefore not fixed across a run, and ghost selection uses the "
+           "domain-clamped position on non-periodic axes), and the Verlet ghost-reuse skin (0 = "
+           "rebuild the halo topology every substep; >0 = reuse it until a particle moves > skin, "
+           "and P above is the skin instead of the predicted displacement).")
       .def("step_mpi", &Simulation::stepMpi, nb::arg("n") = 1,
            "Advance the distributed (MPI) simulation by `n` steps of the time step set by set_dt, "
            "with halo exchange.")

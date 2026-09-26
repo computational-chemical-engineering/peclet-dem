@@ -494,8 +494,8 @@ static int runExactlyOnce(const std::string& which, int rank, int size) {
 // VISIBLE on any rank (so no rank can solve them, whatever the ownership rule). It never fails
 // today; when the halo supplies every pair, kMissedGate = true makes a missed pair a failure.
 static constexpr bool kMissedGate = true;  // WO-9: every periodic image is sent
-// WO-7 (docs/contact_solve_framework.md §5.1): the drift vote + migrateToBlocks + band reach + S + d
-// make every drifted pair visible, so the drift probes are gates. The periodic probe stays
+// WO-7 (docs/contact_solve_framework.md §5.1): the drift vote + migrateToBlocks + band reach + S +
+// d make every drifted pair visible, so the drift probes are gates. The periodic probe stays
 // report-only until WO-9 (all periodic images).
 static constexpr bool kMissedDriftGate = true;
 

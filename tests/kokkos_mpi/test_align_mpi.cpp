@@ -1,12 +1,13 @@
-// dem — the ALIGNED weighted ORB of migrate_to_weights(w, align) is flow's partition, cell for cell.
+// dem — the ALIGNED weighted ORB of migrate_to_weights(w, align) is flow's partition, cell for
+// cell.
 //
 // A coupled CFD-DEM run co-locates by construction: flow's rebalance_by_weights(w) and dem's
 // migrate_to_weights(w, align) each build the partition from the same replicated weight field, and
 // nothing but the split positions is shared. flow chooses the partition with core's
-// chooseAlignedWeighted(np, G, w) (the largest alignment 2^a within the 1.05 weight-imbalance budget,
-// amr/docs/amr_mg_core_boundary.md §11.4) and returns 2^a; dem must rebuild exactly that partition
-// from (w, 2^a). A different partition would silently put particles outside the fluid block their
-// drag is deposited in. We check, on every rank:
+// chooseAlignedWeighted(np, G, w) (the largest alignment 2^a within the 1.05 weight-imbalance
+// budget, amr/docs/amr_mg_core_boundary.md §11.4) and returns 2^a; dem must rebuild exactly that
+// partition from (w, 2^a). A different partition would silently put particles outside the fluid
+// block their drag is deposited in. We check, on every rank:
 //   (1) flow's choice: dem's decomposition after migrate_to_weights(w, 1 << a) equals
 //       chooseAlignedWeighted(np, G, w).dec -- same block origins and sizes, and the same owner for
 //       every cell of the grid -- for several weight fields, at least one of them aligned (a > 0);
@@ -97,7 +98,8 @@ static long compareDecomp(const BlockDecomposer<3>& a, const BlockDecomposer<3>&
   return bad;
 }
 
-// Owned particles lie in this rank's block of `dec` (cell of the position, as the migrator bins it).
+// Owned particles lie in this rank's block of `dec` (cell of the position, as the migrator bins
+// it).
 static long outsideBlock(Simulation& sim, const BlockDecomposer<3>& dec, int rank) {
   const std::vector<float> pos = sim.getPositions();
   const IVec<3> o = dec.origins()[(std::size_t)rank], s = dec.sizes()[(std::size_t)rank];
@@ -142,8 +144,10 @@ int main(int argc, char** argv) {
       MPI_Allreduce(&lc, &gc, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
       if (dd != 0 || ob != 0 || gc != N) {
         fail = 1;
-        std::fprintf(stderr, "  rank %d %s: %ld partition differences, %ld outside the block, "
-                     "count %ld\n", rank, what, dd, ob, gc);
+        std::fprintf(stderr,
+                     "  rank %d %s: %ld partition differences, %ld outside the block, "
+                     "count %ld\n",
+                     rank, what, dd, ob, gc);
       }
     };
 

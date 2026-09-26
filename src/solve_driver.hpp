@@ -1310,7 +1310,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       if (PC.nHubs > 0)
         posOv = SlotOverride{PC.slotA, PC.slotB, {}, 1.0f};
 #if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 7
-    posOv = SlotOverride{PC.slotA, PC.slotB, P.splitSlot, 1.5f};  // G13 mutant 7
+      posOv = SlotOverride{PC.slotA, PC.slotB, P.splitSlot, 1.5f};  // G13 mutant 7
 #endif
     }
   } else if (posCopiesOn) {

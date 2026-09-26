@@ -555,10 +555,10 @@ struct PositionContactSweep {
   SlotOverride ov{};
   // Accumulated projection (WO-12, §13.5; USER 2026-09-26): with a stop residual view and the
   // per-contact ledger posLambdaAcc, each contact's net push Lambda >= 0 is projected,
-  // Lambda' = max(0, Lambda - omega C / w), and the CHANGE d = Lambda' - Lambda is applied -- it may
-  // be negative (an overshoot is retracted), so over-relaxation omega in (0, 2) is legitimate and
-  // the fixed point is the unique least-displacement solution. posResidual collects max |d| w (the
-  // position change), the stop quantity; maxOverlap keeps "the largest violation seen". Empty
+  // Lambda' = max(0, Lambda - omega C / w), and the CHANGE d = Lambda' - Lambda is applied -- it
+  // may be negative (an overshoot is retracted), so over-relaxation omega in (0, 2) is legitimate
+  // and the fixed point is the unique least-displacement solution. posResidual collects max |d| w
+  // (the position change), the stop quantity; maxOverlap keeps "the largest violation seen". Empty
   // posResidual = the pre-WO-12 incremental projection at omega 1 (kernel unit tests only).
   Kokkos::View<float, CpMem> posResidual{};
   float omega = 1.0f;
@@ -682,17 +682,16 @@ inline bool solvePositionColoredGSKokkos(
     const FusedLoopSpec* loop = nullptr, SlotOverride ov = {},
     Kokkos::View<float, CpMem> posResidual = {}, float omega = 1.0f) {
   CpExec space;
-  const PositionContactSweep f{contacts,   invMass,    posPred,      quatPred,    quatStatic,
-                               invInertia, maxOverlap, posLambdaAcc, units,       ov,
-                               posResidual, omega};
+  const PositionContactSweep f{contacts,   invMass,      posPred, quatPred, quatStatic,  invInertia,
+                               maxOverlap, posLambdaAcc, units,   ov,       posResidual, omega};
 #ifdef KOKKOS_ENABLE_CUDA
   if (loop) {
     // The device loop's stop residual: the position change under the accumulated projection
     // (WO-12), else the overlap.
     if (fused && fused->maxBucket > 0 && colorOffs)
-      return demLaunchFusedSweepLoop(space, f, colorPerm, *fused, numColors, *loop,
-                                     posResidual.extent(0) > 0 ? posResidual.data()
-                                                               : maxOverlap.data());
+      return demLaunchFusedSweepLoop(
+          space, f, colorPerm, *fused, numColors, *loop,
+          posResidual.extent(0) > 0 ? posResidual.data() : maxOverlap.data());
     return false;
   }
   if (fused && fused->maxBucket > 0 && colorOffs &&

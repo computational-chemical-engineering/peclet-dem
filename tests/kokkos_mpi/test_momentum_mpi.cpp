@@ -233,7 +233,7 @@ static Tol tolOf(const std::string& mode) {
   if (mode == "hub" || mode == "hub_pgs" || mode == "cluster_poisson" ||
       mode == "cluster_escalate" || mode == "cluster_ordered")  // dP <= 8e-7 (free-fall floor)
     return {5e-6, 1e-5, 1e-5, -1, 1e-6};
-  if (mode == "cluster_multilevel")  // dLvel reported only: the coarse cycle is translation-only
+  if (mode == "cluster_multilevel")     // dLvel reported only: the coarse cycle is translation-only
     return {5e-6, 1e-5, 1e-5, -1, -1};  // (§12 S17, a separate follow-up)
   if (mode == "hub_posonly")
     return {1e-6, 1e-5, 1e-5, -1, 1e-6};
@@ -675,8 +675,13 @@ struct State {
   std::vector<int> gid;  // pairs a body's states across a step (a drift migration moves bodies)
 };
 static State readState(const ProbeSim& s) {
-  State st{s.getPositions(), s.getVelocities(), s.getAngularVelocities(),
-           s.getMasses(),    s.getInvInertia(), s.getQuaternions(), {}};
+  State st{s.getPositions(),
+           s.getVelocities(),
+           s.getAngularVelocities(),
+           s.getMasses(),
+           s.getInvInertia(),
+           s.getQuaternions(),
+           {}};
   const auto& P = s.parts();
   auto hg = Kokkos::create_mirror_view(P.gid);
   Kokkos::deep_copy(hg, P.gid);
@@ -812,9 +817,11 @@ static D3 angularAbout(const State& st, const D3& X, const D3& V) {
 // sum_i m_i (x_i(b) - x_i(a)), minimum image in a periodic box of side `box`, with a body's two
 // states paired by gid on rank 0 (a drift migration moves bodies between ranks within a step).
 static D3 periodicDisplacement(const State& aLocal, const State& bLocal, double box) {
-  const std::vector<float> ax = gatherBodies(aLocal.x, MPI_FLOAT), bx = gatherBodies(bLocal.x, MPI_FLOAT),
+  const std::vector<float> ax = gatherBodies(aLocal.x, MPI_FLOAT),
+                           bx = gatherBodies(bLocal.x, MPI_FLOAT),
                            bm = gatherBodies(bLocal.m, MPI_FLOAT);
-  const std::vector<int> ag = gatherBodies(aLocal.gid, MPI_INT), bg = gatherBodies(bLocal.gid, MPI_INT);
+  const std::vector<int> ag = gatherBodies(aLocal.gid, MPI_INT),
+                         bg = gatherBodies(bLocal.gid, MPI_INT);
   std::unordered_map<int, int> where;
   for (int j = 0; j < static_cast<int>(ag.size()); ++j)
     where[ag[j]] = j;
@@ -905,10 +912,10 @@ struct Mode {
   unsigned relabel = 0;      // --relabel: 0 = identity
   bool tri = false, ring = false, poisson = false;
   bool hubStatic = false, hubMl = false;  // the WO-4b hub scenes (makeHubLast)
-  bool shear = false;  // WO-7: v_x += kShearRate z (bodies drift out of their owners' blocks)
-  bool reportOnly = false;                // the WO-0 modes: never fail today
-  std::string stab;     // stabilization mode set after the gravity rule's 'off' (empty = keep)
-  std::string fused;    // --fused=auto|on|off: diagnostics.set_fused_sweeps (empty = default)
+  bool shear = false;       // WO-7: v_x += kShearRate z (bodies drift out of their owners' blocks)
+  bool reportOnly = false;  // the WO-0 modes: never fail today
+  std::string stab;         // stabilization mode set after the gravity rule's 'off' (empty = keep)
+  std::string fused;        // --fused=auto|on|off: diagnostics.set_fused_sweeps (empty = default)
   bool noStop = false;  // --no-stop: every adaptive stop off, each loop runs its cap (§12 S13, G7)
 };
 
@@ -1021,7 +1028,7 @@ static int runCluster(const Mode& md, int rank, int size) {
   const float dt0 = md.hertz ? 1e-4f : 1e-2f;
   const float dt = md.dt > 0.0f ? md.dt : dt0;
   const int steps0 = md.shear       ? 200
-                     : md.hertz       ? 40
+                     : md.hertz     ? 40
                      : md.hubStatic ? 1
                      : md.hubMl     ? 10
                                     : (hub ? 20 : (md.tri ? 3 : (md.ring ? 10 : 50)));
@@ -1525,10 +1532,11 @@ static int runPerf(bool pgs, int rank, int size) {
     MPI_Allreduce(&g, &gs, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&g, &gmax, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
     if (rank == 0)
-      std::printf("PERFDIAG mode=%s np=%d migrations=%lld ghostsTotal=%d ghostsMax=%d "
-                  "velItersLast=%d posItersLast=%d rebuilds=%ld gathers=%ld\n",
-                  pgs ? "perf_pgs" : "perf_gas", size, static_cast<long long>(st.driftMigrations),
-                  gs, gmax, st.velItersUsed, st.posItersUsed, sim.mpiRebuilds(), sim.mpiGathers());
+      std::printf(
+          "PERFDIAG mode=%s np=%d migrations=%lld ghostsTotal=%d ghostsMax=%d "
+          "velItersLast=%d posItersLast=%d rebuilds=%ld gathers=%ld\n",
+          pgs ? "perf_pgs" : "perf_gas", size, static_cast<long long>(st.driftMigrations), gs, gmax,
+          st.velItersUsed, st.posItersUsed, sim.mpiRebuilds(), sim.mpiGathers());
   }
   return 0;
 }
@@ -1674,8 +1682,7 @@ int main(int argc, char** argv) {
         if (std::strncmp(argv[a], "--perf-g=", 9) == 0)
           gPerfLattice = std::atoi(argv[a] + 9);
       fail = runPerf(mode == "perf_pgs", rank, size);
-    }
-    else if (mode == "friction_pair" || mode == "friction_pair_pgs")
+    } else if (mode == "friction_pair" || mode == "friction_pair_pgs")
       fail = runFrictionPair(md, rank, size);
     else if (mode == "hub" || mode == "hub_posonly" || mode == "hub_pgs" || mode == "hub_static" ||
              mode == "hub_ml")

@@ -811,16 +811,13 @@ inline void decayBodyOrphanKokkos(Kokkos::View<float*, CpMem> orphan,
 /// is delivered to that body's owner by the velocity reverse at the next sync, and an endpoint
 /// that has left this rank's halo is not found (it gets the conservative half, and that half is
 /// dropped).
-inline void scatterOrphanBanksKokkos(Kokkos::View<const unsigned long long*, CpMem> prevKeys,
-                                     Kokkos::View<const float*, CpMem> prevRestBank,
-                                     Kokkos::View<const float*, CpMem> prevRestVPeak,
-                                     Kokkos::View<const unsigned char*, CpMem> matched,
-                                     int prevCount, Kokkos::View<const float*, CpMem> invMass,
-                                     Kokkos::View<float*, CpMem> orphan,
-                                     Kokkos::View<float*, CpMem> orphanVPeak,
-                                     Kokkos::View<const int*, CpMem> gidSorted = {},
-                                     Kokkos::View<const int*, CpMem> slotSorted = {},
-                                     int ownedLimit = -1) {
+inline void scatterOrphanBanksKokkos(
+    Kokkos::View<const unsigned long long*, CpMem> prevKeys,
+    Kokkos::View<const float*, CpMem> prevRestBank, Kokkos::View<const float*, CpMem> prevRestVPeak,
+    Kokkos::View<const unsigned char*, CpMem> matched, int prevCount,
+    Kokkos::View<const float*, CpMem> invMass, Kokkos::View<float*, CpMem> orphan,
+    Kokkos::View<float*, CpMem> orphanVPeak, Kokkos::View<const int*, CpMem> gidSorted = {},
+    Kokkos::View<const int*, CpMem> slotSorted = {}, int ownedLimit = -1) {
   // ownedLimit >= 0 (the distributed step: numReal): credit a dead entry only on the rank that
   // owns its LOWER-gid endpoint -- with symmetric visibility (§5.1) exactly the pair's owner, so
   // an entry carried on both endpoints' ranks (migration pack) is credited once

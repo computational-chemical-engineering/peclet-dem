@@ -34,11 +34,11 @@
 
 #include <algorithm>
 #include <array>
-#include <limits>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <Kokkos_Core.hpp>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -171,7 +171,8 @@ struct ContactOwnership {
     if (!ao && !bo)
       return false;  // cannot occur (queries come from owned bodies); defensive
 #if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 1
-    return false;  // G13 mutant 1 (docs/contact_solve_framework.md §9): no cross-rank pair is solved
+    return false;  // G13 mutant 1 (docs/contact_solve_framework.md §9): no cross-rank pair is
+                   // solved
 #endif
     const int o = ao ? a : b, g = ao ? b : a;
     if (gid(o) == gid(g))
@@ -819,7 +820,8 @@ inline void haloApplyVelocityIncrementM(V3 velPred, V3 angVelPred, Vf orphan, Vf
           float c2 = 0.0f;  // §12 S14: the owner copy's consensus correction (increment form)
           for (int d = 0; d < 3; ++d) {
 #if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 2
-            const float own = velPred(i, d) - seedV(i, d), mean = af * own + r.v[d];  // G13 mutant 2
+            const float own = velPred(i, d) - seedV(i, d),
+                        mean = af * own + r.v[d];  // G13 mutant 2
 #else
             const float own = velPred(i, d) - seedV(i, d), mean = (af * own + r.v[d]) / kf;
 #endif
@@ -1268,9 +1270,8 @@ class ParticleHalo {
                                  static_cast<double>(blk.origin[d]) * map_.cellSize[d]);
       hi[d] = static_cast<float>(map_.origin[d] + static_cast<double>(blk.origin[d] + blk.size[d]) *
                                                       map_.cellSize[d]);
-      L[d] = map_.periodic[d]
-                 ? static_cast<float>(static_cast<double>(gs[d]) * map_.cellSize[d])
-                 : 0.0f;
+      L[d] = map_.periodic[d] ? static_cast<float>(static_cast<double>(gs[d]) * map_.cellSize[d])
+                              : 0.0f;
       // Ownership clamps a position outside a non-periodic domain onto the boundary cells
       // (core ParticleMigrator::cellOf), so a boundary block owns the half-space beyond it.
       if (!map_.periodic[d]) {
@@ -1735,9 +1736,8 @@ class ParticleHalo {
 
   /// The contact-ownership rule over the current topology (see ContactOwnership).
   ContactOwnership contactOwnership(const Particles& P) const {
-    return ContactOwnership{rank_,       numReal_,    P.gid,        ghostSource_,
-                            copyOffsets_, copyRanks_, ghostImage_,  copyImage_,
-                            selfOffsets_, selfImage_};
+    return ContactOwnership{rank_,      numReal_,    P.gid,      ghostSource_, copyOffsets_,
+                            copyRanks_, ghostImage_, copyImage_, selfOffsets_, selfImage_};
   }
 
   /// TEST-ONLY (Simulation::debugCaptureContacts): the periodic image shift of every ghost slot
@@ -1980,8 +1980,8 @@ class ParticleHalo {
   /// adjacent: a body is active on a rank only through a contact with a partner the rank owns,
   /// within the contact reach of the body, so two such ranks' blocks lie within 2 (reach + drift)
   /// <= 2 band of each other. (§1.4 wrote "band + S", which covers owner-ghost pairs but not two
-  /// ghost ranks of one body -- §12 S19.) A superset of the conflict graph is safe; its only cost is
-  /// C. C <= 64 (the mask is one 64-bit word), else throw.
+  /// ghost ranks of one body -- §12 S19.) A superset of the conflict graph is safe; its only cost
+  /// is C. C <= 64 (the mask is one 64-bit word), else throw.
   void ensureRankColoring(double band) {
     // Keyed on the band AND a fingerprint of the decomposition, so every way the blocks can
     // change (rebalance, migrateTo, migrate_to_weights, a re-init) recolours.
@@ -2228,7 +2228,8 @@ class ParticleHalo {
     std::vector<int> cur(off.begin(), off.end() - 1);
     for (std::size_t k = 0; k < t.sendRanks.size(); ++k)
       for (int j = t.sendOffsets[k]; j < t.sendOffsets[k + 1]; ++j) {
-        const std::size_t at = static_cast<std::size_t>(cur[static_cast<std::size_t>(t.sendIdx[j])]++);
+        const std::size_t at =
+            static_cast<std::size_t>(cur[static_cast<std::size_t>(t.sendIdx[j])]++);
         ranks[at] = t.sendRanks[k];
         imgs[at] = imageOf(t.sendShift[static_cast<std::size_t>(j)]);
       }

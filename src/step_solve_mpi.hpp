@@ -106,15 +106,15 @@ inline void driftVoteLocalKokkos(const Particles& P, const ParticleHalo::BlockBo
         const float di = Kokkos::sqrt(v0 * v0 + v1 * v1 + v2 * v2) * dt +
                          Kokkos::sqrt(ax * ax + ay * ay + az * az) * dt * dt;
         float d2 = 0.0f;
-#define PECLET_DEM_DRIFT_AXIS(X, LO, HI, L)                                                        \
-  {                                                                                                \
-    float gk = Kokkos::fmax(0.0f, Kokkos::fmax((LO) - (X), (X) - (HI)));                           \
-    if ((L) > 0.0f) {                                                                              \
-      const float xm = (X) - (L), xp = (X) + (L);                                                  \
-      gk = Kokkos::fmin(gk, Kokkos::fmax(0.0f, Kokkos::fmax((LO) - xm, xm - (HI))));               \
-      gk = Kokkos::fmin(gk, Kokkos::fmax(0.0f, Kokkos::fmax((LO) - xp, xp - (HI))));               \
-    }                                                                                              \
-    d2 += gk * gk;                                                                                 \
+#define PECLET_DEM_DRIFT_AXIS(X, LO, HI, L)                                          \
+  {                                                                                  \
+    float gk = Kokkos::fmax(0.0f, Kokkos::fmax((LO) - (X), (X) - (HI)));             \
+    if ((L) > 0.0f) {                                                                \
+      const float xm = (X) - (L), xp = (X) + (L);                                    \
+      gk = Kokkos::fmin(gk, Kokkos::fmax(0.0f, Kokkos::fmax((LO) - xm, xm - (HI)))); \
+      gk = Kokkos::fmin(gk, Kokkos::fmax(0.0f, Kokkos::fmax((LO) - xp, xp - (HI)))); \
+    }                                                                                \
+    d2 += gk * gk;                                                                   \
   }
         PECLET_DEM_DRIFT_AXIS(pos(i, 0), lo0, hi0, L0)
         PECLET_DEM_DRIFT_AXIS(pos(i, 1), lo1, hi1, L1)
@@ -140,8 +140,6 @@ inline float globalMaxRadius(const Particles& P, MPI_Comm comm) {
   MPI_Allreduce(&r, &g, 1, MPI_FLOAT, MPI_MAX, comm);
   return g > 0.0f ? g : maxOwnedRadius(P);
 }
-
-
 
 /// The XPBD narrow phase's reach: it reports a pair while the gap is below the broadphase margin
 /// (0.1 R_max), i.e. at centre distance < r_i + r_j + margin, so a partner of a body across a
