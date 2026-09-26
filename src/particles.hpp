@@ -340,6 +340,10 @@ struct Particles {
   // --- atomic counters / scalars (rank-0 Views) ---
   Kokkos::View<int, CpMem> pairCount, contactCount, manifoldCount, topGhost;
   Kokkos::View<float, CpMem> maxOverlap;
+  // The accumulated position projection's stop residual max |d| w per iteration (WO-12), and its
+  // over-relaxation (internal; kPositionOmega by default, a test hook for the omega scan).
+  Kokkos::View<float, CpMem> posResidual;
+  float positionOmega = 1.5f;
   // Max physical approach speed among approaching manifolds in the last velocity sweep — drives the
   // colored-GS velocity loop's adaptive stop (converged once no pair approaches above the resting
   // threshold). maxOverlap plays the same role for the position loop.
@@ -578,6 +582,7 @@ struct Particles {
     manifoldCount = Kokkos::View<int, CpMem>("manifoldCount");
     topGhost = Kokkos::View<int, CpMem>("topGhost");
     maxOverlap = Kokkos::View<float, CpMem>("maxOverlap");
+    posResidual = Kokkos::View<float, CpMem>("posResidual");
     maxApproach = Kokkos::View<float, CpMem>("maxApproach");
     maxApproachQS = Kokkos::View<float, CpMem>("maxApproachQS");
     maxConsensus = Kokkos::View<float, CpMem>("maxConsensus");

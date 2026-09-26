@@ -120,3 +120,39 @@ block-neighbour list before large rank counts.
 - The position phase's effective mass carries rotational terms although the rotation is never
   applied (`computeW`).
 - Core 1.3.0 publish; then move dem's `PECLET_CORE_TAG`.
+
+## 9. WO-12: the accumulated, retractable overlap projection (USER decision 2026-09-26)
+
+The change: each contact's net position push Λ ≥ 0 is projected, Λ' = max(0, Λ − ω C / w̃), and the
+change applied, so an overshoot is retracted. ω_pos = 1.5 everywhere, np 1 included. The stop is
+max |d| w̃ < 1e-4 R. This is a named numerics change for every run with coupled contacts.
+
+**Uniqueness.** The overlap-only substep, converged with 2000 iterations and the stops off, gives
+positions whose max difference from np 1 is:
+
+| | np 2 | np 4 | np 8 |
+|---|---|---|---|
+| after | 1.5e-5 R | 2.0e-5 R | 4.7e-5 R |
+| before (non-accumulated POCS) | 1.0e-2 R | 9.5e-3 R | 8.6e-3 R |
+
+The `position_agreement_np{2,4,8}` ctests gate this at 1e-4 R.
+
+**Iterations to converge** at np 1, stops on (`after11/wo12_omega_scan.txt`):
+
+| scene | old | ω 1.0 | 1.3 | **1.5** | 1.7 |
+|---|---|---|---|---|---|
+| dense cluster, overlap only | 97 | 97 | 56 | **34** | 30 |
+| cluster, PGS with gravity | 105 | 106 | 60 | **35** | 29 |
+| hub | 8 | 10 | 9 | **13** | 25 |
+
+That is 2.9× fewer on clusters. The hub pays a few iterations, and ω = 1.7 is worse on hubs, so
+the design's 1.5 stays. `ring_mini` does not converge under either form (overlap ~0.2–0.25 R);
+that is the pre-existing `computeW` / translation-only issue, open.
+
+**Cost:** within ±1 % of the pre-WO-12 build in the benchmark (clean cores 0–15;
+`after11/wo12_perf.txt`), where the iteration cap of 8 binds. The gain shows only where the
+adaptive stop ends the loop.
+
+**Gates:** battery 264/264, the 3 new agreement gates included; mutant 7 is redefined as "no
+retraction" and detected. CUDA: the subset passes 59/59; the device loop converges in 33
+iterations (host 34).

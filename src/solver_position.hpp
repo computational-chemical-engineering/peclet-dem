@@ -551,8 +551,17 @@ struct PositionContactSweep {
 
   PosUnits units;  // empty = one contact per work item (the identity)
   // Hub-copy slot overrides per UNIT (docs/contact_solve_framework.md §4.4); empty = the raw
-  // contact bodies. The position phase carries no relaxation (§13.1).
+  // contact bodies.
   SlotOverride ov{};
+  // Accumulated projection (WO-12, §13.5; USER 2026-09-26): with a stop residual view and the
+  // per-contact ledger posLambdaAcc, each contact's net push Lambda >= 0 is projected,
+  // Lambda' = max(0, Lambda - omega C / w), and the CHANGE d = Lambda' - Lambda is applied -- it may
+  // be negative (an overshoot is retracted), so over-relaxation omega in (0, 2) is legitimate and
+  // the fixed point is the unique least-displacement solution. posResidual collects max |d| w (the
+  // position change), the stop quantity; maxOverlap keeps "the largest violation seen". Empty
+  // posResidual = the pre-WO-12 incremental projection at omega 1 (kernel unit tests only).
+  Kokkos::View<float, CpMem> posResidual{};
+  float omega = 1.0f;
 
   /// One work item: every contact of position unit u, sequentially in ascending contact index
   /// (a pair's points are a serial Gauss-Seidel sweep inside one item; §4.3). A one-point unit is
@@ -606,30 +615,40 @@ struct PositionContactSweep {
       const F3 pBc = add3(pB, rB);
       C = dot3(sub3(pAc, pBc), n);
     }
-    if (C >= 0.0f)
-      return;
+    const bool accumulated = posResidual.extent(0) > 0 && posLambdaAcc.extent(0) > 0;
+    const float lam = accumulated ? posLambdaAcc(idx) : 0.0f;
+    if (C >= 0.0f && lam <= 0.0f)
+      return;  // separated and never pushed: nothing to project or retract
 
     const F3 invIA = ldF3(invInertia, idA);
     const F3 invIB = (idB >= 0) ? ldF3(invInertia, idB) : F3{0, 0, 0};
     const float wTotal = computeW(rA, n, invMassA, invIA) + computeW(rB, n, invMassB, invIB);
     if (wTotal < 1e-6f)
       return;
-    // Never over-relaxed (omega_pos = 1, docs/contact_solve_framework.md §13.1): this projection
-    // cannot retract an overshoot.
+    if (C < 0.0f)
+      Kokkos::atomic_max(&maxOverlap(), -C);
+    float dLambda;
+    if (accumulated) {
 #if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 7
-    float dLambda = -C / wTotal;
-    if (ov.relax(idA, idB))
-      dLambda *= ov.omega;  // G13 mutant 7: the over-relaxed projection of WO-4
+      // G13 mutant 7: over-relaxed WITHOUT retraction (the pre-WO-12 defect: a permanent gap).
+      const float lamNew = Kokkos::fmax(lam, lam - omega * C / wTotal);
 #else
-    const float dLambda = -C / wTotal;
+      const float lamNew = Kokkos::fmax(0.0f, lam - omega * C / wTotal);
 #endif
-    // Position-channel normal load bookkeeping: the friction cone must see the TOTAL normal
-    // force; whatever de-penetration flows through this projection (instead of the velocity
-    // impulses) is accumulated here, converted to impulse units by the caller, and carried
-    // into the next substep's Coulomb bound (else a jostled bed's bound under-counts and
-    // stick leaks -- measured as 99% sliding wall contacts in the benchmark drum).
-    if (posLambdaAcc.extent(0) > 0)
-      Kokkos::atomic_add(&posLambdaAcc(idx), dLambda);
+      dLambda = lamNew - lam;
+      if (dLambda == 0.0f)
+        return;
+      posLambdaAcc(idx) = lamNew;  // the unit's work item owns the contact: plain RMW
+      Kokkos::atomic_max(&posResidual(), Kokkos::fabs(dLambda) * wTotal);
+    } else {
+      dLambda = -C / wTotal;
+      if (posLambdaAcc.extent(0) > 0)
+        Kokkos::atomic_add(&posLambdaAcc(idx), dLambda);
+    }
+    // Position-channel normal load bookkeeping: posLambdaAcc is the contact's NET position
+    // impulse (the friction cone must see the TOTAL normal force; the caller converts it to
+    // impulse units and carries it into the next substep's Coulomb bound -- else a jostled bed's
+    // bound under-counts and stick leaks, measured as 99% sliding wall contacts in the drum).
 
     // Translation-only correction, in place (rotation discarded to match applyUpdatesKokkos).
     posPred(idA, 0) += n.x * dLambda * invMassA;
@@ -640,7 +659,6 @@ struct PositionContactSweep {
       posPred(idB, 1) += -n.y * dLambda * invMassB;
       posPred(idB, 2) += -n.z * dLambda * invMassB;
     }
-    Kokkos::atomic_max(&maxOverlap(), -C);
   }
 };
 
@@ -661,15 +679,20 @@ inline bool solvePositionColoredGSKokkos(
     Kokkos::View<const float* [3], CpMem> invInertia, Kokkos::View<float, CpMem> maxOverlap,
     Kokkos::View<float*, CpMem> posLambdaAcc = {}, Kokkos::View<const int*, CpMem> colorPerm = {},
     const std::vector<int>* colorOffs = nullptr, const FusedSweepCtx* fused = nullptr,
-    const FusedLoopSpec* loop = nullptr, SlotOverride ov = {}) {
+    const FusedLoopSpec* loop = nullptr, SlotOverride ov = {},
+    Kokkos::View<float, CpMem> posResidual = {}, float omega = 1.0f) {
   CpExec space;
-  const PositionContactSweep f{contacts,   invMass,    posPred,      quatPred, quatStatic,
-                               invInertia, maxOverlap, posLambdaAcc, units,    ov};
+  const PositionContactSweep f{contacts,   invMass,    posPred,      quatPred,    quatStatic,
+                               invInertia, maxOverlap, posLambdaAcc, units,       ov,
+                               posResidual, omega};
 #ifdef KOKKOS_ENABLE_CUDA
   if (loop) {
+    // The device loop's stop residual: the position change under the accumulated projection
+    // (WO-12), else the overlap.
     if (fused && fused->maxBucket > 0 && colorOffs)
       return demLaunchFusedSweepLoop(space, f, colorPerm, *fused, numColors, *loop,
-                                     maxOverlap.data());
+                                     posResidual.extent(0) > 0 ? posResidual.data()
+                                                               : maxOverlap.data());
     return false;
   }
   if (fused && fused->maxBucket > 0 && colorOffs &&

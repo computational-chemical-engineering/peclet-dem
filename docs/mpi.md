@@ -139,7 +139,7 @@ image within that band, not just one.
 | Stabilization (one-sided, escalate, ordered) | projection | **M** | |
 | Multilevel: fine sweep + coarse cycle | projection + coarse accelerator | **M**; a folded hub's copies are one coarse vertex of mass `a·m/k` | |
 | Legacy friction (`g = 0`, no gravity, or Jacobi A/B) | explicit Jacobi pass, raw sync | count-averaged (unaffected by copies) | single application point (midpoint); world-frame inverse inertia |
-| Overlap projection (position phase) | projection (POCS, never over-relaxed: `ω_pos = 1`) | **M** | multi-point pairs solved as one unit |
+| Overlap projection (position phase) | accumulated, retractable projection (projected SOR on each contact's net push, `ω_pos = 1.5`; unique fixed point) | **M** | multi-point pairs solved as one unit |
 | Poisson bank / orphan scatter | bookkeeping | true masses; credit only by the pair's owner | |
 | `'jacobi'` diagnostic | projection, mass-split | every contact its own copy, `k` = global contact count | |
 | Hertz–Mindlin | explicit, redundant on both owners | unchanged; needs symmetric visibility + canonical pair orientation | |

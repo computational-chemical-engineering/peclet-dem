@@ -198,3 +198,13 @@ foreach(t mutant1_ownership_oracle_closed_np2 mutant2_momentum_cluster_pgs_np2
   set_tests_properties(${t} PROPERTIES WILL_FAIL TRUE)
 endforeach()
 
+
+# WO-12 (docs/contact_solve_framework.md §13.5): the accumulated position projection's fixed point
+# is unique -- the converged overlap-only substep agrees across rank counts to 1e-4 R.
+foreach(np 2 4 8)
+  add_test(NAME position_agreement_np${np}
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/position_agreement.sh ${MPIEXEC_EXECUTABLE}
+                   ${_mpi_preflags} -- $<TARGET_FILE:test_momentum_mpi> ${np}
+                   ${CMAKE_CURRENT_BINARY_DIR}/position_agreement_np${np})
+  set_tests_properties(position_agreement_np${np} PROPERTIES PROCESSORS ${np} LABELS mpi)
+endforeach()

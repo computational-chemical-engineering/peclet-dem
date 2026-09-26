@@ -295,14 +295,20 @@ copy, solved against `m/count`, and the true-mass deltas are summed with factor 
 uncoloured leftovers is gone; a vertex above 32 active edges gets local mass-split copies and is
 recoloured instead (above), and an edge still uncolourable after that throws.
 
-This projection is applied only while $C < 0$ and never retracted, so it is **non-accumulated
-POCS** (Agmon–Motzkin–Schoenberg), not the velocity phase's accumulated, retractable PGS form —
-and it is therefore **never over-relaxed**: every copy solves at $\omega_{pos} = 1$. Over-relaxing a
-projection that cannot take a push back leaves a permanent overshoot proportional to
-$(\omega_{eff} - 1)|C|$: $\omega = 1.5$ on mass-split copies was measured to separate an isolated
-periodic wrap pair by $1.5\times$ its true gap, and every leaf of a mass-split hub by $0.5\times$
-its overlap clear — both a spurious injection of potential energy, since position corrections do
-not feed velocities in dem (`docs/contact_solve_framework.md` §13.1). The velocity phase's PGS
+**Accumulated, retractable projection (WO-12, 2026-09-26; USER decision).** Each contact keeps
+its net position push $\Lambda \ge 0$ (`posLambdaContact`, zeroed per substep) and every sweep
+projects it, $\Lambda' = \max(0,\ \Lambda - \omega_{pos} C / \tilde w)$, applying the change
+$d = \Lambda' - \Lambda$ — which may be negative, so an overshoot is pulled back. This is projected
+SOR on the accumulated multiplier (the velocity phase's PGS form, in positions): over-relaxation is
+legitimate, $\omega_{pos} = 1.5$ on every contact (np 1 included), and the fixed point is the unique
+least-displacement solution, so the converged positions agree across rank counts (measured:
+$\max |x_{np N} - x_{np 1}| \le 4.7\times 10^{-5} R$ at np 2/4/8, gated at $10^{-4} R$; the
+non-accumulated POCS it replaced differed by $10^{-2} R$). The stop is the position change
+$\max |d|\,\tilde w$ below $10^{-4} R$ (retractions included); `max_overlap` stays the largest
+violation seen. Dense clusters converge in 2.9× fewer iterations than the old $\omega = 1$
+projection (34 vs 97). The superseded form — applied only while $C < 0$, never retracted, hence
+never over-relaxed ($\omega = 1.5$ on it left a permanent gap of $(\omega_{eff}-1)|C|$, §13.1) —
+survives only as the kernel unit test's reference. The velocity phase's PGS
 normal keeps its over-relaxation hook (its multiplier is accumulated and clamped, so an overshoot
 there is legitimately retractable).
 

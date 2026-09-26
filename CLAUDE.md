@@ -40,6 +40,10 @@ judgement call in the moment.
   conservative, and at a fixed iteration budget more dissipative than the form it replaced.
 - **The overlap projection sweeps whole contact pairs**, and **colourings never exceed 64
   colours**: hubs get local copies.
+- **The overlap projection is accumulated and retractable** (projected SOR on each contact's net
+  push, `ω_pos = 1.5`, WO-12, 2026-09-26): its fixed point is unique, so converged positions agree
+  across rank counts to 1e-4 R (`position_agreement_np*`). Never go back to the non-accumulated
+  form (it cannot retract, so any over-relaxation leaves a permanent gap).
 - **The PGS friction bound comes from the converged normal accumulator**, never from the live
   approach value.
 - **Sleeping is an `invMassEff` swap around the solve call**, not a per-manifold mechanism.

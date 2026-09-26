@@ -33,9 +33,9 @@ inline constexpr int kHubEdgeBudget = 32;
 /// Split relaxation (§4.5, §13.1): the PGS normal step on an edge touching a mass-split slot is
 /// scaled by kSplitOmegaVelocity before the clamp (1: no relaxation; the pre-designed lever of
 /// R-F2, legitimate there because the PGS normal multiplier is accumulated and its clamp can
-/// retract an overshoot). The overlap projection is NEVER relaxed (omega_pos = 1, §13.1): it
-/// applies -C/w only while C < 0 and never retracts (non-accumulated POCS), so an overshoot is a
-/// permanent gap (omega w/w~ - 1)|C|. At omega 1 each update is an exact projection in the split
+/// retract an overshoot). The overlap projection is the accumulated, retractable form since WO-12
+/// (projected SOR on each contact's net push at P.positionOmega = 1.5, solver_position.hpp); the
+/// non-accumulated POCS of §13.1 could not retract and was held at omega 1. At omega 1 each update of that old form was an exact projection in the split
 /// metric, the local fold and the rank reconciliation are exact projections onto the consensus
 /// subspaces, and cyclic projection onto these half-spaces and subspaces converges to a feasible
 /// point (Fejer-monotone; which point depends on the order, as for serial POCS).

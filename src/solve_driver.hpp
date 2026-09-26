@@ -1345,12 +1345,15 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
 
   // One position iteration (async residual zero + colored overlap sweep), graph-captured on
   // the single-GPU path like the velocity loops.
+  // WO-12: the accumulated, retractable projection (§13.5) at omega = P.positionOmega; the stop
+  // reads the position change (posResidual), maxOverlap the largest violation seen.
   auto emitPosIter = [&] {
     Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
+    Kokkos::deep_copy(space, P.posResidual, 0.0f);
     solvePositionColoredGSKokkos(P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors,
                                  invMassPos, P.posPred, P.quatPred, P.quat, invInertiaPos,
                                  P.maxOverlap, P.posLambdaContact, posPermC, posOffsP, posFusedP,
-                                 nullptr, posOv);
+                                 nullptr, posOv, P.posResidual, P.positionOmega);
     if (posCopiesOn)
       foldCopiesKokkos(space, PC, P.posPred, {}, {}, {}, P.maxConsensus);
   };
@@ -1366,10 +1369,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       FusedLoopSpec spec{P.positionIterations, stopsOn ? posTol : fusedOff, true};
       if (P.iterCounters)  // diagnostics (§12 S12)
         spec.iters = demIterCountSlot(P, 1);
+      Kokkos::deep_copy(space, P.maxOverlap, 0.0f);  // the largest violation over the device loop
       posLoopDone = solvePositionColoredGSKokkos(
           P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors, P.invMass, P.posPred,
           P.quatPred, P.quat, P.invInertia, P.maxOverlap, P.posLambdaContact, posPermC, posOffsP,
-          posFusedP, &spec);
+          posFusedP, &spec, {}, P.posResidual, P.positionOmega);
     }
   }
   bool graphPos = false;
@@ -1389,9 +1393,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         emitPosIter();
       // Every active unit is coloured (§4.2): the count-averaged fallback is gone; the stop's
       // Allreduce carries the colouring-invariant vote if the velocity loop did not.
-      const float posRes = voteInvariant(withConsensus(readFloat(P.maxOverlap), posCons));
-      // Adaptive stop: end once no contact overlaps by more than posTol. Fixed positionIterations
-      // is the cap. Distributed: Allreduce-MAXed so all ranks break together.
+      const float posRes = voteInvariant(withConsensus(readFloat(P.posResidual), posCons));
+      // Adaptive stop (WO-12): end once no contact's projection moves it by more than posTol
+      // (|d| w, retractions included). Fixed positionIterations is the cap. Distributed:
+      // Allreduce-MAXed so all ranks break together.
       if (stopsOn && posRes < posTol)
         break;
     } else {

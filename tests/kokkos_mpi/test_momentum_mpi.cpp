@@ -896,6 +896,7 @@ struct Mode {
   bool solo = false;      // --solo: Simulation::step (single-rank demStep), np = 1
   float dt = 0.0f;        // --dt: override the mode's dt (steps scaled to keep the duration)
   int posIters = 20;      // --posit
+  float omega = -1.0f;    // --omega: the position over-relaxation (WO-12 scan; < 0 = default)
   float delta = 0.05f;    // --delta (friction_pair): overlap / R
   // WO-0 report-only options (docs/contact_solve_framework.md §8)
   float restitution = 0.5f;  // --e
@@ -1049,6 +1050,8 @@ static int runCluster(const Mode& md, int rank, int size) {
   sim.setDt(dt);
   sim.setGravity(static_cast<float>(g[0]), static_cast<float>(g[1]), static_cast<float>(g[2]));
   sim.setSolverIterations(md.posIters, md.velIters);
+  if (md.omega > 0.0f)
+    sim.parts().positionOmega = md.omega;  // WO-12 omega scan (internal knob)
   sim.debugIterationCounters(true);  // ITERS also from a device-side loop (§12 S12; no numerics)
   if (md.noStop)
     sim.debugNoAdaptiveStop(true);  // G7a / G7c run with N forced (§12 S13)
@@ -1553,6 +1556,8 @@ int main(int argc, char** argv) {
         posItersFlag = std::stoi(argv[a] + 8);
       else if (std::strncmp(argv[a], "--pos-iters=", 12) == 0)
         posItersFlag = std::stoi(argv[a] + 12);
+      else if (std::strncmp(argv[a], "--omega=", 8) == 0)
+        md.omega = std::stof(argv[a] + 8);
       else if (std::strncmp(argv[a], "--hub=", 6) == 0)
         md.hubScale = std::stof(argv[a] + 6);
       else if (std::strncmp(argv[a], "--delta=", 8) == 0)
