@@ -47,6 +47,14 @@ struct ContactC {
   float boundaryFriction{-1.0f};           // per-wall Coulomb friction;   < 0 => use the global one
 };
 
+/// Which body's surface a contact's normal belongs to. A forward contact (A's shell point against
+/// B's SDF) carries B's outward normal; a two-way reverse contact (B's shell point against A's SDF,
+/// set_shell_detection('two_way')) carries the negated outward normal of A and marks normal.w = 1.
+/// The position phase delta-rotates a stored normal with its own body's predicted rotation.
+KOKKOS_INLINE_FUNCTION bool normalOfA(const ContactC& c) {
+  return c.normal.w != 0.0f;
+}
+
 /// Wall identity of a boundary contact (docs/contact_solve_framework.md §12 S6): a contact with a
 /// wall carries bodyB = -1 - wallIndex, where wallIndex runs over the analytic planes first
 /// ([0, numPlanes)) and then the SDF walls (numPlanes + w). Every "is a wall" test is bodyB < 0;

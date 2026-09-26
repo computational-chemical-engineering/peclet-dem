@@ -92,7 +92,7 @@ inline void solvePositionKokkos(
         if (idB >= 0) {
           const F4 qBdelta = quatMult(qB, quatInverse(ldF4(quatStatic, idB)));
           rB = rotateVector(qBdelta, rB);
-          n = rotateVector(qBdelta, n);
+          n = rotateVector(normalOfA(c) ? qAdelta : qBdelta, n);  // the normal's own body
         }
 
         float C;
@@ -563,7 +563,7 @@ struct PositionContactSweep {
     if (idB >= 0) {
       const F4 qBdelta = quatMult(qB, quatInverse(ldF4(quatStatic, idB)));
       rB = rotateVector(qBdelta, rB);
-      n = rotateVector(qBdelta, n);
+      n = rotateVector(normalOfA(c) ? qAdelta : qBdelta, n);  // the normal's own body
     }
 
     float C;

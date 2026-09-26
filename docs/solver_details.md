@@ -113,7 +113,9 @@ sphere–shell pair use only the exact sphere probe whichever index the sphere h
 is emitted in the pair's canonical orientation (bodyA $= i$, normal $=$ outward normal of $j$, lever
 arms to the two surface points), so manifolds, position units, the warm-start ledger and MPI contact
 ownership see it as one more point of the same pair; sphere–sphere pairs and `step_hertz` are
-bit-identical to `'one_way'`.
+bit-identical to `'one_way'`. Its normal is a surface normal of $i$ (body A), marked by
+`normal.w = 1` (`normalOfA`), so the position phase delta-rotates it with A's predicted rotation;
+a forward contact's normal rotates with B's.
 
 *When to enable it:* thin-walled or non-convex shells (tubes, rings, hollow shapes); sharp edges
 and corners against faces (boxes, polyhedra, composed scene shapes); large size ratios where the
@@ -343,6 +345,7 @@ once, with the same incremental-colouring policy as the velocity phase, and
 $$ C(\mathbf{x}) = (\mathbf{p}_A^{surf} - \mathbf{p}_B^{surf})\cdot\mathbf{n} \ge 0 $$
 
 evaluated with the lever arms and normal delta-rotated from the static frame to the predicted one
+(each with the rotation of the body whose surface it belongs to)
 ($C \ge 0$ ⇒ inactive, skipped). Contacts are rigid (compliance 0), so
 
 $$ \Delta\lambda = \frac{-C(\mathbf{x}_{pred})}{\tilde w}, \qquad

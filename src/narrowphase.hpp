@@ -363,14 +363,12 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
           const F3 rB = sub3(pSurfB, posB);
 
           // Canonical orientation: the normal is B's outward direction, -mWorld, so that
-          // pSurfA = pSurfB + normal * dist as for a forward contact. (The position phase rotates
-          // a stored normal with B's predicted spin; this one is A's surface normal, so over a
-          // step it lags by the relative rotation -- the same order as R-B5 of
-          // docs/contact_physics_followups.md, times dist.)
+          // pSurfA = pSurfB + normal * dist as for a forward contact. It is A's surface normal,
+          // so normal.w = 1 marks it (normalOfA): the position phase rotates it with A's spin.
           ContactC c{};
           c.bodyA = idA;
           c.bodyB = idB;
-          c.normal = F4{-mWorld.x, -mWorld.y, -mWorld.z, 0.0f};
+          c.normal = F4{-mWorld.x, -mWorld.y, -mWorld.z, 1.0f};
           c.rA = F4{rA.x, rA.y, rA.z, 0.0f};
           c.rB = F4{rB.x, rB.y, rB.z, 0.0f};
           c.dist = effDist;
