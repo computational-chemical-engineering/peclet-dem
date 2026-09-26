@@ -97,6 +97,49 @@ gradient (central difference). Contacts are then reduced to per-pair **manifolds
 arm, lever arm — which the velocity phase consumes; `contactSlot` keeps the contact→manifold map
 the friction bound reads through.
 
+**Two-way shell detection** — `set_shell_detection('one_way' | 'two_way')`, default `'one_way'`
+(XPBD engine only: `step`, `step_mpi`, `relax`, `compute_overlaps`; the Hertz engine has its own
+pair law and is untouched). The broad phase emits each pair once, $(i, j)$ with $i < j$, and the
+one-way narrow phase tests only $i$'s probes — its shell points, or its centre and radius for a
+sphere — against $j$'s SDF. A thin rim, wall or edge of $j$ pressed into a flat face of $i$ between
+$i$'s shell points is then invisible: on tubes a penetration of 0.0235 went unseen while 0.001 was
+reported (`docs/contact_physics_followups.md` F2), and a tube dropped rim-first onto a fixed box
+(box shell spacing 0.5, tube wall 0.06) falls straight through it (`tests/python/test_shell_detection.py`).
+On the ring gate scene `ring_collide` (27 tubes, 10 steps) the one-way run's committed overlap reads
+$2.1\times10^{-5}$ by its own probe but $3.2\times10^{-2}$ — a sixth of the tube wall — measured
+two-way; the two-way run holds it to $5.1\times10^{-4}$.
+`'two_way'` adds $j$'s shell points against $i$'s SDF for shell–shell pairs, and makes a
+sphere–shell pair use only the exact sphere probe whichever index the sphere has. A reverse contact
+is emitted in the pair's canonical orientation (bodyA $= i$, normal $=$ outward normal of $j$, lever
+arms to the two surface points), so manifolds, position units, the warm-start ledger and MPI contact
+ownership see it as one more point of the same pair; sphere–sphere pairs and `step_hertz` are
+bit-identical to `'one_way'`.
+
+*When to enable it:* thin-walled or non-convex shells (tubes, rings, hollow shapes); sharp edges
+and corners against faces (boxes, polyhedra, composed scene shapes); large size ratios where the
+smaller body's features are finer than the larger body's shell spacing. *Not needed* for spheres
+(the sphere probe is exact) or for smooth convex bodies of similar size with dense shells, where
+both directions see the same contact.
+
+*Why the two directions are not merged:* where both directions see a contact (convex sides, flat
+faces) the extra rows are redundant constraints of the same pair, and the accumulated position
+projection has a unique fixed point. Measured on two tubes side by side and two boxes face to face
+(overlap 0.02, one `relax`): the residual gap is $+9.8\times10^{-6}$ with both settings, and a
+head-on impact at $e = 0.5$ returns $e_{eff} = 0.5000$ with both — no overshoot, no double
+restitution, only twice the contact rows.
+
+*Cost* (host OpenMP, 8 threads, `taskset` to 8 cores): the narrow phase of a shell pair does twice
+the SDF evaluations, and the solve sees more contact rows.
+
+| scene | narrow phase / step | ms / step | contacts |
+|---|---|---|---|
+| `ring_collide` (27 tubes, 210 steps, single rank) | 0.22 → 0.49 ms (×2.2) | 2.07 → 2.34 (×1.13) | per-body contact points 124 → 218 |
+| 1000 rings (R 0.5, H 1, wall 0.1) poured into a box, state settled one-way | 61 → 116 ms (×1.9) | 161 → 253 (×1.57) | 3.3e5 → 5.0e5 (×1.52) |
+| the same pour settled two-way | 69–80 → 161–173 ms (×2.2) | 197–203 → 379–384 (×1.89) | 3.6e5 → 6.0e5 (×1.68) |
+
+The dense ring packing is the representative case: expect up to 2× the narrow phase and 1.6–1.9×
+the step where shell–shell contacts dominate; spheres pay nothing.
+
 **Detection is decoupled from the solve.** Both phases run **once** per substep, on the
 **predicted** state. The solvers iterate on that fixed contact/manifold list: they do not detect new
 contacts, but they *do* re-evaluate geometry (distance, normal, lever arms) against the updated
@@ -382,6 +425,7 @@ angular velocities are rescaled at the end of the step (the packing-annealing pr
 | `set_velocity_solver('gauss_seidel'\|'jacobi')` | `diagnostics` | selects the colored-GS or the mass-split Jacobi diagnostic (velocity and position both; conservative, more dissipative than Gauss–Seidel at a fixed iteration count). **Changes results.** |
 | `set_incremental_coloring(enabled)` | `Simulation` | warm-started colouring; **changes results** (sweep order), which is why it is public. |
 | `set_verlet_skin(frac)` | `Simulation` | broadphase cache; identical contact *set*, different order ⇒ run-to-run scatter at float precision. |
+| `set_shell_detection('one_way'\|'two_way')` | `Simulation` | narrow-phase probe directions (§2); `'two_way'` **changes results** for non-sphere bodies and costs up to 2× the narrow phase; spheres and `step_hertz` unaffected. |
 | `set_sleeping(...)`, `set_stabilization(...)`, `set_restitution_model(...)` | `Simulation` | physics/algorithm choices; each documented above. |
 
 No environment variable changes what `peclet.dem` computes (QUALITY_PLAN package E) — the single
