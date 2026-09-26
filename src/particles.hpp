@@ -414,6 +414,14 @@ struct Particles {
   // mass invMass k / max(1, a) (§13.2). Grow-only.
   Kokkos::View<int*, CpMem> aVel, aPos, kVel, kPos;
   Kokkos::View<unsigned char*, CpMem> activityHit;
+  // Rank-level X (docs/contact_solve_framework.md §1.4, §13.5 WO-6; the g = 0 one-shot on an
+  // exchanging rank): per slot the velocity activity mask (bit col(r) of every rank on which the
+  // body is active, made global by the g = 0 opening), the per-manifold fire gate of the current
+  // sync interval, and the solve counter that starts each substep's holder cycle one step later.
+  // solveEpoch is incremented by every demSolveContacts, so it is identical on all ranks.
+  Kokkos::View<unsigned long long*, CpMem> velMask;
+  Kokkos::View<unsigned char*, CpMem> xGate;
+  long long solveEpoch = 0;
   Kokkos::View<float*, CpMem> invMassCoarse;
   // split_stats.orphanClamps, accumulated on the device by the owner apply (read by
   // Simulation::debugSplitStats, reset by the step entry points; no fence in the step).

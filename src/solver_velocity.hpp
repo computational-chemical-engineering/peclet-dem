@@ -1647,6 +1647,63 @@ inline void solveVelocityPGSBucketsKokkos(const PGSManifoldSweep& f,
   space.fence();
 }
 
+/// Rank-level X (docs/contact_solve_framework.md §1.4): the holder of a body whose velocity
+/// activity mask has several bits (ranks) in sync interval t -- the colour t mod C if it is in the
+/// mask, else the (t mod popcount)-th set bit (lowest = 0th). Every rank evaluates the same mask
+/// and t, so all ranks agree on the holder without communication.
+KOKKOS_INLINE_FUNCTION int xPopcount(unsigned long long m) {
+  int n = 0;
+  while (m != 0ull) {
+    m &= m - 1ull;
+    ++n;
+  }
+  return n;
+}
+KOKKOS_INLINE_FUNCTION int xHolder(unsigned long long mask, long long t, int numColors) {
+  const int tc = static_cast<int>(t % numColors);
+  if ((mask >> tc) & 1ull)
+    return tc;
+  int j = static_cast<int>(t % xPopcount(mask));
+  for (int b = 0; b < 64; ++b)
+    if ((mask >> b) & 1ull) {
+      if (j == 0)
+        return b;
+      --j;
+    }
+  return -1;  // unreachable: popcount(mask) >= 2 at every call
+}
+/// The per-manifold fire gate of sync interval t: 1 iff this rank (colour `color`) holds every
+/// endpoint whose mask names two or more ranks. Masks live at the canonical velocity slot
+/// realIdx(body), so every image and hub copy of one body on this rank shares the decision.
+inline void computeXGateKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int nm,
+                               Kokkos::View<const int*, CpMem> realIdx,
+                               Kokkos::View<const unsigned long long*, CpMem> velMask,
+                               Kokkos::View<unsigned char*, CpMem> gate, int color, int numColors,
+                               long long t) {
+  Kokkos::parallel_for(
+      "peclet::dem::x_gate", Kokkos::RangePolicy<CpExec>(0, nm), KOKKOS_LAMBDA(int idx) {
+        const ManifoldC m = manifolds(idx);
+        bool fire = true;
+        const unsigned long long mA = velMask(realIdx(m.bodyA));
+        if (xPopcount(mA) >= 2 && xHolder(mA, t, numColors) != color)
+          fire = false;
+        if (m.bodyB >= 0) {
+          const unsigned long long mB = velMask(realIdx(m.bodyB));
+          if (xPopcount(mB) >= 2 && xHolder(mB, t, numColors) != color)
+            fire = false;
+        }
+        gate(idx) = fire ? 1 : 0;
+      });
+}
+/// Diagnostics (iterCounters): the number of gated-off manifolds of one sweep.
+inline long long countUnfiredKokkos(Kokkos::View<const unsigned char*, CpMem> gate, int nm) {
+  long long n = 0;
+  Kokkos::parallel_reduce(
+      "peclet::dem::x_unfired", Kokkos::RangePolicy<CpExec>(0, nm),
+      KOKKOS_LAMBDA(int idx, long long& acc) { acc += gate(idx) == 0 ? 1 : 0; }, n);
+  return n;
+}
+
 /// Colored Gauss–Seidel normal-restitution solve: sweep the `numColors` colour classes in order,
 /// applying each manifold's impulse directly to velPred/angVelPred (in place). Same per-manifold
 /// impulse math as solveVelocityKokkos (growth-velocity term, approach gate, resting-contact e=0
@@ -1664,11 +1721,13 @@ inline void solveVelocityColoredGSKokkos(
     Kokkos::View<float, CpMem> maxApproach,
     Kokkos::View<const unsigned char*, CpMem> persistent = {},
     Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {},
-    Kokkos::View<const unsigned char*, CpMem> grounded = {}, SlotOverride ov = {}) {
+    Kokkos::View<const unsigned char*, CpMem> grounded = {}, SlotOverride ov = {},
+    Kokkos::View<const unsigned char*, CpMem> gate = {}) {
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
   const bool usePersist = persistent.extent(0) > 0;
+  const bool gated = gate.extent(0) > 0;
   for (int color = 0; color < numColors; ++color) {
     Kokkos::parallel_for(
         "peclet::dem::solve_velocity_gs", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -1763,6 +1822,11 @@ inline void solveVelocityColoredGSKokkos(
           // caller ends the velocity loop once no manifold approaches faster than the resting
           // threshold.
           Kokkos::atomic_max(&maxApproach(), Kokkos::fabs(vn) / lenN);
+          // Rank-level X (docs/contact_solve_framework.md §1.4): a gated contact whose rank does
+          // not hold one of its rank-split bodies in this sync interval records its approach (the
+          // stop must not end while it still approaches) but writes nothing.
+          if (gated && gate(idx) == 0)
+            return;
 
           if (Kokkos::fabs(vn) < restVelThreshold * lenN)
             restitution = 0.0f;

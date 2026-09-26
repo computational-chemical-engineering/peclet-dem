@@ -528,3 +528,33 @@ session scratchpad, `wo5b/`.
 - **Position path** (`solver_position.hpp`): the world-frame form is applied for consistency.
   `deltaQuat` is never committed (`applyUpdatesKokkos` commits `deltaPos` only), so it changes no
   result today.
+
+## WO-6: rank-level X for the g = 0 one-shot (implemented and verified by the session, 2026-09-26)
+
+The Opus subagents had hit their weekly usage limit, so the session implemented WO-6 itself.
+
+**Code:**
+- `ParticleHalo::ensureRankColoring`: greedy colouring of "blocks within 2 band" (§12 S19),
+  computed from the replicated decomposition with no communication. `rankColor()` and
+  `numRankColors()` expose the result.
+- The g = 0 opening (`openPositionCounts(P, velocityMask)`) carries `PositionCountsMask`
+  {mask, a_pos}: 16 B per ghost each way, in the same round.
+- `P.velMask`, `P.xGate`, and `P.solveEpoch` (incremented per `demSolveContacts`).
+- `computeXGateKokkos` and `xHolder` (§1.4). The one-shot kernel takes `gate`: a gated contact
+  records its approach and writes nothing.
+- `RankK` gained `color`, `numColors` and `syncInterval`.
+
+**Results** (OMP 1 unless stated; raw output in the session scratchpad `wo6/`):
+
+| gate | result |
+|---|---|
+| review 3-body `tri --axis=2`, KE at step 3, np 1/2/4/8 | e = 0.5: 0.1379044264 at every np (WO-5 np 2: 0.2907, energy created). e = 0.8: 0.2459279908 at every np, the review's np 1 value. Axes 0 and 1 unchanged, np 2 = np 1. |
+| KE non-increasing, np 8 OMP 8 | `cluster`, `cluster_e09`, `hub` decrease every step. `cluster_e10` (elastic) is flat to +2e-8 relative (float round-off). |
+| inertness vs WO-5 (ref build 0ea32ba), np 1/2/4/8 | 44 / 44 IDENT. The modes are `cluster_pgs`, `_poisson`, `_multilevel`, `_escalate`, `_ordered`, `_onesided`, `_posonly`, `hub_pgs`, `hub_posonly`, `hub_static`, `hub_ml`. |
+| G4 run-to-run, np 4/8, 3 runs | 6 / 6 IDENT (`cluster`, `tri`, `hub`). |
+| G1 conservation, np 1/2/4/8 × OMP 1/8 | 64 / 64 OK. Modes: `cluster`, `_friction`, `_sync3`, `_norot`, `_e09`, `_e10`, `hub`, `tri`. Max dP 7.7e-9 (hub 3.1e-7), dX ≤ 5.9e-7 R, dLvel ≤ 2.2e-8. |
+| battery (OMP 2, python_mpi run) | 201 / 201 |
+
+**Not yet measured:** `unfiredSplitContacts` in `perf_gas`. The counter exists under
+`iterCounters`, but `perf_gas` does not print it; that goes into WO-11's evidence. Also not yet
+measured: ms/step in the pinned protocol (WO-11).

@@ -63,11 +63,15 @@ struct MpiSolveHooks {
   void syncFrictionCounts(Particles& P) const { halo.syncFrictionCounts(P); }
   void syncContactCounts(Particles& P) const { halo.syncContactCounts(P); }
   // Rank-level M (docs/contact_solve_framework.md §13.3).
-  RankK rankK() const { return RankK{halo.exchanges()}; }
+  RankK rankK() const {
+    return RankK{halo.exchanges(), halo.rankColor(), halo.numRankColors(), syncEvery};
+  }
   void openVelocityPhase(Particles& P, bool poisson) const {
     halo.openVelocityPhase(P, forwardRotation, poisson);
   }
-  void openPositionCounts(Particles& P) const { halo.openPositionCounts(P); }
+  void openPositionCounts(Particles& P, bool velocityMask) const {
+    halo.openPositionCounts(P, velocityMask);
+  }
   void restoreOrphanBalance(Particles& P) const { halo.restoreOrphanBalance(P); }
 };
 

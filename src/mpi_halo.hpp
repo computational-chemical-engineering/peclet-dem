@@ -902,6 +902,55 @@ inline void haloUnpackGhostInt(Vi dst, peclet::core::View<int> ghost, Vi slot, i
       "peclet::dem::halo::unpackGhostInt", Kokkos::RangePolicy<CpExec>(0, ng),
       KOKKOS_LAMBDA(int g) { dst(no + slot(g)) = ghost(g); });
 }
+// Rank-level X (docs/contact_solve_framework.md §1.4, §13.5 WO-6): the g = 0 opening carries, with
+// a_pos, the velocity activity mask -- bit col(r) of every rank on which the body has an active
+// velocity copy. Reverse: OR the masks, sum the counts; forward: the owner's OR and k_pos. 16 B per
+// ghost each way, in the opening's single round.
+struct PositionCountsMask {
+  unsigned long long mask;
+  int aPos;
+  int pad;
+};
+KOKKOS_INLINE_FUNCTION PositionCountsMask operator+(const PositionCountsMask& a,
+                                                    const PositionCountsMask& b) {
+  return PositionCountsMask{a.mask | b.mask, a.aPos + b.aPos, 0};
+}
+inline void haloPackGhostCountsMask(Vi aVel, Vi aPos, peclet::core::View<PositionCountsMask> ghost,
+                                    Vi slot, unsigned long long bit, int no, int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::packCountsMask", Kokkos::RangePolicy<CpExec>(0, ng),
+      KOKKOS_LAMBDA(int g) {
+        const int s = no + slot(g);
+        ghost(g) = PositionCountsMask{aVel(s) > 0 ? bit : 0ull, aPos(s), 0};
+      });
+}
+inline void haloOwnerCountsMask(Vi aVel, Vi aPos, Vi kPos,
+                                Kokkos::View<unsigned long long*, CpMem> velMask,
+                                peclet::core::View<PositionCountsMask> owned,
+                                unsigned long long bit, int no) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::ownerCountsMask", Kokkos::RangePolicy<CpExec>(0, no),
+      KOKKOS_LAMBDA(int i) {
+        const PositionCountsMask r = owned(i);
+        const int kk = aPos(i) + r.aPos;
+        kPos(i) = kk > 1 ? kk : 1;
+        const unsigned long long m = r.mask | (aVel(i) > 0 ? bit : 0ull);
+        velMask(i) = m;
+        owned(i) = PositionCountsMask{m, kPos(i), 0};
+      });
+}
+inline void haloUnpackCountsMask(Vi kPos, Kokkos::View<unsigned long long*, CpMem> velMask,
+                                 peclet::core::View<PositionCountsMask> ghost, Vi slot, int no,
+                                 int ng) {
+  Kokkos::parallel_for(
+      "peclet::dem::halo::unpackCountsMask", Kokkos::RangePolicy<CpExec>(0, ng),
+      KOKKOS_LAMBDA(int g) {
+        const int s = no + slot(g);
+        kPos(s) = ghost(g).aPos;
+        velMask(s) = ghost(g).mask;
+      });
+}
+
 // The velocity slot map (§6.2): ghost slot no + j takes the canonical slot canon(j) of its body on
 // this rank (the owned slot for a self image, else the lowest ghost slot with its gid).
 inline void haloMapVelocitySlots(Vi realIndices, Vi canon, int no, int ng) {
@@ -963,6 +1012,12 @@ class ParticleHalo {
   }
   const peclet::core::decomp::BlockDecomposer<3>& decomposer() const { return dec_; }
 
+  /// Rank-level X (docs/contact_solve_framework.md §1.4; §12 S19): this rank's colour col(r) and
+  /// the number of colours C of the rank graph, recomputed by gather() when the band or the
+  /// decomposition changes.
+  int rankColor() const { return rankColor_; }
+  int numRankColors() const { return numRankColors_; }
+
   bool inited() const { return inited_; }
   int rank() const { return rank_; }
   int numGhost() const { return numGhost_; }
@@ -1000,6 +1055,7 @@ class ParticleHalo {
     // ghosts the new one needs), or when an owned particle has displaced ≥ skin since the last
     // build (a particle could have entered the rcut band without being in the rcut+skin list).
     const double band = rcut + static_cast<double>(verletSkin_);
+    ensureRankColoring(band);
     // Rank-level M (§13.3) is per substep: nothing of it crosses a gather.
     velM_ = posM_ = orphanShares_ = false;
     bool rebuild = (verletSkin_ <= 0.0f) || !haveTopo_ || (no != lastNumReal_) || band != lastBand_;
@@ -1127,6 +1183,7 @@ class ParticleHalo {
     packState(P, pos, payload);
     dec_ =
         newDec;  // in place: mig_ still points at dec_; mig_.migrate() sends to dec_.ownerOf(...)
+    colorBand_ = -1.0;  // the rank colouring follows the decomposition (§1.4)
     const std::size_t newN = mig_.migrate(pos, payload, sizeof(MigratePack));
     orderArrivalsBySource(pos, payload, newN);
     if ((int)newN > P.capacity)
@@ -1719,10 +1776,26 @@ class ParticleHalo {
   /// The g = 0 path's counts-only opening (§13.3): reverse a_pos, owner k_pos, forward k_pos.
   /// Its velocity phase stays c771e07's raw sync (WO-6 turns it into X); the position syncs from
   /// here to the next gather are M.
-  void openPositionCounts(Particles& P) {
+  ///
+  /// With `velocityMask` (rank-level X, §1.4 / WO-6) the same single round also carries the
+  /// velocity activity mask (PositionCountsMask): every slot's P.velMask ends as the OR of bit
+  /// col(r) over the ranks on which its body has an active velocity copy.
+  void openPositionCounts(Particles& P, bool velocityMask) {
     if (!exchanges())
       return;
     const int no = numReal_, ng = numGhost_;
+    if (velocityMask) {
+      const unsigned long long bit = 1ull << rankColor_;
+      haloPackGhostCountsMask(P.aVel, P.aPos, ghostCM_, ghostSlot_, bit, no, ng);
+      Kokkos::deep_copy(Kokkos::subview(ownedCM_, std::pair<std::size_t, std::size_t>(0, no)),
+                        PositionCountsMask{0ull, 0, 0});
+      dev_.reverse(ghostCM_, ownedCM_);
+      haloOwnerCountsMask(P.aVel, P.aPos, P.kPos, P.velMask, ownedCM_, bit, no);
+      dev_.forward(ownedCM_, ghostCM_);
+      haloUnpackCountsMask(P.kPos, P.velMask, ghostCM_, ghostSlot_, no, ng);
+      posM_ = true;
+      return;
+    }
     haloPackGhostInt(P.aPos, ghostCnt_, ghostSlot_, no, ng);
     Kokkos::deep_copy(Kokkos::subview(ownedCnt_, std::pair<std::size_t, std::size_t>(0, no)), 0);
     dev_.reverse(ghostCnt_, ownedCnt_);
@@ -1773,6 +1846,64 @@ class ParticleHalo {
   }
 
  private:
+  /// Greedy colouring, in rank order, of the graph "blocks within 2 band of each other" (minimum
+  /// image on the periodic axes), identical on every rank and computed without communication from
+  /// the replicated decomposition. Two ranks on which one body can be active at the same time are
+  /// adjacent: a body is active on a rank only through a contact with a partner the rank owns,
+  /// within the contact reach of the body, so two such ranks' blocks lie within 2 (reach + drift)
+  /// <= 2 band of each other. (§1.4 wrote "band + S", which covers owner-ghost pairs but not two
+  /// ghost ranks of one body -- §12 S19.) A superset of the conflict graph is safe; its only cost is
+  /// C. C <= 64 (the mask is one 64-bit word), else throw.
+  void ensureRankColoring(double band) {
+    if (band == colorBand_)
+      return;
+    colorBand_ = band;
+    const int nb = static_cast<int>(dec_.numBlocks());
+    const auto& gs = dec_.globalSize();
+    std::vector<std::array<double, 6>> box(static_cast<std::size_t>(nb));
+    for (int b = 0; b < nb; ++b) {
+      const auto blk = dec_.block(static_cast<std::size_t>(b));
+      for (int d = 0; d < 3; ++d) {
+        box[b][d] = map_.origin[d] + static_cast<double>(blk.origin[d]) * map_.cellSize[d];
+        box[b][3 + d] = box[b][d] + static_cast<double>(blk.size[d]) * map_.cellSize[d];
+      }
+    }
+    const double lim2 = 4.0 * band * band;
+    auto adjacent = [&](int a, int b) {
+      double d2 = 0.0;
+      for (int d = 0; d < 3; ++d) {
+        const double L = static_cast<double>(gs[d]) * map_.cellSize[d];
+        auto gap = [&](double shift) {
+          const double loB = box[b][d] + shift, hiB = box[b][3 + d] + shift;
+          return std::max(0.0, std::max(box[a][d] - hiB, loB - box[a][3 + d]));
+        };
+        double g = gap(0.0);
+        if (map_.periodic[d])
+          g = std::min(g, std::min(gap(L), gap(-L)));
+        d2 += g * g;
+      }
+      return d2 <= lim2;
+    };
+    std::vector<int> col(static_cast<std::size_t>(nb), 0);
+    int maxc = 0;
+    for (int r = 0; r < nb; ++r) {
+      unsigned long long used = 0ull;
+      for (int q = 0; q < r; ++q)
+        if (adjacent(r, q))
+          used |= 1ull << col[q];
+      int c = 0;
+      while (c < 64 && ((used >> c) & 1ull))
+        ++c;
+      if (c >= 64)
+        throw std::runtime_error(
+            "ParticleHalo: the rank graph needs more than 64 colours for rank-level X "
+            "(docs/contact_solve_framework.md §1.4); the blocks are too small for the band");
+      col[r] = c;
+      maxc = std::max(maxc, c);
+    }
+    rankColor_ = col[static_cast<std::size_t>(rank_)];
+    numRankColors_ = maxc + 1;
+  }
   void ensureClampCounter(Particles& P) {
     if (P.orphanClampCount.data() == nullptr)
       P.orphanClampCount = Kokkos::View<int, CpMem>("peclet::dem::orphanClampCount");
@@ -1888,6 +2019,7 @@ class ParticleHalo {
       ghostPosInc_ = peclet::core::View<PositionIncrement>("peclet::dem::halo::ghostPosInc", g1);
       ghostVal_ = peclet::core::View<float>("peclet::dem::halo::ghostVal", g1);
       ghostCnt_ = peclet::core::View<int>("peclet::dem::halo::ghostCnt", g1);
+      ghostCM_ = peclet::core::View<PositionCountsMask>("peclet::dem::halo::ghostCM", g1);
       ghostVelState_ = peclet::core::View<VelocityState>("peclet::dem::halo::ghostVelState", g1);
       ghostPosState_ = peclet::core::View<PositionState>("peclet::dem::halo::ghostPosState", g1);
       ghostOpenInc_ = peclet::core::View<OpeningIncrement>("peclet::dem::halo::ghostOpenInc", g1);
@@ -1903,6 +2035,7 @@ class ParticleHalo {
       ownedPosInc_ = peclet::core::View<PositionIncrement>("peclet::dem::halo::ownedPosInc", o1);
       ownedVal_ = peclet::core::View<float>("peclet::dem::halo::ownedVal", o1);
       ownedCnt_ = peclet::core::View<int>("peclet::dem::halo::ownedCnt", o1);
+      ownedCM_ = peclet::core::View<PositionCountsMask>("peclet::dem::halo::ownedCM", o1);
       ownedVelState_ = peclet::core::View<VelocityState>("peclet::dem::halo::ownedVelState", o1);
       ownedPosState_ = peclet::core::View<PositionState>("peclet::dem::halo::ownedPosState", o1);
       ownedOpenInc_ = peclet::core::View<OpeningIncrement>("peclet::dem::halo::ownedOpenInc", o1);
@@ -2069,6 +2202,11 @@ class ParticleHalo {
   peclet::core::View<PositionIncrement> ghostPosInc_, ownedPosInc_;
   peclet::core::View<float> ghostVal_, ownedVal_;
   peclet::core::View<int> ghostCnt_, ownedCnt_;
+  peclet::core::View<PositionCountsMask> ghostCM_, ownedCM_;
+  // Rank-level X (§1.4): this rank's colour and the number of colours, for the band they were
+  // computed with (-1: stale; reset whenever the decomposition changes).
+  int rankColor_ = 0, numRankColors_ = 1;
+  double colorBand_ = -1.0;
   peclet::core::View<VelocityState> ghostVelState_, ownedVelState_;  // fused forwards (rotation)
   peclet::core::View<PositionState> ghostPosState_, ownedPosState_;
   // Ownership maps (§2.1; see buildOwnershipMaps).

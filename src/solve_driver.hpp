@@ -240,6 +240,11 @@ struct CudaIterGraph {
 /// (buildSolveViewsRankKKokkos) and the coarse vertex masses.
 struct RankK {
   bool exchanges = false;
+  // Rank-level X (§1.4, WO-6): this rank's colour col(r), the number of colours C of the rank
+  // graph, and the sync interval (solver iterations per sync) that the holder cycle steps with.
+  int color = 0;
+  int numColors = 1;
+  int syncInterval = 1;
 };
 
 /// Single-GPU hooks: no ghost refresh, residuals are already global. Everything inlines away.
@@ -260,7 +265,7 @@ struct SoloSolveHooks {
   // directly -- and there is no rank-level k to expose.
   RankK rankK() const { return {}; }
   void openVelocityPhase(Particles&, bool) const {}
-  void openPositionCounts(Particles&) const {}
+  void openPositionCounts(Particles&, bool) const {}
   void restoreOrphanBalance(Particles&) const {}
 };
 
@@ -289,6 +294,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                              Kokkos::View<const int*, CpMem> keyIdx, const Hooks& hooks) {
   CpExec space;
   hooks.beginSolve(P);
+  // Rank-level X (§1.4): identical on every rank; each substep starts the holder cycle one step
+  // later, so no rank is systematically first. Incremented on every rank and every call (np 1
+  // included, where it is read by nothing).
+  ++P.solveEpoch;
   const int nmVisible = hooks.visibleManifolds(nm);
 
   // A frictional wall drives friction even when the body-body material is frictionless.
@@ -547,6 +556,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     growCopyView(P.kVel, static_cast<std::size_t>(nAll), "peclet::dem::kVel");
     growCopyView(P.kPos, static_cast<std::size_t>(nAll), "peclet::dem::kPos");
     growCopyView(P.activityHit, static_cast<std::size_t>(nAll), "peclet::dem::activityHit");
+    if (!usePersistPre) {  // rank-level X (§1.4): the g = 0 one-shot's masks and gates
+      growCopyView(P.velMask, static_cast<std::size_t>(nAll), "peclet::dem::velMask");
+      growCopyView(P.xGate, static_cast<std::size_t>(nm > 0 ? nm : 1), "peclet::dem::xGate");
+    }
     const SlotOverride vOv =
         VC.nHubs > 0 ? SlotOverride{VC.slotA, VC.slotB, {}, 1.0f} : SlotOverride{};
     activityHitVelocityKokkos(P.manifolds, nm, P.realIndices,
@@ -609,6 +622,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // impulses up front -- a static pile's force network is re-established in ~one sweep. g = 0
   // keeps the original one-shot colored-GS path bit-identical (HCS, growth packing).
   const bool usePGS = usePersist && P.velocityUseGS;
+  // Rank-level X (§1.4, WO-6): the g = 0 one-shot on a rank that exchanges, when the rank graph
+  // has more than one colour (with one colour no two ranks are adjacent, so no body is split
+  // across ranks and every contact fires).
+  const RankK rk = hooks.rankK();
+  const bool xOn = rankM && !usePGS && P.velocityUseGS && rk.numColors > 1;
   const float gMagP = Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
                                    P.gravity.z * P.gravity.z);
   const F3 gHat =
@@ -700,10 +718,12 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     if constexpr (Hooks::distributed)
       hooks.openVelocityPhase(P, poisson);
   } else if (P.velocityUseGS) {
-    // The g = 0 one-shot path: a counts-only opening for the position phase's k_pos (§13.3); the
-    // velocity phase stays c771e07's raw reconciliation until WO-6.
+    // The g = 0 one-shot path: the opening makes the position phase's k_pos (§13.3) and, in the
+    // same round, the velocity activity masks of rank-level X (§1.4, WO-6). The velocity phase's
+    // reconciliation stays c771e07's raw reverse + forward: under X at most one copy of a body
+    // changes per sync interval, so the raw sum is exact.
     if constexpr (Hooks::distributed)
-      hooks.openPositionCounts(P);
+      hooks.openPositionCounts(P, /*velocityMask=*/rankM);
   }
   // Velocity-phase copies (§4.4 step 6, §4.5): seeded once the warm start -- known impulses on
   // true masses -- has been applied (and, under MPI, published). The sweeps, the stabilization
@@ -836,10 +856,22 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           emitVelIter();
       } else {
         Kokkos::deep_copy(space, P.maxApproach, 0.0f);
+        // Rank-level X (§1.4, WO-6): in sync interval t a contact fires only if this rank holds
+        // every rank-split endpoint; a non-firing contact still records its approach for the stop.
+        Kokkos::View<const unsigned char*, CpMem> xGate;
+        if (xOn) {
+          const long long t = P.solveEpoch + it / rk.syncInterval;
+          computeXGateKokkos(P.manifolds, nm, P.realIndices,
+                             Kokkos::View<const unsigned long long*, CpMem>(P.velMask), P.xGate,
+                             rk.color, rk.numColors, t);
+          xGate = P.xGate;
+          if (P.iterCounters)
+            P.splitStats.unfiredSplitContacts += countUnfiredKokkos(xGate, nm);
+        }
         solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, invMassVel,
                                      invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,
                                      P.growthRate, P.restitutionNormal, vRest, P.maxApproach, {},
-                                     {}, {}, {}, velOv);
+                                     {}, {}, {}, velOv, xGate);
         foldVel();
       }
       // Every active manifold is coloured (§4.2): the count-averaged fallback is gone. The stop's

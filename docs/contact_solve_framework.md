@@ -2267,3 +2267,11 @@ PSOR would have a unique least-displacement fixed point and legitimate over-rela
     np 4/8 each rank owns too few eligible contacts, so there only conservation is gated.
   - The twin-dedup deviation (the check is disabled at every MPI dedup site) is accepted as
     recorded in IMPL_A.
+- **S19: the rank colouring graph is "blocks within 2 band", not "band + S"** (settled by the
+  session while implementing WO-6, 2026-09-26). A body is active on a rank only through a contact
+  with a partner that rank owns, within the contact reach of the body. Two ranks holding active
+  copies of one body therefore have blocks up to 2 (reach + drift) ≤ 2 band apart. §1.4's
+  "band + S" covers owner–ghost pairs but misses two ghost ranks of one body. Those two ranks could
+  then share a colour and write the body in the same interval, which breaks X1. Colouring a
+  superset of the conflict graph is always safe; its only cost is a larger C. The colouring is
+  greedy in rank order, uses the minimum image on periodic axes, and throws when C > 64.
