@@ -90,6 +90,12 @@
 //   tri_pgs           tri under free fall (g != 0: the warm-started PGS path), --vel-iters
 //   cluster_e09, cluster_e10   cluster with restitution 0.9 / 1.0
 //   cluster_poisson   cluster_pgs with the Poisson restitution model
+//   cluster_pgs_e     GATED (docs/contact_physics_followups.md §6 G-C1, WO-C1): cluster_pgs with
+//                     mu = 0, no spins, stabilization off, --e=<e>, --rest-target=<newton|moreau>,
+//                     ONE step with every adaptive stop off and 2000 velocity iterations (the
+//                     converged PGS). Prints KEGATE (the CoM-frame KE before and after the step).
+//                     Under 'moreau': KE after <= KE before (1 + 1e-5), and at e = 1 also
+//                     >= KE before (1 - 2e-3); under 'newton' the ratio is reported only.
 //   cluster_multilevel, cluster_escalate, cluster_ordered, cluster_onesided   cluster_pgs with that
 //                     stabilization mode instead of 'off'
 //   hub_pgs           hub under free fall (g != 0)
@@ -125,7 +131,8 @@
 // list is std::shuffle'd with std::mt19937(seed) before the gids are assigned, which samples
 // another serial Gauss-Seidel order of the same physical scene), --no-stop (every adaptive stop
 // of the contact solve off, so each loop runs exactly its cap: the convergence gates G7a / G7c,
-// §12 S13; Simulation::debugNoAdaptiveStop, test-only).
+// §12 S13; Simulation::debugNoAdaptiveStop, test-only), --rest-target=<newton|moreau>
+// (diagnostics.set_restitution_target: the PGS restitution target law, WO-C1).
 // dLvel measures the velocity phase from the PREDICTED angular velocity (§12 S16): the predict's
 // explicit gyroscopic term is frame rotation, not a contact impulse.
 //
@@ -211,6 +218,8 @@ static Tol tolOf(const std::string& mode) {
   if (mode == "cluster_sync3" || mode == "cluster_norot")
     return {1e-6, 1e-5, 1e-5, -1, 1e-4};  // the serial legacy-friction floor dLvel was 1.9e-5
   if (mode == "cluster_pgs")              // free-fall float accumulation floor dP 7.9e-7 at np 1
+    return {5e-6, 1e-5, 1e-5, -1, 1e-6};
+  if (mode == "cluster_pgs_e")  // WO-C1: the §1 free-fall conservation gates (plus KEGATE)
     return {5e-6, 1e-5, 1e-5, -1, 1e-6};
   if (mode == "cluster_posonly")  // the velocity increments are exact zeros
     return {1e-12, 1e-5, 1e-5, -1, 1e-12};
@@ -917,6 +926,8 @@ struct Mode {
   std::string stab;         // stabilization mode set after the gravity rule's 'off' (empty = keep)
   std::string fused;        // --fused=auto|on|off: diagnostics.set_fused_sweeps (empty = default)
   bool noStop = false;  // --no-stop: every adaptive stop off, each loop runs its cap (§12 S13, G7)
+  std::string restTarget;  // --rest-target=newton|moreau (empty = the default, newton)
+  bool keGate = false;     // cluster_pgs_e: the G-C1 KE gate (KEGATE line)
 };
 
 // Gather every rank's owned bodies to rank 0 and write them sorted by global body index (see the
@@ -1073,6 +1084,8 @@ static int runCluster(const Mode& md, int rank, int size) {
     sim.setStabilizationMode(md.stab);
   if (md.poisson)
     sim.setRestitutionModel("poisson");
+  if (!md.restTarget.empty())
+    sim.setRestitutionTarget(md.restTarget);  // WO-C1 A/B (default newton: never called)
   if (md.hertz) {
     sim.setHertzMaterial(0, 1.0e5f, 0.25f);
   }
@@ -1098,6 +1111,19 @@ static int runCluster(const Mode& md, int rank, int size) {
   State st = readState(sim);
   const Sums S0 = globalSums(st);
   const double M = S0.m;
+  // Kinetic energy in the CoM frame (translational + rotational), host double, Allreduced.
+  auto keCm = [&](const State& s, const Sums& S) {
+    double kl = 0.0, kg = 0.0;
+    for (int i = 0; i < static_cast<int>(s.m.size()); ++i) {
+      const D3 v = at(s.v, i), w = at(s.w, i), sp = spin(s, i);
+      kl += 0.5 * s.m[i] * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) +
+            0.5 * (sp[0] * w[0] + sp[1] * w[1] + sp[2] * w[2]);
+    }
+    MPI_Allreduce(&kl, &kg, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    kg -= 0.5 * (S.P[0] * S.P[0] + S.P[1] * S.P[1] + S.P[2] * S.P[2]) / M;
+    return kg;
+  };
+  const double ke0 = keCm(st, S0);  // before the first step (KEGATE)
   const D3 X0{S0.mx[0] / M, S0.mx[1] / M, S0.mx[2] / M}, V0{S0.P[0] / M, S0.P[1] / M, S0.P[2] / M};
   double pScaleLoc = 0.0, lScaleLoc = 0.0;
   for (int i = 0; i < static_cast<int>(st.m.size()); ++i) {
@@ -1194,17 +1220,7 @@ static int runCluster(const Mode& md, int rank, int size) {
     // per-body comparison across a step pairs the two states by gid (velocityPhaseTorque,
     // periodicDisplacement).
     const Sums S = globalSums(nx);
-    {  // kinetic energy in the CoM frame (translational + rotational), host double
-      double kl = 0.0, kg = 0.0;
-      for (int i = 0; i < static_cast<int>(nx.m.size()); ++i) {
-        const D3 v = at(nx.v, i), w = at(nx.w, i), sp = spin(nx, i);
-        kl += 0.5 * nx.m[i] * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) +
-              0.5 * (sp[0] * w[0] + sp[1] * w[1] + sp[2] * w[2]);
-      }
-      MPI_Allreduce(&kl, &kg, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-      kg -= 0.5 * (S.P[0] * S.P[0] + S.P[1] * S.P[1] + S.P[2] * S.P[2]) / M;
-      keHist.push_back(kg);
-    }
+    keHist.push_back(keCm(nx, S));
     const double t = static_cast<double>(s) * sub * dt;
     D3 ep, ex, el, ec;
     const D3 Ln = angular(nx, S), Lc = angularCm(nx, S);
@@ -1328,6 +1344,24 @@ static int runCluster(const Mode& md, int rank, int size) {
     for (std::size_t k = 0; k < keHist.size(); ++k)
       std::printf(" s%zu=%.9e", k + 1, keHist[k]);
     std::printf("\n");
+  }
+  // G-C1 (docs/contact_physics_followups.md §6, WO-C1): the converged one-step PGS in the dense
+  // frictionless cluster. Moreau's target is energy-consistent for a uniform e (§4.1): KE may
+  // not grow, and at e = 1 it is conserved up to the sub-threshold (e = 0) contacts. Newton's
+  // ratio is reported (it exceeds 1 at e >= 0.9: pre-separating loaded contacts create energy).
+  if (md.keGate && !keHist.empty()) {
+    const bool moreau = md.restTarget == "moreau";
+    const double ratio = keHist.back() / ke0;
+    if (rank == 0)
+      std::printf("KEGATE mode=%s np=%d thr=%d target=%s e=%.3f ke0=%.9e ke1=%.9e ratio=%.9f\n",
+                  md.name.c_str(), size, thr, moreau ? "moreau" : "newton",
+                  static_cast<double>(md.restitution), ke0, keHist.back(), ratio);
+    if (moreau && !(ratio <= 1.0 + 1e-5 && (md.restitution != 1.0f || ratio >= 1.0 - 2e-3))) {
+      fail = 1;
+      if (rank == 0)
+        std::fprintf(stderr, "GATE: Moreau KE ratio %.9f outside the G-C1 bounds (e = %.3f)\n",
+                     ratio, static_cast<double>(md.restitution));
+    }
   }
   // G2 (docs/contact_solve_framework.md §9, the review's 3-body face scene): under policy X the
   // distributed g = 0 one-shot is a legal serial Gauss-Seidel order, so the kinetic energy after
@@ -1589,6 +1623,8 @@ int main(int argc, char** argv) {
         md.fused = argv[a] + 8;
       else if (std::strcmp(argv[a], "--no-stop") == 0)
         md.noStop = true;
+      else if (std::strncmp(argv[a], "--rest-target=", 14) == 0)
+        md.restTarget = argv[a] + 14;
     }
     if (md.axis < 0 || md.axis > 2) {
       if (rank == 0)
@@ -1606,6 +1642,12 @@ int main(int argc, char** argv) {
       md.friction = md.spins = true;
     } else if (mode == "cluster_pgs") {
       md.friction = md.spins = md.gravity = true;
+    } else if (mode == "cluster_pgs_e") {  // G-C1: mu = 0, no spins, one converged step
+      md.gravity = md.keGate = true;
+      md.velIters = 2000;
+      md.noStop = true;
+      if (md.steps <= 0)
+        md.steps = 1;
     } else if (mode == "cluster_posonly") {
       md.velIters = 0;
     } else if (mode == "cluster_jacobi") {
@@ -1693,9 +1735,10 @@ int main(int argc, char** argv) {
              mode == "cluster_onesided" || mode == "ring_mini")
       fail = runCluster(md, rank, size);
     else if (mode == "cluster" || mode == "cluster_friction" || mode == "cluster_pgs" ||
-             mode == "cluster_posonly" || mode == "hertz" || mode == "cluster_sync3" ||
-             mode == "cluster_norot" || mode == "cluster_periodic" || mode == "cluster_jacobi" ||
-             mode == "hertz_shear" || mode == "cluster_shear" || mode == "hertz_shear_frictionless")
+             mode == "cluster_pgs_e" || mode == "cluster_posonly" || mode == "hertz" ||
+             mode == "cluster_sync3" || mode == "cluster_norot" || mode == "cluster_periodic" ||
+             mode == "cluster_jacobi" || mode == "hertz_shear" || mode == "cluster_shear" ||
+             mode == "hertz_shear_frictionless")
       fail = runCluster(md, rank, size);
     else {
       if (rank == 0)

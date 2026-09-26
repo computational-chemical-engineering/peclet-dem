@@ -230,6 +230,11 @@ struct Particles {
   // impulse banked per pair, released as a budget-capped separation-velocity target during
   // unloading — restores the multi-substep-impact rebound per-substep Newton cannot return).
   int restitutionModel = 0;
+  // Restitution TARGET law of the PGS velocity solve (the g != 0 path; a diagnostics A/B,
+  // docs/contact_physics_followups.md §4 / WO-C1): 0 = newton (default; -e v0til on pre-solve
+  // approaching contacts only), 1 = moreau (-e v0til on every closed contact above the resting
+  // threshold). Only with restitutionModel == 0 (the setters refuse moreau + poisson, R-C4).
+  int restitutionTarget = 0;
   // Per-particle material id + flat pair-material table [kMaxMaterials^2 * 2] of (restitution,
   // friction) rows; zero-length pairMaterials = feature off (global material everywhere).
   Kokkos::View<unsigned char*, CpMem> materialId;

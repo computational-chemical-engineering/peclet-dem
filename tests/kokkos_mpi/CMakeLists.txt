@@ -136,6 +136,18 @@ foreach(np 1 2 4 8)
   endforeach()
 endforeach()
 _dem_mpi_test(followup_missed_drift_lattice_np4 4 test_ownership_mpi missed_drift_lattice)
+# cluster_pgs_e (docs/contact_physics_followups.md §6 G-C1, WO-C1): the dense frictionless cluster,
+# one converged PGS step under Moreau's restitution target: the CoM-frame kinetic energy may not
+# grow (1e-5). e = 1.0 is NOT registered yet: at the scene's dt = 1e-2 the resting threshold
+# (2 dt |g| = 0.2) leaves sub-threshold e = 0 contacts, whose creation channel (the note's R-C3)
+# measures KE1/KE0 = 1 + 1.26e-4 at np 1..8, above the 1e-5 bound (1 + 3e-9 at dt = 1e-4). How the
+# e = 1 gate is posed is open (reported with WO-C1).
+foreach(np 1 2 4 8)
+  foreach(e 0.5 0.9)
+    _dem_mpi_test(momentum_cluster_pgs_e${e}_moreau_np${np} ${np} test_momentum_mpi cluster_pgs_e
+                  --e=${e} --rest-target=moreau)
+  endforeach()
+endforeach()
 # docs/contact_solve_framework.md WO-0: report-only instrumentation of the contact-solve framework
 # (KE per step, CONFLICTS per step, the tri / ring_mini / stabilization scenes; the dynamic
 # visibility oracle). None of them fails today; the framework's gates read their lines.

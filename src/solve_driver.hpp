@@ -818,13 +818,13 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // stop — and the physics — are bit-identical to the submission path.
   auto emitVelIter = [&] {
     Kokkos::deep_copy(space, P.maxApproach, 0.0f);
-    solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel,
-                           P.quat, P.velPred, P.angVelPred, P.realIndices, P.growthRate,
-                           P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
-                           Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
-                           P.frictionDynamic, P.vt0, P.restitutionTangent,
-                           Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC,
-                           orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
+    solveVelocityPGSKokkos(
+        P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel, P.quat, P.velPred,
+        P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.maxApproach,
+        P.lambdaAcc, P.vn0, Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+        P.frictionDynamic, P.vt0, P.restitutionTangent,
+        Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC, orphV, orphPk,
+        velPermC, velOffsP, velFusedP, nullptr, velOv, P.restitutionTarget);
     foldVel();
   };
   // Device-side iteration loop (CUDA, single-rank): the whole adaptive velocity loop as ONE
@@ -842,7 +842,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           P.lambdaAcc, P.vn0, Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
           P.frictionDynamic, P.vt0, P.restitutionTangent,
           Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC, orphV, orphPk,
-          velPermC, velOffsP, velFusedP, &spec);
+          velPermC, velOffsP, velFusedP, &spec, {}, P.restitutionTarget);
     }
   }
   bool graphVel = false;
@@ -950,7 +950,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
               P.maxApproach, P.lambdaAcc, P.vn0,
               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
               P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {},
-              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
+              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv,
+              P.restitutionTarget);
           foldVel();
         };
         bool osLoopDone = false;
@@ -964,7 +965,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                 Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
                 P.frictionDynamic, P.vt0, P.restitutionTangent,
                 Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC, orphV,
-                orphPk, velPermC, velOffsP, velFusedP, &spec);
+                orphPk, velPermC, velOffsP, velFusedP, &spec, {}, P.restitutionTarget);
           }
         }
         bool graphOs = false;
@@ -1088,7 +1089,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
               P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse),
               P.maxApproachQS, bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP,
-              nullptr, velOv);
+              nullptr, velOv, P.restitutionTarget);
           foldVel();
           if (H.numLevels > 0) {
             multilevelCoarseCycleKokkos(P.manifolds, nm, P.realIndices, invMassCoarse, P.velPred,
@@ -1113,8 +1114,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                   P.maxApproachQS, P.lambdaAcc, P.vn0,
                   Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
                   P.frictionDynamic, P.vt0, P.restitutionTangent,
-                  Kokkos::View<const float*, CpMem>(P.posImpulse), bankV, relV, vpkC, orphV,
-                  orphPk);
+                  Kokkos::View<const float*, CpMem>(P.posImpulse), bankV, relV, vpkC, orphV, orphPk,
+                  {}, P.restitutionTarget);
               mlLoopDone = demLaunchFusedMlLoop(
                   space, fStab, velPermC, *velFusedP, numColors, P.manifolds, P.realIndices,
                   Kokkos::View<const float*, CpMem>(P.invMass), P.velPred, P.lambdaAcc,
@@ -1132,7 +1133,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                   Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
                   P.frictionDynamic, P.vt0, P.restitutionTangent,
                   Kokkos::View<const float*, CpMem>(P.posImpulse), P.maxApproachQS, bankV, relV,
-                  vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, &spec);
+                  vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, &spec, {},
+                  P.restitutionTarget);
             }
           }
         }
@@ -1194,7 +1196,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                      vpkC,
                                      orphV,
                                      orphPk,
-                                     velOv};
+                                     velOv,
+                                     P.restitutionTarget};
         if (velCons)
           Kokkos::deep_copy(P.maxConsensus, 0.0f);
         for (int it = 0; it < 2 * P.velocityIterations; ++it) {
@@ -1226,7 +1229,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
               P.maxApproach, P.lambdaAcc, P.vn0,
               Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
               P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {},
-              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
+              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv,
+              P.restitutionTarget);
           foldVel();
           const float esRes = hooks.allMax(withConsensus(readFloat(P.maxApproach), velCons));
           if (stopsOn && esRes <= vRestS)

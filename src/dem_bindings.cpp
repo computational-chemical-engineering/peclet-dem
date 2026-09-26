@@ -176,6 +176,21 @@ NB_MODULE(_dem, m) {
           },
           "'gauss_seidel' or 'jacobi'.")
       .def(
+          "set_restitution_target",
+          [](Diagnostics& d, const std::string& target) { d.s->setRestitutionTarget(target); },
+          nb::arg("target"),
+          "A/B switch of the restitution TARGET law in the PGS velocity solve (the g != 0 path): "
+          "'newton' (default; -e x the pre-solve approach on a contact that approaches, 0 on a "
+          "pre-separating one) or 'moreau' (-e x the pre-solve normal velocity on EVERY closed "
+          "contact above the resting threshold: energy-consistent for a uniform e, where Newton "
+          "creates kinetic energy in dense kinetic states). Single contacts, resting beds, "
+          "one-sided contacts and the g = 0 one-shot are unaffected. 'moreau' raises ValueError "
+          "under set_restitution_model('poisson'), and so does switching to 'poisson' while the "
+          "target is 'moreau'. CHANGES RESULTS.")
+      .def_prop_ro(
+          "restitution_target", [](Diagnostics& d) { return d.s->restitutionTarget(); },
+          "'newton' or 'moreau'.")
+      .def(
           "set_cuda_graphs", [](Diagnostics& d, bool on) { d.s->setCudaGraphs(on); },
           nb::arg("enabled"),
           "CUDA-graph replay of the solver's iteration loops (default True): capture collapses "

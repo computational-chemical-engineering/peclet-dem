@@ -249,12 +249,37 @@ class Simulation : public ShapeRegistry {
   void setRestitutionModel(const std::string& model) {
     if (model == "newton")
       P_.restitutionModel = 0;
-    else if (model == "poisson")
+    else if (model == "poisson") {
+      if (P_.restitutionTarget == 1)  // R-C4: Poisson keeps its Newton per-substep targets
+        throw std::invalid_argument(
+            "set_restitution_model: 'poisson' needs the 'newton' restitution target; call "
+            "diagnostics.set_restitution_target('newton') first");
       P_.restitutionModel = 1;
-    else
+    } else
       throw std::invalid_argument("set_restitution_model: expected 'newton' or 'poisson'");
   }
   std::string restitutionModel() const { return P_.restitutionModel == 1 ? "poisson" : "newton"; }
+  /// Restitution TARGET law of the PGS velocity solve (the g != 0 path; diagnostics A/B of
+  /// docs/contact_physics_followups.md §4, WO-C1): "newton" (default; -e v0til on a contact that
+  /// approaches before the solve, 0 on a pre-separating one) or "moreau" (-e v0til on every
+  /// closed contact whose pre-solve normal speed reaches the resting threshold -- energy-
+  /// consistent for a uniform e). CHANGES RESULTS in dense kinetic states; single contacts,
+  /// resting beds, one-sided contacts and the g = 0 one-shot are unaffected. "moreau" is refused
+  /// under the "poisson" restitution model (R-C4).
+  void setRestitutionTarget(const std::string& target) {
+    if (target == "newton")
+      P_.restitutionTarget = 0;
+    else if (target == "moreau") {
+      if (P_.restitutionModel == 1)
+        throw std::invalid_argument(
+            "set_restitution_target: 'moreau' is not available under the 'poisson' restitution "
+            "model (it keeps its Newton per-substep targets)");
+      P_.restitutionTarget = 1;
+    } else
+      throw std::invalid_argument("set_restitution_target: expected 'newton' or 'moreau', got '" +
+                                  target + "'");
+  }
+  std::string restitutionTarget() const { return P_.restitutionTarget == 1 ? "moreau" : "newton"; }
   /// Island sleeping / freezing (single-GPU statics, default ON; `enabled=False` disables). A
   /// REAL body whose linear AND
   /// angular motion stays below `scale` x the resting floor (2 dt |g|) for K substeps while
