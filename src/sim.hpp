@@ -327,6 +327,22 @@ class Simulation : public ShapeRegistry {
   /// numerical option, not just a speed one; False reproduces the pre-incremental behaviour.
   void setIncrementalColoring(bool enabled) { P_.incrementalColoring = enabled; }
   bool incrementalColoring() const { return P_.incrementalColoring; }
+  /// Narrow-phase shell detection of the XPBD engine (step / step_mpi / relax / compute_overlaps;
+  /// the Hertz engine is unaffected): "one_way" (default: the lower-index body's shell points
+  /// against the other's SDF) or "two_way" (shell pairs are probed from both sides, and a
+  /// sphere-shell pair always takes the exact sphere probe). CHANGES RESULTS for non-sphere
+  /// bodies; costs up to 2x the narrow phase and contacts of shell pairs
+  /// (docs/solver_details.md, "Two-way shell detection"; detectContactsKokkos).
+  void setShellDetection(const std::string& mode) {
+    if (mode == "one_way")
+      P_.shellDetection = 0;
+    else if (mode == "two_way")
+      P_.shellDetection = 1;
+    else
+      throw std::invalid_argument("set_shell_detection: expected 'one_way' or 'two_way'");
+    ensureContactCapacity();  // the setup-time bound doubles for two-way
+  }
+  std::string shellDetection() const { return P_.shellDetection == 1 ? "two_way" : "one_way"; }
   /// Number of currently-sleeping real bodies (diagnostics / tests).
   int numAsleep() {
     int n = 0;

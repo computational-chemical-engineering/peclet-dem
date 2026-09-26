@@ -40,7 +40,8 @@ namespace peclet::dem {
 /// is worse still, since calculateGhostCapacity's +4096 slots of slack alone ask for 13 million
 /// contacts (several GB across the ~40 buffers) with a 1625-probe particle. See narrowPhaseGrow.
 inline void growContactBuffers(Particles& P, long nBodies, long floorWant = 0) {
-  const int perParticle = std::max(16, P.shellPoints);
+  // Two-way shell detection probes a shell pair from both sides: up to twice the contacts.
+  const int perParticle = std::max(16, P.shellPoints) * (P.shellDetection == 1 ? 2 : 1);
   const long want = std::max(
       floorWant, nBodies * perParticle + nBodies * std::max(1, P.shellPoints) * P.numWalls);
   if (want > P.maxContacts) {
@@ -120,7 +121,7 @@ inline int narrowPhaseGrow(Particles& P, int np, float margin) {
     Kokkos::deep_copy(space, P.contactCount, 0);
     detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
                          P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid,
-                         P.materialId, P.pairMaterials);
+                         P.materialId, P.pairMaterials, /*twoWay=*/P.shellDetection == 1);
     detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId,
                          P.shapes, P.shell, P.planes, P.globalScale, margin, P.contacts,
                          P.contactCount, P.maxOverlap);

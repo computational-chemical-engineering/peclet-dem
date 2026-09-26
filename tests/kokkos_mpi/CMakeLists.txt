@@ -243,3 +243,26 @@ foreach(np 2 4 8)
   set_tests_properties(position_agreement_ring_collide_np${np} PROPERTIES PROCESSORS ${np}
                        LABELS mpi)
 endforeach()
+# Two-way shell detection (Simulation::setShellDetection("two_way"), docs/solver_details.md): the
+# reverse probes are emitted as more points of the same canonical pair, so every framework
+# invariant must still hold with it ON -- conservation on both tube scenes at every np, and the
+# ring_collide feasibility, committed-overlap and np-agreement gates.
+foreach(np 1 2 4 8)
+  foreach(mode ring_collide ring_mini)
+    _dem_mpi_test(momentum_${mode}_twoway_np${np} ${np} test_momentum_mpi ${mode}
+                  --shell-detection=two_way)
+  endforeach()
+endforeach()
+_dem_mpi_test(ring_collide_twoway_converged_np1 1 test_momentum_mpi ring_collide --pos-iters=2000
+              --gate-pos-cap --shell-detection=two_way)
+_dem_mpi_test(ring_collide_twoway_overlap_np1 1 test_momentum_mpi ring_collide --gate-overlap=5e-3
+              --shell-detection=two_way)
+foreach(np 2 4)
+  add_test(NAME position_agreement_ring_collide_twoway_np${np}
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/position_agreement.sh ${MPIEXEC_EXECUTABLE}
+                   ${_mpi_preflags} -- $<TARGET_FILE:test_momentum_mpi> ${np}
+                   ${CMAKE_CURRENT_BINARY_DIR}/position_agreement_ring_collide_twoway_np${np}
+                   ring_collide_posonly --shell-detection=two_way)
+  set_tests_properties(position_agreement_ring_collide_twoway_np${np} PROPERTIES PROCESSORS ${np}
+                       LABELS mpi)
+endforeach()

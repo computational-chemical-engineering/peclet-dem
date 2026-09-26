@@ -151,7 +151,9 @@
 // list is std::shuffle'd with std::mt19937(seed) before the gids are assigned, which samples
 // another serial Gauss-Seidel order of the same physical scene), --no-stop (every adaptive stop
 // of the contact solve off, so each loop runs exactly its cap: the convergence gates G7a / G7c,
-// §12 S13; Simulation::debugNoAdaptiveStop, test-only).
+// §12 S13; Simulation::debugNoAdaptiveStop, test-only),
+// --shell-detection=<one_way|two_way> (Simulation::setShellDetection: the narrow phase's probe
+// directions; two_way adds B's shell points against A's SDF for shell pairs).
 // dLvel measures the velocity phase from the PREDICTED angular velocity (§12 S16): the predict's
 // explicit gyroscopic term is frame rotation, not a contact impulse.
 //
@@ -1027,6 +1029,7 @@ struct Mode {
   std::string fused;        // --fused=auto|on|off: diagnostics.set_fused_sweeps (empty = default)
   bool noStop = false;  // --no-stop: every adaptive stop off, each loop runs its cap (§12 S13, G7)
   bool keGate = false;  // cluster_pgs_e: the G-C1 KE gate (KEGATE line)
+  std::string shellDetection;  // --shell-detection=one_way|two_way (empty = default, one_way)
 };
 
 // Gather every rank's owned bodies to rank 0 and write them sorted by global body index (see the
@@ -1185,6 +1188,8 @@ static int runCluster(const Mode& md, int rank, int size) {
     sim.setStabilizationMode(md.stab);
   if (md.poisson)
     sim.setRestitutionModel("poisson");
+  if (!md.shellDetection.empty())
+    sim.setShellDetection(md.shellDetection);  // default one_way: never called
   if (md.hertz) {
     sim.setHertzMaterial(0, 1.0e5f, 0.25f);
   }
@@ -1777,6 +1782,8 @@ int main(int argc, char** argv) {
         md.fused = argv[a] + 8;
       else if (std::strcmp(argv[a], "--no-stop") == 0)
         md.noStop = true;
+      else if (std::strncmp(argv[a], "--shell-detection=", 18) == 0)
+        md.shellDetection = argv[a] + 18;
       else if (std::strcmp(argv[a], "--gate-pos-cap") == 0)
         md.gatePosCap = true;
       else if (std::strncmp(argv[a], "--gate-overlap=", 15) == 0)

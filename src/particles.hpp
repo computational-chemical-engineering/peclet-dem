@@ -390,6 +390,10 @@ struct Particles {
   // free-function contact-buffer growth (growContactBuffers) can size itself without reading the
   // device shape descriptors back to the host every step.
   int shellPoints = 0;
+  // Narrow-phase shell detection (Simulation::setShellDetection; detectContactsKokkos): 0 =
+  // one-way (default; the lower-index body's probes against the other's SDF), 1 = two-way (shell
+  // pairs probe both ways, sphere-shell pairs take the sphere probe). XPBD engine only.
+  int shellDetection = 0;
   // max wall friction (host) — gates the friction path so a frictional wall works even with a
   // frictionless body-body material (global frictionDynamic == 0).
   float wallFrictionMax = 0.0f;

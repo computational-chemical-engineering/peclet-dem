@@ -213,6 +213,25 @@ KOKKOS_INLINE_FUNCTION F3 sdfGradShape(F3 p, const ShapeDesc& d, GridView grid) 
 
 /// Pair point-shell vs SDF contacts. pairs[numPairs][2] are (idA,idB) from the broad-phase; emits
 /// ContactC into outContacts guarded by atomic outCount (clamped to outContacts.extent(0)).
+///
+/// One-way (the default, `twoWay == false`): A's probes -- its shell points, or its centre and
+/// radius for a sphere -- are tested against B's SDF, and nothing else. A thin rim, wall or edge of
+/// B pressed into a face of A can then sit between A's shell points unseen
+/// (docs/contact_physics_followups.md F2: 0.0235 penetration on tubes while 0.001 was reported).
+///
+/// Two-way (`twoWay == true`, Simulation::setShellDetection("two_way"); the XPBD narrow phase
+/// only -- the Hertz engine has its own pair law and would double-count the stiffness):
+///   * shell-shell pairs ALSO test B's shell points against A's SDF;
+///   * a sphere-shell pair uses ONLY the exact sphere probe, whichever index the sphere has: with
+///     A the shell and B the sphere, B's centre probes A's SDF instead of A's shell probing B's
+///     sphere (a sphere can press between shell points; its centre distance cannot miss);
+///   * sphere-sphere pairs, and a sphere A against a shell B, are unchanged.
+/// A reverse contact is emitted in the pair's CANONICAL orientation (bodyA = idA, bodyB = idB,
+/// normal = the outward normal of B, rA / rB the surface points on A / B with
+/// pA = pB + normal * dist), exactly the form of a forward contact, so the manifold reduction, the
+/// position units, the warm-start ledger and the MPI contact ownership all treat it as one more
+/// point of the same pair. The two directions are not merged: each is a separate constraint row of
+/// the pair (docs/solver_details.md, "Two-way shell detection", for the measurement).
 inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int numPairs,
                                  PosView pos, QuatView quat, ScalarF scale, ScalarI shapeId,
                                  Kokkos::View<const ShapeDesc*, CpMem> shapes, ShellView shell,
@@ -221,7 +240,7 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
                                  Kokkos::View<int, CpMem> outCount,
                                  Kokkos::View<float, CpMem> maxOverlap,
                                  GridView sdfGrid = GridView{}, MatIdView matId = MatIdView{},
-                                 PairTableView pairTable = PairTableView{}) {
+                                 PairTableView pairTable = PairTableView{}, bool twoWay = false) {
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
@@ -243,8 +262,13 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
         const int countA = dA.numPoints;
         const bool sphereA = (dA.type == SPHERE);
         const int iter = (countA > 0) ? countA : 1;
+        // Two-way only: B's probes against A's SDF. A shell A against a sphere B swaps to B's
+        // exact sphere probe (and drops A's forward probes below); a shell pair adds B's shell.
+        const int countB = dB.numPoints;
+        const bool sphereProbeB = twoWay && countA > 0 && countB == 0 && dB.type == SPHERE;
+        const bool shellProbeB = twoWay && countA > 0 && countB > 0;
 
-        for (int k = 0; k < iter; ++k) {
+        for (int k = 0; k < (sphereProbeB ? 0 : iter); ++k) {
           F3 pLocalA{0, 0, 0};
           float pointRadius = 0.0f;
           if (countA > 0) {
@@ -290,6 +314,69 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
           c.friction_lambda_n = 0.0f;
           c.weight = 0.0f;
           if (pairTable.extent(0) > 0) {  // per-pair body-body material
+            const int t = (int(matId(idA)) * kMaxMaterials + int(matId(idB))) * 2;
+            c.boundaryRestitution = pairTable(t);
+            c.boundaryFriction = pairTable(t + 1);
+          }
+          outContacts(slot) = c;
+        }
+
+        // Reverse direction: B's probe points against A's SDF, emitted in the canonical (A, B)
+        // orientation. The geometry mirrors the forward block with the roles of A and B exchanged;
+        // only the emission differs (normal = -gradient of A, the surface points swap arms).
+        const int iterB = sphereProbeB ? 1 : (shellProbeB ? countB : 0);
+        for (int k = 0; k < iterB; ++k) {
+          F3 pLocalB{0, 0, 0};
+          float pointRadius = 0.0f;
+          if (shellProbeB) {
+            const int s = dB.shellOffset + k;
+            pLocalB = F3{shell(s, 0), shell(s, 1), shell(s, 2)};
+          } else {
+            pointRadius = dB.params.x * effScaleB;
+          }
+
+          const F3 pWorld = add3(posB, rotateVector(qB, scale3(pLocalB, effScaleB)));
+          const F3 pLocalA = invRotateVector(qA, sub3(pWorld, posA));
+          const F3 pCanA = scale3(pLocalA, 1.0f / effScaleA);
+
+          const float dist = sdfEvalShape(pCanA, dA, sdfGrid) * effScaleA;
+          const float effDist = dist - pointRadius;
+          if (effDist >= margin)
+            continue;
+
+          if (effDist < 0.0f)
+            Kokkos::atomic_max(&maxOverlap(), -effDist);
+          const int slot = Kokkos::atomic_fetch_add(&outCount(), 1);
+          if (slot >= maxContacts) {
+            Kokkos::atomic_add(&outCount(), -1);
+            continue;
+          }
+
+          F3 mLoc = sdfGradShape(pCanA, dA, sdfGrid);
+          const float len = len3(mLoc);
+          mLoc = (len > 1e-9f) ? scale3(mLoc, 1.0f / len) : F3{0, 1, 0};
+
+          const F3 mWorld = rotateVector(qA, mLoc);  // outward normal of A at B's probe
+          const F3 pSurfB = sub3(pWorld, scale3(mWorld, pointRadius));  // on B's surface
+          const F3 pSurfA = sub3(pSurfB, scale3(mWorld, effDist));      // on A's surface
+          const F3 rA = sub3(pSurfA, posA);
+          const F3 rB = sub3(pSurfB, posB);
+
+          // Canonical orientation: the normal is B's outward direction, -mWorld, so that
+          // pSurfA = pSurfB + normal * dist as for a forward contact. (The position phase rotates
+          // a stored normal with B's predicted spin; this one is A's surface normal, so over a
+          // step it lags by the relative rotation -- the same order as R-B5 of
+          // docs/contact_physics_followups.md, times dist.)
+          ContactC c{};
+          c.bodyA = idA;
+          c.bodyB = idB;
+          c.normal = F4{-mWorld.x, -mWorld.y, -mWorld.z, 0.0f};
+          c.rA = F4{rA.x, rA.y, rA.z, 0.0f};
+          c.rB = F4{rB.x, rB.y, rB.z, 0.0f};
+          c.dist = effDist;
+          c.friction_lambda_n = 0.0f;
+          c.weight = 0.0f;
+          if (pairTable.extent(0) > 0) {  // per-pair body-body material (the pair's own row)
             const int t = (int(matId(idA)) * kMaxMaterials + int(matId(idB))) * 2;
             c.boundaryRestitution = pairTable(t);
             c.boundaryFriction = pairTable(t + 1);

@@ -803,6 +803,20 @@ NB_MODULE(_dem, m) {
            "pre-incremental behaviour rather than merely running slower.")
       .def_prop_ro("incremental_coloring", &Simulation::incrementalColoring,
                    "Whether incremental (warm-started) coloring is enabled.")
+      .def("set_shell_detection", &Simulation::setShellDetection, nb::arg("mode"),
+           "Narrow-phase shell detection of the XPBD engine (step, step_mpi, relax, "
+           "compute_overlaps; step_hertz is unaffected). 'one_way' (default): only the "
+           "lower-index body's shell points are tested against the other body's SDF, so a thin "
+           "rim, wall or edge pressed into a flat face between those points can go unseen. "
+           "'two_way': shell pairs are also probed the other way round, and a sphere-shell pair "
+           "always uses the exact sphere probe. Enable it for thin-walled or non-convex shells "
+           "(tubes, rings), sharp edges and corners against faces, and large size ratios where "
+           "the smaller body's features are finer than the larger body's shell spacing; not "
+           "needed for spheres or smooth convex bodies of similar size with dense shells. Costs "
+           "up to 2x the narrow phase and the contacts of shell pairs (docs/solver_details.md). "
+           "CHANGES RESULTS for non-sphere bodies.")
+      .def_prop_ro("shell_detection", &Simulation::shellDetection,
+                   "The narrow-phase shell detection: 'one_way' or 'two_way'.")
 #ifdef PECLET_DEM_MPI
       // ---- distributed step; built only with -DPECLET_DEM_MPI=ON ---------------------------
       .def(
