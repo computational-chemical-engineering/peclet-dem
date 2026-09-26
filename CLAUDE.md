@@ -160,8 +160,9 @@ slots only as the partner half of an impulse pair: the reverse delivers exactly 
 there. `ghost_band_*` no longer pins one thread.
 
 Since 2026-09-25 (`docs/contact_solve_framework.md`):
-- `openVelocityPhase` exchanges the active-copy counts `k` and holder masks with the warm-start
-  increments;
+- the PGS path's `openVelocityPhase` exchanges the active-copy counts `k` with the warm-start
+  increments; the `g = 0` path's `openPositionCounts` carries `k_pos` and the velocity activity
+  masks of policy X (16 B per ghost, same round);
 - every later sync applies the mean for `k > 1` in projection phases;
 - the `g = 0` one-shot fires a rank-shared body's contacts only on its holder rank (a `gate` per
   manifold);
