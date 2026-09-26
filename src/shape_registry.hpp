@@ -9,6 +9,7 @@
 #define DEM_SHAPE_REGISTRY_HPP
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <Kokkos_Core.hpp>
 #include <stdexcept>
@@ -36,12 +37,17 @@ class ShapeRegistry {
   // descriptor + surface point shell (cylinder/box) and records the per-shape base radius and
   // (uniform-mass=1) inverse inertia applied to every particle by setPositions. shape_type uses the
   // peclet::dem::ShapeKind values (SPHERE=1, HOLLOW_CYLINDER=2, BOX=3).
+  //
+  // The registered baseRadius is the shape's CIRCUMSCRIBED (bounding) radius, the reach every
+  // reader of baseRadius_ / P.baseRadius / P.rad sizes by (broad-phase box, margin, ghost band,
+  // drift vote, Verlet/Hertz skin): sqrt(R^2 + (H/2)^2) for a hollow cylinder, sqrt(3) R for a
+  // box, R for a sphere (docs/contact_physics_followups.md F1, WO-B0). The geometric radius
+  // registered before missed every end and corner contact (coaxial tubes overlapping by 0.3 gave
+  // 0 contacts). The inertia below keeps the geometric `radius`.
   void initializeShape(int shape_type, float radius, float height, float thickness) {
-    baseRadius_ = radius;
-    P_.baseRadius =
-        radius;  // effective radius = scale*globalScale*baseRadius (broadphase + ghost band)
     F4 params{radius, 0, 0, 0};
     std::vector<F3> shell;
+    float bound = radius;  // circumscribed radius (sphere: the radius itself)
 
     if (shape_type == HOLLOW_CYLINDER) {
       params = F4{radius, height, thickness, 0};
@@ -53,11 +59,13 @@ class ShapeRegistry {
       if (spacing < 1e-3f)
         spacing = 1e-3f;
       shell = genCylinderShell(radius, height, thickness, spacing);
+      bound = std::sqrt(radius * radius + 0.25f * height * height);
     } else if (shape_type == BOX) {
       // Cube with half-extent = radius (side = 2*radius).
       params = F4{radius, radius, radius, 0};
       float spacing = std::max(radius * 0.5f, 1e-3f);
       shell = genBoxShell(radius, radius, radius, spacing);
+      bound = std::sqrt(3.0f) * radius;
     } else {
       shape_type = SPHERE;
       params = F4{radius, 0, 0, 0};  // sphere: analytic single-probe, no shell
@@ -68,12 +76,12 @@ class ShapeRegistry {
     // Per-shape inverse inertia (mass=1), faithful to CUDA Simulation::initialize.
     float ix = 1.0f, iy = 1.0f, iz = 1.0f;
     if (shape_type == SPHERE) {
-      if (baseRadius_ > 0.0f) {
-        float v = 2.5f / (baseRadius_ * baseRadius_);
+      if (radius > 0.0f) {
+        float v = 2.5f / (radius * radius);
         ix = iy = iz = v;
       }
     } else if (shape_type == HOLLOW_CYLINDER) {
-      float r_out = baseRadius_, r_in = baseRadius_ - thickness;
+      float r_out = radius, r_in = radius - thickness;
       if (r_in < 0)
         r_in = 0;
       float term_r = r_out * r_out + r_in * r_in;
@@ -86,7 +94,7 @@ class ShapeRegistry {
       if (I_zz > 1e-6f)
         iz = 1.0f / I_zz;
     } else if (shape_type == BOX) {
-      float L = 2.0f * baseRadius_;
+      float L = 2.0f * radius;
       float I = (1.0f / 6.0f) * L * L;
       if (I > 1e-6f) {
         ix = iy = iz = 1.0f / I;
@@ -96,8 +104,8 @@ class ShapeRegistry {
     // becomes this". Use addShape() to build a mixture instead.
     clearShapes();
     ShapeDesc sd{shape_type, params, 0, nPts};
-    appendShape(sd, shell, F3{ix, iy, iz}, radius);
-    uploadShapes();
+    appendShape(sd, shell, F3{ix, iy, iz}, bound);
+    uploadShapes();  // sets baseRadius_ = P_.baseRadius = the registry's largest bounding radius
     ensureContactCapacity();
   }
 

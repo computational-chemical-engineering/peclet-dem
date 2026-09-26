@@ -77,7 +77,7 @@ foreach(np 1 2 4)
   # the band must cover every pair the narrow phase can make, and be rebuilt when it changes.
   # The chain is conservative (one owner per contact, ghost increments reverse-accumulated), so
   # the thread-order flake is gone and these run on the caller's thread pool.
-  foreach(mode band_change default_band margin explicit_rcut)
+  foreach(mode band_change default_band margin explicit_rcut coax_tubes)
     _dem_mpi_test(ghost_band_${mode}_np${np} ${np} test_ghost_band_mpi ${mode})
   endforeach()
   _dem_mpi_test(align_np${np} ${np} test_align_mpi)

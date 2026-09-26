@@ -18,6 +18,11 @@
 //                      rank whose own grains are small).
 //   explicit_rcut    — an explicit rcut = 2r (what coupling passes) is below the reach 2r + margin:
 //                      the band must still cover the margin.
+//   coax_tubes       — two coaxial hollow cylinders (D 1, H 1.5, wall 0.18, axis x) straddling the
+//                      x = 8 face at centre distance 1.47 (end faces 0.03 deep): every rank that
+//                      owns a tube must see the pair (contacts > 0) -- the broad phase and band are
+//                      sized by the tube's circumscribed radius (docs/contact_physics_followups.md
+//                      F1, WO-B0, G-B0); with the geometric radius no rank saw it.
 //
 // np = 1, 2, 4, 8 (the x = 8 split carries every pair). Build with -DPECLET_DEM_MPI.
 #include <mpi.h>
@@ -45,6 +50,7 @@ static constexpr float RAD = 0.5f;  // base radius (scale 1)
 
 struct Body {
   float x, y, z, vx, scale;
+  float q[4] = {0.0f, 0.0f, 0.0f, 1.0f};  // orientation (x, y, z, w); loaded for tube scenes only
 };
 
 // Owned bodies of this rank under the equal-cell ORB (the decomposition initMpi builds).
@@ -65,27 +71,37 @@ static std::vector<int> ownedOf(const std::vector<Body>& b, int rank, int size) 
   return gids;
 }
 
-static void load(Simulation& sim, const std::vector<Body>& b, const std::vector<int>& gids) {
-  std::vector<float> p, v, s;
+static void load(Simulation& sim, const std::vector<Body>& b, const std::vector<int>& gids,
+                 bool tubes) {
+  std::vector<float> p, v, s, q;
   for (int g : gids) {
     p.insert(p.end(), {b[g].x, b[g].y, b[g].z});
     v.insert(v.end(), {b[g].vx, 0.0f, 0.0f});
     s.push_back(b[g].scale);
+    q.insert(q.end(), {b[g].q[0], b[g].q[1], b[g].q[2], b[g].q[3]});
   }
   sim.setPositions(p);
   sim.setVelocities(v);
   sim.setScales(s);
+  if (tubes)
+    sim.setQuaternions(q);
 }
 
 // Run `drive` (enable_mpi_step + steps) distributed and on MPI_COMM_SELF; compare by global id.
+// tubes: the bodies are hollow cylinders (D 1, H 1.5, wall 0.18) instead of spheres of radius RAD,
+// and every rank that owns a body must have seen a contact in the distributed run.
 static int runCase(const char* name, const std::vector<Body>& bodies,
-                   const std::function<void(Simulation&)>& drive, int rank, int size) {
+                   const std::function<void(Simulation&)>& drive, int rank, int size,
+                   bool tubes = false) {
   const int n = static_cast<int>(bodies.size());
   const int cap = 16 * n + 64;
   auto configure = [&](Simulation& sim) {
     sim.setDomain(L, L, L, false, false, false);
     sim.setGlobalScale(1.0f);
-    sim.setSphereShape(RAD);
+    if (tubes)
+      sim.initializeShape(peclet::dem::HOLLOW_CYLINDER, 0.5f, 1.5f, 0.18f);
+    else
+      sim.setSphereShape(RAD);
     sim.setDt(1e-2f);
     sim.setGravity(0, 0, 0);
     sim.setSolverIterations(20, 4);
@@ -98,10 +114,14 @@ static int runCase(const char* name, const std::vector<Body>& bodies,
   const std::vector<int> gids = ownedOf(bodies, rank, size);
   Simulation dist(cap);
   configure(dist);
-  load(dist, bodies, gids);
+  load(dist, bodies, gids, tubes);
   dist.initMpi(origin, dsize, gsize, per, MPI_COMM_WORLD);
   drive(dist);
   const std::vector<float> distPos = dist.getPositions();
+  // A rank that owns a body of the (single) pair must see it: its visible contacts are non-empty.
+  const int blind = (tubes && !gids.empty() && dist.numContacts() == 0) ? 1 : 0;
+  int blindRanks = 0;
+  MPI_Allreduce(&blind, &blindRanks, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   const long rebuilds = dist.mpiRebuilds();
 
   std::vector<float> refPos(static_cast<std::size_t>(n) * 3, 0.0f);
@@ -111,7 +131,7 @@ static int runCase(const char* name, const std::vector<Body>& bodies,
       all[g] = g;
     Simulation ref(cap);
     configure(ref);
-    load(ref, bodies, all);
+    load(ref, bodies, all, tubes);
     ref.initMpi(origin, dsize, gsize, per, MPI_COMM_SELF);
     drive(ref);
     refPos = ref.getPositions();
@@ -144,7 +164,9 @@ static int runCase(const char* name, const std::vector<Body>& bodies,
         "  [%-14s] np=%d particles=%d posErr=%.3e (tol %.0e) halo rebuilds=%ld "
         "comShift dist=%.3e ref=%.3e\n",
         name, size, n, posErr, posTol, maxRebuilds, gcom / n - com0, comRef - com0);
-  int fail = !(posErr < posTol) ? 1 : 0;
+  if (tubes && rank == 0)
+    std::printf("  [%-14s] owner ranks that saw no contact: %d\n", name, blindRanks);
+  int fail = (!(posErr < posTol) || blindRanks > 0) ? 1 : 0;
   for (float v : distPos)
     if (!std::isfinite(v))
       fail = 1;
@@ -222,6 +244,23 @@ int main(int argc, char** argv) {
             s.stepMpi(4);
           },
           rank, size);
+    } else if (mode == "coax_tubes") {
+      // Axis x (body y rotated by -90 degrees about z), centres 0.735 either side of x = 8: the
+      // end faces overlap by 1.5 - 1.47 = 0.03, a contact only the circumscribed radius (0.901)
+      // brings into the broad phase (the geometric 0.5 + margin never reached the partner).
+      const float h = std::sqrt(0.5f);
+      Body a{8.0f - 0.735f, y, z, 0.0f, 1.0f}, b{8.0f + 0.735f, y, z, 0.0f, 1.0f};
+      for (Body* t : {&a, &b}) {
+        t->q[2] = -h;
+        t->q[3] = h;
+      }
+      fail = runCase(
+          "coax_tubes", {a, b},
+          [](Simulation& s) {
+            s.enableMpiStep(0.0, 1, true);
+            s.stepMpi(1);
+          },
+          rank, size, /*tubes=*/true);
     } else {
       if (rank == 0)
         std::fprintf(stderr, "unknown mode %s\n", mode.c_str());

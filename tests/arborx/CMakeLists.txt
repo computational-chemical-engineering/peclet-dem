@@ -20,7 +20,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 set(_dem_src "${CMAKE_CURRENT_SOURCE_DIR}/../../src")
-foreach(t broadphase_arborx pipeline)
+foreach(t broadphase_arborx pipeline shape_detection)
   add_executable(test_${t} test_${t}.cpp)
   target_include_directories(test_${t} PRIVATE ${_dem_src} ${PECLET_CORE_INCLUDE})
   target_link_libraries(test_${t} PRIVATE ArborX::ArborX Kokkos::kokkos)
