@@ -46,6 +46,18 @@ judgement call in the moment.
   form (it cannot retract, so any over-relaxation leaves a permanent gap).
 - **The PGS friction bound comes from the converged normal accumulator**, never from the live
   approach value.
+- **The overlap projection stays translation-only, with the translational diagonal
+  `invM_A + invM_B`** (`docs/contact_physics_followups.md` §3, 2026-09-26). `computeW`'s rotational
+  term described a rotation never applied. Rotation in the position phase was rejected: it does not
+  rescue tunnelled starts, and non-tunnelled tube scenes are translation-feasible.
+- **Multilevel coarse bodies are rigid 6-DOF aggregates** (impulse at the contact point, rigid
+  prolongation, spins included): ΔL is exact. Never go back to translation-only aggregates
+  (`hub_ml` dLvel 3e-3).
+- **An analytic tube's/box's `baseRadius` is its circumscribed radius** (every `baseRadius`/`rad`
+  reader is a reach use); the geometric radius made end and corner contacts invisible. **A
+  contact's sphere radius is the shape's own** (`params.x`), never the reach radius `rad(i)`.
+- **`ring_mini` is a conservation scene** (it starts tunnelled: its overlap cannot converge under
+  any solver); **`ring_collide` is the ring convergence gate.**
 - **Sleeping is an `invMassEff` swap around the solve call**, not a per-manifold mechanism.
 - **Radius and halo sizing derive from `baseRadius*scale*globalScale`** — all three factors.
 - **Distributed contacts are owner-exclusive with reverse accumulation**, not solved redundantly
@@ -70,7 +82,7 @@ OMP_NUM_THREADS=2 OMP_PROC_BIND=false PYTHONPATH=<core-python-build> \
 | suite | what | ctests |
 |---|---|---|
 | `tests/kokkos` | kernel unit tests vs serial references (contact preprocessing, narrow-phase, velocity/position/friction solves, integration, periodicity, thermostat) | 8 |
-| `tests/arborx` | ArborX broad-phase vs an O(N^2) oracle + the full single-rank pipeline | 2 |
+| `tests/arborx` | ArborX broad-phase vs an O(N^2) oracle + the full single-rank pipeline + tube/box detection | 3 |
 | `tests/kokkos_mpi` (needs `PECLET_DEM_MPI`) | distributed step (XPBD + Hertz engines, closed + periodic, mid-run rebalance) / migration / rebalance vs single-rank, and the collective schedule under rank-divergent layouts (`halo_schedule_*`: one-sided halo, divergent Verlet-skin rebuild, skin reuse across a reordering migration or with empty ranks; a hang = TIMEOUT 120 s) and the ghost band (`ghost_band_*`: a cross-face pair just inside the contact reach vs `MPI_COMM_SELF`), np=1,2,4, and `migrate_to_weights(w, align)` vs flow's aligned partition (`align_*`, np=1,2,4,8); label `mpi` | 55 |
 | `tests/python` | `python_tests` = `pytest tests/python` on the module in the build tree: Hertz + non-spherical Hertz, cone friction (Walton), pair materials, coloured GS (binary exactness, conservation, Enskog cooling, colouring invariant), statics battery, bounce, restitution, SDF particles, hollow-cylinder overlap, growth packing, rotating drum, periodic wrap symmetry; label `python` | 1 |
 | `tests/python/mpi` (needs `PECLET_DEM_MPI`) | `python_mpi_<name>_np{1,2,4}`: exact step vs serial, periodic wrap, cross-rank observables, MPI rotating drum — launched through `mpirun`, on core's `peclet.halo` + mpi4py (put a built `core/python` tree on `PYTHONPATH`; exit 77 = ctest SKIP when that stack is missing); labels `python;mpi` | 12 |
