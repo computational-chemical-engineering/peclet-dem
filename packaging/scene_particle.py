@@ -1,14 +1,14 @@
 """peclet.dem.scene_particle — a COMPOSED analytic SDF shape as a DEM particle, in one call.
 
 The pipeline the analytic-SDF campaign builds toward: author a particle as a CSG tree in
-:mod:`peclet.core.geom` (leaves + union/intersection/difference + transforms), and hand the SAME
+:mod:`peclet.geom` (leaves + union/intersection/difference + transforms), and hand the SAME
 tree to every consumer —
 
 * **dem** collides against the exact tree (``Simulation.add_scene_shape``: the collision field is
   ``evalTree`` in canonical body space, no sampled-grid approximation), with a surface point shell
   generated from a lattice bake (the point-shell model still needs probes; their spacing, not the
   field, is then the contact resolution),
-* **mass properties** come from implicit quadrature (:func:`peclet.core.geom` ``body_properties``):
+* **mass properties** come from implicit quadrature (:func:`peclet.geom` ``body_properties``):
   mass, COM, full inertia tensor, principal moments + quaternion — sign-exact bracketing, so
   bound-only leaves (ellipsoid, superquadric, CSG) carry no systematic bias,
 * the tree is **re-expressed in its principal body frame exactly** (``principal_frame``: one
@@ -19,7 +19,7 @@ tree to every consumer —
 
 Example::
 
-    from peclet.core import geom
+    from peclet import geom
     from peclet.dem import scene_particle
 
     b = geom.SceneBuilder()
@@ -41,7 +41,7 @@ import numpy as np
 class SceneParticle:
     """A composed analytic particle, principal-frame, ready for dem (and flow)."""
 
-    builder: object          # the peclet.core.geom.SceneBuilder (owns the nodes)
+    builder: object          # the peclet.geom.SceneBuilder (owns the nodes)
     home_root: int           # root of the PRINCIPAL-FRAME copy of the tree
     input_root: int          # the tree as authored (untouched)
     node_ints: np.ndarray    # flat encoding of the whole builder (add_scene_shape / set_scene)

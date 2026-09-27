@@ -357,7 +357,7 @@ NB_MODULE(_dem, m) {
           nb::arg("node_ints"), nb::arg("node_reals"), nb::arg("root"), nb::arg("shell"),
           nb::arg("inv_inertia"), nb::arg("bounding_radius"),
           "Register a COMPOSED analytic particle shape from core's flat node encoding (the arrays "
-          "peclet.core.geom.SceneBuilder.encode() returns; CSG of the full leaf vocabulary): the "
+          "peclet.geom.SceneBuilder.encode() returns; CSG of the full leaf vocabulary): the "
           "collision field is the exact tree, evaluated in canonical body space. shell: (M,3) "
           "surface probe points (bake the tree and run the shell path -- the point-shell model "
           "still needs probes). inv_inertia: unit-mass principal diagonal inverse inertia; "
