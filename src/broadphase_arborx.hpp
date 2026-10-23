@@ -75,7 +75,10 @@ inline int findCollisionsArborX(PosV pos, RadV rad, int numParticles, int numRea
       });
 #undef PECLET_DEM_SANE_BOX
 
-  Kokkos::View<typename decltype(tree)::value_type*, BpMem> values("peclet::dem::bp::values", 0);
+  // An alias, not `typename decltype(tree)::value_type` inline: nvcc 13.4 misparses that as
+  // a template argument.
+  using TreeValue = typename decltype(tree)::value_type;
+  Kokkos::View<TreeValue*, BpMem> values("peclet::dem::bp::values", 0);
   Kokkos::View<int*, BpMem> offsets("peclet::dem::bp::offsets", 0);
   tree.query(space, preds, values, offsets);
 
