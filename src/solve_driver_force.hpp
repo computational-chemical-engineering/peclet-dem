@@ -154,29 +154,38 @@ struct HertzMindlinLaw {
                                    P.hertzWallCand, P.hertzWallCandCount);
   }
   void pairForces(Particles& P, float dt, bool hasShapes) const {
+    const HertzMaterials mat{MatIdView(P.materialId),
+                             PairTableView(P.pairMaterials),
+                             P.restitutionNormal,
+                             P.frictionDynamic,
+                             P.hertzE,
+                             P.hertzNu};
     if (hasShapes)
       hertzShapePairForces(P.pairs, P.hertzNumPairs, P.pos, P.quat, P.vel, P.angVel, P.scale,
                            P.shapeId, P.shapes, P.shell, P.sdfGrid, P.globalScale,
-                           P.hertzContactRadiusFrac, P.invMass, MatIdView(P.materialId),
-                           PairTableView(P.pairMaterials), P.restitutionNormal, P.frictionDynamic,
-                           P.hertzE, P.hertzNu, dt, P.hertzXi, P.hertzSnPair, P.deltaVel,
-                           P.deltaAngVel);
+                           P.hertzContactRadiusFrac, P.invMass, mat, dt, P.hertzXi, P.hertzSnPair,
+                           P.deltaVel, P.deltaAngVel);
     else
-      hertzPairForces(P.pairs, P.hertzNumPairs, P.pos, P.vel, P.angVel, P.rad, P.invMass,
-                      MatIdView(P.materialId), PairTableView(P.pairMaterials), P.restitutionNormal,
-                      P.frictionDynamic, P.hertzE, P.hertzNu, dt, P.hertzXi, P.deltaVel,
-                      P.deltaAngVel, Kokkos::View<const float*, CpMem>(P.scale), P.shapeId,
-                      P.shapes, P.globalScale);
+      hertzPairForces(P.pairs, P.hertzNumPairs, P.pos, P.vel, P.angVel, P.rad, P.invMass, mat, dt,
+                      P.hertzXi, P.deltaVel, P.deltaAngVel,
+                      Kokkos::View<const float*, CpMem>(P.scale), P.shapeId, P.shapes,
+                      P.globalScale);
   }
   void wallForces(Particles& P, float dt, bool hasShapes) const {
-    if (P.numWalls > 0 && P.hertzNumWallCand > 0)
+    if (P.numWalls > 0 && P.hertzNumWallCand > 0) {
+      const HertzMaterials mat{MatIdView(P.materialId),
+                               PairTableView(P.pairMaterials),
+                               P.restitutionNormal,
+                               P.frictionDynamic,
+                               P.hertzE,
+                               P.hertzNu};
       hertzWallForces(Kokkos::View<const int*, CpMem>(P.hertzWallCand), P.hertzNumWallCand, P.walls,
-                      P.wallGrid, P.pos, P.vel, P.angVel, P.rad, P.invMass, MatIdView(P.materialId),
-                      PairTableView(P.pairMaterials), P.restitutionNormal, P.frictionDynamic,
-                      P.hertzE, P.hertzNu, dt, P.hertzXiWall, Particles::kHertzMaxWalls, P.deltaVel,
-                      P.deltaAngVel, Kokkos::View<const float* [4], CpMem>(P.quat),
+                      P.wallGrid, P.pos, P.vel, P.angVel, P.rad, P.invMass, mat, dt, P.hertzXiWall,
+                      Particles::kHertzMaxWalls, P.deltaVel, P.deltaAngVel,
+                      Kokkos::View<const float* [4], CpMem>(P.quat),
                       Kokkos::View<const float*, CpMem>(P.scale), P.shapeId, P.shapes, P.shell,
                       P.globalScale, P.hertzContactRadiusFrac, hasShapes, P.hertzSnWall);
+    }
   }
   /// Engine-support restrictions of this law (probed once per call).
   void validate(const Particles& P) const {
