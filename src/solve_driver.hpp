@@ -450,6 +450,95 @@ inline int colorPositionPhase(Particles& P, int nc, int nm, bool usePersistPre, 
   return numPosColors;
 }
 
+/// The overlap projection's loop context: what its iterations read that solvePositionPhase settles
+/// before them -- the units and colour schedule, the stop tolerance and the phase's switches.
+/// Host-side only: runOverlapProjection unpacks it into locals before any kernel, so no device
+/// lambda names it.
+struct PositionSolveContext {
+  PosUnits posUnits;
+  int numPosUnits = 0;
+  ColorSchedule posSched;
+  float posTol = 0.0f;
+  float fusedOff = -1.0f;
+  bool stopsOn = true;
+  bool posCopiesOn = false;
+  bool posCons = false;
+};
+
+/// The overlap projection's iterations to their adaptive stop (WO-12): the fused device loop
+/// (CUDA, single-rank), CUDA-graph replay or host submission of one iteration (emitPosIter), or
+/// mass-split Jacobi; the position syncs and the final owner->ghost refresh.
+template <class Hooks, class EmitPosIter, class SyncPos, class VoteInvariant, class WithConsensus>
+inline void runOverlapProjection(Particles& P, int nc, const Hooks& hooks, CpExec& space,
+                                 const PositionSolveContext& ctx, EmitPosIter&& emitPosIter,
+                                 SyncPos&& syncPos, VoteInvariant&& voteInvariant,
+                                 WithConsensus&& withConsensus) {
+  const auto& posUnits = ctx.posUnits;
+  const auto& numPosUnits = ctx.numPosUnits;
+  const auto& posSched = ctx.posSched;
+  const auto& posTol = ctx.posTol;
+  const auto& fusedOff = ctx.fusedOff;
+  const auto& stopsOn = ctx.stopsOn;
+  const auto& posCopiesOn = ctx.posCopiesOn;
+  const auto& posCons = ctx.posCons;
+  // Device-side position loop (CUDA, single-rank): all overlap-projection iterations + the
+  // adaptive stop in ONE kernel. Disabled while the phase has copies (the fold runs between
+  // iterations on the host-driven path).
+  bool posLoopDone = false;
+  if constexpr (!Hooks::distributed) {
+    if (P.velocityUseGS && !posCopiesOn && posSched.fused) {
+      FusedLoopSpec spec{P.positionIterations, stopsOn ? posTol : fusedOff, true};
+      if (P.iterCounters)  // diagnostics (§12 S12)
+        spec.iters = demIterCountSlot(P, 1);
+      Kokkos::deep_copy(space, P.maxOverlap, 0.0f);  // the largest violation over the device loop
+      posLoopDone =
+          solvePositionColoredGS(P.contacts, posUnits, numPosUnits, posSched, P.invMass, P.posPred,
+                                 P.quatPred, P.quat, P.invInertia, P.maxOverlap, P.posLambdaContact,
+                                 &spec, {}, P.posResidual, P.positionOmega);
+    }
+  }
+  bool graphPos = false;
+  CudaIterGraph gPos;
+  if (!posLoopDone && P.velocityUseGS) {
+    PECLET_DEM_GRAPH_LOOP(graphPos, gPos, emitPosIter, P.graphCache[3])
+  }
+  P.splitStats.posItersUsed = posLoopDone ? demReadIterCount(P, 1) : 0;
+  if (posCons)
+    Kokkos::deep_copy(P.maxConsensus, 0.0f);
+  for (int it = 0; !posLoopDone && it < P.positionIterations; ++it) {
+    ++P.splitStats.posItersUsed;
+    if (P.velocityUseGS) {
+      if (graphPos)
+        gPos.launch(space);
+      else
+        emitPosIter();
+      // Every active unit is coloured (§4.2): the count-averaged fallback is gone; the stop's
+      // Allreduce carries the colouring-invariant vote if the velocity loop did not.
+      const float posRes = voteInvariant(withConsensus(readFloat(P.posResidual), posCons));
+      // Adaptive stop (WO-12): end once no contact's projection moves it by more than posTol
+      // (|d| w, retractions included). Fixed positionIterations is the cap. Distributed:
+      // Allreduce-MAXed so all ranks break together.
+      if (stopsOn && posRes < posTol)
+        break;
+    } else {
+      // Mass-split Jacobi (see the velocity branch): count, global counts, solve, add.
+      countPositionJacobi(P.contacts, nc, P.constraintCounts);
+      hooks.syncContactCounts(P);
+      solvePosition(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
+                    P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap, {}, 0,
+                    /*massSplit=*/true);
+      applyUpdates(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel, P.constraintCounts,
+                   /*averaged=*/false);
+    }
+    if constexpr (Hooks::distributed) {
+      if (hooks.syncPoint(it))
+        syncPos();
+    }
+  }
+  if constexpr (Hooks::distributed)
+    syncPos();  // final owner->ghost refresh of the position phase
+}
+
 /// The position phase (docs/contact_solve_framework.md §4.4, §4.5, §13.3 step 9; WO-12): seed the
 /// position-phase copies, run the accumulated overlap projection to its adaptive stop, and carry
 /// the position-channel Coulomb bound to the next substep. Closes the solve's profiling region.
@@ -530,62 +619,16 @@ inline void solvePositionPhase(Particles& P, int nc, int nm, const Hooks& hooks,
   // §12 S14: the position phase folds its consensus corrections (|dx| of a local fold or an M
   // sync, absolute like maxOverlap) into its stop vote, exactly as the velocity phase does.
   const bool posCons = posCopiesOn || posM;
-  // Device-side position loop (CUDA, single-rank): all overlap-projection iterations + the
-  // adaptive stop in ONE kernel. Disabled while the phase has copies (the fold runs between
-  // iterations on the host-driven path).
-  bool posLoopDone = false;
-  if constexpr (!Hooks::distributed) {
-    if (P.velocityUseGS && !posCopiesOn && posSched.fused) {
-      FusedLoopSpec spec{P.positionIterations, stopsOn ? posTol : fusedOff, true};
-      if (P.iterCounters)  // diagnostics (§12 S12)
-        spec.iters = demIterCountSlot(P, 1);
-      Kokkos::deep_copy(space, P.maxOverlap, 0.0f);  // the largest violation over the device loop
-      posLoopDone =
-          solvePositionColoredGS(P.contacts, posUnits, numPosUnits, posSched, P.invMass, P.posPred,
-                                 P.quatPred, P.quat, P.invInertia, P.maxOverlap, P.posLambdaContact,
-                                 &spec, {}, P.posResidual, P.positionOmega);
-    }
-  }
-  bool graphPos = false;
-  CudaIterGraph gPos;
-  if (!posLoopDone && P.velocityUseGS) {
-    PECLET_DEM_GRAPH_LOOP(graphPos, gPos, emitPosIter, P.graphCache[3])
-  }
-  P.splitStats.posItersUsed = posLoopDone ? demReadIterCount(P, 1) : 0;
-  if (posCons)
-    Kokkos::deep_copy(P.maxConsensus, 0.0f);
-  for (int it = 0; !posLoopDone && it < P.positionIterations; ++it) {
-    ++P.splitStats.posItersUsed;
-    if (P.velocityUseGS) {
-      if (graphPos)
-        gPos.launch(space);
-      else
-        emitPosIter();
-      // Every active unit is coloured (§4.2): the count-averaged fallback is gone; the stop's
-      // Allreduce carries the colouring-invariant vote if the velocity loop did not.
-      const float posRes = voteInvariant(withConsensus(readFloat(P.posResidual), posCons));
-      // Adaptive stop (WO-12): end once no contact's projection moves it by more than posTol
-      // (|d| w, retractions included). Fixed positionIterations is the cap. Distributed:
-      // Allreduce-MAXed so all ranks break together.
-      if (stopsOn && posRes < posTol)
-        break;
-    } else {
-      // Mass-split Jacobi (see the velocity branch): count, global counts, solve, add.
-      countPositionJacobi(P.contacts, nc, P.constraintCounts);
-      hooks.syncContactCounts(P);
-      solvePosition(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
-                    P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap, {}, 0,
-                    /*massSplit=*/true);
-      applyUpdates(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel, P.constraintCounts,
-                   /*averaged=*/false);
-    }
-    if constexpr (Hooks::distributed) {
-      if (hooks.syncPoint(it))
-        syncPos();
-    }
-  }
-  if constexpr (Hooks::distributed)
-    syncPos();  // final owner->ghost refresh of the position phase
+  const PositionSolveContext posCtx{.posUnits = posUnits,
+                                    .numPosUnits = numPosUnits,
+                                    .posSched = posSched,
+                                    .posTol = posTol,
+                                    .fusedOff = fusedOff,
+                                    .stopsOn = stopsOn,
+                                    .posCopiesOn = posCopiesOn,
+                                    .posCons = posCons};
+  runOverlapProjection(P, nc, hooks, space, posCtx, emitPosIter, syncPos, voteInvariant,
+                       withConsensus);
   // Position-channel Coulomb-bound carry (PGS path): next substep's friction cone sees
   // mu * (velocity-impulse channel + this position-channel load). Without it a jostled bed's
   // bound under-counts the true normal force and stick leaks (measured: 99% sliding wall
