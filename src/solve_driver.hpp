@@ -1484,6 +1484,39 @@ inline void openVelocityWarmStart(Particles& P, int nm, int nBodies, const Hooks
   }
 }
 
+/// Rank-level M's activity pass (docs/contact_solve_framework.md §13.3) on a rank that exchanges:
+/// size the per-slot count views (and, on the g = 0 one-shot path, rank-level X's masks and
+/// gates), then give each slot its local active copy count a per phase from the final colourings.
+inline void countRankLevelActivity(Particles& P, int nm, bool usePersistPre,
+                                   const PosUnits& posUnits, int numPosUnits) {
+  PhaseCopies& VC = P.velCopies;
+  PhaseCopies& PC = P.posCopies;
+  const int nAll = P.numParticles + (VC.nCopies > PC.nCopies ? VC.nCopies : PC.nCopies);
+  growCopyView(P.aVel, static_cast<std::size_t>(nAll), "peclet::dem::aVel");
+  growCopyView(P.aPos, static_cast<std::size_t>(nAll), "peclet::dem::aPos");
+  growCopyView(P.kVel, static_cast<std::size_t>(nAll), "peclet::dem::kVel");
+  growCopyView(P.kPos, static_cast<std::size_t>(nAll), "peclet::dem::kPos");
+  growCopyView(P.activityHit, static_cast<std::size_t>(nAll), "peclet::dem::activityHit");
+  if (!usePersistPre) {  // rank-level X (§1.4): the g = 0 one-shot's masks and gates
+    growCopyView(P.velMask, static_cast<std::size_t>(nAll), "peclet::dem::velMask");
+    growCopyView(P.xGate, static_cast<std::size_t>(nm > 0 ? nm : 1), "peclet::dem::xGate");
+  }
+  const SlotOverride vOv =
+      VC.nHubs > 0 ? SlotOverride{VC.slotA, VC.slotB, {}, 1.0f} : SlotOverride{};
+  activityHitVelocity(P.manifolds, nm, P.realIndices,
+                      Kokkos::View<const int*, CpMem>(P.manifoldColor), vOv, P.activityHit,
+                      P.numParticles + VC.nCopies);
+  finishActivity(Kokkos::View<const unsigned char*, CpMem>(P.activityHit), P.numParticles, VC,
+                 P.aVel);
+  const SlotOverride pOv =
+      PC.nHubs > 0 ? SlotOverride{PC.slotA, PC.slotB, {}, 1.0f} : SlotOverride{};
+  activityHitPosition(P.contacts, posUnits, numPosUnits,
+                      Kokkos::View<const int*, CpMem>(P.unitColor), pOv, P.activityHit,
+                      P.numParticles + PC.nCopies);
+  finishActivity(Kokkos::View<const unsigned char*, CpMem>(P.activityHit), P.numParticles, PC,
+                 P.aPos);
+}
+
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
 /// comment). Runs between the narrow phase and finalCommit; the caller owns ghost construction,
 /// broad/narrow phase and the commit.
@@ -1620,32 +1653,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // global k. A rank that neither sends nor receives (np 1 closed, an isolated block) keeps WO-4's
   // single-rank path (k = groupK), bit for bit: §13.3 "step 0".
   const bool rankM = Hooks::distributed && hooks.rankK().exchanges;
-  if (rankM && P.velocityUseGS) {
-    const int nAll = P.numParticles + (VC.nCopies > PC.nCopies ? VC.nCopies : PC.nCopies);
-    growCopyView(P.aVel, static_cast<std::size_t>(nAll), "peclet::dem::aVel");
-    growCopyView(P.aPos, static_cast<std::size_t>(nAll), "peclet::dem::aPos");
-    growCopyView(P.kVel, static_cast<std::size_t>(nAll), "peclet::dem::kVel");
-    growCopyView(P.kPos, static_cast<std::size_t>(nAll), "peclet::dem::kPos");
-    growCopyView(P.activityHit, static_cast<std::size_t>(nAll), "peclet::dem::activityHit");
-    if (!usePersistPre) {  // rank-level X (§1.4): the g = 0 one-shot's masks and gates
-      growCopyView(P.velMask, static_cast<std::size_t>(nAll), "peclet::dem::velMask");
-      growCopyView(P.xGate, static_cast<std::size_t>(nm > 0 ? nm : 1), "peclet::dem::xGate");
-    }
-    const SlotOverride vOv =
-        VC.nHubs > 0 ? SlotOverride{VC.slotA, VC.slotB, {}, 1.0f} : SlotOverride{};
-    activityHitVelocity(P.manifolds, nm, P.realIndices,
-                        Kokkos::View<const int*, CpMem>(P.manifoldColor), vOv, P.activityHit,
-                        P.numParticles + VC.nCopies);
-    finishActivity(Kokkos::View<const unsigned char*, CpMem>(P.activityHit), P.numParticles, VC,
-                   P.aVel);
-    const SlotOverride pOv =
-        PC.nHubs > 0 ? SlotOverride{PC.slotA, PC.slotB, {}, 1.0f} : SlotOverride{};
-    activityHitPosition(P.contacts, posUnits, numPosUnits,
-                        Kokkos::View<const int*, CpMem>(P.unitColor), pOv, P.activityHit,
-                        P.numParticles + PC.nCopies);
-    finishActivity(Kokkos::View<const unsigned char*, CpMem>(P.activityHit), P.numParticles, PC,
-                   P.aPos);
-  }
+  if (rankM && P.velocityUseGS)
+    countRankLevelActivity(P, nm, usePersistPre, posUnits, numPosUnits);
   P.splitStats.velHubCopies = VC.nCopies;
   P.splitStats.posHubCopies = PC.nCopies;
   P.splitStats.splitBodiesVel = countSplitBodies(VC);
