@@ -30,7 +30,7 @@
 namespace peclet::dem {
 
 /// Device-side context for a fused colour sweep: the colour offsets (numColors+1, uploaded from
-/// buildColorBucketsKokkos's host vector), the barrier counter, and the largest colour bucket
+/// buildColorBuckets's host vector), the barrier counter, and the largest colour bucket
 /// (grid sizing). maxBucket == 0 <=> inactive (fall back to per-colour launches).
 struct FusedSweepCtx {
   Kokkos::View<const int*, CpMem> offsDev;
@@ -227,7 +227,7 @@ inline bool demLaunchFusedSweepLoop(CpExec& space, const Sweep& f,
 
 #endif  // KOKKOS_ENABLE_CUDA
 
-/// Fill a FusedSweepCtx from buildColorBucketsKokkos's host offsets: async-upload them into the
+/// Fill a FusedSweepCtx from buildColorBuckets's host offsets: async-upload them into the
 /// pooled device view and record the largest bucket. The caller owns the policy decision
 /// (demFusedWanted); no-CUDA / empty / oversize => inactive ctx.
 inline FusedSweepCtx demMakeFusedCtx(CpExec& space, const std::vector<int>& offs,

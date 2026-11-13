@@ -42,13 +42,13 @@ KOKKOS_INLINE_FUNCTION void contactArmsMid(const ContactC& c, F3& rA, F3& rB) {
 /// a grain buried under the bed thus gets the WEIGHT TRANSMITTED FROM ABOVE pressing it into the
 /// wall, not just its own one-shot gravity approach (computePlaneLoad). Without this a deep bed
 /// slips against a moving wall instead of being dragged up (a rotating drum stays flat).
-inline void accumulateNormalImpulseKokkos(Kokkos::View<ContactC*, CpMem> contacts, int numContacts,
-                                          Kokkos::View<const float*, CpMem> invMass,
-                                          Kokkos::View<const float* [3], CpMem> invInertia,
-                                          Kokkos::View<const float* [3], CpMem> velPred,
-                                          Kokkos::View<const float* [3], CpMem> angVelPred,
-                                          Kokkos::View<const int*, CpMem> realIdx, float growthRate,
-                                          bool dedupTwins = true) {
+inline void accumulateNormalImpulse(Kokkos::View<ContactC*, CpMem> contacts, int numContacts,
+                                    Kokkos::View<const float*, CpMem> invMass,
+                                    Kokkos::View<const float* [3], CpMem> invInertia,
+                                    Kokkos::View<const float* [3], CpMem> velPred,
+                                    Kokkos::View<const float* [3], CpMem> angVelPred,
+                                    Kokkos::View<const int*, CpMem> realIdx, float growthRate,
+                                    bool dedupTwins = true) {
   using detail::computeW;
   CpExec space;
   Kokkos::parallel_for(
@@ -98,12 +98,12 @@ inline void accumulateNormalImpulseKokkos(Kokkos::View<ContactC*, CpMem> contact
 
 /// Plane (idB<0) one-shot loads. Zeros planeFriction first (both columns), then sets the
 /// per-contact friction_lambda_n and the per-body max plane load (.x).
-inline void computePlaneLoadKokkos(Kokkos::View<ContactC*, CpMem> contacts, int numContacts,
-                                   Kokkos::View<const float*, CpMem> invMass,
-                                   Kokkos::View<const float* [3], CpMem> invInertia,
-                                   Kokkos::View<const float* [3], CpMem> velPred,
-                                   Kokkos::View<const float* [3], CpMem> angVelPred,
-                                   FrManifoldCounts planeFriction) {
+inline void computePlaneLoad(Kokkos::View<ContactC*, CpMem> contacts, int numContacts,
+                             Kokkos::View<const float*, CpMem> invMass,
+                             Kokkos::View<const float* [3], CpMem> invInertia,
+                             Kokkos::View<const float* [3], CpMem> velPred,
+                             Kokkos::View<const float* [3], CpMem> angVelPred,
+                             FrManifoldCounts planeFriction) {
   using detail::computeW;
   CpExec space;
   Kokkos::deep_copy(space, planeFriction, 0.0f);
@@ -134,9 +134,9 @@ inline void computePlaneLoadKokkos(Kokkos::View<ContactC*, CpMem> contacts, int 
 }
 
 /// Per-body active-contact count into planeFriction(:,1).
-inline void countFrictionContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts,
-                                        int numContacts, Kokkos::View<const int*, CpMem> realIdx,
-                                        FrManifoldCounts planeFriction) {
+inline void countFrictionContacts(Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
+                                  Kokkos::View<const int*, CpMem> realIdx,
+                                  FrManifoldCounts planeFriction) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::fric_count", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
@@ -162,7 +162,7 @@ inline void countFrictionContactsKokkos(Kokkos::View<const ContactC*, CpMem> con
 /// world torque directly broke angular momentum by up to 32 % of the applied torque on one
 /// ring-ring impulse. Isotropic inverse inertia (spheres) has no principal frame: its branch keeps
 /// the component-wise arithmetic verbatim, so sphere runs are byte-identical.
-inline void solveContactFrictionKokkos(
+inline void solveContactFriction(
     Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
     Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<const float* [3], CpMem> velPred,
@@ -225,7 +225,7 @@ inline void solveContactFrictionKokkos(
           return;
 
         // friction_lambda_n now carries the accumulated force-chain load for BOTH body-body and
-        // wall contacts (see accumulateNormalImpulseKokkos), so it is the Coulomb bound in both
+        // wall contacts (see accumulateNormalImpulse), so it is the Coulomb bound in both
         // cases.
         const float bound = lambda_n;
         const float nA = planeFriction(realA, 1);

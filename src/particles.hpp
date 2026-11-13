@@ -117,7 +117,7 @@ struct Particles {
   // colour, sorted alongside prevPairKeys (committed by pair key exactly like prevLambda). A
   // surviving pair keeps its colour so the Jones-Plassmann arbitration only re-runs over the NEW
   // manifolds; velLastFullColors is the colour count at the last FULL recolour (creep-recompaction
-  // reference). See colorManifoldsIncrementalKokkos.
+  // reference). See colorManifoldsIncremental.
   Kokkos::View<int*, CpMem> prevManifoldColor;
   int velLastFullColors = 0;
   // Persistent-contact restitution (gravity-gated): pair keys of this/last substep's manifolds +
@@ -148,7 +148,7 @@ struct Particles {
   // alongside prevPairKeys for the warm-start gather). |lambdaT| <= mu * lambdaAcc at all times.
   Kokkos::View<float* [3], CpMem> lambdaT;
   Kokkos::View<float* [3], CpMem> prevLambdaT;
-  // Position-channel normal load (see solvePositionColoredGSKokkos): per-contact positional
+  // Position-channel normal load (see solvePositionColoredGS): per-contact positional
   // lambda this substep, its per-manifold impulse-equivalent, the previous substep's value
   // (warm-gathered) that tops up the friction cone's Coulomb bound, and the sorted store.
   Kokkos::View<float*, CpMem> hertzSnPair;  // per cached pair: last step's patch stiffness sum
@@ -160,7 +160,7 @@ struct Particles {
   // (physical units) — e x the event's banked kinetic-compression impulse, minus what has already
   // been returned. Carried by pair key like lambdaT (gathered into restBank, committed to
   // prevRestBank); restRel is the per-substep release accumulator (clamped 0..owed inside the PGS
-  // sweep — the friction-cone-shaped budget cap). See updateRestitutionBankKokkos.
+  // sweep — the friction-cone-shaped budget cap). See updateRestitutionBank.
   Kokkos::View<float*, CpMem> restBank;
   Kokkos::View<float*, CpMem> prevRestBank;  // sorted alongside prevPairKeys
   Kokkos::View<float*, CpMem> restRel;       // this substep's released impulse (lambda units)
@@ -258,7 +258,7 @@ struct Particles {
   // its colour and only NEW contacts re-arbitrate. Unlike the manifold graph a pair CAN own several
   // contacts (non-spherical multi-point patches), so carried colours are conflict-CHECKED (a shared
   // colour on a shared body -> full recolour that substep). posLastFullColors = colours at the last
-  // full recolour (creep-recompaction reference). See colorContactsIncrementalKokkos.
+  // full recolour (creep-recompaction reference). See colorContactsIncremental.
   Kokkos::View<unsigned long long*, CpMem> contactKeys;
   Kokkos::View<unsigned long long*, CpMem> prevContactKeys;
   Kokkos::View<int*, CpMem> prevContactColor;
@@ -269,7 +269,7 @@ struct Particles {
   // high word (splitmix32 of the edge index), the unique edge index in the low word. Random
   // priorities give O(log n) arbitration rounds w.h.p.; RAW indices are adversarial for poured
   // lattice beds (monotone index chains -> O(chain) rounds -> minutes per step at 1M grains).
-  // Dense colour-bucket scratch (buildColorBucketsKokkos): per-manifold permutation for the PGS
+  // Dense colour-bucket scratch (buildColorBuckets): per-manifold permutation for the PGS
   // velocity sweeps, the pooled commit permutation, a 64-int cursor, and the lazily-grown
   // per-level coarse-cycle permutation (numLevels x numManifolds segments).
   Kokkos::View<int*, CpMem> velPerm;
@@ -390,7 +390,7 @@ struct Particles {
   // free-function contact-buffer growth (growContactBuffers) can size itself without reading the
   // device shape descriptors back to the host every step.
   int shellPoints = 0;
-  // Narrow-phase shell detection (Simulation::setShellDetection; detectContactsKokkos): 0 =
+  // Narrow-phase shell detection (Simulation::setShellDetection; detectContacts): 0 =
   // one-way (default; the lower-index body's probes against the other's SDF), 1 = two-way (shell
   // pairs probe both ways, sphere-shell pairs take the sphere probe). XPBD engine only.
   int shellDetection = 0;
@@ -651,7 +651,7 @@ struct Particles {
     Kokkos::resize(rad, newCap);
     Kokkos::resize(extForce, newCap);
     Kokkos::resize(extTorque, newCap);
-    // materialId is written per GHOST slot by generateGhostsKokkos (guarded by `capacity`),
+    // materialId is written per GHOST slot by generateGhosts (guarded by `capacity`),
     // so it MUST track the padded capacity like every other per-slot array. Its absence here
     // was a silent out-of-bounds write into the neighbouring allocation — harmless or
     // catastrophic depending on the device allocator's layout (the 2026-08 H100 packing
@@ -668,7 +668,7 @@ struct Particles {
     // write. Found via peclet-examples/pall-ring-packing, where a 48-ring pour reported
     // "corrupted double-linked list" from inside step() -- mlGrp/mlMate (the multilevel
     // stabiliser's per-body group and mate arrays) and invMassEff (written for numParticles by
-    // buildInvMassEffKokkos) are the ones that bit. A cap-sized array that ensureCapacity does not
+    // buildInvMassEff) are the ones that bit. A cap-sized array that ensureCapacity does not
     // resize is a latent heap corruption, full stop; there is no reason to keep any of them out.
     Kokkos::resize(invMassEff, newCap);
     Kokkos::resize(sleepCurCount, newCap);

@@ -1,4 +1,4 @@
-// Correctness of the Kokkos narrow-phase (detectContactsKokkos / detectBoundaryKokkos) against a
+// Correctness of the Kokkos narrow-phase (detectContacts / detectBoundary) against a
 // host replication of the identical per-point math.
 //
 // Scene: a jittered 3D grid of spheres spaced so that only face-neighbours overlap decisively (no
@@ -152,10 +152,10 @@ int main(int argc, char** argv) {
     Kokkos::View<int, CpMem> dCount("count");
     Kokkos::View<float, CpMem> dMaxOv("maxov");
 
-    detectContactsKokkos(pairs, numPairs, pos, quat, scale, shapeId, dShapes, shell, globalScale,
-                         margin, dContacts, dCount, dMaxOv);
-    detectBoundaryKokkos(N, static_cast<int>(planes.size()), pos, quat, scale, shapeId, dShapes,
-                         shell, dPlanes, globalScale, margin, dContacts, dCount, dMaxOv);
+    detectContacts(pairs, numPairs, pos, quat, scale, shapeId, dShapes, shell, globalScale, margin,
+                   dContacts, dCount, dMaxOv);
+    detectBoundary(N, static_cast<int>(planes.size()), pos, quat, scale, shapeId, dShapes, shell,
+                   dPlanes, globalScale, margin, dContacts, dCount, dMaxOv);
 
     int nc = 0;
     Kokkos::deep_copy(nc, dCount);

@@ -108,7 +108,7 @@ KOKKOS_INLINE_FUNCTION float effMass(float invMass) {
 /// Optional eligibility gates beyond the quasi-static approach test (a SELECTION, not a sink --
 /// impulses stay symmetric; gating only decides which contacts join the coarse problem):
 ///   kGatePersistent -- contact must have existed last substep (a fresh contact is an event).
-///   kGateCone       -- support-oriented only (|up| > 0.3|dx|, computeSideFlagsKokkos's cone).
+///   kGateCone       -- support-oriented only (|up| > 0.3|dx|, computeSideFlags's cone).
 ///   kGateSlip       -- exclude sustained shear (|vt0| > qsThr): a discharging silo's bulk is
 ///                      normal-quasi-static in every direction, and cancelling aggregate-relative
 ///                      approach there acts as fake bulk viscosity (measured: large-orifice
@@ -220,11 +220,11 @@ KOKKOS_INLINE_FUNCTION D3 rotateD(double qx, double qy, double qz, double qw, D3
 ///      non-positive or non-finite determinant is a logic error: debug builds throw, release
 ///      builds store invI_g = 0 (that group moves translation-only).
 /// massG / invMassG are not touched. Returns the number of singular groups (0 unless broken).
-inline int buildMlLevelGeometryKokkos(const MlScratch& S, int off, int ng, int numReal,
-                                      Kokkos::View<const float* [3], CpMem> posPred,
-                                      Kokkos::View<const float*, CpMem> invMass,
-                                      Kokkos::View<const float* [4], CpMem> quat,
-                                      Kokkos::View<const float* [3], CpMem> invIc) {
+inline int buildMlLevelGeometry(const MlScratch& S, int off, int ng, int numReal,
+                                Kokkos::View<const float* [3], CpMem> posPred,
+                                Kokkos::View<const float*, CpMem> invMass,
+                                Kokkos::View<const float* [4], CpMem> quat,
+                                Kokkos::View<const float* [3], CpMem> invIc) {
   CpExec space;
   auto grp = S.grp;
   auto acc = S.accD;
@@ -344,7 +344,7 @@ inline int buildMlLevelGeometryKokkos(const MlScratch& S, int off, int ng, int n
 /// matching and coarse solving: mldetail::eligible (active, non-dup, persistent, quasi-static,
 /// support-oriented). Walls (bodyB < 0) never merge but their manifolds ARE coarse contacts
 /// (the momentum sink). Returns the host hierarchy description.
-inline ContactHierarchy buildContactHierarchyKokkos(
+inline ContactHierarchy buildContactHierarchy(
     Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
     Kokkos::View<const int*, CpMem> realIdx, Kokkos::View<const int*, CpMem> mColor,
     Kokkos::View<const float*, CpMem> vn0, Kokkos::View<const float* [3], CpMem> vt0,
@@ -502,10 +502,9 @@ inline ContactHierarchy buildContactHierarchyKokkos(
     }
     // ---- rigid-aggregate geometry of this level (§2.3; the pools are allocated lazily) ----
     if (haveGeometry)
-      buildMlLevelGeometryKokkos(S, groupOff, ngNew, numReal, posPred, invMass, body.quat,
-                                 body.invIc);
+      buildMlLevelGeometry(S, groupOff, ngNew, numReal, posPred, invMass, body.quat, body.invIc);
     // ---- colour the crossing manifolds of this level on the group graph ----
-    // Same round-based random-priority arbitration as colorManifoldsKokkos, endpoints = groups.
+    // Same round-based random-priority arbitration as colorManifolds, endpoints = groups.
     // Committed colours land in this level's 6-bit slot of colorPacked (63 stays = skip).
     {
       auto grp = S.grp;
@@ -620,11 +619,10 @@ inline ContactHierarchy buildContactHierarchyKokkos(
 /// bulk of the launch-submission bound at 25k). perm segment for level l lives at
 /// [(l-1)*numManifolds, l*numManifolds). Colour slots >= numColors (kMlSlotSkip = uncoloured /
 /// non-crossing) are excluded — exactly the set the scan-mode colour filter never matched.
-inline void buildCoarseBucketsKokkos(const ContactHierarchy& H, MlScratch& S, int numManifolds,
-                                     Kokkos::View<int*, CpMem> colorScratch,
-                                     Kokkos::View<int*, CpMem> perm,
-                                     Kokkos::View<int*, CpMem> cursor,
-                                     std::vector<std::vector<int>>& offs) {
+inline void buildCoarseBuckets(const ContactHierarchy& H, MlScratch& S, int numManifolds,
+                               Kokkos::View<int*, CpMem> colorScratch,
+                               Kokkos::View<int*, CpMem> perm, Kokkos::View<int*, CpMem> cursor,
+                               std::vector<std::vector<int>>& offs) {
   offs.assign(static_cast<std::size_t>(H.numLevels), {});
   if (numManifolds <= 0)
     return;
@@ -642,8 +640,8 @@ inline void buildCoarseBucketsKokkos(const ContactHierarchy& H, MlScratch& S, in
         });
     auto seg =
         Kokkos::subview(perm, Kokkos::pair<int, int>((lvl - 1) * numManifolds, lvl * numManifolds));
-    buildColorBucketsKokkos(Kokkos::View<const int*, CpMem>(colorScratch), numManifolds, nCol, seg,
-                            cursor, offs[static_cast<std::size_t>(lvl) - 1]);
+    buildColorBuckets(Kokkos::View<const int*, CpMem>(colorScratch), numManifolds, nCol, seg,
+                      cursor, offs[static_cast<std::size_t>(lvl) - 1]);
   }
 }
 
@@ -1064,7 +1062,7 @@ inline MlFusedCtx demMakeMlFusedCtx(CpExec& space, const ContactHierarchy& H,
   return ctx;
 }
 
-inline void multilevelCoarseCycleKokkos(
+inline void multilevelCoarseCycle(
     Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
     Kokkos::View<const int*, CpMem> realIdx, Kokkos::View<const float*, CpMem> invMass,
     Kokkos::View<float* [3], CpMem> velPred, Kokkos::View<float*, CpMem> lambdaAcc,

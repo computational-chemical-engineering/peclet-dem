@@ -1,5 +1,5 @@
 // Correctness of the Kokkos contact->manifold reduction
-// (peclet::dem::reduceContactsToManifoldsKokkos) against a host reference that groups contacts by
+// (peclet::dem::reduceContactsToManifolds) against a host reference that groups contacts by
 // canonical pair and sums the same per-contact transform. Checks: manifold count == unique pairs;
 // per-pair summed quantities match (float tol); num_points and canonical (bodyA,bodyB) match
 // exactly. Runs on whatever backend Kokkos was built for (CUDA locally; OpenMP for CI).
@@ -67,8 +67,7 @@ int main(int argc, char** argv) {
     }
     Kokkos::View<ManifoldC*, peclet::dem::CpMem> dMan("manifolds", Ncontacts);  // upper bound
     Kokkos::View<int, peclet::dem::CpMem> dCount("count");
-    const int nman =
-        peclet::dem::reduceContactsToManifoldsKokkos(dContacts, Ncontacts, dMan, dCount);
+    const int nman = peclet::dem::reduceContactsToManifolds(dContacts, Ncontacts, dMan, dCount);
 
     std::vector<ManifoldC> gotMan(nman);
     {

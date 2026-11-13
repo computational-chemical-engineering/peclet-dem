@@ -17,7 +17,7 @@ step_solve_mpi.hpp +42` (83 insertions, 0 deletions).
   `shiftDev_` through `ghostSlot_`). The image triple is `lround(shift / box)` per axis: exact, no
   position arithmetic.
 - `debugCaptureOwnedContacts(P, halo, ncOwned)` in `demStepMpi`, right after
-  `partitionContactsKokkos`, only when the flag is set: owned contacts `[0, ncOwned)` (gidA, gidB,
+  `partitionContacts`, only when the flag is set: owned contacts `[0, ncOwned)` (gidA, gidB,
   image of each slot, dist), owned gid / posPred / rad.
 - `Simulation::debugCaptureContacts(bool)`, `debugCapturedContacts()` (C++ only, MPI only).
 
@@ -108,7 +108,7 @@ axis (the note's targets). np 2 splits z, so only `--axis=2` crosses the rank fa
    proven inert above.
 2. Added `leftVel` / `leftPos` to CONFLICTS (items left at colour -1, i.e. the count-averaged
    fallback's set).
-3. **`ring_mini` reaches the "dead" count-averaged position fallback at np 1.** `colorContactsKokkos`
+3. **`ring_mini` reaches the "dead" count-averaged position fallback at np 1.** `colorContacts`
    runs at most `numBodies + 2` arbitration rounds (29 for 27 bodies), and a round colours at most
    one contact per body. With ~24000 contacts, 24052 stay at -1, `posLeftover > 0`, and the
    Jacobi fallback runs every substep; `pos` conflicts read 0 because the cap stops before colour
@@ -460,7 +460,7 @@ np 1); WO-5 does not change it. `contacts` stays at 8b4a5f3; `build_ct` / `build
 The parked 2dfdee4 cherry-picked onto `contacts` (8b4a5f3 + note e58d7f1), then:
 - **S14 (the stop residual includes the consensus correction).** A device scalar
   `Particles::maxConsensus` receives, by atomic max, the largest correction any consensus applies to
-  an ACTIVE copy: the local fold (`foldCopiesKokkos`, `|T/k - (x_q - sigma - shift)|`), the owner row
+  an ACTIVE copy: the local fold (`foldCopies`, `|T/k - (x_q - sigma - shift)|`), the owner row
   of an M sync (`|mean - own|` in increment form) and every active ghost copy after the forward
   (`haloGhostConsensus`, `|(x_new - base) - inc/a|`). Velocity phase: `|dv|` of `velPred`
   (the note's `|v_avg - v_copy|`, absolute like the phase's residual); position phase: `|dx|`.
@@ -526,7 +526,7 @@ session scratchpad, `wo5b/`.
 - **The hand-worked ring–ring impulse test** (tests/kokkos/test_solver_friction.cpp) passes. All
   7 friction ctests pass.
 - **Position path** (`solver_position.hpp`): the world-frame form is applied for consistency.
-  `deltaQuat` is never committed (`applyUpdatesKokkos` commits `deltaPos` only), so it changes no
+  `deltaQuat` is never committed (`applyUpdates` commits `deltaPos` only), so it changes no
   result today.
 
 ## WO-6: rank-level X for the g = 0 one-shot (implemented and verified by the session, 2026-09-26)
@@ -540,7 +540,7 @@ The Opus subagents had hit their weekly usage limit, so the session implemented 
 - The g = 0 opening (`openPositionCounts(P, velocityMask)`) carries `PositionCountsMask`
   {mask, a_pos}: 16 B per ghost each way, in the same round.
 - `P.velMask`, `P.xGate`, and `P.solveEpoch` (incremented per `demSolveContacts`).
-- `computeXGateKokkos` and `xHolder` (§1.4). The one-shot kernel takes `gate`: a gated contact
+- `computeXGate` and `xHolder` (§1.4). The one-shot kernel takes `gate`: a gated contact
   records its approach and writes nothing.
 - `RankK` gained `color`, `numColors` and `syncInterval`.
 
@@ -567,7 +567,7 @@ measured: ms/step in the pinned protocol (WO-11).
 - `mpiXpbdBand`: band = max(rcut, reach + S + d_max).
 - `migrateToBlocks`, with `MigratePack` carrying extForce and extTorque.
 - The Hertz rebuild vote, with band_H = (2 + skinFrac) R + S.
-- The owner-only Poisson credit: `scatterOrphanBanksKokkos(ownedLimit)`.
+- The owner-only Poisson credit: `scatterOrphanBanks(ownedLimit)`.
 - S20 (clamped ghost selection), S21 (canonical Hertz orientation) and S22 (the tests pair bodies
   by gid).
 

@@ -26,12 +26,11 @@ namespace peclet::dem {
 /// (narrowphase.hpp: `effScale = scale(i) * globalScale`). It defaults to 1 so existing callers are
 /// unchanged; passing the simulation's real value is what makes the exported field agree with the
 /// simulated geometry.
-inline std::vector<float> generateSdfKokkos(int rx, int ry, int rz, F3 dmin, F3 dmax, int numReal,
-                                            PosView pos, QuatView quat, ScalarF scale,
-                                            ScalarI shapeId,
-                                            Kokkos::View<const ShapeDesc*, CpMem> shapes, bool px,
-                                            bool py, bool pz, GridView sdfGrid = GridView{},
-                                            float globalScale = 1.0f) {
+inline std::vector<float> generateSdf(int rx, int ry, int rz, F3 dmin, F3 dmax, int numReal,
+                                      PosView pos, QuatView quat, ScalarF scale, ScalarI shapeId,
+                                      Kokkos::View<const ShapeDesc*, CpMem> shapes, bool px,
+                                      bool py, bool pz, GridView sdfGrid = GridView{},
+                                      float globalScale = 1.0f) {
   CpExec space;
   const long total = (long)rx * ry * rz;
   const F3 origin = dmin;

@@ -130,9 +130,9 @@ int main(int argc, char** argv) {
     Kokkos::View<float* [3], CpMem> dDV("dv", N), dDW("dw", N);
 
     // --- device sequence ---
-    computePlaneLoadKokkos(dC, M, dIM, dInvI, dVel, dAng, dPF);
-    accumulateNormalImpulseKokkos(dC, M, dIM, dInvI, dVel, dAng, dReal, growthRate);
-    countFrictionContactsKokkos(dC, M, dReal, dPF);
+    computePlaneLoad(dC, M, dIM, dInvI, dVel, dAng, dPF);
+    accumulateNormalImpulse(dC, M, dIM, dInvI, dVel, dAng, dReal, growthRate);
+    countFrictionContacts(dC, M, dReal, dPF);
     // Identity orientations: the world inverse inertia R diag(invI) R^T is diag(invI), so the
     // serial reference below (body frame = world frame) stays exact for anisotropic inertia.
     Kokkos::View<float* [4], CpMem> dQuat("q", N);
@@ -144,8 +144,8 @@ int main(int argc, char** argv) {
       }
       Kokkos::deep_copy(dQuat, h);
     }
-    solveContactFrictionKokkos(dC, M, dIM, dInvI, dQuat, dVel, dAng, dReal, dPF, frictionDynamic,
-                               dDV, dDW);
+    solveContactFriction(dC, M, dIM, dInvI, dQuat, dVel, dAng, dReal, dPF, frictionDynamic, dDV,
+                         dDW);
 
     std::vector<float> gln(M), gpx(N), gpy(N), gdv(3 * N), gdw(3 * N);
     {
@@ -403,7 +403,7 @@ int main(int argc, char** argv) {
       Kokkos::deep_copy(dR, hR);
       Kokkos::deep_copy(dPF, hPF);
     }
-    solveContactFrictionKokkos(dC, 1, dIM, dII, dQ, dV, dW, dR, dPF, 0.5f, dDV, dDW);
+    solveContactFriction(dC, 1, dIM, dII, dQ, dV, dW, dR, dPF, 0.5f, dDV, dDW);
     auto hDV = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), dDV);
     auto hDW = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), dDW);
     // Host, double: R of the float quaternion the kernel read, I_world = R diag(1/invI) R^T.

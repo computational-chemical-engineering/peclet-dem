@@ -16,7 +16,7 @@
 
 namespace peclet::dem {
 
-/// Padded particle-array capacity that leaves room for the periodic ghosts generateGhostsKokkos
+/// Padded particle-array capacity that leaves room for the periodic ghosts generateGhosts
 /// will emit: the real count plus an estimate of the boundary-shell ghost population, gated on
 /// which axes are actually periodic. Faithful port of the CUDA Simulation::calculate_capacity
 /// (small/dense box
@@ -41,11 +41,11 @@ inline int calculateGhostCapacity(int nReal, Domain dom, float skin) {
 /// Generate periodic ghosts for particles [0,numReal). topGhost must be pre-seeded to numReal (the
 /// first free slot); on return it holds the total particle count. Slots beyond `capacity` are
 /// dropped. `skin` is the ghost band width at each periodic face.
-inline void generateGhostsKokkos(int numReal, int capacity, Domain dom, float skin, V3 pos,
-                                 Vf invMass, V3 posPred, V3 vel, V3 velPred, V4 quat, V4 quatPred,
-                                 V3 angVel, V3 angVelPred, Vf scale, Vi shapeId, Vi realIndices,
-                                 Kokkos::View<int, CpMem> topGhost, Vi gid = Vi{},
-                                 Kokkos::View<unsigned char*, CpMem> materialId = {}) {
+inline void generateGhosts(int numReal, int capacity, Domain dom, float skin, V3 pos, Vf invMass,
+                           V3 posPred, V3 vel, V3 velPred, V4 quat, V4 quatPred, V3 angVel,
+                           V3 angVelPred, Vf scale, Vi shapeId, Vi realIndices,
+                           Kokkos::View<int, CpMem> topGhost, Vi gid = Vi{},
+                           Kokkos::View<unsigned char*, CpMem> materialId = {}) {
   using detail::st3;
   using detail::st4;
   CpExec space;

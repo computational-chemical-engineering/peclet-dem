@@ -47,7 +47,7 @@ sim.migrate_to_weights(w, align=1)                       # co-rebalance onto the
   weighted-ORB `particle_rebalance` path. Rebuilt each substep from the owned positions.
 - `src/step_solve_mpi.hpp` (`demStepMpi`) — the distributed substep. The periodic ghost generation of the
   single-rank step is replaced by a cross-rank gather (ghosts carry **real** mass). The contacts are
-  partitioned owned-first (`ContactOwnership`, `partitionContactsKokkos`) and reduced to manifolds
+  partitioned owned-first (`ContactOwnership`, `partitionContacts`) and reduced to manifolds
   owned-first, and each rank solves only the contacts it owns; the partner's half of every impulse
   lands in the partner's self-mapped ghost slot and is **reverse-accumulated onto its owner** at the
   next sync, after which the owners refresh their ghost copies (velPred/angVelPred, then

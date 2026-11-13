@@ -104,7 +104,7 @@ the aggregates' centres of mass, and ΔL = (X_gA − X_gB) × J. Measured today:
 
 ### 2.3 Build: the per-level geometry (once per hierarchy build)
 
-In `buildContactHierarchyKokkos`, per level, after the existing group-mass pass. `massG` and
+In `buildContactHierarchy`, per level, after the existing group-mass pass. `massG` and
 `invMassG` stay **exactly** today's float arithmetic.
 
 1. **Origin.** `O_g = fl( Σ μ_q x_q / Σ μ_q )`, sums in double (`Kokkos::atomic_add` on double).
@@ -140,7 +140,7 @@ requires, for both endpoints, `posPred(slot) == posPred(realIdx(slot))` bitwise.
 
 ### 2.4 The cycle (per level, per stabilization iteration), with the colouring unchanged
 
-**Restrict**, in `multilevelCoarseCycleKokkos` and in the fused device cycle:
+**Restrict**, in `multilevelCoarseCycle` and in the fused device cycle:
 - V_g as today.
 - New: accumulate `L_g = Σ_q [ μ_q (d_q × v_q) + J_q ω_q ]` (3 float atomics per member).
 - Then per group `Ω_g = invI_g · L_g`, and snapshot `Ω0_g = Ω_g`.
@@ -167,12 +167,12 @@ The following are unchanged: `sgn`, the `restRel` skip, the `lenN` guard, and λ
 
 **The coarse colouring already makes groups disjoint within a colour,** so Ω needs no atomics
 (exactly as V). The sequence fine sweep → fold → coarse cycle → re-seed is unchanged.
-`reseedCopiesKokkos` already re-seeds `angVelPred`.
+`reseedCopies` already re-seeds `angVelPred`.
 
 ### 2.5 Mass splitting and MPI
 
 The coarse vertex q (§13.2) carries `μ_q = a m/k`. Its spin inertia is the same fraction:
-`(a/k) I_q`. Build it exactly as `buildInvMassCoarseKokkos` does
+`(a/k) I_q`. Build it exactly as `buildInvMassCoarse` does
 (`solve_copies.hpp:699`), with the ratio first:
 
     ratio = float(k(q)) / float(max(1, a(q)));   invIc(q) = invInertia(q) * ratio   // per component
@@ -318,7 +318,7 @@ replacement scene.
     checked (1–10, then every third step to 40), with **0 LP-infeasible pairs** (both directions'
     rows, translation only) in each.
 - **F2, one-way shell detection.**
-  - The broad phase emits i < j (`broadphase_arborx.hpp:90`), and `detectContactsKokkos` tests only
+  - The broad phase emits i < j (`broadphase_arborx.hpp:90`), and `detectContacts` tests only
     i's shell against j's SDF (`narrowphase.hpp:241-265`).
   - At step 6 of the corrected scene: `compute_overlaps()` = 1.04e-3, while j's shell sits 0.0235
     inside i (pair 22–23) with i's side reading 0.0000.
@@ -333,10 +333,10 @@ replacement scene.
 
     wTotal = invMassA + invMassB           // wall: invMassA; invMass* are the solve views (k·invM)
 
-This applies in `PositionContactSweep` (`:625`) and in the Jacobi twin (`solvePositionKokkos`,
+This applies in `PositionContactSweep` (`:625`) and in the Jacobi twin (`solvePosition`,
 `:127-128`).
 - The twin's world-frame dθ and `deltaQuat` scatter (`:135-172`) are dead work, since
-  `applyUpdatesKokkos` commits `deltaPos` only. Delete them.
+  `applyUpdates` commits `deltaPos` only. Delete them.
 - `computeW` stays for its other caller: the legacy-friction load estimate in `solver_friction.hpp`,
   which is out of scope (R-B7).
 - ω_pos stays 1.5. The stop metric `|dΛ|·w̃` becomes the true relative position change, as WO-12
@@ -594,10 +594,10 @@ A1 → A2; B0 → B2; B1 is independent; C1 → (user) → C2.
 **WO-A1: rigid-aggregate plumbing, inert. Byte-identical (G-A3).**
 
 Files:
-- `src/solver_multilevel.hpp`: `MlScratch`, `buildContactHierarchyKokkos`, `MlCoarseSweep`,
-  `multilevelCoarseCycleKokkos`, `demMlCoarseCycleDevice`, `demFusedCoarseCycleK`,
+- `src/solver_multilevel.hpp`: `MlScratch`, `buildContactHierarchy`, `MlCoarseSweep`,
+  `multilevelCoarseCycle`, `demMlCoarseCycleDevice`, `demFusedCoarseCycleK`,
   `demFusedMlLoopK`, `demLaunchFusedMlLoop`;
-- `src/solve_copies.hpp`: `buildInvInertiaCoarseKokkos`;
+- `src/solve_copies.hpp`: `buildInvInertiaCoarse`;
 - `src/particles.hpp`: the lazy pools and `invInertiaCoarse`;
 - `src/solve_driver.hpp`: pass `posPred`, `angVelPred`, `P.quat`, `invInertiaCoarse`;
 - `tests/kokkos/test_multilevel_rigid.cpp` + CMake.

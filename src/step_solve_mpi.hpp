@@ -16,7 +16,7 @@
 #include "mpi_halo.hpp"  // ParticleHalo
 #include "particles.hpp"
 #include "solve_driver.hpp"        // demSolveContacts, maxOwnedRadius
-#include "solve_driver_force.hpp"  // demStepForce + HertzMindlinLaw + fillWorldRadiiKokkos
+#include "solve_driver_force.hpp"  // demStepForce + HertzMindlinLaw + fillWorldRadii
 #include "step_solve.hpp"          // narrowPhaseGrow
 
 namespace peclet::dem {
@@ -86,8 +86,8 @@ inline constexpr float kDriftSlack = 0.25f;
 /// `dt` = 0 gives the pure distance (the Hertz rebuild vote on committed positions, §5.5).
 /// One pass also returns the max owned scale (the radius reduction the vote replaces): three Max
 /// reducers in one launch, the per-axis gap inline.
-inline void driftVoteLocalKokkos(const Particles& P, const ParticleHalo::BlockBox box, float dt,
-                                 float& eMax, float& dMax, float* scaleMax = nullptr) {
+inline void driftVoteLocal(const Particles& P, const ParticleHalo::BlockBox box, float dt,
+                           float& eMax, float& dMax, float* scaleMax = nullptr) {
   const F3 g = P.gravity;
   const auto pos = P.pos;
   const auto vel = P.vel;
@@ -202,7 +202,7 @@ struct MpiDriftVote {
 };
 inline MpiDriftVote mpiDriftVote(Particles& P, ParticleHalo& halo) {
   float vote[3] = {0.0f, 0.0f, 0.0f}, smax = 0.0f;
-  driftVoteLocalKokkos(P, halo.blockBox(), P.dt, vote[1], vote[2], &smax);
+  driftVoteLocal(P, halo.blockBox(), P.dt, vote[1], vote[2], &smax);
   // = maxOwnedRadius(P) on a non-empty rank (same float product), 0 on an empty one.
   vote[0] = P.numReal > 0 ? smax * P.globalScale * P.baseRadius : 0.0f;
   float g[3];
@@ -275,15 +275,14 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
       P.growthFactor = 1.0f;
   }
   if (P.growthFactor > 0.0f)
-    updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
+    updateGrowthScales(P.numReal, P.scale, P.targetScale, P.growthFactor);
   const double band = mpiXpbdBand(P, halo, rcut, vote);
 
   // 1. Predict velocity on the owned set (no ghosts yet -> numParticles == numReal).
   P.numParticles = P.numReal;
-  predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
-                        P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
-                        P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce,
-                        P.extTorque);
+  predictVelocity(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia, P.posPred,
+                  P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat, P.deltaVel,
+                  P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce, P.extTorque);
 
   // 2. Gather ghosts (real mass) from owners over the halo: full state -- including gid,
   //    materialId and the warm grounded level -- into the ghost slots; sets
@@ -299,7 +298,7 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   halo.mapVelocitySlots(P);
   Kokkos::Profiling::popRegion();
 
-  fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
+  fillWorldRadii(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
 
   // 3. Broad/narrow phase + manifold reduction over owned + ghosts (contactSlot map included:
   // the PGS friction bound and the position-channel Coulomb carry read through it).
@@ -319,13 +318,13 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
   // the manifolds reduced owned-first. The solve runs on [0, ncOwned) / [0, nmOwned); the
   // visible counts stay in P.contactCount / P.manifoldCount for the getters.
   Kokkos::Profiling::pushRegion("dem::ownership");
-  const int ncOwned = partitionContactsKokkos(P.contacts, nc, halo.contactOwnership(P));
+  const int ncOwned = partitionContacts(P.contacts, nc, halo.contactOwnership(P));
   Kokkos::Profiling::popRegion();
   if (P.debugCapture)
     debugCaptureOwnedContacts(P, halo, ncOwned);
   int nmOwned = 0;
-  reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot,
-                                  ncOwned, &nmOwned);
+  reduceContactsToManifolds(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot, ncOwned,
+                            &nmOwned);
   const int nmVisible = readInt(P.manifoldCount);
 
   // 4-6. The shared modern velocity + position solve, distributed: rank-local colouring over the
@@ -338,11 +337,11 @@ inline void demStepMpi(Particles& P, ParticleHalo& halo, double rcut, int syncEv
 
   // 7. Commit (owned results kept; the ghost slots, reconciled by the final sync, are dropped and
   // re-gathered next substep).
-  finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
+  finalCommit(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
 
   if (P.thermostatTau > 0.0f && P.dt > 0.0f)
-    applyThermostatKokkos(P.numReal, P.vel, P.invMass, P.angVel, P.invInertia, P.quat,
-                          P.thermostatKB, P.thermostatTau, P.thermostatTemp, P.dt);
+    applyThermostat(P.numReal, P.vel, P.invMass, P.angVel, P.invInertia, P.quat, P.thermostatKB,
+                    P.thermostatTau, P.thermostatTemp, P.dt);
 
   P.numParticles = P.numReal;  // restore owned-only active count for getters
 }
@@ -374,7 +373,7 @@ struct MpiForceHooks {
     // covers motion until the next rebuild), move every particle to its current block first. The
     // live Mindlin springs ride the migration pack (gid-keyed) exactly as in a rebalance.
     float e = 0.0f, d = 0.0f;
-    driftVoteLocalKokkos(P, halo.blockBox(), 0.0f, e, d);
+    driftVoteLocal(P, halo.blockBox(), 0.0f, e, d);
     int commSize = 1;
     MPI_Comm_size(halo.comm(), &commSize);
     if (allMax(e) >= slack && commSize > 1) {
@@ -384,11 +383,11 @@ struct MpiForceHooks {
       // only at the start of each step (clearGhostScratch) and then left holding the discarded
       // ghost halves. A migration turns former ghost slots into owned ones: clear the owned range
       // so no stale ghost force is integrated (measured: dP 1e-8 -> 9e-4 at the first migration).
-      zeroForceScratchKokkos(P.deltaVel, P.deltaAngVel, 0, P.numReal);
+      zeroForceScratch(P.deltaVel, P.deltaAngVel, 0, P.numReal);
     }
     halo.invalidateTopology();  // fresh band + fresh positions at every pair rebuild
     halo.gather(P, band);
-    fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
+    fillWorldRadii(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
   }
   void refreshGhostState(Particles& P, bool needQuat) const {
     halo.forwardPositions(P.pos);
@@ -398,7 +397,7 @@ struct MpiForceHooks {
       halo.forward4(P.quat);
   }
   void clearGhostScratch(Particles& P) const {
-    zeroForceScratchKokkos(P.deltaVel, P.deltaAngVel, P.numReal, P.numReal + halo.numGhost());
+    zeroForceScratch(P.deltaVel, P.deltaAngVel, P.numReal, P.numReal + halo.numGhost());
   }
 };
 

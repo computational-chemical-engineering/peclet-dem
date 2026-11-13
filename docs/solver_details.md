@@ -24,25 +24,25 @@ default time step.
 ## 1. The impulse step (`demStep`, `src/step_solve.hpp`)
 
 ```text
-growth ramp                    updateGrowthScalesKokkos           (growth_rate > 0)
-predict                        predictVelocityKokkos              gravity + gyroscopic + ext. force/torque
-freeze sleepers                freezeAsleepKokkos                 (sleeping, |g| > 0, no ext. drive)
-ghosts                         generateGhostsKokkos               periodic band = 2 R_max + margin
+growth ramp                    updateGrowthScales           (growth_rate > 0)
+predict                        predictVelocity              gravity + gyroscopic + ext. force/torque
+freeze sleepers                freezeAsleep                 (sleeping, |g| > 0, no ext. drive)
+ghosts                         generateGhosts               periodic band = 2 R_max + margin
 broad phase                    findCollisionsArborX / ...Verlet   ArborX BVH over real + ghost
-narrow phase                   detectContactsKokkos / detectWallSdfKokkos
-manifolds                      reduceContactsToManifoldsKokkos    per-pair aggregate
-wake / sleep masks             wakeDisturbedKokkos, ...           (sleeping)
+narrow phase                   detectContacts / detectWallSdf
+manifolds                      reduceContactsToManifolds    per-pair aggregate
+wake / sleep masks             wakeDisturbed, ...           (sleeping)
 SOLVE                          demSolveContacts                   §3-§6, shared with step_mpi
-commit                         finalCommitKokkos                  wrap + write pos/quat
-sleep detection                updateSleepKokkos                  (sleeping)
-thermostat                     applyThermostatKokkos              (thermostat_tau > 0)
+commit                         finalCommit                  wrap + write pos/quat
+sleep detection                updateSleep                  (sleeping)
+thermostat                     applyThermostat              (thermostat_tau > 0)
 ```
 
 `relax(n)` runs the same pipeline at `dt = 0` and restores the stored `dt` afterwards — overlap
 removal only, no gravity, no velocity update, and it is the one stepper that does **not** require
 `set_dt`. It is what `step(0.0)` used to be before 1.0.0.
 
-### Prediction — `src/integration.hpp` (`predictVelocityKokkos`)
+### Prediction — `src/integration.hpp` (`predictVelocity`)
 
 From state $\mathbf{x}_n, \mathbf{v}_n$ and step $\Delta t$:
 
@@ -59,7 +59,7 @@ From state $\mathbf{x}_n, \mathbf{v}_n$ and step $\Delta t$:
 Gravity defaults to **zero** and there is no implicit floor — `set_gravity((0, 0, -9.81))` and
 `add_plane(point, normal)` (or an SDF wall) are the caller's job.
 
-### Periodic ghosts — `src/periodicity.hpp` (`generateGhostsKokkos`)
+### Periodic ghosts — `src/periodicity.hpp` (`generateGhosts`)
 
 Real particles within `ghostBand = 2 * maxOwnedRadius(P) + margin` (twice the largest **effective**
 radius, growth included — not `global_scale` — plus the narrow-phase margin) of a periodic face are
@@ -88,12 +88,12 @@ built at $\text{margin} + f\,r_{max}$ and reuses it while nothing has moved more
 skin — a **superset** of the true candidates, so the narrow phase yields identical contacts (in a
 different order). It composes with sleeping: a frozen bed never rebuilds.
 
-**Narrow phase** — `src/narrowphase.hpp` (`detectContactsKokkos`, `detectBoundaryKokkos`,
-`detectWallSdfKokkos`). Candidate pairs and boundary planes/SDF walls are verified against the
+**Narrow phase** — `src/narrowphase.hpp` (`detectContacts`, `detectBoundary`,
+`detectWallSdf`). Candidate pairs and boundary planes/SDF walls are verified against the
 shape's surface point-shell and its signed distance field: overlap
 $d_{eff} = \mathrm{SDF}(\mathbf{x}) - r$, contact if $d_{eff} < \text{margin}$, normal from the SDF
 gradient (central difference). Contacts are then reduced to per-pair **manifolds**
-(`src/contact_preprocessing.hpp`, `reduceContactsToManifoldsKokkos`) — aggregate normal, torque
+(`src/contact_preprocessing.hpp`, `reduceContactsToManifolds`) — aggregate normal, torque
 arm, lever arm — which the velocity phase consumes; `contactSlot` keeps the contact→manifold map
 the friction bound reads through.
 
@@ -226,7 +226,7 @@ mass-split M under MPI):
   ($-e\,u^-$ on approaching contacts only), whose micro-reflections its bank accounts for, and is
   event-level: a per-pair compression budget is banked and released as a
   budget-capped separation-velocity target during unloading
-  (`updateRestitutionBankKokkos`), with an orphan-transfer pass settling dead pairs' remaining
+  (`updateRestitutionBank`), with an orphan-transfer pass settling dead pairs' remaining
   budget onto their endpoint bodies. Read the instruments with
   `sim.diagnostics.rest_bank_stats()` / `rest_orphan_stats()`.
 - **Resting threshold.** Below roughly the speed one substep of free fall gains
@@ -234,11 +234,11 @@ mass-split M under MPI):
   energy-bomb guard.
 - **Friction.** In the PGS path the Coulomb cone is inside the sweep, bounded by
   $\mu\,($velocity-impulse channel $+$ position-channel load$)$; the position-channel carry
-  (`commitPosImpulseKokkos`, end of the step) is what keeps stick from leaking in a jostled bed.
+  (`commitPosImpulse`, end of the step) is what keeps stick from leaking in a jostled bed.
   Outside it (no gravity, or the Jacobi A/B) the legacy four-kernel cluster of
-  `src/solver_friction.hpp` runs instead: `computePlaneLoadKokkos` (one-shot wall normal load),
-  `accumulateNormalImpulseKokkos` (body-body force-chain load), `countFrictionContactsKokkos` and a
-  single count-averaged, Coulomb-clamped `solveContactFrictionKokkos` sweep — a raw sync,
+  `src/solver_friction.hpp` runs instead: `computePlaneLoad` (one-shot wall normal load),
+  `accumulateNormalImpulse` (body-body force-chain load), `countFrictionContacts` and a
+  single count-averaged, Coulomb-clamped `solveContactFriction` sweep — a raw sync,
   unaffected by the copies framework, that runs after the phase's own reconciliation on settled
   state. A frictional **wall** drives friction even when the body-body material is frictionless;
   the default body-body material is frictionless. Every per-contact velocity computation in this
@@ -316,7 +316,7 @@ of `s` and momentum leaks at every cycle (`docs/contact_solve_framework.md` §13
 
 ## 5. Re-integration
 
-*File: `src/integration.hpp` (`applyVelocityAndPredictPositionKokkos`).*
+*File: `src/integration.hpp` (`applyVelocityAndPredictPosition`).*
 
 The solved velocity is **persisted as the new state** and used to re-predict the position:
 
@@ -339,7 +339,7 @@ a single-point unit is today's exact edge and arithmetic, so spheres and analyti
 bitwise, while a ring bed's colour count drops from 79–613 per-point edges to about 5–20 pairs
 (`docs/contact_solve_framework.md` §4.3). Beyond that the **contact** graph (of units) is coloured
 once, with the same incremental-colouring policy as the velocity phase, and
-`solvePositionColoredGSKokkos` sweeps it as colored Gauss–Seidel. For a contact between $A$ and $B$
+`solvePositionColoredGS` sweeps it as colored Gauss–Seidel. For a contact between $A$ and $B$
 (or a static wall) the linearised non-penetration constraint on the surface points is
 
 $$ C(\mathbf{x}) = (\mathbf{p}_A^{surf} - \mathbf{p}_B^{surf})\cdot\mathbf{n} \ge 0 $$
@@ -367,8 +367,8 @@ non-spinning sphere's term was below half an ulp and it stays bitwise.
 The loop stops once the deepest penetration falls below `posTol = 1e-4 * base_radius *
 global_scale` (~0.01 % of a radius), capped at `positionIterations`; distributed, that residual is
 Allreduce-MAXed too. Selecting the Jacobi A/B (`set_velocity_solver('jacobi')`) runs the whole
-phase through the older **Jacobi** form of the same projection (`solvePositionKokkos` +
-`applyUpdatesKokkos`), but this is now **mass-split**, not count-averaged: every contact is its own
+phase through the older **Jacobi** form of the same projection (`solvePosition` +
+`applyUpdates`), but this is now **mass-split**, not count-averaged: every contact is its own
 copy, solved against `m/count`, and the true-mass deltas are summed with factor 1
 (`docs/contact_solve_framework.md` §3.1). The colouring's own count-averaged fallback for
 uncoloured leftovers is gone; a vertex above 32 active edges gets local mass-split copies and is
@@ -400,7 +400,7 @@ there is legitimately retractable).
 
 ## 7. Commit, sleeping, thermostat
 
-`finalCommitKokkos` (`src/integration.hpp`) wraps the resolved predicted position into the domain on
+`finalCommit` (`src/integration.hpp`) wraps the resolved predicted position into the domain on
 periodic axes and commits it with the integrated orientation. The velocity is **not** re-derived
 from the position change — it was already set in §4/§5.
 
@@ -414,7 +414,7 @@ the broad/narrow-phase floor. A sleeper is given effective inverse mass `immovab
 without waking anything; waking is then a physics decision — a fast approaching neighbour, a change
 in the contact set, a moving wall, and optionally `wake_on_lost_contact`.
 
-**Berendsen thermostat** (`applyThermostatKokkos`): with `thermostat_tau > 0` the linear and
+**Berendsen thermostat** (`applyThermostat`): with `thermostat_tau > 0` the linear and
 angular velocities are rescaled at the end of the step (the packing-annealing protocol uses it).
 
 ---

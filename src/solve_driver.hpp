@@ -63,7 +63,7 @@ inline float readFloat(Kokkos::View<float, CpMem> v) {
 
 /// gid(i) = base + i over [0, n) — the per-rank global-id re-base of the distributed step
 /// (namespace scope: nvcc forbids KOKKOS_LAMBDA in member functions).
-inline void fillGidBaseKokkos(Vi gid, int n, int base) {
+inline void fillGidBase(Vi gid, int n, int base) {
   Kokkos::parallel_for(
       "peclet::dem::gid_base", Kokkos::RangePolicy<CpExec>(0, n),
       KOKKOS_LAMBDA(int i) { gid(i) = base + i; });
@@ -91,7 +91,7 @@ inline float maxOwnedRadius(const Particles& P) {
 /// overlap probe, force-based, their distributed forms) fills the radii through this one kernel.
 /// Fences the default instance: the callers' next launch on that instance is stream-ordered
 /// anyway, so the fence changes nothing about the result.
-inline void fillWorldRadiiKokkos(Vf scale, Vf rad, float gs, float bR, int n) {
+inline void fillWorldRadii(Vf scale, Vf rad, float gs, float bR, int n) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::world_radii", Kokkos::RangePolicy<CpExec>(space, 0, n),
@@ -104,7 +104,7 @@ inline void fillWorldRadiiKokkos(Vf scale, Vf rad, float gs, float bR, int n) {
 /// `findCollisionsArborX` guards its pair WRITES at `maxPairs` but returns the RAW candidate count,
 /// which can exceed `P.pairs`' capacity once a bed compacts (more neighbour pairs than the buffer
 /// holds — e.g. a fluidized bed driven denser by the CFD-DEM drag). Feeding that raw count straight
-/// into `detectContactsKokkos` as its loop bound makes the narrowphase read `P.pairs` out of bounds
+/// into `detectContacts` as its loop bound makes the narrowphase read `P.pairs` out of bounds
 /// → `cudaErrorIllegalAddress`. Here we detect the overflow, reallocate `P.pairs` (with headroom so
 /// an oscillating count doesn't realloc every step) and re-run once so no candidate pair is
 /// silently dropped, then clamp defensively so the returned count is ALWAYS ≤ the buffer extent —
@@ -237,7 +237,7 @@ struct CudaIterGraph {
 /// whether this rank reconciles copies with neighbours at all (it sends or receives ghosts). The
 /// per-slot counts themselves live in Particles (aVel / aPos from the driver's activity pass,
 /// kVel / kPos from the halo's openings) and feed the solve-view builder
-/// (buildSolveViewsRankKKokkos) and the coarse vertex masses.
+/// (buildSolveViewsRankK) and the coarse vertex masses.
 struct RankK {
   bool exchanges = false;
   // Rank-level X (§1.4, WO-6): this rank's colour col(r), the number of colours C of the rank
@@ -322,8 +322,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
               : Kokkos::View<const unsigned char*, CpMem>();
   const bool legacyFriction = friction && !(usePersistPre && P.velocityUseGS);
   if (legacyFriction)
-    computePlaneLoadKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
-                           P.planeFriction);
+    computePlaneLoad(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
+                     P.planeFriction);
 
   // Colour the manifold graph ONCE (topology-only; reused across the sweeps), then normal
   // restitution as colored Gauss–Seidel: correct multi-contact dissipation with no count-averaging
@@ -390,13 +390,13 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     if (incrColor) {
       // A substep coloured through hub copies carried per-COPY colours: recolour in full.
       bool didFull = (P.prevPairCount <= 0) || P.velCopiesLastSubstep;
-      numColors = colorManifoldsIncrementalKokkos(
+      numColors = colorManifoldsIncremental(
           P.manifolds, nm, P.realIndices, nBodies,
           Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
           Kokkos::View<const int*, CpMem>(P.prevManifoldColor), P.prevPairCount, P.manifoldColor,
           P.bodyWinner, P.bodyColorMask, velLeftover, /*forceFull*/ didFull, mSleep);
       if (!didFull && P.velLastFullColors > 0 && numColors > (P.velLastFullColors * 13) / 10) {
-        numColors = colorManifoldsIncrementalKokkos(
+        numColors = colorManifoldsIncremental(
             P.manifolds, nm, P.realIndices, nBodies,
             Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
             Kokkos::View<const int*, CpMem>(P.prevManifoldColor), P.prevPairCount, P.manifoldColor,
@@ -406,30 +406,30 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       if (didFull)
         P.velLastFullColors = numColors;
     } else {
-      numColors = colorManifoldsKokkos(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
-                                       P.bodyWinner, P.bodyColorMask, velLeftover, mSleep, {},
-                                       /*dedupTwins*/ !Hooks::distributed);
+      numColors = colorManifolds(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
+                                 P.bodyWinner, P.bodyColorMask, velLeftover, mSleep, {},
+                                 /*dedupTwins*/ !Hooks::distributed);
     }
     if (velLeftover > 0 && nm > 0) {
       // Attempt failed: hub copies over the vertices realIdx(body) (§4.4), full recolour.
       edgeA = Kokkos::View<int*, CpMem>("peclet::dem::copies_eA", nm);
       edgeB = Kokkos::View<int*, CpMem>("peclet::dem::copies_eB", nm);
-      velocityEdgeEndsKokkos(P.manifolds, nm, P.realIndices,
-                             Kokkos::View<const int*, CpMem>(P.manifoldColor), edgeA, edgeB);
+      velocityEdgeEnds(P.manifolds, nm, P.realIndices,
+                       Kokkos::View<const int*, CpMem>(P.manifoldColor), edgeA, edgeB);
       growCopyView(P.vertexDegree, static_cast<std::size_t>(nBodies), "peclet::dem::vertexDegree");
-      vertexDegreeKokkos(edgeA, edgeB, nm, nBodies, P.vertexDegree);
-      buildHubCopiesKokkos(edgeA, edgeB, nm, nBodies, slotBase, P.vertexDegree, VC);
+      vertexDegree(edgeA, edgeB, nm, nBodies, P.vertexDegree);
+      buildHubCopies(edgeA, edgeB, nm, nBodies, slotBase, P.vertexDegree, VC);
       growSlots(VC.nCopies);
       const SlotOverride ovColor{VC.slotA, VC.slotB, {}, 1.0f};
-      numColors = colorManifoldsKokkos(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
-                                       P.bodyWinner, P.bodyColorMask, velLeftover, mSleep, ovColor,
-                                       /*dedupTwins*/ !Hooks::distributed, slotBase + VC.nCopies);
+      numColors = colorManifolds(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
+                                 P.bodyWinner, P.bodyColorMask, velLeftover, mSleep, ovColor,
+                                 /*dedupTwins*/ !Hooks::distributed, slotBase + VC.nCopies);
       if (incrColor)
         P.velLastFullColors = numColors;
-      buildCopyGroupsKokkos(P.realIndices, nBodies, P.numReal, P.vertexDegree, {}, VC,
-                            /*identityBodies*/ true);
-      P.splitStats.lightHubs = countLightHubsKokkos(VC, edgeA, edgeB, nm, nBodies,
-                                                    Kokkos::View<const float*, CpMem>(P.invMass));
+      buildCopyGroups(P.realIndices, nBodies, P.numReal, P.vertexDegree, {}, VC,
+                      /*identityBodies*/ true);
+      P.splitStats.lightHubs = countLightHubs(VC, edgeA, edgeB, nm, nBodies,
+                                              Kokkos::View<const float*, CpMem>(P.invMass));
       if (velLeftover > 0)
         noteInvariant("velocity", Kokkos::View<const int*, CpMem>(P.manifoldColor), nm);
     }
@@ -439,8 +439,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   std::vector<int> velOffs;
   const bool velBuckets = P.velocityUseGS && nm > 0 && numColors > 0;
   if (velBuckets)
-    buildColorBucketsKokkos(Kokkos::View<const int*, CpMem>(P.manifoldColor), nm, numColors,
-                            P.velPerm, P.bucketCursor, velOffs);
+    buildColorBuckets(Kokkos::View<const int*, CpMem>(P.manifoldColor), nm, numColors, P.velPerm,
+                      P.bucketCursor, velOffs);
   const Kokkos::View<const int*, CpMem> velPermC(P.velPerm);
   const std::vector<int>* velOffsP = velBuckets ? &velOffs : nullptr;
   // Fused colour sweeps (CUDA): the whole PGS sweep — and where eligible the whole adaptive
@@ -469,7 +469,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       usePersistPre && P.velocityUseGS && !Hooks::distributed && !incrColorOff;
   bool posDidFull = false;
   if (P.velocityUseGS) {
-    numPosUnits = buildPositionUnitsKokkos(P.contacts, nc, P.unitStart, P.unitContacts, nm);
+    numPosUnits = buildPositionUnits(P.contacts, nc, P.unitStart, P.unitContacts, nm);
     P.numPosUnits = numPosUnits;
     // All singletons (spheres): the unit map is the identity -- the empty PosUnits, so the
     // sweeps and passes index contacts directly (no two-level indirection per contact).
@@ -480,7 +480,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                           Kokkos::pair<int, int>(0, nc))};
     if (incrPosColor) {
       posDidFull = (P.posPrevContactCount <= 0);
-      numPosColors = colorContactsIncrementalKokkos(
+      numPosColors = colorContactsIncremental(
           P.contacts, numPosUnits, P.numParticles,
           Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
           Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount, P.unitColor,
@@ -488,7 +488,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           /*forceFull*/ posDidFull, cSleep, posUnits);
       if (!posDidFull && P.posLastFullColors > 0 &&
           numPosColors > (P.posLastFullColors * 13) / 10) {
-        numPosColors = colorContactsIncrementalKokkos(
+        numPosColors = colorContactsIncremental(
             P.contacts, numPosUnits, P.numParticles,
             Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
             Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount, P.unitColor,
@@ -499,9 +499,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       if (posDidFull)
         P.posLastFullColors = numPosColors;
     } else {
-      numPosColors =
-          colorContactsKokkos(P.contacts, numPosUnits, P.numParticles, P.unitColor, P.bodyWinner,
-                              P.bodyColorMask, posLeftover, cSleep, posUnits);
+      numPosColors = colorContacts(P.contacts, numPosUnits, P.numParticles, P.unitColor,
+                                   P.bodyWinner, P.bodyColorMask, posLeftover, cSleep, posUnits);
     }
     // Position vertices are raw slots. demStep's periodic images are local copies of their body
     // (§WO-4 item 2): they join its fold group, which needs the per-slot degree even without hubs.
@@ -509,21 +508,20 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     if ((posLeftover > 0 || images) && numPosUnits > 0) {
       edgeA = Kokkos::View<int*, CpMem>("peclet::dem::copies_eA", numPosUnits);
       edgeB = Kokkos::View<int*, CpMem>("peclet::dem::copies_eB", numPosUnits);
-      positionEdgeEndsKokkos(P.contacts, posUnits, numPosUnits,
-                             Kokkos::View<const int*, CpMem>(P.unitColor), edgeA, edgeB);
+      positionEdgeEnds(P.contacts, posUnits, numPosUnits,
+                       Kokkos::View<const int*, CpMem>(P.unitColor), edgeA, edgeB);
       growCopyView(P.vertexDegree, static_cast<std::size_t>(P.numParticles),
                    "peclet::dem::vertexDegree");
-      vertexDegreeKokkos(edgeA, edgeB, numPosUnits, P.numParticles, P.vertexDegree);
+      vertexDegree(edgeA, edgeB, numPosUnits, P.numParticles, P.vertexDegree);
       if (posLeftover > 0) {
         // Attempt failed: hub copies over the raw slots (§4.4), full recolour (the incremental
         // path falls back to this full path with copies).
-        buildHubCopiesKokkos(edgeA, edgeB, numPosUnits, P.numParticles, slotBase, P.vertexDegree,
-                             PC);
+        buildHubCopies(edgeA, edgeB, numPosUnits, P.numParticles, slotBase, P.vertexDegree, PC);
         growSlots(PC.nCopies);
         const SlotOverride ovColor{PC.slotA, PC.slotB, {}, 1.0f};
-        numPosColors = colorContactsKokkos(P.contacts, numPosUnits, P.numParticles, P.unitColor,
-                                           P.bodyWinner, P.bodyColorMask, posLeftover, cSleep,
-                                           posUnits, ovColor, slotBase + PC.nCopies);
+        numPosColors = colorContacts(P.contacts, numPosUnits, P.numParticles, P.unitColor,
+                                     P.bodyWinner, P.bodyColorMask, posLeftover, cSleep, posUnits,
+                                     ovColor, slotBase + PC.nCopies);
         if (incrPosColor) {
           posDidFull = true;
           P.posLastFullColors = numPosColors;
@@ -531,20 +529,20 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         if (posLeftover > 0)
           noteInvariant("position", Kokkos::View<const int*, CpMem>(P.unitColor), numPosUnits);
       }
-      buildCopyGroupsKokkos(P.realIndices, P.numParticles, P.numReal, P.vertexDegree,
-                            images ? Kokkos::View<const float* [3], CpMem>(P.imageShift)
-                                   : Kokkos::View<const float* [3], CpMem>(),
-                            PC, /*identityBodies*/ Hooks::distributed);
+      buildCopyGroups(P.realIndices, P.numParticles, P.numReal, P.vertexDegree,
+                      images ? Kokkos::View<const float* [3], CpMem>(P.imageShift)
+                             : Kokkos::View<const float* [3], CpMem>(),
+                      PC, /*identityBodies*/ Hooks::distributed);
     }
     // Every contact carries its unit's colour: the per-contact ledger commit below and the
     // diagnostics read it.
-    expandUnitColorsKokkos(posUnits, numPosUnits, Kokkos::View<const int*, CpMem>(P.unitColor),
-                           P.contactColor);
+    expandUnitColors(posUnits, numPosUnits, Kokkos::View<const int*, CpMem>(P.unitColor),
+                     P.contactColor);
     if (incrPosColor) {
       // Commit this substep's (contact key, colour) for next substep's warm gather.
-      commitContactColorKokkos(Kokkos::View<const unsigned long long*, CpMem>(P.contactKeys),
-                               Kokkos::View<const int*, CpMem>(P.contactColor), P.prevContactKeys,
-                               P.prevContactColor, P.posCommitPerm, nc);
+      commitContactColor(Kokkos::View<const unsigned long long*, CpMem>(P.contactKeys),
+                         Kokkos::View<const int*, CpMem>(P.contactColor), P.prevContactKeys,
+                         P.prevContactColor, P.posCommitPerm, nc);
       P.posPrevContactCount = nc;
     }
   }
@@ -568,23 +566,23 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     }
     const SlotOverride vOv =
         VC.nHubs > 0 ? SlotOverride{VC.slotA, VC.slotB, {}, 1.0f} : SlotOverride{};
-    activityHitVelocityKokkos(P.manifolds, nm, P.realIndices,
-                              Kokkos::View<const int*, CpMem>(P.manifoldColor), vOv, P.activityHit,
-                              P.numParticles + VC.nCopies);
-    finishActivityKokkos(Kokkos::View<const unsigned char*, CpMem>(P.activityHit), P.numParticles,
-                         VC, P.aVel);
+    activityHitVelocity(P.manifolds, nm, P.realIndices,
+                        Kokkos::View<const int*, CpMem>(P.manifoldColor), vOv, P.activityHit,
+                        P.numParticles + VC.nCopies);
+    finishActivity(Kokkos::View<const unsigned char*, CpMem>(P.activityHit), P.numParticles, VC,
+                   P.aVel);
     const SlotOverride pOv =
         PC.nHubs > 0 ? SlotOverride{PC.slotA, PC.slotB, {}, 1.0f} : SlotOverride{};
-    activityHitPositionKokkos(P.contacts, posUnits, numPosUnits,
-                              Kokkos::View<const int*, CpMem>(P.unitColor), pOv, P.activityHit,
-                              P.numParticles + PC.nCopies);
-    finishActivityKokkos(Kokkos::View<const unsigned char*, CpMem>(P.activityHit), P.numParticles,
-                         PC, P.aPos);
+    activityHitPosition(P.contacts, posUnits, numPosUnits,
+                        Kokkos::View<const int*, CpMem>(P.unitColor), pOv, P.activityHit,
+                        P.numParticles + PC.nCopies);
+    finishActivity(Kokkos::View<const unsigned char*, CpMem>(P.activityHit), P.numParticles, PC,
+                   P.aPos);
   }
   P.splitStats.velHubCopies = VC.nCopies;
   P.splitStats.posHubCopies = PC.nCopies;
-  P.splitStats.splitBodiesVel = countSplitBodiesKokkos(VC);
-  P.splitStats.splitBodiesPos = countSplitBodiesKokkos(PC);
+  P.splitStats.splitBodiesVel = countSplitBodies(VC);
+  P.splitStats.splitBodiesPos = countSplitBodies(PC);
   // The colouring invariant (§4.2 item 4, §12 S3): a single rank throws now; the distributed step
   // votes the flag in its first stop Allreduce and every rank throws there (a rank-local throw
   // would leave the others waiting in a collective).
@@ -609,8 +607,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   std::vector<int> posOffs;
   const bool posBuckets = P.velocityUseGS && numPosUnits > 0 && numPosColors > 0;
   if (posBuckets)
-    buildColorBucketsKokkos(Kokkos::View<const int*, CpMem>(P.unitColor), numPosUnits, numPosColors,
-                            P.posPerm, P.bucketCursor, posOffs);
+    buildColorBuckets(Kokkos::View<const int*, CpMem>(P.unitColor), numPosUnits, numPosColors,
+                      P.posPerm, P.bucketCursor, posOffs);
   const Kokkos::View<const int*, CpMem> posPermC(P.posPerm);
   const std::vector<int>* posOffsP = posBuckets ? &posOffs : nullptr;
   const FusedSweepCtx posFused = (posBuckets && wantFused)
@@ -642,7 +640,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   const F3 gHat =
       usePersist ? F3{P.gravity.x / gMagP, P.gravity.y / gMagP, P.gravity.z / gMagP} : F3{0, 0, 0};
   // Event-level (Poisson) restitution: per-pair banked compression budget, released as a
-  // budget-capped separation-velocity target during unloading (see updateRestitutionBankKokkos /
+  // budget-capped separation-velocity target during unloading (see updateRestitutionBank /
   // PGSManifoldSweep). Off (empty views) the sweeps run the per-substep Newton path verbatim.
   const bool poisson = usePGS && P.restitutionModel == 1;
   const Kokkos::View<float*, CpMem> bankV = poisson ? P.restBank : Kokkos::View<float*, CpMem>();
@@ -659,12 +657,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       auto mt = Kokkos::subview(P.prevMatched, Kokkos::pair<int, int>(0, P.prevPairCount));
       Kokkos::deep_copy(mt, static_cast<unsigned char>(0));
     }
-    gatherWarmLambdaKokkos(P.manifolds, nmVisible, P.realIndices, keyIdx, P.prevPairKeys,
-                           P.prevLambda, P.prevLambdaT, P.prevPosImpulse, P.prevRestBank,
-                           P.prevRestVPeak, P.prevPairCount, P.pairKeys, P.lambdaAcc, P.lambdaT,
-                           P.posImpulse, P.restBank, P.restVPeak,
-                           poisson ? P.prevMatched : Kokkos::View<unsigned char*, CpMem>(),
-                           /*dedupTwins*/ !Hooks::distributed);
+    gatherWarmLambda(P.manifolds, nmVisible, P.realIndices, keyIdx, P.prevPairKeys, P.prevLambda,
+                     P.prevLambdaT, P.prevPosImpulse, P.prevRestBank, P.prevRestVPeak,
+                     P.prevPairCount, P.pairKeys, P.lambdaAcc, P.lambdaT, P.posImpulse, P.restBank,
+                     P.restVPeak, poisson ? P.prevMatched : Kokkos::View<unsigned char*, CpMem>(),
+                     /*dedupTwins*/ !Hooks::distributed);
     if (poisson) {
       {  // per-substep release accumulator starts from zero every substep
         auto rr = Kokkos::subview(P.restRel, Kokkos::pair<int, int>(0, nm));
@@ -675,7 +672,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       // identities are gids, so the scatter resolves them through a sorted gid -> slot map built
       // over owned + ghost slots (a ghost-side credit is delivered to the owner by the velocity
       // reverse at the next sync; the pair's bank lives only in its owning rank's ledger).
-      decayBodyOrphanKokkos(P.bodyOrphan, P.bodyOrphanVPeak, P.numReal, 2.0f * P.dt * gMagP);
+      decayBodyOrphan(P.bodyOrphan, P.bodyOrphanVPeak, P.numReal, 2.0f * P.dt * gMagP);
       if (P.prevPairCount > 0) {
         Kokkos::View<const int*, CpMem> gidSorted, slotSorted;
         if constexpr (Hooks::distributed) {
@@ -696,19 +693,19 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           gidSorted = gs;
           slotSorted = ss;
         }
-        scatterOrphanBanksKokkos(Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
-                                 Kokkos::View<const float*, CpMem>(P.prevRestBank),
-                                 Kokkos::View<const float*, CpMem>(P.prevRestVPeak),
-                                 Kokkos::View<const unsigned char*, CpMem>(P.prevMatched),
-                                 P.prevPairCount, Kokkos::View<const float*, CpMem>(P.invMass),
-                                 P.bodyOrphan, P.bodyOrphanVPeak, gidSorted, slotSorted,
-                                 Hooks::distributed ? P.numReal : -1);
+        scatterOrphanBanks(Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
+                           Kokkos::View<const float*, CpMem>(P.prevRestBank),
+                           Kokkos::View<const float*, CpMem>(P.prevRestVPeak),
+                           Kokkos::View<const unsigned char*, CpMem>(P.prevMatched),
+                           P.prevPairCount, Kokkos::View<const float*, CpMem>(P.invMass),
+                           P.bodyOrphan, P.bodyOrphanVPeak, gidSorted, slotSorted,
+                           Hooks::distributed ? P.numReal : -1);
       }
     }
-    markPersistentManifoldsKokkos(P.manifolds, nm, P.realIndices, keyIdx, P.prevPairKeys,
-                                  P.prevPairCount, P.pairKeys, P.manifoldPersistent);
-    updateGroundedLevelsKokkos(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat,
-                               P.groundedLevel, nBodies, /*sweeps*/ 8, /*decay*/ 8);
+    markPersistentManifolds(P.manifolds, nm, P.realIndices, keyIdx, P.prevPairKeys, P.prevPairCount,
+                            P.pairKeys, P.manifoldPersistent);
+    updateGroundedLevels(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat, P.groundedLevel,
+                         nBodies, /*sweeps*/ 8, /*decay*/ 8);
     // STAGED SOLVE (Guendelman): the main sweeps are fully momentum-conserving (side flags all
     // zero) -- ballistic impact, discharge and shear see correct physics. One-sided grounding is
     // reserved for the STABILIZATION pass below, which runs only if the main sweeps leave an
@@ -718,10 +715,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       auto flags = Kokkos::subview(P.sideFlags, Kokkos::pair<int, int>(0, nm));
       Kokkos::deep_copy(flags, static_cast<unsigned char>(0));
     }
-    computeVn0Kokkos(P.manifolds, nm, P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.vn0,
-                     P.vt0, /*dedupTwins*/ !Hooks::distributed);
-    warmStartApplyKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                         P.realIndices, P.lambdaAcc, P.lambdaT, /*dedupTwins*/ !Hooks::distributed);
+    computeVn0(P.manifolds, nm, P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.vn0, P.vt0,
+               /*dedupTwins*/ !Hooks::distributed);
+    warmStartApply(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                   P.realIndices, P.lambdaAcc, P.lambdaT, /*dedupTwins*/ !Hooks::distributed);
     // The warm impulses just moved every owned AND ghost body: the opening (§13.3 step 5)
     // reconciles them raw (known impulses), makes the global k_vel / k_pos and forwards the
     // owners' state, balance and k, so the first sweep reads a consistent ghost state. (An
@@ -751,27 +748,27 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   const Kokkos::View<float*, CpMem> orphPkW =
       poisson ? P.bodyOrphanVPeak : Kokkos::View<float*, CpMem>();
   if (velM) {
-    buildSolveViewsRankKKokkos(P, VC, slotBase + (velCopiesOn ? VC.nCopies : 0), P.invMass,
-                               P.invInertia, Kokkos::View<const int*, CpMem>(P.kVel));
+    buildSolveViewsRankK(P, VC, slotBase + (velCopiesOn ? VC.nCopies : 0), P.invMass, P.invInertia,
+                         Kokkos::View<const int*, CpMem>(P.kVel));
     invMassVel = P.invMassSolve;
     invInertiaVel = P.invInertiaSolve;
     velOv = velCopiesOn ? SlotOverride{VC.slotA, VC.slotB, P.splitSlot, kSplitOmegaVelocity}
                         : SlotOverride{{}, {}, P.splitSlot, kSplitOmegaVelocity};
     if (velCopiesOn) {
-      seedCopySlotStateKokkos(P, VC);
-      markCopySeedsKokkos(VC, P.velPred, P.angVelPred, orphV, orphPkW, /*shareFromBase*/ true);
+      seedCopySlotState(P, VC);
+      markCopySeeds(VC, P.velPred, P.angVelPred, orphV, orphPkW, /*shareFromBase*/ true);
     }
   } else if (velCopiesOn) {
-    buildSolveViewsKokkos(P, VC, slotBase + VC.nCopies, P.invMass, P.invInertia);
-    seedCopySlotStateKokkos(P, VC);
-    markCopySeedsKokkos(VC, P.velPred, P.angVelPred, orphV, orphPkW);
+    buildSolveViews(P, VC, slotBase + VC.nCopies, P.invMass, P.invInertia);
+    seedCopySlotState(P, VC);
+    markCopySeeds(VC, P.velPred, P.angVelPred, orphV, orphPkW);
     invMassVel = P.invMassSolve;
     invInertiaVel = P.invInertiaSolve;
     velOv = SlotOverride{VC.slotA, VC.slotB, P.splitSlot, kSplitOmegaVelocity};
   }
   auto foldVel = [&] {
     if (velCopiesOn)
-      foldCopiesKokkos(space, VC, P.velPred, P.angVelPred, orphV, orphPkW, P.maxConsensus);
+      foldCopies(space, VC, P.velPred, P.angVelPred, orphV, orphPkW, P.maxConsensus);
   };
   // §12 S14: a velocity phase with copies (local hub copies, or rank-level M) has not converged
   // while copies of one body disagree. Its stop votes fold in the largest consensus correction
@@ -798,18 +795,18 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       if (velM) {
         hooks.syncVelocities(P);
         if (velCopiesOn)
-          markCopySeedsKokkos(VC, P.velPred, P.angVelPred, orphV, orphPkW, /*shareFromBase*/ true);
+          markCopySeeds(VC, P.velPred, P.angVelPred, orphV, orphPkW, /*shareFromBase*/ true);
         return;
       }
       if (velCopiesOn)
-        unfoldOrphanKokkos(VC, orphV);
+        unfoldOrphan(VC, orphV);
       hooks.syncVelocities(P);
       if (velCopiesOn)
-        markCopySeedsKokkos(VC, P.velPred, P.angVelPred, orphV, orphPkW);
+        markCopySeeds(VC, P.velPred, P.angVelPred, orphV, orphPkW);
     }
   };
   // Restitution threshold ~ the speed one substep of free fall gains: below it a contact is
-  // RESTING and bounces with e=0 (see solveVelocityKokkos — dense-pile energy-bomb guard).
+  // RESTING and bounces with e=0 (see solveVelocity — dense-pile energy-bomb guard).
   const float vRest = 2.0f * P.dt * gMagP;
   // One PGS velocity iteration (async residual zero + full colour sweep). Captured as a CUDA
   // graph and replayed per iteration on the single-GPU path: the step is host-submission-bound
@@ -818,13 +815,13 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // stop — and the physics — are bit-identical to the submission path.
   auto emitVelIter = [&] {
     Kokkos::deep_copy(space, P.maxApproach, 0.0f);
-    solveVelocityPGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel,
-                           P.quat, P.velPred, P.angVelPred, P.realIndices, P.growthRate,
-                           P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
-                           Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
-                           P.frictionDynamic, P.vt0, P.restitutionTangent,
-                           Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC,
-                           orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
+    solveVelocityPGS(P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel, P.quat,
+                     P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal,
+                     vRest, P.maxApproach, P.lambdaAcc, P.vn0,
+                     Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+                     P.frictionDynamic, P.vt0, P.restitutionTangent,
+                     Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC, orphV,
+                     orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
     foldVel();
   };
   // Device-side iteration loop (CUDA, single-rank): the whole adaptive velocity loop as ONE
@@ -836,7 +833,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       FusedLoopSpec spec{P.velocityIterations, stopsOn ? 0.02f * vRest : fusedOff, false};
       if (P.iterCounters)  // diagnostics (§12 S12): the loop writes its count on the device
         spec.iters = demIterCountSlot(P, 0);
-      velLoopDone = solveVelocityPGSKokkos(
+      velLoopDone = solveVelocityPGS(
           P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia, P.quat, P.velPred,
           P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.maxApproach,
           P.lambdaAcc, P.vn0, Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
@@ -858,9 +855,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   for (int it = 0; !velLoopDone && it < P.velocityIterations; ++it) {
     ++P.splitStats.velItersUsed;
     if (legacyFriction)
-      accumulateNormalImpulseKokkos(P.contacts, nc, P.invMass, P.invInertia, P.velPred,
-                                    P.angVelPred, P.realIndices, P.growthRate,
-                                    /*dedupTwins*/ !Hooks::distributed);
+      accumulateNormalImpulse(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
+                              P.realIndices, P.growthRate,
+                              /*dedupTwins*/ !Hooks::distributed);
     if (P.velocityUseGS) {
       if (usePGS) {
         if (graphVel)
@@ -877,16 +874,16 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           xGate = XGateSpec{Kokkos::View<const unsigned long long*, CpMem>(P.velMask), rk.color,
                             rk.numColors, t};
           if (P.iterCounters) {  // diagnostics only: the explicit gate pass, to count the unfired
-            computeXGateKokkos(P.manifolds, nm, P.realIndices,
-                               Kokkos::View<const unsigned long long*, CpMem>(P.velMask), P.xGate,
-                               rk.color, rk.numColors, t);
-            P.splitStats.unfiredSplitContacts += countUnfiredKokkos(P.xGate, nm);
+            computeXGate(P.manifolds, nm, P.realIndices,
+                         Kokkos::View<const unsigned long long*, CpMem>(P.velMask), P.xGate,
+                         rk.color, rk.numColors, t);
+            P.splitStats.unfiredSplitContacts += countUnfired(P.xGate, nm);
           }
         }
-        solveVelocityColoredGSKokkos(P.manifolds, nm, P.manifoldColor, numColors, invMassVel,
-                                     invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,
-                                     P.growthRate, P.restitutionNormal, vRest, P.maxApproach, {},
-                                     {}, {}, {}, velOv, xGate);
+        solveVelocityColoredGS(P.manifolds, nm, P.manifoldColor, numColors, invMassVel,
+                               invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,
+                               P.growthRate, P.restitutionNormal, vRest, P.maxApproach, {}, {}, {},
+                               {}, velOv, xGate);
         foldVel();
       }
       // Every active manifold is coloured (§4.2): the count-averaged fallback is gone. The stop's
@@ -906,15 +903,15 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       // §3.1): every manifold is its own copy. Count first, make the counts global (every copy of
       // a body must see the serial count), solve each manifold against copies of mass m / n with
       // true-mass deltas, and add them with factor 1 -- conservative at every iterate.
-      countVelocityJacobiKokkos(P.manifolds, nm, P.realIndices, P.constraintCounts,
-                                /*dedupTwins*/ !Hooks::distributed);
+      countVelocityJacobi(P.manifolds, nm, P.realIndices, P.constraintCounts,
+                          /*dedupTwins*/ !Hooks::distributed);
       hooks.syncContactCounts(P);
-      solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                          P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
-                          P.deltaAngVel, P.constraintCounts, {}, 0, {}, {}, {}, {},
-                          /*massSplit=*/true, /*dedupTwins*/ !Hooks::distributed);
-      applyVelocityDeltasAveragedKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
-                                        P.deltaAngVel, P.constraintCounts, /*averaged=*/false);
+      solveVelocity(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                    P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
+                    P.deltaAngVel, P.constraintCounts, {}, 0, {}, {}, {}, {},
+                    /*massSplit=*/true, /*dedupTwins*/ !Hooks::distributed);
+      applyVelocityDeltasAveraged(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
+                                  P.deltaAngVel, P.constraintCounts, /*averaged=*/false);
     }
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))
@@ -935,29 +932,29 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     const int smode = P.stabilizationMode;
     if (smode != 0 && hooks.allMax(readFloat(P.maxApproach)) > vRestS) {
       if (smode == 1) {  // ONE-SIDED grounded pass (default): held-lower-side impulses
-        computeSideFlagsKokkos(P.manifolds, nm, P.realIndices,
-                               Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent),
-                               Kokkos::View<const unsigned char*, CpMem>(P.groundedLevel),
-                               P.posPred, P.velPred, gHat, 8.0f * P.dt * gMagP, P.sideFlags, P.vn0,
-                               8.0f * P.dt * gMagP, /*dedupTwins*/ !Hooks::distributed);
+        computeSideFlags(P.manifolds, nm, P.realIndices,
+                         Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent),
+                         Kokkos::View<const unsigned char*, CpMem>(P.groundedLevel), P.posPred,
+                         P.velPred, gHat, 8.0f * P.dt * gMagP, P.sideFlags, P.vn0,
+                         8.0f * P.dt * gMagP, /*dedupTwins*/ !Hooks::distributed);
         // Arrest budget: 2x the main budget -- the pass must out-pace a violent collapse, and it
         // only ever runs when the residual says one is happening (adaptive stop ends it early).
         auto emitOsIter = [&] {
           Kokkos::deep_copy(space, P.maxApproach, 0.0f);
-          solveVelocityPGSKokkos(
-              P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel, P.quat,
-              P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRestS,
-              P.maxApproach, P.lambdaAcc, P.vn0,
-              Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
-              P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {},
-              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
+          solveVelocityPGS(P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel,
+                           P.quat, P.velPred, P.angVelPred, P.realIndices, P.growthRate,
+                           P.restitutionNormal, vRestS, P.maxApproach, P.lambdaAcc, P.vn0,
+                           Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+                           P.frictionDynamic, P.vt0, P.restitutionTangent,
+                           Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC,
+                           orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
           foldVel();
         };
         bool osLoopDone = false;
         if constexpr (!Hooks::distributed) {
           if (!velCopiesOn && velFusedP) {
             const FusedLoopSpec spec{2 * P.velocityIterations, stopsOn ? vRestS : fusedOff, false};
-            osLoopDone = solveVelocityPGSKokkos(
+            osLoopDone = solveVelocityPGS(
                 P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia, P.quat,
                 P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRestS,
                 P.maxApproach, P.lambdaAcc, P.vn0,
@@ -1020,9 +1017,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         if (velM) {
           growCopyView(P.invMassCoarse, static_cast<std::size_t>(nBodies),
                        "peclet::dem::invMassCoarse");
-          buildInvMassCoarseKokkos(P.invMass, Kokkos::View<const int*, CpMem>(P.kVel),
-                                   Kokkos::View<const int*, CpMem>(P.aVel), nBodies,
-                                   P.invMassCoarse);
+          buildInvMassCoarse(P.invMass, Kokkos::View<const int*, CpMem>(P.kVel),
+                             Kokkos::View<const int*, CpMem>(P.aVel), nBodies, P.invMassCoarse);
           invMassCoarse = P.invMassCoarse;
         }
         // The coarse vertex's inverse inertia is the same fraction
@@ -1032,9 +1028,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         if (velM) {
           growCopyView(P.invInertiaCoarse, static_cast<std::size_t>(nBodies),
                        "peclet::dem::invInertiaCoarse");
-          buildInvInertiaCoarseKokkos(P.invInertia, Kokkos::View<const int*, CpMem>(P.kVel),
-                                      Kokkos::View<const int*, CpMem>(P.aVel), nBodies,
-                                      P.invInertiaCoarse);
+          buildInvInertiaCoarse(P.invInertia, Kokkos::View<const int*, CpMem>(P.kVel),
+                                Kokkos::View<const int*, CpMem>(P.aVel), nBodies,
+                                P.invInertiaCoarse);
           invInertiaCoarse = P.invInertiaCoarse;
         }
         // Rigid-aggregate pools (§2.3), allocated on the first multilevel pass only.
@@ -1053,7 +1049,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                     P.mlAngG,        P.mlAngG0,  P.mlInvIG,    P.mlAccD};
         const MlBodyViews mlBody{Kokkos::View<const float* [3], CpMem>(P.posPred), P.angVelPred,
                                  Kokkos::View<const float* [4], CpMem>(P.quat), invInertiaCoarse};
-        const ContactHierarchy H = buildContactHierarchyKokkos(
+        const ContactHierarchy H = buildContactHierarchy(
             P.manifolds, nm, P.realIndices, Kokkos::View<const int*, CpMem>(P.manifoldColor),
             Kokkos::View<const float*, CpMem>(P.vn0), Kokkos::View<const float* [3], CpMem>(P.vt0),
             Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent), P.posPred, gHat,
@@ -1066,15 +1062,15 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
 #ifndef NDEBUG
         // Debug build (§13.5 WO-5 item 4): no multi-member coarse group holds an inactive vertex.
         if (velM && H.numLevels > 0 &&
-            countInactiveAggregatedKokkos(Kokkos::View<const int*, CpMem>(S.parent), H.parentOff[0],
-                                          nBodies, H.numGroups[0],
-                                          Kokkos::View<const int*, CpMem>(P.aVel)) > 0)
+            countInactiveAggregated(Kokkos::View<const int*, CpMem>(S.parent), H.parentOff[0],
+                                    nBodies, H.numGroups[0],
+                                    Kokkos::View<const int*, CpMem>(P.aVel)) > 0)
           throw std::logic_error("rank-level M: a coarse group holds a vertex with a = 0");
 #endif
         if (H.numLevels > 0 && (velCopiesOn || velM))  // §13.2's positive control (diagnostic)
           P.splitStats.mlHubAggregated =
               std::max(P.splitStats.mlHubAggregated,
-                       countSplitAggregatedKokkos(
+                       countSplitAggregated(
                            Kokkos::View<const int*, CpMem>(S.parent), H.parentOff[0], nBodies,
                            H.numGroups[0], Kokkos::View<const unsigned char*, CpMem>(P.splitSlot)));
         P.mlLast.numManifolds = nm;
@@ -1086,7 +1082,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         if (H.numLevels > 0) {
           if (static_cast<int>(P.mlBucketPerm.extent(0)) < H.numLevels * nm)
             Kokkos::realloc(Kokkos::WithoutInitializing, P.mlBucketPerm, H.numLevels * nm);
-          buildCoarseBucketsKokkos(H, S, nm, P.levelKey, P.mlBucketPerm, P.bucketCursor, mlOffs);
+          buildCoarseBuckets(H, S, nm, P.levelKey, P.mlBucketPerm, P.bucketCursor, mlOffs);
         }
         // Fused coarse cycle (CUDA): the whole per-iteration coarse leg as ONE kernel.
         const MlFusedCtx mlFused =
@@ -1108,23 +1104,23 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         // leg reads the bases, [0, nBodies)), and re-seed the copies from the bases after it.
         auto emitMlIter = [&] {
           Kokkos::deep_copy(space, P.maxApproachQS, 0.0f);
-          solveVelocityPGSKokkos(
-              P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel, P.quat,
-              P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRestS,
-              P.maxApproach, P.lambdaAcc, P.vn0,
-              Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
-              P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse),
-              P.maxApproachQS, bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP,
-              nullptr, velOv);
+          solveVelocityPGS(P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel,
+                           P.quat, P.velPred, P.angVelPred, P.realIndices, P.growthRate,
+                           P.restitutionNormal, vRestS, P.maxApproach, P.lambdaAcc, P.vn0,
+                           Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+                           P.frictionDynamic, P.vt0, P.restitutionTangent,
+                           Kokkos::View<const float*, CpMem>(P.posImpulse), P.maxApproachQS, bankV,
+                           relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr,
+                           velOv);
           foldVel();
           if (H.numLevels > 0) {
-            multilevelCoarseCycleKokkos(P.manifolds, nm, P.realIndices, invMassCoarse, P.velPred,
-                                        P.lambdaAcc, P.maxApproachQS, nBodies, H, S,
-                                        /*coarseSweeps*/ 2, mlBody,
-                                        Kokkos::View<const float*, CpMem>(relV), &mlOffs,
-                                        Kokkos::View<const int*, CpMem>(P.mlBucketPerm), mlFusedP);
+            multilevelCoarseCycle(P.manifolds, nm, P.realIndices, invMassCoarse, P.velPred,
+                                  P.lambdaAcc, P.maxApproachQS, nBodies, H, S,
+                                  /*coarseSweeps*/ 2, mlBody,
+                                  Kokkos::View<const float*, CpMem>(relV), &mlOffs,
+                                  Kokkos::View<const int*, CpMem>(P.mlBucketPerm), mlFusedP);
             if (velCopiesOn)
-              reseedCopiesKokkos(space, VC, P.velPred, P.angVelPred);
+              reseedCopies(space, VC, P.velPred, P.angVelPred);
           }
         };
         // Device-side stabilization loop (CUDA, single-rank): fine sweep + coarse cycle +
@@ -1152,7 +1148,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
               // aggregation found nothing: the loop is plain fine sweeps on the QS residual
               const FusedLoopSpec spec{2 * P.velocityIterations, stopsOn ? vRestS : fusedOff,
                                        false};
-              mlLoopDone = solveVelocityPGSKokkos(
+              mlLoopDone = solveVelocityPGS(
                   P.manifolds, nm, P.manifoldColor, numColors, P.invMass, P.invInertia, P.quat,
                   P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRestS,
                   P.maxApproach, P.lambdaAcc, P.vn0,
@@ -1190,10 +1186,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         // inelastic impulse only EQUALIZES velocities, so a deep column still cools one halving
         // per cycle -- measured insufficient on the statics battery (kept for A/B comparison
         // against the multilevel pass).
-        computeHeightLevelsKokkos(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat,
-                                  P.heightLevel, nBodies);
+        computeHeightLevels(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat, P.heightLevel,
+                            nBodies);
         std::vector<std::pair<int, int>> buckets;
-        buildLevelColorBucketsKokkos(
+        buildLevelColorBuckets(
             P.manifolds, nm, P.realIndices, Kokkos::View<const int*, CpMem>(P.manifoldColor),
             Kokkos::View<const int*, CpMem>(P.heightLevel), P.levelKey, P.levelPerm, buckets);
         const PGSManifoldSweep sweep{P.manifolds,
@@ -1226,10 +1222,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           Kokkos::deep_copy(P.maxConsensus, 0.0f);
         for (int it = 0; it < 2 * P.velocityIterations; ++it) {
           Kokkos::deep_copy(P.maxApproach, 0.0f);
-          solveVelocityPGSBucketsKokkos(sweep, Kokkos::View<const int*, CpMem>(P.levelPerm),
-                                        buckets, /*topDown*/ false);
-          solveVelocityPGSBucketsKokkos(sweep, Kokkos::View<const int*, CpMem>(P.levelPerm),
-                                        buckets, /*topDown*/ true);
+          solveVelocityPGSBuckets(sweep, Kokkos::View<const int*, CpMem>(P.levelPerm), buckets,
+                                  /*topDown*/ false);
+          solveVelocityPGSBuckets(sweep, Kokkos::View<const int*, CpMem>(P.levelPerm), buckets,
+                                  /*topDown*/ true);
           foldVel();
           const float orRes = hooks.allMax(withConsensus(readFloat(P.maxApproach), velCons));
           if (stopsOn && orRes <= vRestS)
@@ -1247,13 +1243,13 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
           Kokkos::deep_copy(P.maxConsensus, 0.0f);
         for (int it = 0; it < 256; ++it) {
           Kokkos::deep_copy(P.maxApproach, 0.0f);
-          solveVelocityPGSKokkos(
-              P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel, P.quat,
-              P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRestS,
-              P.maxApproach, P.lambdaAcc, P.vn0,
-              Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
-              P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {},
-              bankV, relV, vpkC, orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
+          solveVelocityPGS(P.manifolds, nm, P.manifoldColor, numColors, invMassVel, invInertiaVel,
+                           P.quat, P.velPred, P.angVelPred, P.realIndices, P.growthRate,
+                           P.restitutionNormal, vRestS, P.maxApproach, P.lambdaAcc, P.vn0,
+                           Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+                           P.frictionDynamic, P.vt0, P.restitutionTangent,
+                           Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV, vpkC,
+                           orphV, orphPk, velPermC, velOffsP, velFusedP, nullptr, velOv);
           foldVel();
           const float esRes = hooks.allMax(withConsensus(readFloat(P.maxApproach), velCons));
           if (stopsOn && esRes <= vRestS)
@@ -1276,18 +1272,18 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     if (poisson)
       hooks.restoreOrphanBalance(P);
   } else if (velCopiesOn) {
-    unfoldOrphanKokkos(VC, orphV);
+    unfoldOrphan(VC, orphV);
   }
   // Poisson bookkeeping runs once per substep on the FINAL velocity state (after every phase and
   // ghost refresh): bank this substep's kinetic compression, deduct what was returned/released.
   if (poisson)
-    updateRestitutionBankKokkos(
-        P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
-        P.growthRate, P.restitutionNormal, 2.0f * P.dt * gMagP, P.vn0, P.lambdaAcc,
-        Kokkos::View<const float*, CpMem>(P.restRel), P.restBank, P.restVPeak,
-        /*dedupTwins*/ !Hooks::distributed);
+    updateRestitutionBank(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                          P.realIndices, P.growthRate, P.restitutionNormal, 2.0f * P.dt * gMagP,
+                          P.vn0, P.lambdaAcc, Kokkos::View<const float*, CpMem>(P.restRel),
+                          P.restBank, P.restVPeak,
+                          /*dedupTwins*/ !Hooks::distributed);
   if (usePGS) {  // save the converged force network for next substep's warm start
-    commitPairKeysLambdaKokkos(
+    commitPairKeysLambda(
         P.pairKeys, P.lambdaAcc, P.lambdaT, Kokkos::View<const float*, CpMem>(P.restBank),
         Kokkos::View<const float*, CpMem>(P.restVPeak), P.prevPairKeys, P.prevLambda, P.prevLambdaT,
         P.prevRestBank, P.prevRestVPeak, P.commitPerm, nm,
@@ -1299,19 +1295,19 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     P.prevPairCount = nm;
   }
   if (legacyFriction) {
-    countFrictionContactsKokkos(P.contacts, nc, P.realIndices, P.planeFriction);
+    countFrictionContacts(P.contacts, nc, P.realIndices, P.planeFriction);
     hooks.syncFrictionCounts(P);
     // World-frame inverse inertia at the phase's frozen orientation P.quat (§12 S15).
-    solveContactFrictionKokkos(P.contacts, nc, P.invMass, P.invInertia, P.quat, P.velPred,
-                               P.angVelPred, P.realIndices, P.planeFriction, P.frictionDynamic,
-                               P.deltaVel, P.deltaAngVel);
-    applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
+    solveContactFriction(P.contacts, nc, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                         P.realIndices, P.planeFriction, P.frictionDynamic, P.deltaVel,
+                         P.deltaAngVel);
+    applyVelocityDeltas(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
     if constexpr (Hooks::distributed)
       hooks.syncVelocities(P);  // publish the friction velocity update to the ghosts
   }
 
-  applyVelocityAndPredictPositionKokkos(P.numParticles, P.pos, P.invMass, P.vel, P.quat, P.velPred,
-                                        P.angVelPred, P.posPred, P.quatPred, P.angVel, P.dt);
+  applyVelocityAndPredictPosition(P.numParticles, P.pos, P.invMass, P.vel, P.quat, P.velPred,
+                                  P.angVelPred, P.posPred, P.quatPred, P.angVel, P.dt);
   if constexpr (Hooks::distributed)
     hooks.publishPositions(P);
 
@@ -1327,13 +1323,13 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // base's); the local fold still divides by the local count a; the syncs are M in the halo.
   const bool posM = rankM && P.velocityUseGS;
   if (posM) {
-    buildSolveViewsRankKKokkos(P, PC, slotBase + (posCopiesOn ? PC.nCopies : 0), P.invMass,
-                               P.invInertia, Kokkos::View<const int*, CpMem>(P.kPos));
+    buildSolveViewsRankK(P, PC, slotBase + (posCopiesOn ? PC.nCopies : 0), P.invMass, P.invInertia,
+                         Kokkos::View<const int*, CpMem>(P.kPos));
     invMassPos = P.invMassSolve;
     invInertiaPos = P.invInertiaSolve;
     if (posCopiesOn) {
-      seedCopySlotStateKokkos(P, PC);
-      markCopySeedsKokkos(PC, P.posPred, {}, {}, {});
+      seedCopySlotState(P, PC);
+      markCopySeeds(PC, P.posPred, {}, {}, {});
       if (PC.nHubs > 0)
         posOv = SlotOverride{PC.slotA, PC.slotB, {}, 1.0f};
 #if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 7
@@ -1341,9 +1337,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
 #endif
     }
   } else if (posCopiesOn) {
-    buildSolveViewsKokkos(P, PC, slotBase + PC.nCopies, P.invMass, P.invInertia);
-    seedCopySlotStateKokkos(P, PC);
-    markCopySeedsKokkos(PC, P.posPred, {}, {}, {});
+    buildSolveViews(P, PC, slotBase + PC.nCopies, P.invMass, P.invInertia);
+    seedCopySlotState(P, PC);
+    markCopySeeds(PC, P.posPred, {}, {}, {});
     invMassPos = P.invMassSolve;
     invInertiaPos = P.invInertiaSolve;
     // The slot overrides only: the overlap projection is never relaxed (§13.1).
@@ -1359,7 +1355,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     if constexpr (Hooks::distributed) {
       hooks.syncPositions(P);
       if (posCopiesOn)
-        markCopySeedsKokkos(PC, P.posPred, {}, {}, {});
+        markCopySeeds(PC, P.posPred, {}, {}, {});
     }
   };
 
@@ -1377,12 +1373,12 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   auto emitPosIter = [&] {
     Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
     Kokkos::deep_copy(space, P.posResidual, 0.0f);
-    solvePositionColoredGSKokkos(P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors,
-                                 invMassPos, P.posPred, P.quatPred, P.quat, invInertiaPos,
-                                 P.maxOverlap, P.posLambdaContact, posPermC, posOffsP, posFusedP,
-                                 nullptr, posOv, P.posResidual, P.positionOmega);
+    solvePositionColoredGS(P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors, invMassPos,
+                           P.posPred, P.quatPred, P.quat, invInertiaPos, P.maxOverlap,
+                           P.posLambdaContact, posPermC, posOffsP, posFusedP, nullptr, posOv,
+                           P.posResidual, P.positionOmega);
     if (posCopiesOn)
-      foldCopiesKokkos(space, PC, P.posPred, {}, {}, {}, P.maxConsensus);
+      foldCopies(space, PC, P.posPred, {}, {}, {}, P.maxConsensus);
   };
   // §12 S14: the position phase folds its consensus corrections (|dx| of a local fold or an M
   // sync, absolute like maxOverlap) into its stop vote, exactly as the velocity phase does.
@@ -1397,7 +1393,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       if (P.iterCounters)  // diagnostics (§12 S12)
         spec.iters = demIterCountSlot(P, 1);
       Kokkos::deep_copy(space, P.maxOverlap, 0.0f);  // the largest violation over the device loop
-      posLoopDone = solvePositionColoredGSKokkos(
+      posLoopDone = solvePositionColoredGS(
           P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors, P.invMass, P.posPred,
           P.quatPred, P.quat, P.invInertia, P.maxOverlap, P.posLambdaContact, posPermC, posOffsP,
           posFusedP, &spec, {}, P.posResidual, P.positionOmega);
@@ -1428,13 +1424,13 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         break;
     } else {
       // Mass-split Jacobi (see the velocity branch): count, global counts, solve, add.
-      countPositionJacobiKokkos(P.contacts, nc, P.constraintCounts);
+      countPositionJacobi(P.contacts, nc, P.constraintCounts);
       hooks.syncContactCounts(P);
-      solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
-                          P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap, {}, 0,
-                          /*massSplit=*/true);
-      applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
-                         P.constraintCounts, /*averaged=*/false);
+      solvePosition(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
+                    P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap, {}, 0,
+                    /*massSplit=*/true);
+      applyUpdates(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel, P.constraintCounts,
+                   /*averaged=*/false);
     }
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))
@@ -1448,8 +1444,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // bound under-counts the true normal force and stick leaks (measured: 99% sliding wall
   // contacts in the benchmark drum while the Hertz reference sticks).
   if (usePGS && nm > 0)
-    commitPosImpulseKokkos(P.posLambdaContact, nc, P.contactSlot, P.manifolds, nm, P.pairKeys,
-                           P.prevPairKeys, P.prevPairCount, P.dt, P.vn0, P.prevPosImpulse);
+    commitPosImpulse(P.posLambdaContact, nc, P.contactSlot, P.manifolds, nm, P.pairKeys,
+                     P.prevPairKeys, P.prevPairCount, P.dt, P.vn0, P.prevPosImpulse);
   Kokkos::Profiling::popRegion();
   (void)space;
 }

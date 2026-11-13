@@ -848,7 +848,7 @@ static D3 spinOf(const State& orient, int i, const D3& w) {
 static D3 spin(const State& st, int i) {  // I w
   return spinOf(st, i, at(st.w, i));
 }
-// The angular velocity predictVelocityKokkos hands the velocity phase (no external torque in these
+// The angular velocity predictVelocity hands the velocity phase (no external torque in these
 // scenes): w + R [-dt invI (wb x I wb)] with wb = R^T w, in double. Isotropic or massless bodies
 // and bodies without inverse inertia keep w exactly (the kernel's own guards).
 static D3 predictedOmega(const State& st, int i, double dt) {
@@ -983,7 +983,7 @@ static D3 velocityPhaseTorque(const State& aLocal, const State& bLocal, const D3
       dv[d] = v1[d] - v0[d] - g[d] * dt;
     }
     // Both at the orientation the phase solves at (frozen in the velocity phase). The baseline
-    // is the PREDICTED omega (docs/contact_solve_framework.md §12 S16): predictVelocityKokkos's
+    // is the PREDICTED omega (docs/contact_solve_framework.md §12 S16): predictVelocity's
     // explicit gyroscopic Euler term -dt invI (w x I w) (integration.hpp), replayed in double, is
     // the free body's frame-rotation compensation, not a contact impulse, so it is not booked to
     // the velocity phase. Isotropic inertia (spheres) has w x I w = 0: the baseline is w itself.

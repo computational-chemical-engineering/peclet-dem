@@ -1,4 +1,4 @@
-// Correctness of the Kokkos manifold velocity solve (dem::solveVelocityKokkos) against a host
+// Correctness of the Kokkos manifold velocity solve (dem::solveVelocity) against a host
 // replication of the identical impulse math. Random bodies + canonical manifolds (bodyA<bodyB, or
 // bodyB=-1 boundary); identity real-index map. Compares the accumulated delta_vel / delta_ang_vel
 // per body within tolerance (device atomic vs host sequential accumulation differ only in float
@@ -151,8 +151,8 @@ int main(int argc, char** argv) {
 
     // restVelThreshold = 0: every approaching contact keeps the prescribed restitution — the
     // pre-threshold semantics this host reference encodes.
-    solveVelocityKokkos(dMan, M, dInvMass, dInvI, dQuat, dVel, dAng, dReal, growthRate, restitution,
-                        /*restVelThreshold=*/0.0f, dDV, dDW, dCounts);
+    solveVelocity(dMan, M, dInvMass, dInvI, dQuat, dVel, dAng, dReal, growthRate, restitution,
+                  /*restVelThreshold=*/0.0f, dDV, dDW, dCounts);
 
     std::vector<float> gdv(3 * N), gdw(3 * N);
     {

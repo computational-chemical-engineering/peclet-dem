@@ -150,34 +150,33 @@ struct HertzMindlinLaw {
     hertzRebuildPairs(P, skin);
     if (P.numWalls > 0)
       P.hertzNumWallCand =
-          hertzBuildWallCandidatesKokkos(P.numReal, P.numWalls, P.walls, P.wallGrid, P.pos, P.rad,
-                                         skin, P.hertzWallCand, P.hertzWallCandCount);
+          hertzBuildWallCandidates(P.numReal, P.numWalls, P.walls, P.wallGrid, P.pos, P.rad, skin,
+                                   P.hertzWallCand, P.hertzWallCandCount);
   }
   void pairForces(Particles& P, float dt, bool hasShapes) const {
     if (hasShapes)
-      hertzShapePairForcesKokkos(P.pairs, P.hertzNumPairs, P.pos, P.quat, P.vel, P.angVel, P.scale,
-                                 P.shapeId, P.shapes, P.shell, P.sdfGrid, P.globalScale,
-                                 P.hertzContactRadiusFrac, P.invMass, MatIdView(P.materialId),
-                                 PairTableView(P.pairMaterials), P.restitutionNormal,
-                                 P.frictionDynamic, P.hertzE, P.hertzNu, dt, P.hertzXi,
-                                 P.hertzSnPair, P.deltaVel, P.deltaAngVel);
+      hertzShapePairForces(P.pairs, P.hertzNumPairs, P.pos, P.quat, P.vel, P.angVel, P.scale,
+                           P.shapeId, P.shapes, P.shell, P.sdfGrid, P.globalScale,
+                           P.hertzContactRadiusFrac, P.invMass, MatIdView(P.materialId),
+                           PairTableView(P.pairMaterials), P.restitutionNormal, P.frictionDynamic,
+                           P.hertzE, P.hertzNu, dt, P.hertzXi, P.hertzSnPair, P.deltaVel,
+                           P.deltaAngVel);
     else
-      hertzPairForcesKokkos(
-          P.pairs, P.hertzNumPairs, P.pos, P.vel, P.angVel, P.rad, P.invMass,
-          MatIdView(P.materialId), PairTableView(P.pairMaterials), P.restitutionNormal,
-          P.frictionDynamic, P.hertzE, P.hertzNu, dt, P.hertzXi, P.deltaVel, P.deltaAngVel,
-          Kokkos::View<const float*, CpMem>(P.scale), P.shapeId, P.shapes, P.globalScale);
+      hertzPairForces(P.pairs, P.hertzNumPairs, P.pos, P.vel, P.angVel, P.rad, P.invMass,
+                      MatIdView(P.materialId), PairTableView(P.pairMaterials), P.restitutionNormal,
+                      P.frictionDynamic, P.hertzE, P.hertzNu, dt, P.hertzXi, P.deltaVel,
+                      P.deltaAngVel, Kokkos::View<const float*, CpMem>(P.scale), P.shapeId,
+                      P.shapes, P.globalScale);
   }
   void wallForces(Particles& P, float dt, bool hasShapes) const {
     if (P.numWalls > 0 && P.hertzNumWallCand > 0)
-      hertzWallForcesKokkos(
-          Kokkos::View<const int*, CpMem>(P.hertzWallCand), P.hertzNumWallCand, P.walls, P.wallGrid,
-          P.pos, P.vel, P.angVel, P.rad, P.invMass, MatIdView(P.materialId),
-          PairTableView(P.pairMaterials), P.restitutionNormal, P.frictionDynamic, P.hertzE,
-          P.hertzNu, dt, P.hertzXiWall, Particles::kHertzMaxWalls, P.deltaVel, P.deltaAngVel,
-          Kokkos::View<const float* [4], CpMem>(P.quat), Kokkos::View<const float*, CpMem>(P.scale),
-          P.shapeId, P.shapes, P.shell, P.globalScale, P.hertzContactRadiusFrac, hasShapes,
-          P.hertzSnWall);
+      hertzWallForces(Kokkos::View<const int*, CpMem>(P.hertzWallCand), P.hertzNumWallCand, P.walls,
+                      P.wallGrid, P.pos, P.vel, P.angVel, P.rad, P.invMass, MatIdView(P.materialId),
+                      PairTableView(P.pairMaterials), P.restitutionNormal, P.frictionDynamic,
+                      P.hertzE, P.hertzNu, dt, P.hertzXiWall, Particles::kHertzMaxWalls, P.deltaVel,
+                      P.deltaAngVel, Kokkos::View<const float* [4], CpMem>(P.quat),
+                      Kokkos::View<const float*, CpMem>(P.scale), P.shapeId, P.shapes, P.shell,
+                      P.globalScale, P.hertzContactRadiusFrac, hasShapes, P.hertzSnWall);
   }
   /// Engine-support restrictions of this law (probed once per call).
   void validate(const Particles& P) const {
@@ -193,7 +192,7 @@ struct HertzMindlinLaw {
 /// Zero the force/torque accumulator rows [lo, hi) — under MPI the pair kernels atomically
 /// accumulate onto ghost slots too (Newton's third law), but only owned rows are consumed and
 /// cleared by the integrator; without this the ghost rows grow without bound.
-inline void zeroForceScratchKokkos(V3 dv, V3 dw, int lo, int hi) {
+inline void zeroForceScratch(V3 dv, V3 dw, int lo, int hi) {
   if (hi <= lo)
     return;
   CpExec space;
@@ -225,7 +224,7 @@ inline void demStepForce(Particles& P, float dt, int nsteps, float skinFrac, con
                          const Hooks& hooks) {
   law.validate(P);
   // world radii of the owned span (a halo gather re-fills owned + ghosts)
-  fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numReal);
+  fillWorldRadii(P.scale, P.rad, P.globalScale, P.baseRadius, P.numReal);
   float minRad = 0.0f;
   {
     CpExec space;
@@ -295,14 +294,14 @@ inline void demStepForce(Particles& P, float dt, int nsteps, float skinFrac, con
       tWall += timer.seconds();
       timer.reset();
     }
-    hertzIntegrateKokkos(P.numReal, P.deltaVel, P.deltaAngVel, P.invMass, P.invInertia, g, dt,
-                         P.vel, P.angVel, P.pos, P.quat, hasShapes);
+    hertzIntegrate(P.numReal, P.deltaVel, P.deltaAngVel, P.invMass, P.invInertia, g, dt, P.vel,
+                   P.angVel, P.pos, P.quat, hasShapes);
     if (profile) {
       tInt += timer.seconds();
       timer.reset();
     }
     if ((k & 15) == 15 || k == nsteps - 1) {
-      if (hooks.allMax(hertzMaxDisp2Kokkos(P.numReal, P.pos, P.hertzRefPos)) > rebuildAt)
+      if (hooks.allMax(hertzMaxDisp2(P.numReal, P.pos, P.hertzRefPos)) > rebuildAt)
         rebuild = true;
       if (profile) {
         tCheck += timer.seconds();

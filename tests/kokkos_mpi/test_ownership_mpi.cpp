@@ -16,7 +16,7 @@
 //                          them. np = 1 has no interior face, so there it equals closed.
 //
 // exactly_once_*: each rank gathers its ghosts, runs the broad + narrow phase of the distributed
-// step and partitionContactsKokkos with ParticleHalo::contactOwnership; every rank's owned ACTIVE
+// step and partitionContacts with ParticleHalo::contactOwnership; every rank's owned ACTIVE
 // (dist <= 0) contacts, keyed by pairKeyFromGids, are gathered to rank 0 and compared with the
 // same narrow phase on the whole set on MPI_COMM_SELF: no key may be owned twice, and the union
 // of the owned keys must equal the serial active set.
@@ -310,8 +310,8 @@ struct CRec {
 
 // Run gather + broad/narrow phase + partition on `comm` for the bodies `mine` (gids = mine) and
 // return every contact the narrow phase reports on this rank.
-static void detectContacts(const Scene& sc, const std::vector<int>& mine, bool periodic,
-                           MPI_Comm comm, std::vector<CRec>& out) {
+static void detectContactsOracle(const Scene& sc, const std::vector<int>& mine, bool periodic,
+                                 MPI_Comm comm, std::vector<CRec>& out) {
   const int no = static_cast<int>(mine.size());
   ProbeSim sim(8 * static_cast<int>(sc.x.size()) + 64);
   sim.setDomain(static_cast<float>(GX), static_cast<float>(GX), static_cast<float>(GX), periodic,
@@ -347,11 +347,10 @@ static void detectContacts(const Scene& sc, const std::vector<int>& mine, bool p
   P.numParticles = P.numReal;
   halo.gather(P, peclet::dem::mpiXpbdBand(P, halo, 0.0, vote));
   const int nOwned = P.numReal;  // after a drift migration, not mine.size()
-  peclet::dem::fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
+  peclet::dem::fillWorldRadii(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
   const int np = peclet::dem::findCollisionsGrow(P, margin);
   const int nc = peclet::dem::narrowPhaseGrow(P, np, margin);
-  const int ncOwned =
-      peclet::dem::partitionContactsKokkos(P.contacts, nc, halo.contactOwnership(P));
+  const int ncOwned = peclet::dem::partitionContacts(P.contacts, nc, halo.contactOwnership(P));
   auto hc = Kokkos::create_mirror_view(P.contacts);
   auto hg = Kokkos::create_mirror_view(P.gid);
   auto hx = Kokkos::create_mirror_view(P.posPred);
@@ -385,12 +384,12 @@ static void detectContacts(const Scene& sc, const std::vector<int>& mine, bool p
   P.numParticles = P.numReal;
 }
 
-// The owned active keys and (for the diagnostic) every visible active key of detectContacts.
+// The owned active keys and (for the diagnostic) every visible active key of detectContactsOracle.
 static void ownedKeys(const Scene& sc, const std::vector<int>& mine, bool periodic, MPI_Comm comm,
                       std::vector<unsigned long long>& owned,
                       std::vector<unsigned long long>& visible) {
   std::vector<CRec> cs;
-  detectContacts(sc, mine, periodic, comm, cs);
+  detectContactsOracle(sc, mine, periodic, comm, cs);
   for (const CRec& c : cs) {
     if (c.dist > 0.0f)
       continue;
@@ -890,7 +889,7 @@ static int runOracle(const std::string& which, int rank, int size, const std::st
     for (int g = 0; g < nb; ++g)
       all[g] = g;
     std::vector<CRec> cs;
-    detectContacts(ser, all, periodic, MPI_COMM_SELF, cs);
+    detectContactsOracle(ser, all, periodic, MPI_COMM_SELF, cs);
     const float margin = 0.1f * rMax;
     const double tol = 1e-4 * rMax;
     std::map<OKey, float> serial;  // key -> smallest dist over its contacts / twins

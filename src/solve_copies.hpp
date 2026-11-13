@@ -51,10 +51,10 @@ inline void growCopyView(V& v, std::size_t n, const char* label) {
 
 /// Velocity-phase colouring edges: the vertices realIdx(bodyA / bodyB) of each manifold (-1: a
 /// wall end, or both ends of an inactive (-2) manifold). §4.4 step 1: active = colour != -2.
-inline void velocityEdgeEndsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int nm,
-                                   Kokkos::View<const int*, CpMem> realIdx,
-                                   Kokkos::View<const int*, CpMem> color,
-                                   Kokkos::View<int*, CpMem> eA, Kokkos::View<int*, CpMem> eB) {
+inline void velocityEdgeEnds(Kokkos::View<const ManifoldC*, CpMem> manifolds, int nm,
+                             Kokkos::View<const int*, CpMem> realIdx,
+                             Kokkos::View<const int*, CpMem> color, Kokkos::View<int*, CpMem> eA,
+                             Kokkos::View<int*, CpMem> eB) {
   Kokkos::parallel_for(
       "peclet::dem::copies_vel_ends", Kokkos::RangePolicy<CpExec>(0, nm), KOKKOS_LAMBDA(int e) {
         const ManifoldC m = manifolds(e);
@@ -66,10 +66,9 @@ inline void velocityEdgeEndsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
 
 /// Position-phase colouring edges: one per unit, the leader contact's raw (bodyA, bodyB);
 /// active = the unit is not sleep-masked (colour != -2).
-inline void positionEdgeEndsKokkos(Kokkos::View<const ContactC*, CpMem> contacts,
-                                   const PosUnits& units, int nu,
-                                   Kokkos::View<const int*, CpMem> color,
-                                   Kokkos::View<int*, CpMem> eA, Kokkos::View<int*, CpMem> eB) {
+inline void positionEdgeEnds(Kokkos::View<const ContactC*, CpMem> contacts, const PosUnits& units,
+                             int nu, Kokkos::View<const int*, CpMem> color,
+                             Kokkos::View<int*, CpMem> eA, Kokkos::View<int*, CpMem> eB) {
   Kokkos::parallel_for(
       "peclet::dem::copies_pos_ends", Kokkos::RangePolicy<CpExec>(0, nu), KOKKOS_LAMBDA(int u) {
         const ContactC c = contacts(units.leader(u));
@@ -80,9 +79,8 @@ inline void positionEdgeEndsKokkos(Kokkos::View<const ContactC*, CpMem> contacts
 }
 
 /// Per-vertex active degree over [0, nV) (§4.4 step 1). Wall edges have one endpoint.
-inline void vertexDegreeKokkos(Kokkos::View<const int*, CpMem> eA,
-                               Kokkos::View<const int*, CpMem> eB, int nE, int nV,
-                               Kokkos::View<int*, CpMem> deg) {
+inline void vertexDegree(Kokkos::View<const int*, CpMem> eA, Kokkos::View<const int*, CpMem> eB,
+                         int nE, int nV, Kokkos::View<int*, CpMem> deg) {
   Kokkos::deep_copy(Kokkos::subview(deg, Kokkos::pair<int, int>(0, nV)), 0);
   Kokkos::parallel_for(
       "peclet::dem::copies_degree", Kokkos::RangePolicy<CpExec>(0, nE), KOKKOS_LAMBDA(int e) {
@@ -100,9 +98,9 @@ inline void vertexDegreeKokkos(Kokkos::View<const int*, CpMem> eA,
 /// sorted, go round-robin: the j-th to copy j mod s (copy 0 = the base slot); an edge between two
 /// hubs is assigned independently at each end. Writes the per-edge overrides slotA / slotB (-1 =
 /// none) and copyBase. Deterministic: the order is the sorted key, never thread order.
-inline void buildHubCopiesKokkos(Kokkos::View<const int*, CpMem> eA,
-                                 Kokkos::View<const int*, CpMem> eB, int nE, int nV, int slotBase,
-                                 Kokkos::View<const int*, CpMem> deg, PhaseCopies& H) {
+inline void buildHubCopies(Kokkos::View<const int*, CpMem> eA, Kokkos::View<const int*, CpMem> eB,
+                           int nE, int nV, int slotBase, Kokkos::View<const int*, CpMem> deg,
+                           PhaseCopies& H) {
   CpExec space;
   using Kokkos::view_alloc;
   using Kokkos::WithoutInitializing;
@@ -240,10 +238,10 @@ inline void buildHubCopiesKokkos(Kokkos::View<const int*, CpMem> eA,
 /// position phase (raw slots: every image slot is its own copy, reconciled at rank level, §13.3).
 /// On the single-rank velocity phase realIdx is the identity on [0, span), so it is the same
 /// grouping.
-inline void buildCopyGroupsKokkos(Kokkos::View<const int*, CpMem> realIdx, int span, int numReal,
-                                  Kokkos::View<const int*, CpMem> deg,
-                                  Kokkos::View<const float* [3], CpMem> imageShift, PhaseCopies& H,
-                                  bool identityBodies = false) {
+inline void buildCopyGroups(Kokkos::View<const int*, CpMem> realIdx, int span, int numReal,
+                            Kokkos::View<const int*, CpMem> deg,
+                            Kokkos::View<const float* [3], CpMem> imageShift, PhaseCopies& H,
+                            bool identityBodies = false) {
   CpExec space;
   using Kokkos::view_alloc;
   using Kokkos::WithoutInitializing;
@@ -333,9 +331,9 @@ inline void buildCopyGroupsKokkos(Kokkos::View<const int*, CpMem> realIdx, int s
 /// Solve views of a phase (§4.5): invMassSolve / invInertiaSolve = the phase's masses on every
 /// slot in [0, nSlots), times k on every member of a group, and splitSlot = (k > 1). Built only
 /// while the phase has groups.
-inline void buildSolveViewsKokkos(Particles& P, const PhaseCopies& H, int nSlots,
-                                  Kokkos::View<const float*, CpMem> invMass,
-                                  Kokkos::View<const float* [3], CpMem> invInertia) {
+inline void buildSolveViews(Particles& P, const PhaseCopies& H, int nSlots,
+                            Kokkos::View<const float*, CpMem> invMass,
+                            Kokkos::View<const float* [3], CpMem> invInertia) {
   CpExec space;
   growCopyView(P.invMassSolve, static_cast<std::size_t>(nSlots), "peclet::dem::invMassSolve");
   growCopyView(P.invInertiaSolve, static_cast<std::size_t>(nSlots), "peclet::dem::invInertiaSolve");
@@ -378,7 +376,7 @@ inline void buildSolveViewsKokkos(Particles& P, const PhaseCopies& H, int nSlots
 
 /// Seed the copy slots' read-only state from their hub vertex (§4.4 step 6): orientation, local
 /// inverse inertia and grounded level (velocity), predicted orientation (position).
-inline void seedCopySlotStateKokkos(Particles& P, const PhaseCopies& H) {
+inline void seedCopySlotState(Particles& P, const PhaseCopies& H) {
   if (H.nCopies <= 0)
     return;
   auto cb = H.copyBase;
@@ -407,11 +405,9 @@ inline void seedCopySlotStateKokkos(Particles& P, const PhaseCopies& H) {
 /// `orphan` (Poisson, velocity) every member's account becomes the share B / k of the base's
 /// balance B, and the peak the base's. shareFromBase (rank-level M, §13.3): the base already holds
 /// the share B / k_global (set by the opening / rank sync), and every member copies it.
-inline void markCopySeedsKokkos(const PhaseCopies& H, Kokkos::View<float* [3], CpMem> x,
-                                Kokkos::View<float* [3], CpMem> w,
-                                Kokkos::View<float*, CpMem> orphan,
-                                Kokkos::View<float*, CpMem> orphanPeak,
-                                bool shareFromBase = false) {
+inline void markCopySeeds(const PhaseCopies& H, Kokkos::View<float* [3], CpMem> x,
+                          Kokkos::View<float* [3], CpMem> w, Kokkos::View<float*, CpMem> orphan,
+                          Kokkos::View<float*, CpMem> orphanPeak, bool shareFromBase = false) {
   if (H.nGroups <= 0)
     return;
   auto gs = H.groupStart;
@@ -460,10 +456,10 @@ inline void markCopySeedsKokkos(const PhaseCopies& H, Kokkos::View<float* [3], C
 /// With `consensus` (§12 S14) the largest correction the fold applies to an active member's x,
 /// |T / k - (x(q) - sigma - shift(q))| (increment form: exactly 0 once the sweep stops moving the
 /// copies), is atomic-maxed into it; w, orphan and the result are unaffected.
-inline void foldCopiesKokkos(CpExec space, const PhaseCopies& H, Kokkos::View<float* [3], CpMem> x,
-                             Kokkos::View<float* [3], CpMem> w, Kokkos::View<float*, CpMem> orphan,
-                             Kokkos::View<float*, CpMem> orphanPeak,
-                             Kokkos::View<float, CpMem> consensus = {}) {
+inline void foldCopies(CpExec space, const PhaseCopies& H, Kokkos::View<float* [3], CpMem> x,
+                       Kokkos::View<float* [3], CpMem> w, Kokkos::View<float*, CpMem> orphan,
+                       Kokkos::View<float*, CpMem> orphanPeak,
+                       Kokkos::View<float, CpMem> consensus = {}) {
   if (H.nGroups <= 0)
     return;
   auto gs = H.groupStart;
@@ -540,9 +536,8 @@ inline void foldCopiesKokkos(CpExec space, const PhaseCopies& H, Kokkos::View<fl
 
 /// Re-seed every member from its base, sigma unchanged (the multilevel pass, after the coarse
 /// cycle has moved the bases; §4.4 "copies re-seeded again after the coarse cycle").
-inline void reseedCopiesKokkos(CpExec space, const PhaseCopies& H,
-                               Kokkos::View<float* [3], CpMem> x,
-                               Kokkos::View<float* [3], CpMem> w) {
+inline void reseedCopies(CpExec space, const PhaseCopies& H, Kokkos::View<float* [3], CpMem> x,
+                         Kokkos::View<float* [3], CpMem> w) {
   if (H.nGroups <= 0)
     return;
   auto gs = H.groupStart;
@@ -564,7 +559,7 @@ inline void reseedCopiesKokkos(CpExec space, const PhaseCopies& H,
 
 /// Orphan accounts back from share form (before a rank sync and at the end of the velocity
 /// phase): the base holds the body's balance, the sum of its members' shares.
-inline void unfoldOrphanKokkos(const PhaseCopies& H, Kokkos::View<float*, CpMem> orphan) {
+inline void unfoldOrphan(const PhaseCopies& H, Kokkos::View<float*, CpMem> orphan) {
   if (H.nGroups <= 0 || orphan.extent(0) == 0)
     return;
   auto gs = H.groupStart;
@@ -586,10 +581,10 @@ inline void unfoldOrphanKokkos(const PhaseCopies& H, Kokkos::View<float*, CpMem>
 /// only), velocity phase: hit(slot) = 1 for every slot that is an end -- through the hub-copy
 /// overrides, else realIdx -- of an owned manifold of colour >= 0 in the final colouring. A
 /// same-value store, so the order of the writers does not matter.
-inline void activityHitVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int nm,
-                                      Kokkos::View<const int*, CpMem> realIdx,
-                                      Kokkos::View<const int*, CpMem> color, SlotOverride ov,
-                                      Kokkos::View<unsigned char*, CpMem> hit, int nSlots) {
+inline void activityHitVelocity(Kokkos::View<const ManifoldC*, CpMem> manifolds, int nm,
+                                Kokkos::View<const int*, CpMem> realIdx,
+                                Kokkos::View<const int*, CpMem> color, SlotOverride ov,
+                                Kokkos::View<unsigned char*, CpMem> hit, int nSlots) {
   CpExec space;
   Kokkos::deep_copy(space, Kokkos::subview(hit, Kokkos::pair<int, int>(0, nSlots)),
                     static_cast<unsigned char>(0));
@@ -606,10 +601,10 @@ inline void activityHitVelocityKokkos(Kokkos::View<const ManifoldC*, CpMem> mani
 }
 /// The same over the position phase's units (raw slots of the leader contact, through the
 /// overrides).
-inline void activityHitPositionKokkos(Kokkos::View<const ContactC*, CpMem> contacts,
-                                      const PosUnits& units, int nu,
-                                      Kokkos::View<const int*, CpMem> color, SlotOverride ov,
-                                      Kokkos::View<unsigned char*, CpMem> hit, int nSlots) {
+inline void activityHitPosition(Kokkos::View<const ContactC*, CpMem> contacts,
+                                const PosUnits& units, int nu,
+                                Kokkos::View<const int*, CpMem> color, SlotOverride ov,
+                                Kokkos::View<unsigned char*, CpMem> hit, int nSlots) {
   CpExec space;
   Kokkos::deep_copy(space, Kokkos::subview(hit, Kokkos::pair<int, int>(0, nSlots)),
                     static_cast<unsigned char>(0));
@@ -628,8 +623,8 @@ inline void activityHitPositionKokkos(Kokkos::View<const ContactC*, CpMem> conta
 /// its group's members (base + copies) that were hit, which also refills groupActive and groupK
 /// (floored at 1, WO-4's local fold divisor). Copy slots get 0 (they are never packed; their
 /// solve mass takes the base's k). a is written on [0, nSlots + H.nCopies).
-inline void finishActivityKokkos(Kokkos::View<const unsigned char*, CpMem> hit, int nSlots,
-                                 PhaseCopies& H, Kokkos::View<int*, CpMem> a) {
+inline void finishActivity(Kokkos::View<const unsigned char*, CpMem> hit, int nSlots,
+                           PhaseCopies& H, Kokkos::View<int*, CpMem> a) {
   CpExec space;
   const int nAll = nSlots + (H.nGroups > 0 ? H.nCopies : 0);
   Kokkos::parallel_for(
@@ -660,10 +655,10 @@ inline void finishActivityKokkos(Kokkos::View<const unsigned char*, CpMem> hit, 
 /// masses on every slot in [0, nSlots) (nSlots = slotBase + the phase's copies), with k the
 /// slot's global active copy count kRank (owner-computed, forwarded); a hub copy takes its base's
 /// k. splitSlot = (k > 1). k <= 1 keeps the true masses bit for bit.
-inline void buildSolveViewsRankKKokkos(Particles& P, const PhaseCopies& H, int nSlots,
-                                       Kokkos::View<const float*, CpMem> invMass,
-                                       Kokkos::View<const float* [3], CpMem> invInertia,
-                                       Kokkos::View<const int*, CpMem> kRank) {
+inline void buildSolveViewsRankK(Particles& P, const PhaseCopies& H, int nSlots,
+                                 Kokkos::View<const float*, CpMem> invMass,
+                                 Kokkos::View<const float* [3], CpMem> invInertia,
+                                 Kokkos::View<const int*, CpMem> kRank) {
   CpExec space;
   growCopyView(P.invMassSolve, static_cast<std::size_t>(nSlots), "peclet::dem::invMassSolve");
   growCopyView(P.invInertiaSolve, static_cast<std::size_t>(nSlots), "peclet::dem::invInertiaSolve");
@@ -697,10 +692,9 @@ inline void buildSolveViewsRankKKokkos(Particles& P, const PhaseCopies& H, int n
 
 /// The multilevel coarse vertex's inverse mass (§13.2): invMass(q) (k(q) / max(1, a(q))), the
 /// ratio computed first so that k = a gives invMass bit for bit.
-inline void buildInvMassCoarseKokkos(Kokkos::View<const float*, CpMem> invMass,
-                                     Kokkos::View<const int*, CpMem> k,
-                                     Kokkos::View<const int*, CpMem> a, int n,
-                                     Kokkos::View<float*, CpMem> out) {
+inline void buildInvMassCoarse(Kokkos::View<const float*, CpMem> invMass,
+                               Kokkos::View<const int*, CpMem> k, Kokkos::View<const int*, CpMem> a,
+                               int n, Kokkos::View<float*, CpMem> out) {
   Kokkos::parallel_for(
       "peclet::dem::inv_mass_coarse", Kokkos::RangePolicy<CpExec>(0, n), KOKKOS_LAMBDA(int q) {
         const int aq = a(q) > 1 ? a(q) : 1;
@@ -712,12 +706,12 @@ inline void buildInvMassCoarseKokkos(Kokkos::View<const float*, CpMem> invMass,
 
 /// The multilevel coarse vertex's inverse inertia (docs/contact_physics_followups.md §2.5): the
 /// same fraction a / k of the body's inertia as its mass, invInertia(q) (k(q) / max(1, a(q))) per
-/// component, the ratio computed first exactly as buildInvMassCoarseKokkos (k = a gives
+/// component, the ratio computed first exactly as buildInvMassCoarse (k = a gives
 /// invInertia bit for bit).
-inline void buildInvInertiaCoarseKokkos(Kokkos::View<const float* [3], CpMem> invInertia,
-                                        Kokkos::View<const int*, CpMem> k,
-                                        Kokkos::View<const int*, CpMem> a, int n,
-                                        Kokkos::View<float* [3], CpMem> out) {
+inline void buildInvInertiaCoarse(Kokkos::View<const float* [3], CpMem> invInertia,
+                                  Kokkos::View<const int*, CpMem> k,
+                                  Kokkos::View<const int*, CpMem> a, int n,
+                                  Kokkos::View<float* [3], CpMem> out) {
   Kokkos::parallel_for(
       "peclet::dem::inv_inertia_coarse", Kokkos::RangePolicy<CpExec>(0, n), KOKKOS_LAMBDA(int q) {
         const int aq = a(q) > 1 ? a(q) : 1;
@@ -730,8 +724,8 @@ inline void buildInvInertiaCoarseKokkos(Kokkos::View<const float* [3], CpMem> in
 
 /// Debug-build check (§13.2, §13.5 WO-5 item 4): the vertices with a = 0 that sit in a level-1
 /// multilevel group of >= 2 members (must be none: an inactive copy never joins a coarse edge).
-inline int countInactiveAggregatedKokkos(Kokkos::View<const int*, CpMem> parent, int off, int nV,
-                                         int nGroups1, Kokkos::View<const int*, CpMem> a) {
+inline int countInactiveAggregated(Kokkos::View<const int*, CpMem> parent, int off, int nV,
+                                   int nGroups1, Kokkos::View<const int*, CpMem> a) {
   if (nV <= 0 || nGroups1 <= 0)
     return 0;
   Kokkos::View<int*, CpMem> cnt("peclet::dem::ml_inact_cnt", nGroups1);
@@ -750,7 +744,7 @@ inline int countInactiveAggregatedKokkos(Kokkos::View<const int*, CpMem> parent,
 }
 
 /// Count the bodies whose group has k > 1 (split_stats).
-inline int countSplitBodiesKokkos(const PhaseCopies& H) {
+inline int countSplitBodies(const PhaseCopies& H) {
   if (H.nGroups <= 0)
     return 0;
   auto gk = H.groupK;
@@ -765,9 +759,8 @@ inline int countSplitBodiesKokkos(const PhaseCopies& H) {
 /// split(v) != 0 (k > 1) whose level-1 multilevel group -- parent(off + v), the first level's
 /// parent map -- has at least two members. Diagnostic only (reads the hierarchy, writes nothing
 /// the solve reads).
-inline int countSplitAggregatedKokkos(Kokkos::View<const int*, CpMem> parent, int off, int nV,
-                                      int nGroups1,
-                                      Kokkos::View<const unsigned char*, CpMem> split) {
+inline int countSplitAggregated(Kokkos::View<const int*, CpMem> parent, int off, int nV,
+                                int nGroups1, Kokkos::View<const unsigned char*, CpMem> split) {
   if (nV <= 0 || nGroups1 <= 0 || split.extent(0) < static_cast<std::size_t>(nV))
     return 0;
   Kokkos::View<int*, CpMem> cnt("peclet::dem::ml_agg_cnt", nGroups1);
@@ -787,9 +780,9 @@ inline int countSplitAggregatedKokkos(Kokkos::View<const int*, CpMem> parent, in
 
 /// Light hubs (split_stats, R-P3): velocity hubs whose mass is below 10x the mean mass of their
 /// partners over the hub's active edges.
-inline int countLightHubsKokkos(const PhaseCopies& H, Kokkos::View<const int*, CpMem> eA,
-                                Kokkos::View<const int*, CpMem> eB, int nE, int nV,
-                                Kokkos::View<const float*, CpMem> invMass) {
+inline int countLightHubs(const PhaseCopies& H, Kokkos::View<const int*, CpMem> eA,
+                          Kokkos::View<const int*, CpMem> eB, int nE, int nV,
+                          Kokkos::View<const float*, CpMem> invMass) {
   if (H.nHubs <= 0)
     return 0;
   const int nH = H.nHubs;

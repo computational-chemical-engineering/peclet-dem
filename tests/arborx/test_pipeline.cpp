@@ -108,15 +108,14 @@ int main(int argc, char** argv) {
     const int nsteps = 5;
     for (int s = 0; s < nsteps; ++s) {
       // 1. predict velocity (gravity + gyroscopic), speculative position, clear deltas.
-      predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
-                            P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
-                            P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt,
-                            P.extForce, P.extTorque);
+      predictVelocity(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia, P.posPred,
+                      P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat, P.deltaVel,
+                      P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce, P.extTorque);
       // 2. periodic ghosts from predicted state.
       Kokkos::deep_copy(space, P.topGhost, P.numReal);
-      generateGhostsKokkos(P.numReal, P.capacity, P.domain, P.skin, P.pos, P.invMass, P.posPred,
-                           P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
-                           P.shapeId, P.realIndices, P.topGhost);
+      generateGhosts(P.numReal, P.capacity, P.domain, P.skin, P.pos, P.invMass, P.posPred, P.vel,
+                     P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale, P.shapeId,
+                     P.realIndices, P.topGhost);
       P.numParticles = readi(P.topGhost);
       // also map real particles to themselves (so velocity/friction real-index lookups are valid).
       {
@@ -135,36 +134,34 @@ int main(int argc, char** argv) {
       // 4. narrow-phase: pair contacts + boundary plane contacts.
       Kokkos::deep_copy(space, P.contactCount, 0);
       Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
-      detectContactsKokkos(P.pairs, np, P.pos, P.quat, P.scale, P.shapeId, P.shapes, P.shell,
-                           P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
-      detectBoundaryKokkos(P.numReal, P.numPlanes, P.pos, P.quat, P.scale, P.shapeId, P.shapes,
-                           P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
-                           P.maxOverlap);
+      detectContacts(P.pairs, np, P.pos, P.quat, P.scale, P.shapeId, P.shapes, P.shell,
+                     P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
+      detectBoundary(P.numReal, P.numPlanes, P.pos, P.quat, P.scale, P.shapeId, P.shapes, P.shell,
+                     P.planes, P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap);
       const int nc = readi(P.contactCount);
 
       // 5. reduce to manifolds.
-      reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount);
+      reduceContactsToManifolds(P.contacts, nc, P.manifolds, P.manifoldCount);
       const int nm = readi(P.manifoldCount);
 
       // 6. velocity solve (one iteration) + apply.
-      solveVelocityKokkos(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                          P.realIndices, P.growthRate, P.restitutionNormal, 0.0f, P.deltaVel,
-                          P.deltaAngVel, P.constraintCounts);
-      applyVelocityDeltasKokkos(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
+      solveVelocity(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                    P.realIndices, P.growthRate, P.restitutionNormal, 0.0f, P.deltaVel,
+                    P.deltaAngVel, P.constraintCounts);
+      applyVelocityDeltas(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel);
 
       // 7. re-integrate (persist v, predict x, integrate q).
-      applyVelocityAndPredictPositionKokkos(P.numParticles, P.pos, P.invMass, P.vel, P.quat,
-                                            P.velPred, P.angVelPred, P.posPred, P.quatPred,
-                                            P.angVel, P.dt);
+      applyVelocityAndPredictPosition(P.numParticles, P.pos, P.invMass, P.vel, P.quat, P.velPred,
+                                      P.angVelPred, P.posPred, P.quatPred, P.angVel, P.dt);
 
       // 8. position solve (one iteration): project + Jacobi count-average.
-      solvePositionKokkos(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
-                          P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
-      applyUpdatesKokkos(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
-                         P.constraintCounts);
+      solvePosition(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
+                    P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap);
+      applyUpdates(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel,
+                   P.constraintCounts);
 
       // 9. final commit + periodic wrap.
-      finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
+      finalCommit(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
     }
 
     // --- finiteness / boundedness guard ---

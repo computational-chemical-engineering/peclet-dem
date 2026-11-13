@@ -1,4 +1,4 @@
-// Correctness of Kokkos periodic ghost generation (dem::generateGhostsKokkos). Real particles, some
+// Correctness of Kokkos periodic ghost generation (dem::generateGhosts). Real particles, some
 // near periodic faces; generate ghosts and verify: (1) total ghost count == host expectation, and
 // (2) each ghost is its real owner's state shifted by an integer multiple of the box on each axis
 // (positions/posPred shifted; velocities/quat/scale/shape copied verbatim; real_indices correct).
@@ -111,8 +111,8 @@ int main(int argc, char** argv) {
     Kokkos::View<int, CpMem> top("top");
     Kokkos::deep_copy(top, numReal);
 
-    generateGhostsKokkos(numReal, capacity, dom, skin, pos, invMass, posPred, vel, velPred, quat,
-                         quatPred, angVel, angVelPred, scale, shapeId, realIdx, top);
+    generateGhosts(numReal, capacity, dom, skin, pos, invMass, posPred, vel, velPred, quat,
+                   quatPred, angVel, angVelPred, scale, shapeId, realIdx, top);
 
     int total = 0;
     Kokkos::deep_copy(total, top);
