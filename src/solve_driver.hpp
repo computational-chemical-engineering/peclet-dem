@@ -286,6 +286,75 @@ inline int demReadIterCount(const Particles& P, int slot) {
   return v;
 }
 
+/// Velocity-phase colouring (docs/contact_solve_framework.md §4.2 item 4, §4.4), the PGS paths
+/// only: colour the manifold graph -- incrementally or in full -- and, if an edge found no free
+/// colour, split the hubs into copies and recolour. Returns the colour count; a failed attempt
+/// leaves its colouring edges in edgeA / edgeB for noteInvariant.
+template <class Hooks, class GrowSlots, class NoteInvariant>
+inline int colorVelocityPhase(Particles& P, int nm, int nBodies, bool usePersistPre,
+                              bool incrColorOff,
+                              const Kokkos::View<const unsigned char*, CpMem> mSleep,
+                              PhaseCopies& VC, int slotBase, Kokkos::View<int*, CpMem>& edgeA,
+                              Kokkos::View<int*, CpMem>& edgeB, GrowSlots&& growSlots,
+                              NoteInvariant&& noteInvariant) {
+  int velLeftover = 0;
+  int numColors = 0;
+  // Incremental colouring (single-GPU PGS path only): carry surviving pairs' colours across
+  // substeps, re-arbitrating only the new manifolds. Bit-identical colouring FORM to the full
+  // recolour; forced full on the fresh substep and when the colour count creeps > 1.3x the last
+  // full recolour (compaction keeps the serialized-phase count bounded). Under MPI or g == 0 the
+  // full recolour stays (a carried colour can cross a rank boundary it never arbitrated against).
+  const bool incrColor = usePersistPre && P.velocityUseGS && !Hooks::distributed && !incrColorOff;
+  if (incrColor) {
+    // A substep coloured through hub copies carried per-COPY colours: recolour in full.
+    bool didFull = (P.prevPairCount <= 0) || P.velCopiesLastSubstep;
+    numColors = colorManifoldsIncremental(
+        P.manifolds, nm, P.realIndices, nBodies,
+        Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
+        Kokkos::View<const int*, CpMem>(P.prevManifoldColor), P.prevPairCount, P.manifoldColor,
+        P.bodyWinner, P.bodyColorMask, velLeftover, /*forceFull*/ didFull, mSleep);
+    if (!didFull && P.velLastFullColors > 0 && numColors > (P.velLastFullColors * 13) / 10) {
+      numColors = colorManifoldsIncremental(
+          P.manifolds, nm, P.realIndices, nBodies,
+          Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
+          Kokkos::View<const int*, CpMem>(P.prevManifoldColor), P.prevPairCount, P.manifoldColor,
+          P.bodyWinner, P.bodyColorMask, velLeftover, /*forceFull*/ true, mSleep);
+      didFull = true;
+    }
+    if (didFull)
+      P.velLastFullColors = numColors;
+  } else {
+    numColors = colorManifolds(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
+                               P.bodyWinner, P.bodyColorMask, velLeftover, mSleep, {},
+                               /*dedupTwins*/ !Hooks::distributed);
+  }
+  if (velLeftover > 0 && nm > 0) {
+    // Attempt failed: hub copies over the vertices realIdx(body) (§4.4), full recolour.
+    edgeA = Kokkos::View<int*, CpMem>("peclet::dem::copies_eA", nm);
+    edgeB = Kokkos::View<int*, CpMem>("peclet::dem::copies_eB", nm);
+    velocityEdgeEnds(P.manifolds, nm, P.realIndices,
+                     Kokkos::View<const int*, CpMem>(P.manifoldColor), edgeA, edgeB);
+    growCopyView(P.vertexDegree, static_cast<std::size_t>(nBodies), "peclet::dem::vertexDegree");
+    vertexDegree(edgeA, edgeB, nm, nBodies, P.vertexDegree);
+    buildHubCopies(edgeA, edgeB, nm, nBodies, slotBase, P.vertexDegree, VC);
+    growSlots(VC.nCopies);
+    const SlotOverride ovColor{VC.slotA, VC.slotB, {}, 1.0f};
+    numColors = colorManifolds(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
+                               P.bodyWinner, P.bodyColorMask, velLeftover, mSleep, ovColor,
+                               /*dedupTwins*/ !Hooks::distributed, slotBase + VC.nCopies);
+    if (incrColor)
+      P.velLastFullColors = numColors;
+    buildCopyGroups(P.realIndices, nBodies, P.numReal, P.vertexDegree, {}, VC,
+                    /*identityBodies*/ true);
+    P.splitStats.lightHubs =
+        countLightHubs(VC, edgeA, edgeB, nm, nBodies, Kokkos::View<const float*, CpMem>(P.invMass));
+    if (velLeftover > 0)
+      noteInvariant("velocity", Kokkos::View<const int*, CpMem>(P.manifoldColor), nm);
+  }
+  P.velCopiesLastSubstep = VC.nCopies > 0;
+  return numColors;
+}
+
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
 /// comment). Runs between the narrow phase and finalCommit; the caller owns ghost construction,
 /// broad/narrow phase and the commit.
@@ -328,7 +397,6 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // Colour the manifold graph ONCE (topology-only; reused across the sweeps), then normal
   // restitution as colored Gauss–Seidel: correct multi-contact dissipation with no count-averaging
   // (see solver_velocity.hpp). count==1 binary collisions are identical to the old Jacobi path.
-  int velLeftover = 0;
   int numColors = 0;
   // Complete colourings (docs/contact_solve_framework.md §4.2 item 4): colour each phase graph
   // once; if an edge found no free colour, split every vertex above kHubEdgeBudget edges into hub
@@ -380,61 +448,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     }
     invariantMsg += (invariantMsg.empty() ? "" : "; ") + m;
   };
-  if (P.velocityUseGS) {
-    // Incremental colouring (single-GPU PGS path only): carry surviving pairs' colours across
-    // substeps, re-arbitrating only the new manifolds. Bit-identical colouring FORM to the full
-    // recolour; forced full on the fresh substep and when the colour count creeps > 1.3x the last
-    // full recolour (compaction keeps the serialized-phase count bounded). Under MPI or g == 0 the
-    // full recolour stays (a carried colour can cross a rank boundary it never arbitrated against).
-    const bool incrColor = usePersistPre && P.velocityUseGS && !Hooks::distributed && !incrColorOff;
-    if (incrColor) {
-      // A substep coloured through hub copies carried per-COPY colours: recolour in full.
-      bool didFull = (P.prevPairCount <= 0) || P.velCopiesLastSubstep;
-      numColors = colorManifoldsIncremental(
-          P.manifolds, nm, P.realIndices, nBodies,
-          Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
-          Kokkos::View<const int*, CpMem>(P.prevManifoldColor), P.prevPairCount, P.manifoldColor,
-          P.bodyWinner, P.bodyColorMask, velLeftover, /*forceFull*/ didFull, mSleep);
-      if (!didFull && P.velLastFullColors > 0 && numColors > (P.velLastFullColors * 13) / 10) {
-        numColors = colorManifoldsIncremental(
-            P.manifolds, nm, P.realIndices, nBodies,
-            Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
-            Kokkos::View<const int*, CpMem>(P.prevManifoldColor), P.prevPairCount, P.manifoldColor,
-            P.bodyWinner, P.bodyColorMask, velLeftover, /*forceFull*/ true, mSleep);
-        didFull = true;
-      }
-      if (didFull)
-        P.velLastFullColors = numColors;
-    } else {
-      numColors = colorManifolds(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
-                                 P.bodyWinner, P.bodyColorMask, velLeftover, mSleep, {},
-                                 /*dedupTwins*/ !Hooks::distributed);
-    }
-    if (velLeftover > 0 && nm > 0) {
-      // Attempt failed: hub copies over the vertices realIdx(body) (§4.4), full recolour.
-      edgeA = Kokkos::View<int*, CpMem>("peclet::dem::copies_eA", nm);
-      edgeB = Kokkos::View<int*, CpMem>("peclet::dem::copies_eB", nm);
-      velocityEdgeEnds(P.manifolds, nm, P.realIndices,
-                       Kokkos::View<const int*, CpMem>(P.manifoldColor), edgeA, edgeB);
-      growCopyView(P.vertexDegree, static_cast<std::size_t>(nBodies), "peclet::dem::vertexDegree");
-      vertexDegree(edgeA, edgeB, nm, nBodies, P.vertexDegree);
-      buildHubCopies(edgeA, edgeB, nm, nBodies, slotBase, P.vertexDegree, VC);
-      growSlots(VC.nCopies);
-      const SlotOverride ovColor{VC.slotA, VC.slotB, {}, 1.0f};
-      numColors = colorManifolds(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
-                                 P.bodyWinner, P.bodyColorMask, velLeftover, mSleep, ovColor,
-                                 /*dedupTwins*/ !Hooks::distributed, slotBase + VC.nCopies);
-      if (incrColor)
-        P.velLastFullColors = numColors;
-      buildCopyGroups(P.realIndices, nBodies, P.numReal, P.vertexDegree, {}, VC,
-                      /*identityBodies*/ true);
-      P.splitStats.lightHubs = countLightHubs(VC, edgeA, edgeB, nm, nBodies,
-                                              Kokkos::View<const float*, CpMem>(P.invMass));
-      if (velLeftover > 0)
-        noteInvariant("velocity", Kokkos::View<const int*, CpMem>(P.manifoldColor), nm);
-    }
-    P.velCopiesLastSubstep = VC.nCopies > 0;
-  }
+  if (P.velocityUseGS)
+    numColors = colorVelocityPhase<Hooks>(P, nm, nBodies, usePersistPre, incrColorOff, mSleep, VC,
+                                          slotBase, edgeA, edgeB, growSlots, noteInvariant);
   // Dense colour buckets for the PGS sweeps (bit-identical: colour classes are body-disjoint).
   std::vector<int> velOffs;
   const bool velBuckets = P.velocityUseGS && nm > 0 && numColors > 0;
