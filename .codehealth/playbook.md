@@ -1,6 +1,6 @@
 # dem playbook (overrides the cce-code-health seed by id)
 
-Read the seed first (`plugins/cce-code-health/skills/refactor-loop/playbook-seed.md`, tool pin a59effb), then this file.
+Read the seed first (`plugins/cce-code-health/skills/refactor-loop/playbook-seed.md`, tool pin c5ee4df), then this file.
 Read `CLAUDE.md` (settled decisions) before touching any solver file; a refactor never reverses one.
 Gate: `PECLET_SUITE=<suite> codehealth gate`; bitwise = `state_hash` on the host/OpenMP build at ONE thread.
 
@@ -24,7 +24,7 @@ Gate: `PECLET_SUITE=<suite> codehealth gate`; bitwise = `state_hash` on the host
 
 | id | smell | when | when not | recipe |
 |---|---|---|---|---|
-| extract-kernel-phase | long function (`demSolveContacts`, 1160 lines, CCN 261) | a contiguous phase (colouring setup, position projection, velocity solve, restitution, rank-level M/X) reads and writes a nameable set of Views and scalars | the phase interleaves with another phase's launches, or shares many locals that the next phase mutates | move the phase verbatim into an `inline` free function (or a private member of the `Hooks` template) in the same header; same launches in the same order, same Views, same fences, same `if constexpr` branches; pass the needed Views by value and locals by reference; the caller becomes a readable sequence of phases |
+| extract-kernel-phase | long function (`demSolveContacts`, 1160 lines, CCN 261) | a contiguous phase (colouring setup, position projection, velocity solve, restitution, rank-level M/X) reads and writes a nameable set of Views and scalars | the phase interleaves with another phase's launches, or shares many locals that the next phase mutates; the phase needs 10+ inputs (do `launch-params-struct` first) | move the phase verbatim into an `inline` free function (or a private member of the `Hooks` template) in the same header; same launches in the same order, same Views, same fences, same `if constexpr` branches; pass the needed Views by value and locals by reference; the caller becomes a readable sequence of phases |
 | launch-params-struct | many parameters (launchers with 14–33 params, mostly Views) | the same group of 4+ Views/scalars travels together through several launchers and forms one concept (e.g. body state, manifold arrays, PGS accumulators) | the group is used by only one function, or a member would need a different memory space | a private aggregate struct holding the Views BY VALUE (trivially copyable, captured by value into device lambdas); default member values reproduce today's default arguments exactly |
 | dedup-colouring | duplication (`colorManifolds*` vs `colorContactsIncremental*`) | two colouring routines differ only in the edge source / key | they differ in iteration order, tie-breaking or colour cap handling | one helper parameterized by the edge accessor; prove identical colourings by state_hash and `coloring_conflicts()`; keep the 64-colour cap and hub copies |
 | functor-from-lambda | a kernel lambda carrying most of a launcher's CCN | the lambda body has its own branching and a name would explain it | the extraction only moves complexity (see seed: same complexity, new address) or nvcc rejects it | a named functor or `KOKKOS_INLINE_FUNCTION` with explicit by-value View members; build_cuda guards nvcc; the reviewer must agree it reads better |
@@ -51,5 +51,8 @@ Evidence (filled by consolidation from the run log, never by hand):
   restitution, K = 64, the 8·g·dt slip gate, owner-exclusive contacts with reverse accumulation, ...).
 - **Defaulted-argument drift**: a parameter struct whose defaults differ from the old default arguments.
 - **Public surface change**: renaming or re-signing anything reachable from `src/dem_bindings.cpp`.
+- **A phase helper with a parameter list as long as the phase** (seed c5ee4df): S1 step 3 moved a phase into a
+  19-parameter helper and gained 0.9 (332.1 -> 331.2). Group the inputs first. The `[&]`-capturing lambdas passed
+  into a helper (`voteInvariant`, `withConsensus`) carry caller locals the metric does not count; review checks them.
 - **Debt by lambda shuffling**: cpp@0 counts lambda bodies in the enclosing function, so moving a kernel into a
   functor lowers "debt" without lowering complexity. Accept it only when the reviewer agrees the result reads better.
