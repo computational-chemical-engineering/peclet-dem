@@ -621,6 +621,7 @@ struct VelocitySolveContext {
   float gMagP = 0.0f;
   int nmVisible = 0;
   bool usePGS = false;
+  bool poisson = false;
   bool legacyFriction = false;
   bool sleepOn = false;
   bool wantFused = false;
@@ -1153,6 +1154,51 @@ inline void stabilizeVelocityPhase(Particles& P, int nm, int nBodies, const Hook
   }
 }
 
+/// The close of the velocity phase (§13.3 step 8): the orphan accounts back to balances, the
+/// event-level (Poisson) restitution bookkeeping on the final velocity state, and the converged
+/// force network saved for the next substep's warm start.
+template <class Hooks>
+inline void closeVelocityPhase(Particles& P, int nm, const Hooks& hooks,
+                               const VelocitySolveContext& ctx) {
+  PhaseCopies& VC = P.velCopies;
+  const auto& orphV = ctx.orphV;
+  const auto& gMagP = ctx.gMagP;
+  const auto& usePGS = ctx.usePGS;
+  const auto& poisson = ctx.poisson;
+  const auto& velCopiesOn = ctx.velCopiesOn;
+  const auto& velM = ctx.velM;
+  // End of the velocity phase: the orphan accounts back to balances (the bookkeeping, the legacy
+  // friction pass and the next substep read the bases; copy slots are dead from here on).
+  // Under rank-level M the owner rows of k_vel > 1 bodies get their balance back (§13.3 step 8;
+  // the copies' shares are dead from here on, the next gather forwards B again).
+  if (velM) {
+    if (poisson)
+      hooks.restoreOrphanBalance(P);
+  } else if (velCopiesOn) {
+    unfoldOrphan(VC, orphV);
+  }
+  // Poisson bookkeeping runs once per substep on the FINAL velocity state (after every phase and
+  // ghost refresh): bank this substep's kinetic compression, deduct what was returned/released.
+  if (poisson)
+    updateRestitutionBank(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                          P.realIndices, P.growthRate, P.restitutionNormal, 2.0f * P.dt * gMagP,
+                          P.vn0, P.lambdaAcc, Kokkos::View<const float*, CpMem>(P.restRel),
+                          P.restBank, P.restVPeak,
+                          /*dedupTwins*/ !Hooks::distributed);
+  if (usePGS) {  // save the converged force network for next substep's warm start
+    commitPairKeysLambda(
+        P.pairKeys, P.lambdaAcc, P.lambdaT, Kokkos::View<const float*, CpMem>(P.restBank),
+        Kokkos::View<const float*, CpMem>(P.restVPeak), P.prevPairKeys, P.prevLambda, P.prevLambdaT,
+        P.prevRestBank, P.prevRestVPeak, P.commitPerm, nm,
+        // Carry the per-manifold colour by pair key (single-GPU incremental
+        // colouring warm start; empty on the distributed path).
+        Hooks::distributed ? Kokkos::View<const int*, CpMem>()
+                           : Kokkos::View<const int*, CpMem>(P.manifoldColor),
+        Hooks::distributed ? Kokkos::View<int*, CpMem>() : P.prevManifoldColor);
+    P.prevPairCount = nm;
+  }
+}
+
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
 /// comment). Runs between the narrow phase and finalCommit; the caller owns ghost construction,
 /// broad/narrow phase and the commit.
@@ -1559,6 +1605,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                     .gMagP = gMagP,
                                     .nmVisible = nmVisible,
                                     .usePGS = usePGS,
+                                    .poisson = poisson,
                                     .legacyFriction = legacyFriction,
                                     .sleepOn = sleepOn,
                                     .wantFused = wantFused,
@@ -1573,36 +1620,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   Kokkos::Profiling::popRegion();
   Kokkos::Profiling::pushRegion("dem::solve::stab_fric");
   stabilizeVelocityPhase(P, nm, nBodies, hooks, space, velCtx, foldVel, syncVel, withConsensus);
-  // End of the velocity phase: the orphan accounts back to balances (the bookkeeping, the legacy
-  // friction pass and the next substep read the bases; copy slots are dead from here on).
-  // Under rank-level M the owner rows of k_vel > 1 bodies get their balance back (§13.3 step 8;
-  // the copies' shares are dead from here on, the next gather forwards B again).
-  if (velM) {
-    if (poisson)
-      hooks.restoreOrphanBalance(P);
-  } else if (velCopiesOn) {
-    unfoldOrphan(VC, orphV);
-  }
-  // Poisson bookkeeping runs once per substep on the FINAL velocity state (after every phase and
-  // ghost refresh): bank this substep's kinetic compression, deduct what was returned/released.
-  if (poisson)
-    updateRestitutionBank(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                          P.realIndices, P.growthRate, P.restitutionNormal, 2.0f * P.dt * gMagP,
-                          P.vn0, P.lambdaAcc, Kokkos::View<const float*, CpMem>(P.restRel),
-                          P.restBank, P.restVPeak,
-                          /*dedupTwins*/ !Hooks::distributed);
-  if (usePGS) {  // save the converged force network for next substep's warm start
-    commitPairKeysLambda(
-        P.pairKeys, P.lambdaAcc, P.lambdaT, Kokkos::View<const float*, CpMem>(P.restBank),
-        Kokkos::View<const float*, CpMem>(P.restVPeak), P.prevPairKeys, P.prevLambda, P.prevLambdaT,
-        P.prevRestBank, P.prevRestVPeak, P.commitPerm, nm,
-        // Carry the per-manifold colour by pair key (single-GPU incremental
-        // colouring warm start; empty on the distributed path).
-        Hooks::distributed ? Kokkos::View<const int*, CpMem>()
-                           : Kokkos::View<const int*, CpMem>(P.manifoldColor),
-        Hooks::distributed ? Kokkos::View<int*, CpMem>() : P.prevManifoldColor);
-    P.prevPairCount = nm;
-  }
+  closeVelocityPhase(P, nm, hooks, velCtx);
   if (legacyFriction) {
     countFrictionContacts(P.contacts, nc, P.realIndices, P.planeFriction);
     hooks.syncFrictionCounts(P);
