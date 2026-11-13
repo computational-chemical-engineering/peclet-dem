@@ -88,12 +88,15 @@ kind = "reference"
 cadence = "step"
 timeout = 900
 fail_regex = 'mpi cases skipped'
+# Alarm for a dependency resolved differently at base and head (e.g. a FetchContent fallback): the
+# '[peclet] ...' configure lines (printed on EVERY configure) must match. The configure is not silenced here.
+same_lines = '^-- \[peclet\] '
 outputs = ["hashes.json"]
 cmd = '''cmake -S {repo} -B {repo}/build_health_host -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
   "-DFETCHCONTENT_SOURCE_DIR_PECLET_SIB_PECLET-CORE=$PECLET_SUITE/core" -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
   -DPECLET_DEM_BUILD_TESTS=ON -DPECLET_DEM_MPI=ON "-DMPIEXEC_PREFLAGS=--bind-to none" \
-  -DCMAKE_CXX_FLAGS=-ffp-contract=off -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null \
+  -DCMAKE_CXX_FLAGS=-ffp-contract=off -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
   && cmake --build {repo}/build_health_host -j32 >/dev/null \
   && PYTHONPATH={repo}/build_health_host:$PECLET_SUITE/core/build_health_py \
      python {repo}/tests/regression/state_hash.py --save {out}'''
