@@ -1313,6 +1313,116 @@ inline void closeVelocityPhase(Particles& P, int nm, const Hooks& hooks,
   }
 }
 
+/// The warm start's inputs that demSolveContacts settles before it: the pair-key map, gravity, the
+/// visible manifold count and the phase's switches. Host-side only: openVelocityWarmStart unpacks
+/// it into locals before any kernel, so no device lambda names it.
+struct WarmStartContext {
+  Kokkos::View<const int*, CpMem> keyIdx;
+  F3 gHat{0, 0, 0};
+  float gMagP = 0.0f;
+  int nmVisible = 0;
+  bool usePGS = false;
+  bool poisson = false;
+  bool rankM = false;
+};
+
+/// The velocity phase's warm start and opening (docs/contact_solve_framework.md §13.3 step 5): on
+/// the PGS path the gather of the previous substep's impulses by pair key, the Poisson orphan
+/// transfer, the persistence and grounding marks, the pre-solve approach, the warm impulses and the
+/// opening; on the g = 0 one-shot path the position-count opening.
+template <class Hooks>
+inline void openVelocityWarmStart(Particles& P, int nm, int nBodies, const Hooks& hooks,
+                                  CpExec& space, const WarmStartContext& ws) {
+  const auto& keyIdx = ws.keyIdx;
+  const auto& gHat = ws.gHat;
+  const auto& gMagP = ws.gMagP;
+  const auto& nmVisible = ws.nmVisible;
+  const auto& usePGS = ws.usePGS;
+  const auto& poisson = ws.poisson;
+  const auto& rankM = ws.rankM;
+  if (usePGS) {
+    if (poisson && P.prevPairCount > 0) {  // reset the prev-ledger survival flags for the gather
+      auto mt = Kokkos::subview(P.prevMatched, Kokkos::pair<int, int>(0, P.prevPairCount));
+      Kokkos::deep_copy(mt, static_cast<unsigned char>(0));
+    }
+    gatherWarmLambda(P.manifolds, nmVisible, P.realIndices, keyIdx, P.prevPairKeys, P.prevLambda,
+                     P.prevLambdaT, P.prevPosImpulse, P.prevRestBank, P.prevRestVPeak,
+                     P.prevPairCount, P.pairKeys, P.lambdaAcc, P.lambdaT, P.posImpulse, P.restBank,
+                     P.restVPeak, poisson ? P.prevMatched : Kokkos::View<unsigned char*, CpMem>(),
+                     /*dedupTwins*/ !Hooks::distributed);
+    if (poisson) {
+      {  // per-substep release accumulator starts from zero every substep
+        auto rr = Kokkos::subview(P.restRel, Kokkos::pair<int, int>(0, nm));
+        Kokkos::deep_copy(rr, 0.0f);
+      }
+      // Orphan transfer: age the body accounts (owned range; MPI ghosts are mirrored), then
+      // settle dead pairs' remaining budgets onto their endpoint bodies. Under MPI the pair-key
+      // identities are gids, so the scatter resolves them through a sorted gid -> slot map built
+      // over owned + ghost slots (a ghost-side credit is delivered to the owner by the velocity
+      // reverse at the next sync; the pair's bank lives only in its owning rank's ledger).
+      decayBodyOrphan(P.bodyOrphan, P.bodyOrphanVPeak, P.numReal, 2.0f * P.dt * gMagP);
+      if (P.prevPairCount > 0) {
+        Kokkos::View<const int*, CpMem> gidSorted, slotSorted;
+        if constexpr (Hooks::distributed) {
+          Kokkos::View<int*, CpMem> gs(
+              Kokkos::view_alloc(space, "peclet::dem::orphan_gids", Kokkos::WithoutInitializing),
+              nBodies);
+          Kokkos::View<int*, CpMem> ss(
+              Kokkos::view_alloc(space, "peclet::dem::orphan_slots", Kokkos::WithoutInitializing),
+              nBodies);
+          auto gid = P.gid;
+          Kokkos::parallel_for(
+              "peclet::dem::orphan_gid_map", Kokkos::RangePolicy<CpExec>(space, 0, nBodies),
+              KOKKOS_LAMBDA(int i) {
+                gs(i) = gid(i);
+                ss(i) = i;
+              });
+          Kokkos::Experimental::sort_by_key(space, gs, ss);
+          gidSorted = gs;
+          slotSorted = ss;
+        }
+        scatterOrphanBanks(Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
+                           Kokkos::View<const float*, CpMem>(P.prevRestBank),
+                           Kokkos::View<const float*, CpMem>(P.prevRestVPeak),
+                           Kokkos::View<const unsigned char*, CpMem>(P.prevMatched),
+                           P.prevPairCount, Kokkos::View<const float*, CpMem>(P.invMass),
+                           P.bodyOrphan, P.bodyOrphanVPeak, gidSorted, slotSorted,
+                           Hooks::distributed ? P.numReal : -1);
+      }
+    }
+    markPersistentManifolds(P.manifolds, nm, P.realIndices, keyIdx, P.prevPairKeys, P.prevPairCount,
+                            P.pairKeys, P.manifoldPersistent);
+    updateGroundedLevels(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat, P.groundedLevel,
+                         nBodies, /*sweeps*/ 8, /*decay*/ 8);
+    // STAGED SOLVE (Guendelman): the main sweeps are fully momentum-conserving (side flags all
+    // zero) -- ballistic impact, discharge and shear see correct physics. One-sided grounding is
+    // reserved for the STABILIZATION pass below, which runs only if the main sweeps leave an
+    // unconverged residual (a deep column mid-collapse that symmetric GS cannot arrest within the
+    // iteration budget).
+    {
+      auto flags = Kokkos::subview(P.sideFlags, Kokkos::pair<int, int>(0, nm));
+      Kokkos::deep_copy(flags, static_cast<unsigned char>(0));
+    }
+    computeVn0(P.manifolds, nm, P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.vn0, P.vt0,
+               /*dedupTwins*/ !Hooks::distributed);
+    warmStartApply(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                   P.realIndices, P.lambdaAcc, P.lambdaT, /*dedupTwins*/ !Hooks::distributed);
+    // The warm impulses just moved every owned AND ghost body: the opening (§13.3 step 5)
+    // reconciles them raw (known impulses), makes the global k_vel / k_pos and forwards the
+    // owners' state, balance and k, so the first sweep reads a consistent ghost state. (An
+    // isolated rank: a no-op, as the sync it replaces.)
+    if constexpr (Hooks::distributed)
+      hooks.openVelocityPhase(P, poisson);
+  } else if (P.velocityUseGS) {
+    // The g = 0 one-shot path: the opening makes the position phase's k_pos (§13.3) and, in the
+    // same round, the velocity activity masks of rank-level X (§1.4, WO-6). The velocity phase's
+    // reconciliation stays c771e07's raw reverse + forward: under X at most one copy of a body
+    // changes per sync interval, so the raw sum is exact.
+    if constexpr (Hooks::distributed)
+      hooks.openPositionCounts(P, /*velocityMask=*/rankM);
+  }
+}
+
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
 /// comment). Runs between the narrow phase and finalCommit; the caller owns ghost construction,
 /// broad/narrow phase and the commit.
@@ -1549,87 +1659,14 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   const Kokkos::View<const float*, CpMem> orphPk =
       poisson ? Kokkos::View<const float*, CpMem>(P.bodyOrphanVPeak)
               : Kokkos::View<const float*, CpMem>();
-  if (usePGS) {
-    if (poisson && P.prevPairCount > 0) {  // reset the prev-ledger survival flags for the gather
-      auto mt = Kokkos::subview(P.prevMatched, Kokkos::pair<int, int>(0, P.prevPairCount));
-      Kokkos::deep_copy(mt, static_cast<unsigned char>(0));
-    }
-    gatherWarmLambda(P.manifolds, nmVisible, P.realIndices, keyIdx, P.prevPairKeys, P.prevLambda,
-                     P.prevLambdaT, P.prevPosImpulse, P.prevRestBank, P.prevRestVPeak,
-                     P.prevPairCount, P.pairKeys, P.lambdaAcc, P.lambdaT, P.posImpulse, P.restBank,
-                     P.restVPeak, poisson ? P.prevMatched : Kokkos::View<unsigned char*, CpMem>(),
-                     /*dedupTwins*/ !Hooks::distributed);
-    if (poisson) {
-      {  // per-substep release accumulator starts from zero every substep
-        auto rr = Kokkos::subview(P.restRel, Kokkos::pair<int, int>(0, nm));
-        Kokkos::deep_copy(rr, 0.0f);
-      }
-      // Orphan transfer: age the body accounts (owned range; MPI ghosts are mirrored), then
-      // settle dead pairs' remaining budgets onto their endpoint bodies. Under MPI the pair-key
-      // identities are gids, so the scatter resolves them through a sorted gid -> slot map built
-      // over owned + ghost slots (a ghost-side credit is delivered to the owner by the velocity
-      // reverse at the next sync; the pair's bank lives only in its owning rank's ledger).
-      decayBodyOrphan(P.bodyOrphan, P.bodyOrphanVPeak, P.numReal, 2.0f * P.dt * gMagP);
-      if (P.prevPairCount > 0) {
-        Kokkos::View<const int*, CpMem> gidSorted, slotSorted;
-        if constexpr (Hooks::distributed) {
-          Kokkos::View<int*, CpMem> gs(
-              Kokkos::view_alloc(space, "peclet::dem::orphan_gids", Kokkos::WithoutInitializing),
-              nBodies);
-          Kokkos::View<int*, CpMem> ss(
-              Kokkos::view_alloc(space, "peclet::dem::orphan_slots", Kokkos::WithoutInitializing),
-              nBodies);
-          auto gid = P.gid;
-          Kokkos::parallel_for(
-              "peclet::dem::orphan_gid_map", Kokkos::RangePolicy<CpExec>(space, 0, nBodies),
-              KOKKOS_LAMBDA(int i) {
-                gs(i) = gid(i);
-                ss(i) = i;
-              });
-          Kokkos::Experimental::sort_by_key(space, gs, ss);
-          gidSorted = gs;
-          slotSorted = ss;
-        }
-        scatterOrphanBanks(Kokkos::View<const unsigned long long*, CpMem>(P.prevPairKeys),
-                           Kokkos::View<const float*, CpMem>(P.prevRestBank),
-                           Kokkos::View<const float*, CpMem>(P.prevRestVPeak),
-                           Kokkos::View<const unsigned char*, CpMem>(P.prevMatched),
-                           P.prevPairCount, Kokkos::View<const float*, CpMem>(P.invMass),
-                           P.bodyOrphan, P.bodyOrphanVPeak, gidSorted, slotSorted,
-                           Hooks::distributed ? P.numReal : -1);
-      }
-    }
-    markPersistentManifolds(P.manifolds, nm, P.realIndices, keyIdx, P.prevPairKeys, P.prevPairCount,
-                            P.pairKeys, P.manifoldPersistent);
-    updateGroundedLevels(P.manifolds, nmVisible, P.realIndices, P.posPred, gHat, P.groundedLevel,
-                         nBodies, /*sweeps*/ 8, /*decay*/ 8);
-    // STAGED SOLVE (Guendelman): the main sweeps are fully momentum-conserving (side flags all
-    // zero) -- ballistic impact, discharge and shear see correct physics. One-sided grounding is
-    // reserved for the STABILIZATION pass below, which runs only if the main sweeps leave an
-    // unconverged residual (a deep column mid-collapse that symmetric GS cannot arrest within the
-    // iteration budget).
-    {
-      auto flags = Kokkos::subview(P.sideFlags, Kokkos::pair<int, int>(0, nm));
-      Kokkos::deep_copy(flags, static_cast<unsigned char>(0));
-    }
-    computeVn0(P.manifolds, nm, P.velPred, P.angVelPred, P.realIndices, P.growthRate, P.vn0, P.vt0,
-               /*dedupTwins*/ !Hooks::distributed);
-    warmStartApply(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                   P.realIndices, P.lambdaAcc, P.lambdaT, /*dedupTwins*/ !Hooks::distributed);
-    // The warm impulses just moved every owned AND ghost body: the opening (§13.3 step 5)
-    // reconciles them raw (known impulses), makes the global k_vel / k_pos and forwards the
-    // owners' state, balance and k, so the first sweep reads a consistent ghost state. (An
-    // isolated rank: a no-op, as the sync it replaces.)
-    if constexpr (Hooks::distributed)
-      hooks.openVelocityPhase(P, poisson);
-  } else if (P.velocityUseGS) {
-    // The g = 0 one-shot path: the opening makes the position phase's k_pos (§13.3) and, in the
-    // same round, the velocity activity masks of rank-level X (§1.4, WO-6). The velocity phase's
-    // reconciliation stays c771e07's raw reverse + forward: under X at most one copy of a body
-    // changes per sync interval, so the raw sum is exact.
-    if constexpr (Hooks::distributed)
-      hooks.openPositionCounts(P, /*velocityMask=*/rankM);
-  }
+  const WarmStartContext warmCtx{.keyIdx = keyIdx,
+                                 .gHat = gHat,
+                                 .gMagP = gMagP,
+                                 .nmVisible = nmVisible,
+                                 .usePGS = usePGS,
+                                 .poisson = poisson,
+                                 .rankM = rankM};
+  openVelocityWarmStart(P, nm, nBodies, hooks, space, warmCtx);
   // Velocity-phase copies (§4.4 step 6, §4.5): seeded once the warm start -- known impulses on
   // true masses -- has been applied (and, under MPI, published). The sweeps, the stabilization
   // passes and the multilevel cycle take the solve views and the slot overrides; the fold runs in
