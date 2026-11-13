@@ -450,6 +450,155 @@ inline int colorPositionPhase(Particles& P, int nc, int nm, bool usePersistPre, 
   return numPosColors;
 }
 
+/// The position phase (docs/contact_solve_framework.md §4.4, §4.5, §13.3 step 9; WO-12): seed the
+/// position-phase copies, run the accumulated overlap projection to its adaptive stop, and carry
+/// the position-channel Coulomb bound to the next substep. Closes the solve's profiling region.
+template <class Hooks, class VoteInvariant, class WithConsensus>
+inline void solvePositionPhase(Particles& P, int nc, int nm, const Hooks& hooks, CpExec& space,
+                               PhaseCopies& PC, int slotBase, bool rankM, bool usePGS,
+                               const PosUnits posUnits, int numPosUnits, int numPosColors,
+                               const Kokkos::View<const int*, CpMem> posPermC,
+                               const std::vector<int>* posOffsP, const FusedSweepCtx* posFusedP,
+                               bool stopsOn, float fusedOff, VoteInvariant&& voteInvariant,
+                               WithConsensus&& withConsensus) {
+  // Position-phase copies (§4.4, §4.5; demStep's periodic images, §WO-4 item 2): seeded after the
+  // predict (and, under MPI, the publish). An image is re-seeded to its body's predicted position
+  // plus its generation shift, so its increments are relative to the body.
+  const bool posCopiesOn = PC.nGroups > 0;
+  Kokkos::View<const float*, CpMem> invMassPos = P.invMass;
+  Kokkos::View<const float* [3], CpMem> invInertiaPos = P.invInertia;
+  SlotOverride posOv{};
+  // Rank-level M in the position phase (§13.3 step 9): an exchanging rank on the GS paths (both
+  // openings made k_pos). The solve views carry each raw slot's global k_pos (a hub copy its
+  // base's); the local fold still divides by the local count a; the syncs are M in the halo.
+  const bool posM = rankM && P.velocityUseGS;
+  if (posM) {
+    buildSolveViewsRankK(P, PC, slotBase + (posCopiesOn ? PC.nCopies : 0), P.invMass, P.invInertia,
+                         Kokkos::View<const int*, CpMem>(P.kPos));
+    invMassPos = P.invMassSolve;
+    invInertiaPos = P.invInertiaSolve;
+    if (posCopiesOn) {
+      seedCopySlotState(P, PC);
+      markCopySeeds(PC, P.posPred, {}, {}, {});
+      if (PC.nHubs > 0)
+        posOv = SlotOverride{PC.slotA, PC.slotB, {}, 1.0f};
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 7
+      posOv = SlotOverride{PC.slotA, PC.slotB, P.splitSlot, 1.5f};  // G13 mutant 7
+#endif
+    }
+  } else if (posCopiesOn) {
+    buildSolveViews(P, PC, slotBase + PC.nCopies, P.invMass, P.invInertia);
+    seedCopySlotState(P, PC);
+    markCopySeeds(PC, P.posPred, {}, {}, {});
+    invMassPos = P.invMassSolve;
+    invInertiaPos = P.invInertiaSolve;
+    // The slot overrides only: the overlap projection is never relaxed (§13.1).
+    if (PC.nHubs > 0)
+      posOv = SlotOverride{PC.slotA, PC.slotB, {}, 1.0f};
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 7
+    posOv = SlotOverride{PC.slotA, PC.slotB, P.splitSlot, 1.5f};  // G13 mutant 7
+#endif
+  }
+  Kokkos::Profiling::popRegion();
+  Kokkos::Profiling::pushRegion("dem::solve::pos");
+  auto syncPos = [&] {
+    if constexpr (Hooks::distributed) {
+      hooks.syncPositions(P);
+      if (posCopiesOn)
+        markCopySeeds(PC, P.posPred, {}, {}, {});
+    }
+  };
+
+  // Overlap resolved once the deepest penetration falls below ~0.01% of a particle radius.
+  const float posTol = 1e-4f * P.baseRadius * P.globalScale;
+  {
+    auto pc = Kokkos::subview(P.posLambdaContact, Kokkos::pair<int, int>(0, nc));
+    Kokkos::deep_copy(pc, 0.0f);
+  }
+
+  // One position iteration (async residual zero + colored overlap sweep), graph-captured on
+  // the single-GPU path like the velocity loops.
+  // WO-12: the accumulated, retractable projection (§13.5) at omega = P.positionOmega; the stop
+  // reads the position change (posResidual), maxOverlap the largest violation seen.
+  auto emitPosIter = [&] {
+    Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
+    Kokkos::deep_copy(space, P.posResidual, 0.0f);
+    solvePositionColoredGS(P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors, invMassPos,
+                           P.posPred, P.quatPred, P.quat, invInertiaPos, P.maxOverlap,
+                           P.posLambdaContact, posPermC, posOffsP, posFusedP, nullptr, posOv,
+                           P.posResidual, P.positionOmega);
+    if (posCopiesOn)
+      foldCopies(space, PC, P.posPred, {}, {}, {}, P.maxConsensus);
+  };
+  // §12 S14: the position phase folds its consensus corrections (|dx| of a local fold or an M
+  // sync, absolute like maxOverlap) into its stop vote, exactly as the velocity phase does.
+  const bool posCons = posCopiesOn || posM;
+  // Device-side position loop (CUDA, single-rank): all overlap-projection iterations + the
+  // adaptive stop in ONE kernel. Disabled while the phase has copies (the fold runs between
+  // iterations on the host-driven path).
+  bool posLoopDone = false;
+  if constexpr (!Hooks::distributed) {
+    if (P.velocityUseGS && !posCopiesOn && posFusedP) {
+      FusedLoopSpec spec{P.positionIterations, stopsOn ? posTol : fusedOff, true};
+      if (P.iterCounters)  // diagnostics (§12 S12)
+        spec.iters = demIterCountSlot(P, 1);
+      Kokkos::deep_copy(space, P.maxOverlap, 0.0f);  // the largest violation over the device loop
+      posLoopDone = solvePositionColoredGS(
+          P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors, P.invMass, P.posPred,
+          P.quatPred, P.quat, P.invInertia, P.maxOverlap, P.posLambdaContact, posPermC, posOffsP,
+          posFusedP, &spec, {}, P.posResidual, P.positionOmega);
+    }
+  }
+  bool graphPos = false;
+  CudaIterGraph gPos;
+  if (!posLoopDone && P.velocityUseGS) {
+    PECLET_DEM_GRAPH_LOOP(graphPos, gPos, emitPosIter, P.graphCache[3])
+  }
+  P.splitStats.posItersUsed = posLoopDone ? demReadIterCount(P, 1) : 0;
+  if (posCons)
+    Kokkos::deep_copy(P.maxConsensus, 0.0f);
+  for (int it = 0; !posLoopDone && it < P.positionIterations; ++it) {
+    ++P.splitStats.posItersUsed;
+    if (P.velocityUseGS) {
+      if (graphPos)
+        gPos.launch(space);
+      else
+        emitPosIter();
+      // Every active unit is coloured (§4.2): the count-averaged fallback is gone; the stop's
+      // Allreduce carries the colouring-invariant vote if the velocity loop did not.
+      const float posRes = voteInvariant(withConsensus(readFloat(P.posResidual), posCons));
+      // Adaptive stop (WO-12): end once no contact's projection moves it by more than posTol
+      // (|d| w, retractions included). Fixed positionIterations is the cap. Distributed:
+      // Allreduce-MAXed so all ranks break together.
+      if (stopsOn && posRes < posTol)
+        break;
+    } else {
+      // Mass-split Jacobi (see the velocity branch): count, global counts, solve, add.
+      countPositionJacobi(P.contacts, nc, P.constraintCounts);
+      hooks.syncContactCounts(P);
+      solvePosition(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
+                    P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap, {}, 0,
+                    /*massSplit=*/true);
+      applyUpdates(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel, P.constraintCounts,
+                   /*averaged=*/false);
+    }
+    if constexpr (Hooks::distributed) {
+      if (hooks.syncPoint(it))
+        syncPos();
+    }
+  }
+  if constexpr (Hooks::distributed)
+    syncPos();  // final owner->ghost refresh of the position phase
+  // Position-channel Coulomb-bound carry (PGS path): next substep's friction cone sees
+  // mu * (velocity-impulse channel + this position-channel load). Without it a jostled bed's
+  // bound under-counts the true normal force and stick leaks (measured: 99% sliding wall
+  // contacts in the benchmark drum while the Hertz reference sticks).
+  if (usePGS && nm > 0)
+    commitPosImpulse(P.posLambdaContact, nc, P.contactSlot, P.manifolds, nm, P.pairKeys,
+                     P.prevPairKeys, P.prevPairCount, P.dt, P.vn0, P.prevPosImpulse);
+  Kokkos::Profiling::popRegion();
+}
+
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
 /// comment). Runs between the narrow phase and finalCommit; the caller owns ghost construction,
 /// broad/narrow phase and the commit.
@@ -1343,142 +1492,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   if constexpr (Hooks::distributed)
     hooks.publishPositions(P);
 
-  // Position-phase copies (§4.4, §4.5; demStep's periodic images, §WO-4 item 2): seeded after the
-  // predict (and, under MPI, the publish). An image is re-seeded to its body's predicted position
-  // plus its generation shift, so its increments are relative to the body.
-  const bool posCopiesOn = PC.nGroups > 0;
-  Kokkos::View<const float*, CpMem> invMassPos = P.invMass;
-  Kokkos::View<const float* [3], CpMem> invInertiaPos = P.invInertia;
-  SlotOverride posOv{};
-  // Rank-level M in the position phase (§13.3 step 9): an exchanging rank on the GS paths (both
-  // openings made k_pos). The solve views carry each raw slot's global k_pos (a hub copy its
-  // base's); the local fold still divides by the local count a; the syncs are M in the halo.
-  const bool posM = rankM && P.velocityUseGS;
-  if (posM) {
-    buildSolveViewsRankK(P, PC, slotBase + (posCopiesOn ? PC.nCopies : 0), P.invMass, P.invInertia,
-                         Kokkos::View<const int*, CpMem>(P.kPos));
-    invMassPos = P.invMassSolve;
-    invInertiaPos = P.invInertiaSolve;
-    if (posCopiesOn) {
-      seedCopySlotState(P, PC);
-      markCopySeeds(PC, P.posPred, {}, {}, {});
-      if (PC.nHubs > 0)
-        posOv = SlotOverride{PC.slotA, PC.slotB, {}, 1.0f};
-#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 7
-      posOv = SlotOverride{PC.slotA, PC.slotB, P.splitSlot, 1.5f};  // G13 mutant 7
-#endif
-    }
-  } else if (posCopiesOn) {
-    buildSolveViews(P, PC, slotBase + PC.nCopies, P.invMass, P.invInertia);
-    seedCopySlotState(P, PC);
-    markCopySeeds(PC, P.posPred, {}, {}, {});
-    invMassPos = P.invMassSolve;
-    invInertiaPos = P.invInertiaSolve;
-    // The slot overrides only: the overlap projection is never relaxed (§13.1).
-    if (PC.nHubs > 0)
-      posOv = SlotOverride{PC.slotA, PC.slotB, {}, 1.0f};
-#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 7
-    posOv = SlotOverride{PC.slotA, PC.slotB, P.splitSlot, 1.5f};  // G13 mutant 7
-#endif
-  }
-  Kokkos::Profiling::popRegion();
-  Kokkos::Profiling::pushRegion("dem::solve::pos");
-  auto syncPos = [&] {
-    if constexpr (Hooks::distributed) {
-      hooks.syncPositions(P);
-      if (posCopiesOn)
-        markCopySeeds(PC, P.posPred, {}, {}, {});
-    }
-  };
-
-  // Overlap resolved once the deepest penetration falls below ~0.01% of a particle radius.
-  const float posTol = 1e-4f * P.baseRadius * P.globalScale;
-  {
-    auto pc = Kokkos::subview(P.posLambdaContact, Kokkos::pair<int, int>(0, nc));
-    Kokkos::deep_copy(pc, 0.0f);
-  }
-
-  // One position iteration (async residual zero + colored overlap sweep), graph-captured on
-  // the single-GPU path like the velocity loops.
-  // WO-12: the accumulated, retractable projection (§13.5) at omega = P.positionOmega; the stop
-  // reads the position change (posResidual), maxOverlap the largest violation seen.
-  auto emitPosIter = [&] {
-    Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
-    Kokkos::deep_copy(space, P.posResidual, 0.0f);
-    solvePositionColoredGS(P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors, invMassPos,
-                           P.posPred, P.quatPred, P.quat, invInertiaPos, P.maxOverlap,
-                           P.posLambdaContact, posPermC, posOffsP, posFusedP, nullptr, posOv,
-                           P.posResidual, P.positionOmega);
-    if (posCopiesOn)
-      foldCopies(space, PC, P.posPred, {}, {}, {}, P.maxConsensus);
-  };
-  // §12 S14: the position phase folds its consensus corrections (|dx| of a local fold or an M
-  // sync, absolute like maxOverlap) into its stop vote, exactly as the velocity phase does.
-  const bool posCons = posCopiesOn || posM;
-  // Device-side position loop (CUDA, single-rank): all overlap-projection iterations + the
-  // adaptive stop in ONE kernel. Disabled while the phase has copies (the fold runs between
-  // iterations on the host-driven path).
-  bool posLoopDone = false;
-  if constexpr (!Hooks::distributed) {
-    if (P.velocityUseGS && !posCopiesOn && posFusedP) {
-      FusedLoopSpec spec{P.positionIterations, stopsOn ? posTol : fusedOff, true};
-      if (P.iterCounters)  // diagnostics (§12 S12)
-        spec.iters = demIterCountSlot(P, 1);
-      Kokkos::deep_copy(space, P.maxOverlap, 0.0f);  // the largest violation over the device loop
-      posLoopDone = solvePositionColoredGS(
-          P.contacts, posUnits, numPosUnits, P.unitColor, numPosColors, P.invMass, P.posPred,
-          P.quatPred, P.quat, P.invInertia, P.maxOverlap, P.posLambdaContact, posPermC, posOffsP,
-          posFusedP, &spec, {}, P.posResidual, P.positionOmega);
-    }
-  }
-  bool graphPos = false;
-  CudaIterGraph gPos;
-  if (!posLoopDone && P.velocityUseGS) {
-    PECLET_DEM_GRAPH_LOOP(graphPos, gPos, emitPosIter, P.graphCache[3])
-  }
-  P.splitStats.posItersUsed = posLoopDone ? demReadIterCount(P, 1) : 0;
-  if (posCons)
-    Kokkos::deep_copy(P.maxConsensus, 0.0f);
-  for (int it = 0; !posLoopDone && it < P.positionIterations; ++it) {
-    ++P.splitStats.posItersUsed;
-    if (P.velocityUseGS) {
-      if (graphPos)
-        gPos.launch(space);
-      else
-        emitPosIter();
-      // Every active unit is coloured (§4.2): the count-averaged fallback is gone; the stop's
-      // Allreduce carries the colouring-invariant vote if the velocity loop did not.
-      const float posRes = voteInvariant(withConsensus(readFloat(P.posResidual), posCons));
-      // Adaptive stop (WO-12): end once no contact's projection moves it by more than posTol
-      // (|d| w, retractions included). Fixed positionIterations is the cap. Distributed:
-      // Allreduce-MAXed so all ranks break together.
-      if (stopsOn && posRes < posTol)
-        break;
-    } else {
-      // Mass-split Jacobi (see the velocity branch): count, global counts, solve, add.
-      countPositionJacobi(P.contacts, nc, P.constraintCounts);
-      hooks.syncContactCounts(P);
-      solvePosition(P.contacts, nc, P.invMass, P.posPred, P.quatPred, P.quat, P.invInertia,
-                    P.deltaPos, P.deltaQuat, P.constraintCounts, P.maxOverlap, {}, 0,
-                    /*massSplit=*/true);
-      applyUpdates(P.numParticles, P.posPred, P.velPred, P.deltaPos, P.deltaVel, P.constraintCounts,
-                   /*averaged=*/false);
-    }
-    if constexpr (Hooks::distributed) {
-      if (hooks.syncPoint(it))
-        syncPos();
-    }
-  }
-  if constexpr (Hooks::distributed)
-    syncPos();  // final owner->ghost refresh of the position phase
-  // Position-channel Coulomb-bound carry (PGS path): next substep's friction cone sees
-  // mu * (velocity-impulse channel + this position-channel load). Without it a jostled bed's
-  // bound under-counts the true normal force and stick leaks (measured: 99% sliding wall
-  // contacts in the benchmark drum while the Hertz reference sticks).
-  if (usePGS && nm > 0)
-    commitPosImpulse(P.posLambdaContact, nc, P.contactSlot, P.manifolds, nm, P.pairKeys,
-                     P.prevPairKeys, P.prevPairCount, P.dt, P.vn0, P.prevPosImpulse);
-  Kokkos::Profiling::popRegion();
+  solvePositionPhase(P, nc, nm, hooks, space, PC, slotBase, rankM, usePGS, posUnits, numPosUnits,
+                     numPosColors, posPermC, posOffsP, posFusedP, stopsOn, fusedOff, voteInvariant,
+                     withConsensus);
   (void)space;
 }
 
