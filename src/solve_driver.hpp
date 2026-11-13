@@ -596,6 +596,182 @@ inline void solvePositionPhase(Particles& P, int nc, int nm, const Hooks& hooks,
   Kokkos::Profiling::popRegion();
 }
 
+/// The velocity phase's solve context: everything the velocity-phase loops read that
+/// demSolveContacts settles before them -- the colour schedule, the solve views and slot override
+/// (true masses, mass-split copies or rank-level M), the Poisson restitution views, gravity, the
+/// rank-level X gate and the phase's switches. Built once the warm start and the copies' solve
+/// views are in place; the loops never reassign a member. Host-side only: the helpers unpack it
+/// into locals before any kernel, so no device lambda names it.
+struct VelocitySolveContext {
+  ColorSchedule velSched;
+  int numColors = 0;
+  const FusedSweepCtx* velFusedP = nullptr;
+  Kokkos::View<const float*, CpMem> invMassVel;
+  Kokkos::View<const float* [3], CpMem> invInertiaVel;
+  SlotOverride velOv;
+  // Event-level (Poisson) restitution views (empty when off).
+  Kokkos::View<float*, CpMem> bankV;
+  Kokkos::View<float*, CpMem> relV;
+  Kokkos::View<const float*, CpMem> vpkC;
+  Kokkos::View<float*, CpMem> orphV;
+  Kokkos::View<const float*, CpMem> orphPk;
+  RankK rk;
+  float gMagP = 0.0f;
+  bool usePGS = false;
+  bool legacyFriction = false;
+  bool xOn = false;
+  bool velCopiesOn = false;
+  bool velCons = false;
+  bool stopsOn = true;
+  float fusedOff = -1.0f;
+};
+
+/// The main velocity phase (docs/contact_solve_framework.md §4.4, §4.5, §13.3): the warm-started
+/// PGS iterations (|g| > 0; fused device loop, CUDA-graph replay or host submission), the g = 0
+/// one-shot coloured GS with rank-level X, or mass-split Jacobi, each to its adaptive stop, and the
+/// final owner->ghost refresh. Closes the "dem::solve::prep" profiling region and opens
+/// "dem::solve::vel".
+template <class Hooks, class FoldVel, class SyncVel, class VoteInvariant, class WithConsensus>
+inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks, CpExec& space,
+                               const VelocitySolveContext& ctx, FoldVel&& foldVel,
+                               SyncVel&& syncVel, VoteInvariant&& voteInvariant,
+                               WithConsensus&& withConsensus) {
+  const auto& velSched = ctx.velSched;
+  const auto& numColors = ctx.numColors;
+  const auto& velFusedP = ctx.velFusedP;
+  const auto& invMassVel = ctx.invMassVel;
+  const auto& invInertiaVel = ctx.invInertiaVel;
+  const auto& velOv = ctx.velOv;
+  const auto& bankV = ctx.bankV;
+  const auto& relV = ctx.relV;
+  const auto& vpkC = ctx.vpkC;
+  const auto& orphV = ctx.orphV;
+  const auto& orphPk = ctx.orphPk;
+  const auto& rk = ctx.rk;
+  const auto& gMagP = ctx.gMagP;
+  const auto& usePGS = ctx.usePGS;
+  const auto& legacyFriction = ctx.legacyFriction;
+  const auto& xOn = ctx.xOn;
+  const auto& velCopiesOn = ctx.velCopiesOn;
+  const auto& velCons = ctx.velCons;
+  const auto& stopsOn = ctx.stopsOn;
+  const auto& fusedOff = ctx.fusedOff;
+  // Restitution threshold ~ the speed one substep of free fall gains: below it a contact is
+  // RESTING and bounces with e=0 (see solveVelocity — dense-pile energy-bomb guard).
+  const float vRest = 2.0f * P.dt * gMagP;
+  // One PGS velocity iteration (async residual zero + full colour sweep). Captured as a CUDA
+  // graph and replayed per iteration on the single-GPU path: the step is host-submission-bound
+  // (measured 3,300 launches / ~11 ms per step at 25k), and replay collapses each iteration's
+  // launch storm into one. The residual readback between replays is unchanged, so the adaptive
+  // stop — and the physics — are bit-identical to the submission path.
+  auto emitVelIter = [&] {
+    Kokkos::deep_copy(space, P.maxApproach, 0.0f);
+    solveVelocityPGS(
+        P.manifolds, nm, velSched, invMassVel, invInertiaVel, P.quat, P.velPred, P.angVelPred,
+        P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
+        Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic, P.vt0,
+        P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV,
+        vpkC, orphV, orphPk, nullptr, velOv);
+    foldVel();
+  };
+  // Device-side iteration loop (CUDA, single-rank): the whole adaptive velocity loop as ONE
+  // kernel — same sweeps, same residual, same stop; the per-iteration readback and the graph
+  // capture disappear. The final residual stays in P.maxApproach for the stabilization trigger.
+  bool velLoopDone = false;
+  if constexpr (!Hooks::distributed) {
+    if (usePGS && P.velocityUseGS && !velCopiesOn && velFusedP) {
+      FusedLoopSpec spec{P.velocityIterations, stopsOn ? 0.02f * vRest : fusedOff, false};
+      if (P.iterCounters)  // diagnostics (§12 S12): the loop writes its count on the device
+        spec.iters = demIterCountSlot(P, 0);
+      velLoopDone = solveVelocityPGS(P.manifolds, nm, velSched, P.invMass, P.invInertia, P.quat,
+                                     P.velPred, P.angVelPred, P.realIndices, P.growthRate,
+                                     P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
+                                     Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
+                                     P.lambdaT, P.frictionDynamic, P.vt0, P.restitutionTangent,
+                                     Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV,
+                                     relV, vpkC, orphV, orphPk, &spec, {});
+    }
+  }
+  bool graphVel = false;
+  CudaIterGraph gVel;
+  if (!velLoopDone && usePGS && P.velocityUseGS) {
+    PECLET_DEM_GRAPH_LOOP(graphVel, gVel, emitVelIter, P.graphCache[0])
+  }
+  P.splitStats.velItersUsed = velLoopDone ? demReadIterCount(P, 0) : 0;
+  if (velCons)
+    Kokkos::deep_copy(P.maxConsensus, 0.0f);
+  Kokkos::Profiling::popRegion();
+  Kokkos::Profiling::pushRegion("dem::solve::vel");
+  for (int it = 0; !velLoopDone && it < P.velocityIterations; ++it) {
+    ++P.splitStats.velItersUsed;
+    if (legacyFriction)
+      accumulateNormalImpulse(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
+                              P.realIndices, P.growthRate,
+                              /*dedupTwins*/ !Hooks::distributed);
+    if (P.velocityUseGS) {
+      if (usePGS) {
+        if (graphVel)
+          gVel.launch(space);
+        else
+          emitVelIter();
+      } else {
+        Kokkos::deep_copy(space, P.maxApproach, 0.0f);
+        // Rank-level X (§1.4, WO-6): in sync interval t a contact fires only if this rank holds
+        // every rank-split endpoint; a non-firing contact still records its approach for the stop.
+        XGateSpec xGate;  // evaluated inline in the sweep (no separate pass)
+        if (xOn) {
+          const long long t = P.solveEpoch + it / rk.syncInterval;
+          xGate = XGateSpec{Kokkos::View<const unsigned long long*, CpMem>(P.velMask), rk.color,
+                            rk.numColors, t};
+          if (P.iterCounters) {  // diagnostics only: the explicit gate pass, to count the unfired
+            computeXGate(P.manifolds, nm, P.realIndices,
+                         Kokkos::View<const unsigned long long*, CpMem>(P.velMask), P.xGate,
+                         rk.color, rk.numColors, t);
+            P.splitStats.unfiredSplitContacts += countUnfired(P.xGate, nm);
+          }
+        }
+        solveVelocityColoredGS(P.manifolds, nm, P.manifoldColor, numColors, invMassVel,
+                               invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,
+                               P.growthRate, P.restitutionNormal, vRest, P.maxApproach, {}, {}, {},
+                               {}, velOv, xGate);
+        foldVel();
+      }
+      // Every active manifold is coloured (§4.2): the count-averaged fallback is gone. The stop's
+      // Allreduce carries the colouring-invariant vote (voteInvariant; no extra message).
+      const float velRes = voteInvariant(withConsensus(readFloat(P.maxApproach), velCons));
+      // Adaptive stop. One-shot GS: end once no pair approaches above the resting threshold. PGS:
+      // maxApproach records the largest APPLIED correction, and meaningful increments are ~g dt
+      // (they propagate a chain one link per sweep), so the tolerance must sit well below vRest or
+      // the stop starves deep-chain convergence permanently (measured: a 113-layer pile plateaued
+      // at vz ~ -5 with the vRest stop). Once the warm-started network is converged the first
+      // sweep's correction is ~0 and the loop still exits immediately. Distributed: the residual
+      // is Allreduce-MAXed so every rank takes the same break (collective-refresh consistency).
+      if (stopsOn && velRes <= (usePGS ? 0.02f * vRest : vRest))
+        break;
+    } else {
+      // Mass-split Jacobi (velocityUseGS off, a global setting; docs/contact_solve_framework.md
+      // §3.1): every manifold is its own copy. Count first, make the counts global (every copy of
+      // a body must see the serial count), solve each manifold against copies of mass m / n with
+      // true-mass deltas, and add them with factor 1 -- conservative at every iterate.
+      countVelocityJacobi(P.manifolds, nm, P.realIndices, P.constraintCounts,
+                          /*dedupTwins*/ !Hooks::distributed);
+      hooks.syncContactCounts(P);
+      solveVelocity(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                    P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
+                    P.deltaAngVel, P.constraintCounts, {}, 0, {}, {}, {}, {},
+                    /*massSplit=*/true, /*dedupTwins*/ !Hooks::distributed);
+      applyVelocityDeltasAveraged(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
+                                  P.deltaAngVel, P.constraintCounts, /*averaged=*/false);
+    }
+    if constexpr (Hooks::distributed) {
+      if (hooks.syncPoint(it))
+        syncVel();
+    }
+  }
+  if constexpr (Hooks::distributed)
+    syncVel();  // final owner->ghost refresh of the main velocity phase
+}
+
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
 /// comment). Runs between the narrow phase and finalCommit; the caller owns ghost construction,
 /// broad/narrow phase and the commit.
@@ -985,120 +1161,28 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
         markCopySeeds(VC, P.velPred, P.angVelPred, orphV, orphPkW);
     }
   };
-  // Restitution threshold ~ the speed one substep of free fall gains: below it a contact is
-  // RESTING and bounces with e=0 (see solveVelocity — dense-pile energy-bomb guard).
-  const float vRest = 2.0f * P.dt * gMagP;
-  // One PGS velocity iteration (async residual zero + full colour sweep). Captured as a CUDA
-  // graph and replayed per iteration on the single-GPU path: the step is host-submission-bound
-  // (measured 3,300 launches / ~11 ms per step at 25k), and replay collapses each iteration's
-  // launch storm into one. The residual readback between replays is unchanged, so the adaptive
-  // stop — and the physics — are bit-identical to the submission path.
-  auto emitVelIter = [&] {
-    Kokkos::deep_copy(space, P.maxApproach, 0.0f);
-    solveVelocityPGS(
-        P.manifolds, nm, velSched, invMassVel, invInertiaVel, P.quat, P.velPred, P.angVelPred,
-        P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
-        Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic, P.vt0,
-        P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV,
-        vpkC, orphV, orphPk, nullptr, velOv);
-    foldVel();
-  };
-  // Device-side iteration loop (CUDA, single-rank): the whole adaptive velocity loop as ONE
-  // kernel — same sweeps, same residual, same stop; the per-iteration readback and the graph
-  // capture disappear. The final residual stays in P.maxApproach for the stabilization trigger.
-  bool velLoopDone = false;
-  if constexpr (!Hooks::distributed) {
-    if (usePGS && P.velocityUseGS && !velCopiesOn && velFusedP) {
-      FusedLoopSpec spec{P.velocityIterations, stopsOn ? 0.02f * vRest : fusedOff, false};
-      if (P.iterCounters)  // diagnostics (§12 S12): the loop writes its count on the device
-        spec.iters = demIterCountSlot(P, 0);
-      velLoopDone = solveVelocityPGS(P.manifolds, nm, velSched, P.invMass, P.invInertia, P.quat,
-                                     P.velPred, P.angVelPred, P.realIndices, P.growthRate,
-                                     P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
-                                     Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
-                                     P.lambdaT, P.frictionDynamic, P.vt0, P.restitutionTangent,
-                                     Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV,
-                                     relV, vpkC, orphV, orphPk, &spec, {});
-    }
-  }
-  bool graphVel = false;
-  CudaIterGraph gVel;
-  if (!velLoopDone && usePGS && P.velocityUseGS) {
-    PECLET_DEM_GRAPH_LOOP(graphVel, gVel, emitVelIter, P.graphCache[0])
-  }
-  P.splitStats.velItersUsed = velLoopDone ? demReadIterCount(P, 0) : 0;
-  if (velCons)
-    Kokkos::deep_copy(P.maxConsensus, 0.0f);
-  Kokkos::Profiling::popRegion();
-  Kokkos::Profiling::pushRegion("dem::solve::vel");
-  for (int it = 0; !velLoopDone && it < P.velocityIterations; ++it) {
-    ++P.splitStats.velItersUsed;
-    if (legacyFriction)
-      accumulateNormalImpulse(P.contacts, nc, P.invMass, P.invInertia, P.velPred, P.angVelPred,
-                              P.realIndices, P.growthRate,
-                              /*dedupTwins*/ !Hooks::distributed);
-    if (P.velocityUseGS) {
-      if (usePGS) {
-        if (graphVel)
-          gVel.launch(space);
-        else
-          emitVelIter();
-      } else {
-        Kokkos::deep_copy(space, P.maxApproach, 0.0f);
-        // Rank-level X (§1.4, WO-6): in sync interval t a contact fires only if this rank holds
-        // every rank-split endpoint; a non-firing contact still records its approach for the stop.
-        XGateSpec xGate;  // evaluated inline in the sweep (no separate pass)
-        if (xOn) {
-          const long long t = P.solveEpoch + it / rk.syncInterval;
-          xGate = XGateSpec{Kokkos::View<const unsigned long long*, CpMem>(P.velMask), rk.color,
-                            rk.numColors, t};
-          if (P.iterCounters) {  // diagnostics only: the explicit gate pass, to count the unfired
-            computeXGate(P.manifolds, nm, P.realIndices,
-                         Kokkos::View<const unsigned long long*, CpMem>(P.velMask), P.xGate,
-                         rk.color, rk.numColors, t);
-            P.splitStats.unfiredSplitContacts += countUnfired(P.xGate, nm);
-          }
-        }
-        solveVelocityColoredGS(P.manifolds, nm, P.manifoldColor, numColors, invMassVel,
-                               invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,
-                               P.growthRate, P.restitutionNormal, vRest, P.maxApproach, {}, {}, {},
-                               {}, velOv, xGate);
-        foldVel();
-      }
-      // Every active manifold is coloured (§4.2): the count-averaged fallback is gone. The stop's
-      // Allreduce carries the colouring-invariant vote (voteInvariant; no extra message).
-      const float velRes = voteInvariant(withConsensus(readFloat(P.maxApproach), velCons));
-      // Adaptive stop. One-shot GS: end once no pair approaches above the resting threshold. PGS:
-      // maxApproach records the largest APPLIED correction, and meaningful increments are ~g dt
-      // (they propagate a chain one link per sweep), so the tolerance must sit well below vRest or
-      // the stop starves deep-chain convergence permanently (measured: a 113-layer pile plateaued
-      // at vz ~ -5 with the vRest stop). Once the warm-started network is converged the first
-      // sweep's correction is ~0 and the loop still exits immediately. Distributed: the residual
-      // is Allreduce-MAXed so every rank takes the same break (collective-refresh consistency).
-      if (stopsOn && velRes <= (usePGS ? 0.02f * vRest : vRest))
-        break;
-    } else {
-      // Mass-split Jacobi (velocityUseGS off, a global setting; docs/contact_solve_framework.md
-      // §3.1): every manifold is its own copy. Count first, make the counts global (every copy of
-      // a body must see the serial count), solve each manifold against copies of mass m / n with
-      // true-mass deltas, and add them with factor 1 -- conservative at every iterate.
-      countVelocityJacobi(P.manifolds, nm, P.realIndices, P.constraintCounts,
-                          /*dedupTwins*/ !Hooks::distributed);
-      hooks.syncContactCounts(P);
-      solveVelocity(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                    P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
-                    P.deltaAngVel, P.constraintCounts, {}, 0, {}, {}, {}, {},
-                    /*massSplit=*/true, /*dedupTwins*/ !Hooks::distributed);
-      applyVelocityDeltasAveraged(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
-                                  P.deltaAngVel, P.constraintCounts, /*averaged=*/false);
-    }
-    if constexpr (Hooks::distributed) {
-      if (hooks.syncPoint(it))
-        syncVel();
-    }
-  }
-  if constexpr (Hooks::distributed)
-    syncVel();  // final owner->ghost refresh of the main velocity phase
+  const VelocitySolveContext velCtx{.velSched = velSched,
+                                    .numColors = numColors,
+                                    .velFusedP = velFusedP,
+                                    .invMassVel = invMassVel,
+                                    .invInertiaVel = invInertiaVel,
+                                    .velOv = velOv,
+                                    .bankV = bankV,
+                                    .relV = relV,
+                                    .vpkC = vpkC,
+                                    .orphV = orphV,
+                                    .orphPk = orphPk,
+                                    .rk = rk,
+                                    .gMagP = gMagP,
+                                    .usePGS = usePGS,
+                                    .legacyFriction = legacyFriction,
+                                    .xOn = xOn,
+                                    .velCopiesOn = velCopiesOn,
+                                    .velCons = velCons,
+                                    .stopsOn = stopsOn,
+                                    .fusedOff = fusedOff};
+  solveVelocityPhase(P, nc, nm, hooks, space, velCtx, foldVel, syncVel, voteInvariant,
+                     withConsensus);
   Kokkos::Profiling::popRegion();
   Kokkos::Profiling::pushRegion("dem::solve::stab_fric");
   // STABILIZATION PASS: if the symmetric sweeps could not drain the residual (a collapsing
