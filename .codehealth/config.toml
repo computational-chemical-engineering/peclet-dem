@@ -1,0 +1,125 @@
+# cce-code-health gate for peclet.dem (https://github.com/computational-chemical-engineering/cce-code-health).
+# Measured on SMM-TRS2 2026-11-13 (load ~80 on 48 cores): host build ~150 s, ctest 303 tests ~345 s,
+# state_hash ~6 s, CUDA compile (tests + MPI) ~340 s cold, clang-tidy ~530 s.
+#
+# Run with PECLET_SUITE=<suite checkout> set. Every configure pins core's headers to $PECLET_SUITE/core:
+# the base side builds under .git/codehealth/base-<sha>, where the sibling ../core is absent, and
+# cmake/PecletDeps.cmake would otherwise silently FETCH core at PECLET_CORE_TAG (an older core than
+# the head side's sibling) -- the two sides would compile different programs.
+#
+# Traps encoded below (each one bit on 2026-11-13):
+#  - OMP_NUM_THREADS=1: at 8 threads per rank the np4/np8 tests run 100-600 s each (~10 h battery).
+#  - MPIEXEC_PREFLAGS takes a SPACE ("--bind-to none"): dem splits it with separate_arguments; the
+#    ';' list form reaches mpirun as one bad option and every MPI test fails in 0.01 s.
+#  - PYTHONPATH needs a core Python build providing peclet.halo; without it the 12 python_mpi_* tests
+#    print "***Skipped" and ctest still exits 0, and state_hash drops its MPI cases.
+#  - nvcc from /usr/local/cuda (13.5).
+#  - clang-tidy (clang 19) cannot find GCC's omp.h; it is added with -isystem. Five clang-diagnostic
+#    errors inside GCC's omp.h remain (a GCC-only attribute form); they are identical on both sides.
+schema = 1
+
+[profiles]
+python = "python@0"
+cpp = "cpp@0"
+
+[scope]
+include = ["src/*"]
+
+[gate]
+frozen = ["cmake/*", "CMakeLists.txt", "tests/regression/*", "CLAUDE.md"]
+forbid = ["tests/*", "packaging/*", "pyproject.toml"]
+literals = false
+public_api = false
+flags = true
+keep_going = false
+# The suite venv supplies nanobind (found through the active interpreter), python and clang-format.
+prefix = ': "${PECLET_SUITE:?set PECLET_SUITE to the suite checkout}" && export VIRTUAL_ENV="$PECLET_SUITE/.venv" PATH="$PECLET_SUITE/.venv/bin:$PATH" &&'
+
+[gate.env]
+OMP_NUM_THREADS = "1"
+OMP_PROC_BIND = "false"
+OPENBLAS_NUM_THREADS = "1"
+MKL_NUM_THREADS = "1"
+PYTHONHASHSEED = "0"
+
+# dem's CI format job is BLOCKING (quality.yml, clang-format 18.1.8 = the suite venv's); same file set.
+[[gate.tier]]
+name = "clang_format"
+kind = "command"
+behaviour = false
+cadence = "step"
+timeout = 120
+cmd = '''cd {repo} && $PECLET_SUITE/.venv/bin/clang-format --dry-run --Werror \
+  $(git ls-files 'src/*.hpp' 'src/*.cpp' 'tests/*.hpp' 'tests/*.cpp')'''
+
+[[gate.tier]]
+name = "build_host"
+kind = "command"
+behaviour = false
+cadence = "step"
+timeout = 900
+cmd = '''cmake -S {repo} -B {repo}/build_health_host -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
+  "-DFETCHCONTENT_SOURCE_DIR_PECLET_SIB_PECLET-CORE=$PECLET_SUITE/core" -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+  -DPECLET_DEM_BUILD_TESTS=ON -DPECLET_DEM_MPI=ON "-DMPIEXEC_PREFLAGS=--bind-to none" \
+  -DCMAKE_CXX_FLAGS=-ffp-contract=off -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  && cmake --build {repo}/build_health_host -j32'''
+
+[[gate.tier]]
+name = "ctest_host"
+kind = "command"
+cadence = "step"
+timeout = 2400
+skip_exit = 77
+fail_regex = '\*\*\*Skipped|Not Run|No tests were found'
+detect_exit = [8]
+cmd = '''cmake -S {repo} -B {repo}/build_health_host -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
+  "-DFETCHCONTENT_SOURCE_DIR_PECLET_SIB_PECLET-CORE=$PECLET_SUITE/core" -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+  -DPECLET_DEM_BUILD_TESTS=ON -DPECLET_DEM_MPI=ON "-DMPIEXEC_PREFLAGS=--bind-to none" \
+  -DCMAKE_CXX_FLAGS=-ffp-contract=off -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null \
+  && cmake --build {repo}/build_health_host -j32 >/dev/null \
+  && PYTHONPATH={repo}/build_health_host:$PECLET_SUITE/core/build_health_py \
+     ctest --test-dir {repo}/build_health_host -LE bench -j1 --timeout 1200 --output-on-failure'''
+
+[[gate.tier]]
+name = "state_hash"
+kind = "reference"
+cadence = "step"
+timeout = 900
+fail_regex = 'mpi cases skipped'
+outputs = ["hashes.json"]
+cmd = '''cmake -S {repo} -B {repo}/build_health_host -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
+  "-DFETCHCONTENT_SOURCE_DIR_PECLET_SIB_PECLET-CORE=$PECLET_SUITE/core" -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+  -DPECLET_DEM_BUILD_TESTS=ON -DPECLET_DEM_MPI=ON "-DMPIEXEC_PREFLAGS=--bind-to none" \
+  -DCMAKE_CXX_FLAGS=-ffp-contract=off -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null \
+  && cmake --build {repo}/build_health_host -j32 >/dev/null \
+  && PYTHONPATH={repo}/build_health_host:$PECLET_SUITE/core/build_health_py \
+     python {repo}/tests/regression/state_hash.py --save {out}'''
+
+[[gate.tier]]
+name = "build_cuda"
+kind = "command"
+behaviour = false
+cadence = "step"
+timeout = 1200
+cmd = '''PATH=/usr/local/cuda/bin:$PATH cmake -S {repo} -B {repo}/build_health_cuda -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/nvidia-cuda \
+  "-DFETCHCONTENT_SOURCE_DIR_PECLET_SIB_PECLET-CORE=$PECLET_SUITE/core" -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+  -DPECLET_DEM_BUILD_TESTS=ON -DPECLET_DEM_MPI=ON "-DMPIEXEC_PREFLAGS=--bind-to none" \
+  && PATH=/usr/local/cuda/bin:$PATH cmake --build {repo}/build_health_cuda -j32'''
+
+[[gate.tier]]
+name = "clang_tidy"
+kind = "findings"
+cadence = "campaign"
+format = "gcc"
+ignore_exit = true
+timeout = 3600
+cmd = '''cmake -S {repo} -B {repo}/build_health_tidy -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
+  "-DFETCHCONTENT_SOURCE_DIR_PECLET_SIB_PECLET-CORE=$PECLET_SUITE/core" -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+  -DPECLET_DEM_MPI=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null \
+  && ${CLANG_TIDY:-/usr/bin/clang-tidy} -p {repo}/build_health_tidy --quiet \
+     "--extra-arg=-isystem$(dirname "$(gcc -print-file-name=include/omp.h)")" {repo}/src/dem_bindings.cpp'''
