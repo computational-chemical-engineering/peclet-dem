@@ -633,6 +633,41 @@ struct VelocitySolveContext {
   float fusedOff = -1.0f;
 };
 
+/// The main velocity phase's device-side iteration loop (CUDA, single-rank PGS with a fused
+/// schedule and no copies): the whole adaptive loop as ONE kernel. Returns whether it ran; when
+/// it did not, solveVelocityPhase iterates on the host.
+template <class Hooks>
+inline bool launchFusedVelocityLoop(Particles& P, int nm, float vRest,
+                                    const VelocitySolveContext& ctx) {
+  const auto& velSched = ctx.velSched;
+  const auto& velFusedP = ctx.velFusedP;
+  const auto& bankV = ctx.bankV;
+  const auto& relV = ctx.relV;
+  const auto& vpkC = ctx.vpkC;
+  const auto& orphV = ctx.orphV;
+  const auto& orphPk = ctx.orphPk;
+  const auto& usePGS = ctx.usePGS;
+  const auto& velCopiesOn = ctx.velCopiesOn;
+  const auto& stopsOn = ctx.stopsOn;
+  const auto& fusedOff = ctx.fusedOff;
+  bool velLoopDone = false;
+  if constexpr (!Hooks::distributed) {
+    if (usePGS && P.velocityUseGS && !velCopiesOn && velFusedP) {
+      FusedLoopSpec spec{P.velocityIterations, stopsOn ? 0.02f * vRest : fusedOff, false};
+      if (P.iterCounters)  // diagnostics (§12 S12): the loop writes its count on the device
+        spec.iters = demIterCountSlot(P, 0);
+      velLoopDone = solveVelocityPGS(P.manifolds, nm, velSched, P.invMass, P.invInertia, P.quat,
+                                     P.velPred, P.angVelPred, P.realIndices, P.growthRate,
+                                     P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
+                                     Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
+                                     P.lambdaT, P.frictionDynamic, P.vt0, P.restitutionTangent,
+                                     Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV,
+                                     relV, vpkC, orphV, orphPk, &spec, {});
+    }
+  }
+  return velLoopDone;
+}
+
 /// The main velocity phase (docs/contact_solve_framework.md §4.4, §4.5, §13.3): the warm-started
 /// PGS iterations (|g| > 0; fused device loop, CUDA-graph replay or host submission), the g = 0
 /// one-shot coloured GS with rank-level X, or mass-split Jacobi, each to its adaptive stop, and the
@@ -645,7 +680,6 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
                                WithConsensus&& withConsensus) {
   const auto& velSched = ctx.velSched;
   const auto& numColors = ctx.numColors;
-  const auto& velFusedP = ctx.velFusedP;
   const auto& invMassVel = ctx.invMassVel;
   const auto& invInertiaVel = ctx.invInertiaVel;
   const auto& velOv = ctx.velOv;
@@ -659,10 +693,8 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
   const auto& usePGS = ctx.usePGS;
   const auto& legacyFriction = ctx.legacyFriction;
   const auto& xOn = ctx.xOn;
-  const auto& velCopiesOn = ctx.velCopiesOn;
   const auto& velCons = ctx.velCons;
   const auto& stopsOn = ctx.stopsOn;
-  const auto& fusedOff = ctx.fusedOff;
   // Restitution threshold ~ the speed one substep of free fall gains: below it a contact is
   // RESTING and bounces with e=0 (see solveVelocity — dense-pile energy-bomb guard).
   const float vRest = 2.0f * P.dt * gMagP;
@@ -684,21 +716,7 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
   // Device-side iteration loop (CUDA, single-rank): the whole adaptive velocity loop as ONE
   // kernel — same sweeps, same residual, same stop; the per-iteration readback and the graph
   // capture disappear. The final residual stays in P.maxApproach for the stabilization trigger.
-  bool velLoopDone = false;
-  if constexpr (!Hooks::distributed) {
-    if (usePGS && P.velocityUseGS && !velCopiesOn && velFusedP) {
-      FusedLoopSpec spec{P.velocityIterations, stopsOn ? 0.02f * vRest : fusedOff, false};
-      if (P.iterCounters)  // diagnostics (§12 S12): the loop writes its count on the device
-        spec.iters = demIterCountSlot(P, 0);
-      velLoopDone = solveVelocityPGS(P.manifolds, nm, velSched, P.invMass, P.invInertia, P.quat,
-                                     P.velPred, P.angVelPred, P.realIndices, P.growthRate,
-                                     P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
-                                     Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
-                                     P.lambdaT, P.frictionDynamic, P.vt0, P.restitutionTangent,
-                                     Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV,
-                                     relV, vpkC, orphV, orphPk, &spec, {});
-    }
-  }
+  const bool velLoopDone = launchFusedVelocityLoop<Hooks>(P, nm, vRest, ctx);
   bool graphVel = false;
   CudaIterGraph gVel;
   if (!velLoopDone && usePGS && P.velocityUseGS) {
