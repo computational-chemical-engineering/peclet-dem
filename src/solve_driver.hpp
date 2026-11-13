@@ -355,6 +355,101 @@ inline int colorVelocityPhase(Particles& P, int nm, int nBodies, bool usePersist
   return numColors;
 }
 
+/// Position-phase colouring (docs/contact_solve_framework.md §4.2 item 3, §4.3, §4.4), the PGS
+/// paths only: build the position units, colour them -- incrementally or in full -- with hub
+/// copies when an edge found no free colour (and fold groups for periodic images), then give
+/// every contact its unit's colour. Returns the colour count; a failed attempt leaves its
+/// colouring edges in edgeA / edgeB for noteInvariant.
+template <class Hooks, class GrowSlots, class NoteInvariant>
+inline int colorPositionPhase(Particles& P, int nc, int nm, bool usePersistPre, bool incrColorOff,
+                              const Kokkos::View<const unsigned char*, CpMem> cSleep,
+                              PhaseCopies& PC, int slotBase, Kokkos::View<int*, CpMem>& edgeA,
+                              Kokkos::View<int*, CpMem>& edgeB, GrowSlots&& growSlots,
+                              NoteInvariant&& noteInvariant, int& numPosUnits, PosUnits& posUnits) {
+  int posLeftover = 0;
+  int numPosColors = 0;
+  // Incremental position colouring, same single-GPU PGS gate + creep policy as the velocity path.
+  const bool incrPosColor =
+      usePersistPre && P.velocityUseGS && !Hooks::distributed && !incrColorOff;
+  bool posDidFull = false;
+  numPosUnits = buildPositionUnits(P.contacts, nc, P.unitStart, P.unitContacts, nm);
+  P.numPosUnits = numPosUnits;
+  // All singletons (spheres): the unit map is the identity -- the empty PosUnits, so the
+  // sweeps and passes index contacts directly (no two-level indirection per contact).
+  if (numPosUnits != nc)
+    posUnits = PosUnits{Kokkos::subview(Kokkos::View<const int*, CpMem>(P.unitStart),
+                                        Kokkos::pair<int, int>(0, numPosUnits + 1)),
+                        Kokkos::subview(Kokkos::View<const int*, CpMem>(P.unitContacts),
+                                        Kokkos::pair<int, int>(0, nc))};
+  if (incrPosColor) {
+    posDidFull = (P.posPrevContactCount <= 0);
+    numPosColors = colorContactsIncremental(
+        P.contacts, numPosUnits, P.numParticles,
+        Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
+        Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount, P.unitColor,
+        P.contactKeys, P.bodyWinner, P.bodyColorMask, posLeftover,
+        /*forceFull*/ posDidFull, cSleep, posUnits);
+    if (!posDidFull && P.posLastFullColors > 0 && numPosColors > (P.posLastFullColors * 13) / 10) {
+      numPosColors = colorContactsIncremental(
+          P.contacts, numPosUnits, P.numParticles,
+          Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
+          Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount, P.unitColor,
+          P.contactKeys, P.bodyWinner, P.bodyColorMask, posLeftover,
+          /*forceFull*/ true, cSleep, posUnits);
+      posDidFull = true;
+    }
+    if (posDidFull)
+      P.posLastFullColors = numPosColors;
+  } else {
+    numPosColors = colorContacts(P.contacts, numPosUnits, P.numParticles, P.unitColor, P.bodyWinner,
+                                 P.bodyColorMask, posLeftover, cSleep, posUnits);
+  }
+  // Position vertices are raw slots. demStep's periodic images are local copies of their body
+  // (§WO-4 item 2): they join its fold group, which needs the per-slot degree even without hubs.
+  const bool images = !Hooks::distributed && P.numParticles > P.numReal;
+  if ((posLeftover > 0 || images) && numPosUnits > 0) {
+    edgeA = Kokkos::View<int*, CpMem>("peclet::dem::copies_eA", numPosUnits);
+    edgeB = Kokkos::View<int*, CpMem>("peclet::dem::copies_eB", numPosUnits);
+    positionEdgeEnds(P.contacts, posUnits, numPosUnits,
+                     Kokkos::View<const int*, CpMem>(P.unitColor), edgeA, edgeB);
+    growCopyView(P.vertexDegree, static_cast<std::size_t>(P.numParticles),
+                 "peclet::dem::vertexDegree");
+    vertexDegree(edgeA, edgeB, numPosUnits, P.numParticles, P.vertexDegree);
+    if (posLeftover > 0) {
+      // Attempt failed: hub copies over the raw slots (§4.4), full recolour (the incremental
+      // path falls back to this full path with copies).
+      buildHubCopies(edgeA, edgeB, numPosUnits, P.numParticles, slotBase, P.vertexDegree, PC);
+      growSlots(PC.nCopies);
+      const SlotOverride ovColor{PC.slotA, PC.slotB, {}, 1.0f};
+      numPosColors = colorContacts(P.contacts, numPosUnits, P.numParticles, P.unitColor,
+                                   P.bodyWinner, P.bodyColorMask, posLeftover, cSleep, posUnits,
+                                   ovColor, slotBase + PC.nCopies);
+      if (incrPosColor) {
+        posDidFull = true;
+        P.posLastFullColors = numPosColors;
+      }
+      if (posLeftover > 0)
+        noteInvariant("position", Kokkos::View<const int*, CpMem>(P.unitColor), numPosUnits);
+    }
+    buildCopyGroups(P.realIndices, P.numParticles, P.numReal, P.vertexDegree,
+                    images ? Kokkos::View<const float* [3], CpMem>(P.imageShift)
+                           : Kokkos::View<const float* [3], CpMem>(),
+                    PC, /*identityBodies*/ Hooks::distributed);
+  }
+  // Every contact carries its unit's colour: the per-contact ledger commit below and the
+  // diagnostics read it.
+  expandUnitColors(posUnits, numPosUnits, Kokkos::View<const int*, CpMem>(P.unitColor),
+                   P.contactColor);
+  if (incrPosColor) {
+    // Commit this substep's (contact key, colour) for next substep's warm gather.
+    commitContactColor(Kokkos::View<const unsigned long long*, CpMem>(P.contactKeys),
+                       Kokkos::View<const int*, CpMem>(P.contactColor), P.prevContactKeys,
+                       P.prevContactColor, P.posCommitPerm, nc);
+    P.posPrevContactCount = nc;
+  }
+  return numPosColors;
+}
+
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
 /// comment). Runs between the narrow phase and finalCommit; the caller owns ghost construction,
 /// broad/narrow phase and the commit.
@@ -475,93 +570,14 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // The overlap projection is coloured and swept per position UNIT (§4.3): all contacts of one
   // body pair (or of one body and one wall, §12 S6) in one work item, in ascending contact order.
   // A one-point unit is exactly the old per-contact edge, key and arithmetic.
-  int posLeftover = 0;
   int numPosColors = 0;
   int numPosUnits = 0;
   PosUnits posUnits;
   P.numPosUnits = 0;
-  // Incremental position colouring, same single-GPU PGS gate + creep policy as the velocity path.
-  const bool incrPosColor =
-      usePersistPre && P.velocityUseGS && !Hooks::distributed && !incrColorOff;
-  bool posDidFull = false;
-  if (P.velocityUseGS) {
-    numPosUnits = buildPositionUnits(P.contacts, nc, P.unitStart, P.unitContacts, nm);
-    P.numPosUnits = numPosUnits;
-    // All singletons (spheres): the unit map is the identity -- the empty PosUnits, so the
-    // sweeps and passes index contacts directly (no two-level indirection per contact).
-    if (numPosUnits != nc)
-      posUnits = PosUnits{Kokkos::subview(Kokkos::View<const int*, CpMem>(P.unitStart),
-                                          Kokkos::pair<int, int>(0, numPosUnits + 1)),
-                          Kokkos::subview(Kokkos::View<const int*, CpMem>(P.unitContacts),
-                                          Kokkos::pair<int, int>(0, nc))};
-    if (incrPosColor) {
-      posDidFull = (P.posPrevContactCount <= 0);
-      numPosColors = colorContactsIncremental(
-          P.contacts, numPosUnits, P.numParticles,
-          Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
-          Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount, P.unitColor,
-          P.contactKeys, P.bodyWinner, P.bodyColorMask, posLeftover,
-          /*forceFull*/ posDidFull, cSleep, posUnits);
-      if (!posDidFull && P.posLastFullColors > 0 &&
-          numPosColors > (P.posLastFullColors * 13) / 10) {
-        numPosColors = colorContactsIncremental(
-            P.contacts, numPosUnits, P.numParticles,
-            Kokkos::View<const unsigned long long*, CpMem>(P.prevContactKeys),
-            Kokkos::View<const int*, CpMem>(P.prevContactColor), P.posPrevContactCount, P.unitColor,
-            P.contactKeys, P.bodyWinner, P.bodyColorMask, posLeftover,
-            /*forceFull*/ true, cSleep, posUnits);
-        posDidFull = true;
-      }
-      if (posDidFull)
-        P.posLastFullColors = numPosColors;
-    } else {
-      numPosColors = colorContacts(P.contacts, numPosUnits, P.numParticles, P.unitColor,
-                                   P.bodyWinner, P.bodyColorMask, posLeftover, cSleep, posUnits);
-    }
-    // Position vertices are raw slots. demStep's periodic images are local copies of their body
-    // (§WO-4 item 2): they join its fold group, which needs the per-slot degree even without hubs.
-    const bool images = !Hooks::distributed && P.numParticles > P.numReal;
-    if ((posLeftover > 0 || images) && numPosUnits > 0) {
-      edgeA = Kokkos::View<int*, CpMem>("peclet::dem::copies_eA", numPosUnits);
-      edgeB = Kokkos::View<int*, CpMem>("peclet::dem::copies_eB", numPosUnits);
-      positionEdgeEnds(P.contacts, posUnits, numPosUnits,
-                       Kokkos::View<const int*, CpMem>(P.unitColor), edgeA, edgeB);
-      growCopyView(P.vertexDegree, static_cast<std::size_t>(P.numParticles),
-                   "peclet::dem::vertexDegree");
-      vertexDegree(edgeA, edgeB, numPosUnits, P.numParticles, P.vertexDegree);
-      if (posLeftover > 0) {
-        // Attempt failed: hub copies over the raw slots (§4.4), full recolour (the incremental
-        // path falls back to this full path with copies).
-        buildHubCopies(edgeA, edgeB, numPosUnits, P.numParticles, slotBase, P.vertexDegree, PC);
-        growSlots(PC.nCopies);
-        const SlotOverride ovColor{PC.slotA, PC.slotB, {}, 1.0f};
-        numPosColors = colorContacts(P.contacts, numPosUnits, P.numParticles, P.unitColor,
-                                     P.bodyWinner, P.bodyColorMask, posLeftover, cSleep, posUnits,
-                                     ovColor, slotBase + PC.nCopies);
-        if (incrPosColor) {
-          posDidFull = true;
-          P.posLastFullColors = numPosColors;
-        }
-        if (posLeftover > 0)
-          noteInvariant("position", Kokkos::View<const int*, CpMem>(P.unitColor), numPosUnits);
-      }
-      buildCopyGroups(P.realIndices, P.numParticles, P.numReal, P.vertexDegree,
-                      images ? Kokkos::View<const float* [3], CpMem>(P.imageShift)
-                             : Kokkos::View<const float* [3], CpMem>(),
-                      PC, /*identityBodies*/ Hooks::distributed);
-    }
-    // Every contact carries its unit's colour: the per-contact ledger commit below and the
-    // diagnostics read it.
-    expandUnitColors(posUnits, numPosUnits, Kokkos::View<const int*, CpMem>(P.unitColor),
-                     P.contactColor);
-    if (incrPosColor) {
-      // Commit this substep's (contact key, colour) for next substep's warm gather.
-      commitContactColor(Kokkos::View<const unsigned long long*, CpMem>(P.contactKeys),
-                         Kokkos::View<const int*, CpMem>(P.contactColor), P.prevContactKeys,
-                         P.prevContactColor, P.posCommitPerm, nc);
-      P.posPrevContactCount = nc;
-    }
-  }
+  if (P.velocityUseGS)
+    numPosColors =
+        colorPositionPhase<Hooks>(P, nc, nm, usePersistPre, incrColorOff, cSleep, PC, slotBase,
+                                  edgeA, edgeB, growSlots, noteInvariant, numPosUnits, posUnits);
   // Rank-level M (docs/contact_solve_framework.md §13.3): on a rank that exchanges with a
   // neighbour, every body touched through a ghost is a mass-split copy set across ranks. The
   // activity pass gives each slot its local active copy count a per phase (0 or 1 outside a hub
