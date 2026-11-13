@@ -38,6 +38,18 @@ struct FusedSweepCtx {
   int maxBucket = 0;
 };
 
+/// The colour schedule of one coloured Gauss–Seidel sweep: each item's colour and the colour
+/// count, plus the optional dense-bucket order from buildColorBuckets (the permutation and its
+/// host offsets) and the fused-sweep context. perm empty / offs and fused nullptr = no buckets
+/// (every colour launch scans all items).
+struct ColorSchedule {
+  Kokkos::View<const int*, CpMem> color;
+  int numColors = 0;
+  Kokkos::View<const int*, CpMem> perm = {};
+  const std::vector<int>* offs = nullptr;
+  const FusedSweepCtx* fused = nullptr;
+};
+
 /// Device-side iteration loop: run up to maxIters sweeps of the colour classes inside ONE
 /// kernel, evaluating the adaptive stop on-device (the same residual the host loop read back
 /// between launches — the readback round trip and the CUDA-graph capture disappear entirely).

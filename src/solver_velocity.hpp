@@ -1531,8 +1531,7 @@ inline PGSManifoldSweep makePGSManifoldSweep(
 /// false ONLY in loop mode when the fused path is unavailable — the caller then runs its own
 /// host-side iteration loop (which calls back in per-iteration mode).
 inline bool solveVelocityPGS(
-    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
-    Kokkos::View<const int*, CpMem> mColor, int numColors,
+    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds, const ColorSchedule& sched,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
     Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<float* [3], CpMem> velPred,
     Kokkos::View<float* [3], CpMem> angVelPred, Kokkos::View<const int*, CpMem> realIdx,
@@ -1545,10 +1544,13 @@ inline bool solveVelocityPGS(
     Kokkos::View<float, CpMem> maxApproachQS = {}, Kokkos::View<float*, CpMem> restBank = {},
     Kokkos::View<float*, CpMem> restRel = {}, Kokkos::View<const float*, CpMem> restVPeak = {},
     Kokkos::View<float*, CpMem> restOrphan = {},
-    Kokkos::View<const float*, CpMem> restOrphanVPeak = {},
-    Kokkos::View<const int*, CpMem> colorPerm = {}, const std::vector<int>* colorOffs = nullptr,
-    const FusedSweepCtx* fused = nullptr, const FusedLoopSpec* loop = nullptr,
+    Kokkos::View<const float*, CpMem> restOrphanVPeak = {}, const FusedLoopSpec* loop = nullptr,
     SlotOverride ov = {}) {
+  const Kokkos::View<const int*, CpMem> mColor = sched.color;
+  const int numColors = sched.numColors;
+  const Kokkos::View<const int*, CpMem> colorPerm = sched.perm;
+  const std::vector<int>* colorOffs = sched.offs;
+  const FusedSweepCtx* fused = sched.fused;
   CpExec space;
   const PGSManifoldSweep f = makePGSManifoldSweep(
       manifolds, invMass, invInertia, quat, velPred, angVelPred, realIdx, growthRate,

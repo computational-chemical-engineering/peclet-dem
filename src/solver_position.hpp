@@ -630,20 +630,22 @@ struct PositionContactSweep {
 /// per-contact math as solvePosition — only the write-back differs (in-place RMW instead of
 /// atomic-accumulate + count-average). Race-free because a colour is an independent set of
 /// contacts. One outer call = one full sweep over all colours; the caller loops it
-/// positionIterations times. Dense-bucket mode (colorPerm/colorOffs from buildColorBuckets)
+/// positionIterations times. Dense-bucket mode (sched.perm/sched.offs from buildColorBuckets)
 /// covers only each colour's own contacts; the fused mode collapses the whole sweep into one kernel
 /// — both bit-identical.
 inline bool solvePositionColoredGS(
     Kokkos::View<const ContactC*, CpMem> contacts, const PosUnits& units, int numContacts,
-    Kokkos::View<const int*, CpMem> cColor, int numColors,
-    Kokkos::View<const float*, CpMem> invMass, Kokkos::View<float* [3], CpMem> posPred,
-    Kokkos::View<const float* [4], CpMem> quatPred,
+    const ColorSchedule& sched, Kokkos::View<const float*, CpMem> invMass,
+    Kokkos::View<float* [3], CpMem> posPred, Kokkos::View<const float* [4], CpMem> quatPred,
     Kokkos::View<const float* [4], CpMem> quatStatic,
     Kokkos::View<const float* [3], CpMem> invInertia, Kokkos::View<float, CpMem> maxOverlap,
-    Kokkos::View<float*, CpMem> posLambdaAcc = {}, Kokkos::View<const int*, CpMem> colorPerm = {},
-    const std::vector<int>* colorOffs = nullptr, const FusedSweepCtx* fused = nullptr,
-    const FusedLoopSpec* loop = nullptr, SlotOverride ov = {},
-    Kokkos::View<float, CpMem> posResidual = {}, float omega = 1.0f) {
+    Kokkos::View<float*, CpMem> posLambdaAcc = {}, const FusedLoopSpec* loop = nullptr,
+    SlotOverride ov = {}, Kokkos::View<float, CpMem> posResidual = {}, float omega = 1.0f) {
+  const Kokkos::View<const int*, CpMem> cColor = sched.color;
+  const int numColors = sched.numColors;
+  const Kokkos::View<const int*, CpMem> colorPerm = sched.perm;
+  const std::vector<int>* colorOffs = sched.offs;
+  const FusedSweepCtx* fused = sched.fused;
   CpExec space;
   const PositionContactSweep f{contacts,   invMass,      posPred, quatPred, quatStatic,  invInertia,
                                maxOverlap, posLambdaAcc, units,   ov,       posResidual, omega};
