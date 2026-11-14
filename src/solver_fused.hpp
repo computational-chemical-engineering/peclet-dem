@@ -45,7 +45,7 @@ struct FusedSweepCtx {
 struct ColorSchedule {
   Kokkos::View<const int*, CpMem> color;
   int numColors = 0;
-  Kokkos::View<const int*, CpMem> perm = {};
+  Kokkos::View<const int*, CpMem> perm;
   const std::vector<int>* offs = nullptr;
   const FusedSweepCtx* fused = nullptr;
 };

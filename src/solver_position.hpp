@@ -176,11 +176,12 @@ struct UnitEdges {
   PosUnits units;
   SlotOverride ov;
   bool sleepOn;
-  static constexpr ColorLabels labels = {
-      "peclet::dem::pcolor_init_bodies",  "peclet::dem::pcolor_init_contacts",
-      "peclet::dem::pcolor_reset_winner", "peclet::dem::pcolor_contend",
-      "peclet::dem::pcolor_commit",       "peclet::dem::pcolor_max",
-      "peclet::dem::pcolor_leftover"};
+  static constexpr ColorLabels labels() {
+    return {"peclet::dem::pcolor_init_bodies",  "peclet::dem::pcolor_init_contacts",
+            "peclet::dem::pcolor_reset_winner", "peclet::dem::pcolor_contend",
+            "peclet::dem::pcolor_commit",       "peclet::dem::pcolor_max",
+            "peclet::dem::pcolor_leftover"};
+  }
   KOKKOS_INLINE_FUNCTION int initialColor(int idx) const {
     return (sleepOn && unitAsleep(units, sleepMask, idx)) ? -2 : -1;
   }

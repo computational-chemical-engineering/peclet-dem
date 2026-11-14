@@ -493,13 +493,13 @@ struct ColorLabels {
 ///
 /// `EdgeAccessor` is the compile-time edge source, holding its Views by value, with device members
 /// `int initialColor(int e)` (-2 inactive or -1) and `ColorEdge edge(int e)`, and a static
-/// `labels`. `numVertices` is the vertex count; `vertexSpan` covers hub copy slots (§4.4; 0 = the
+/// `labels()`. `numVertices` is the vertex count; `vertexSpan` covers hub copy slots (§4.4; 0 = the
 /// no-copy span numVertices).
 template <class EdgeAccessor>
 int colorEdges(const EdgeAccessor& edges, int numEdges, int numVertices, int vertexSpan,
                Kokkos::View<int*, CpMem> color, Kokkos::View<long long*, CpMem> bodyWinner,
                Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover) {
-  constexpr ColorLabels labels = EdgeAccessor::labels;
+  constexpr ColorLabels labels = EdgeAccessor::labels();
   leftover = 0;
   CpExec space;
   if (numEdges <= 0 || numVertices <= 0)

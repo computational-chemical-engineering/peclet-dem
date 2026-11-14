@@ -321,14 +321,15 @@ struct ManifoldEdges {
   SlotOverride ov;
   bool sleepOn;
   bool dedupTwins;
-  static constexpr ColorLabels labels = {
-      "peclet::dem::color_init_bodies",  "peclet::dem::color_init_manifolds",
-      "peclet::dem::color_reset_winner", "peclet::dem::color_contend",
-      "peclet::dem::color_commit",       "peclet::dem::color_max",
-      "peclet::dem::color_leftover"};
+  static constexpr ColorLabels labels() {
+    return {"peclet::dem::color_init_bodies",  "peclet::dem::color_init_manifolds",
+            "peclet::dem::color_reset_winner", "peclet::dem::color_contend",
+            "peclet::dem::color_commit",       "peclet::dem::color_max",
+            "peclet::dem::color_leftover"};
+  }
   KOKKOS_INLINE_FUNCTION int initialColor(int idx) const {
     const ManifoldC m = manifolds(idx);
-    if (m.num_points <= 0 || (sleepOn && sleepMask(idx)))
+    if (m.num_points <= 0 || (sleepOn && sleepMask(idx) != 0))
       return -2;  // inactive or a frozen (both-asleep) island manifold
     // Periodic twin dedup (§4.2 item 2): single-rank only; under MPI ownership already
     // excludes the non-owned twin (dedupTwins = !Hooks::distributed).

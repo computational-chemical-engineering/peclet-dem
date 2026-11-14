@@ -378,7 +378,7 @@ struct MlMatchFilter {
     // the sleeping-off path is bit-identical.)
     if (excludeImmovable &&
         (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
-         (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
+         (haveAsleep && (asleep(realIdx(m.bodyA)) != 0 || asleep(realIdx(m.bodyB)) != 0))))
       return false;
     // Aggregation never crosses a periodic wrap (§2.3): an image slot's position is
     // shifted, and an aggregate holding it would have no consistent geometry.
