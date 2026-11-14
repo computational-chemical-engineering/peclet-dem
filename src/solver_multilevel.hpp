@@ -340,6 +340,209 @@ inline int buildMlLevelGeometry(const MlScratch& S, int off, int ng, int numReal
   return bad;
 }
 
+/// The manifolds of a hierarchy build and the inputs of mldetail::eligible (constant over the
+/// build): the matching and the level colouring both test coarse-eligibility with them.
+struct MlEligibility {
+  Kokkos::View<const ManifoldC*, CpMem> manifolds;
+  int numManifolds = 0;
+  Kokkos::View<const int*, CpMem> mColor;
+  Kokkos::View<const float*, CpMem> vn0;
+  Kokkos::View<const float* [3], CpMem> vt0;
+  Kokkos::View<const unsigned char*, CpMem> persistent;
+  Kokkos::View<const float* [3], CpMem> posPred;
+  F3 gHat;
+  float qsThr = 0.0f;
+  int gateMask = 0;
+};
+
+/// Greedy random-priority matching on the group graph of the finer level (ngPrev groups, the
+/// composed body -> group map S.grp): every eligible crossing manifold between two movable,
+/// canonical groups bids colorKey on both endpoints, and a manifold that wins both pairs them
+/// (S.mate; an unmatched group is its own mate).
+inline void matchMlLevelGroups(CpExec& space, const MlEligibility& elig,
+                               Kokkos::View<const int*, CpMem> realIdx,
+                               Kokkos::View<const float*, CpMem> invMass, bool excludeImmovable,
+                               Kokkos::View<const unsigned char*, CpMem> asleep, bool haveAsleep,
+                               const MlScratch& S, Kokkos::View<long long*, CpMem> winner,
+                               int ngPrev) {
+  const auto& manifolds = elig.manifolds;
+  const int numManifolds = elig.numManifolds;
+  const auto& mColor = elig.mColor;
+  const auto& vn0 = elig.vn0;
+  const auto& vt0 = elig.vt0;
+  const auto& persistent = elig.persistent;
+  const auto& posPred = elig.posPred;
+  const auto& gHat = elig.gHat;
+  const auto& qsThr = elig.qsThr;
+  const auto& gateMask = elig.gateMask;
+  Kokkos::parallel_for(
+      "peclet::dem::ml_match_reset", Kokkos::RangePolicy<CpExec>(space, 0, ngPrev),
+      KOKKOS_LAMBDA(int g) { winner(g) = -1; });
+  auto grp = S.grp;
+  Kokkos::parallel_for(
+      "peclet::dem::ml_match_contend", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        const ManifoldC m = manifolds(idx);
+        if (m.bodyB < 0 || !mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred, gHat,
+                                               qsThr, gateMask))
+          return;
+        // Never aggregate an immovable (sleeping / pinned) body: a group carrying its huge
+        // effMass wrecks the coarse-solve conditioning and pins the awake partner. (Gated so
+        // the sleeping-off path is bit-identical.)
+        if (excludeImmovable &&
+            (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
+             (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
+          return;
+        // Aggregation never crosses a periodic wrap (§2.3): an image slot's position is
+        // shifted, and an aggregate holding it would have no consistent geometry.
+        if (!mldetail::canonical(posPred, realIdx, m.bodyA) ||
+            !mldetail::canonical(posPred, realIdx, m.bodyB))
+          return;
+        const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
+        if (gA == gB)
+          return;
+        const long long key = colorKey(idx);
+        Kokkos::atomic_max(&winner(gA), key);
+        Kokkos::atomic_max(&winner(gB), key);
+      });
+  auto mate = S.mate;
+  Kokkos::parallel_for(
+      "peclet::dem::ml_mate_init", Kokkos::RangePolicy<CpExec>(space, 0, ngPrev),
+      KOKKOS_LAMBDA(int g) { mate(g) = g; });
+  Kokkos::parallel_for(
+      "peclet::dem::ml_match_commit", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) {
+        const ManifoldC m = manifolds(idx);
+        if (m.bodyB < 0 || !mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred, gHat,
+                                               qsThr, gateMask))
+          return;
+        if (excludeImmovable &&
+            (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
+             (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
+          return;
+        // Aggregation never crosses a periodic wrap (§2.3): an image slot's position is
+        // shifted, and an aggregate holding it would have no consistent geometry.
+        if (!mldetail::canonical(posPred, realIdx, m.bodyA) ||
+            !mldetail::canonical(posPred, realIdx, m.bodyB))
+          return;
+        const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
+        if (gA == gB)
+          return;
+        const long long key = colorKey(idx);
+        if (winner(gA) == key && winner(gB) == key) {  // sole winner of both endpoints
+          mate(gA) = gB;
+          mate(gB) = gA;
+        }
+      });
+}
+
+/// Colour the crossing manifolds of level lvl (ngNew groups) on the group graph and record the
+/// level's colour count in H.numColors.
+/// Same round-based random-priority arbitration as colorManifolds, endpoints = groups.
+/// Committed colours land in this level's 6-bit slot of colorPacked (63 stays = skip).
+inline void colorMlLevelManifolds(CpExec& space, const MlEligibility& elig,
+                                  Kokkos::View<const int*, CpMem> realIdx, const MlScratch& S,
+                                  Kokkos::View<long long*, CpMem> winner,
+                                  Kokkos::View<std::uint64_t*, CpMem> colorMask, int ngNew, int lvl,
+                                  ContactHierarchy& H) {
+  const auto& manifolds = elig.manifolds;
+  const int numManifolds = elig.numManifolds;
+  const auto& mColor = elig.mColor;
+  const auto& vn0 = elig.vn0;
+  const auto& vt0 = elig.vt0;
+  const auto& persistent = elig.persistent;
+  const auto& posPred = elig.posPred;
+  const auto& gHat = elig.gHat;
+  const auto& qsThr = elig.qsThr;
+  const auto& gateMask = elig.gateMask;
+  auto grp = S.grp;
+  auto cp = S.colorPacked;
+  const int slotShift = 6 * (lvl - 1);
+  Kokkos::parallel_for(
+      "peclet::dem::ml_color_mask_reset", Kokkos::RangePolicy<CpExec>(space, 0, ngNew),
+      KOKKOS_LAMBDA(int g) { colorMask(g) = 0; });
+  // temp per-manifold state via mate-array-free trick: track "uncoloured" in the packed slot
+  // itself (63 = pending here; eligibility recomputed per round).
+  int remaining = 1, prevRemaining = -1, maxc = -1;
+  for (int round = 0; round < 64 && remaining > 0; ++round) {
+    Kokkos::parallel_for(
+        "peclet::dem::ml_color_reset_winner", Kokkos::RangePolicy<CpExec>(space, 0, ngNew),
+        KOKKOS_LAMBDA(int g) { winner(g) = -1; });
+    Kokkos::parallel_for(
+        "peclet::dem::ml_color_contend", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+        KOKKOS_LAMBDA(int idx) {
+          const ManifoldC m = manifolds(idx);
+          if (!mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred, gHat, qsThr,
+                                  gateMask))
+            return;
+          if (((cp(idx) >> slotShift) & 63) != kMlSlotSkip || !(cp(idx) & kMlPendingSkipBit))
+            return;  // committed (or marked skip) in an earlier round
+          const int gA = grp(realIdx(m.bodyA));
+          const int gB = (m.bodyB >= 0) ? grp(realIdx(m.bodyB)) : -1;
+          if (gB == gA)
+            return;  // internal to an aggregate at this level
+          const long long key = colorKey(idx);
+          Kokkos::atomic_max(&winner(gA), key);
+          if (gB >= 0)
+            Kokkos::atomic_max(&winner(gB), key);
+        });
+    int rem = 0;
+    Kokkos::parallel_reduce(
+        "peclet::dem::ml_color_commit", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+        KOKKOS_LAMBDA(int idx, int& acc) {
+          const ManifoldC m = manifolds(idx);
+          if (!mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred, gHat, qsThr,
+                                  gateMask))
+            return;
+          if (((cp(idx) >> slotShift) & 63) != kMlSlotSkip || !(cp(idx) & kMlPendingSkipBit))
+            return;
+          const int gA = grp(realIdx(m.bodyA));
+          const int gB = (m.bodyB >= 0) ? grp(realIdx(m.bodyB)) : -1;
+          if (gB == gA)
+            return;
+          const long long key = colorKey(idx);
+          if (winner(gA) != key || (gB >= 0 && winner(gB) != key)) {
+            acc += 1;
+            return;
+          }
+          std::uint64_t forbidden = colorMask(gA);
+          if (gB >= 0)
+            forbidden |= colorMask(gB);
+          int c = 0;  // lowest free colour among 0..62; never forced (§4.4)
+          while (c < kMlSlotSkip && ((forbidden >> c) & 1))
+            ++c;
+          if (c == kMlSlotSkip) {
+            cp(idx) &= ~kMlPendingSkipBit;  // keeps slot 63: skipped at this level
+            return;
+          }
+          cp(idx) = (cp(idx) & ~(63ll << slotShift)) | (static_cast<long long>(c) << slotShift);
+          const std::uint64_t bit = std::uint64_t(1) << c;
+          colorMask(gA) |= bit;
+          if (gB >= 0)
+            colorMask(gB) |= bit;
+        },
+        rem);
+    space.fence();
+    if (rem == prevRemaining)
+      break;  // safety bound: leftovers keep slot 63 and are skipped at this level
+    prevRemaining = rem;
+    remaining = rem;
+  }
+  Kokkos::parallel_for(
+      "peclet::dem::ml_color_clear_skip", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx) { cp(idx) |= kMlPendingSkipBit; });
+  Kokkos::parallel_reduce(
+      "peclet::dem::ml_color_max", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      KOKKOS_LAMBDA(int idx, int& mx) {
+        const int c = static_cast<int>((cp(idx) >> slotShift) & 63);
+        if (c != kMlSlotSkip && c > mx)
+          mx = c;
+      },
+      Kokkos::Max<int>(maxc));
+  space.fence();
+  H.numColors.push_back(maxc + 1);
+}
+
 /// Build the aggregation hierarchy + per-level crossing-manifold colorings. Eligibility for both
 /// matching and coarse solving: mldetail::eligible (active, non-dup, persistent, quasi-static,
 /// support-oriented). Walls (bodyB < 0) never merge but their manifolds ARE coarse contacts
@@ -381,71 +584,15 @@ inline ContactHierarchy buildContactHierarchy(
                             static_cast<int>(S.accD.extent(0)) >= numReal &&
                             body.quat.extent(0) > 0 && body.invIc.extent(0) > 0;
 
+  const MlEligibility elig{manifolds,  numManifolds, mColor, vn0,   vt0,
+                           persistent, posPred,      gHat,   qsThr, gateMask};
+
   for (int lvl = 1; lvl <= kMlMaxLevels; ++lvl) {
     if (parentOff + ngPrev > parentCap)
       break;  // pool exhausted (matching stalled repeatedly) -- use what we have
     // ---- greedy random-priority matching on the current group graph ----
-    Kokkos::parallel_for(
-        "peclet::dem::ml_match_reset", Kokkos::RangePolicy<CpExec>(space, 0, ngPrev),
-        KOKKOS_LAMBDA(int g) { winner(g) = -1; });
-    {
-      auto grp = S.grp;
-      Kokkos::parallel_for(
-          "peclet::dem::ml_match_contend", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-          KOKKOS_LAMBDA(int idx) {
-            const ManifoldC m = manifolds(idx);
-            if (m.bodyB < 0 || !mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred,
-                                                   gHat, qsThr, gateMask))
-              return;
-            // Never aggregate an immovable (sleeping / pinned) body: a group carrying its huge
-            // effMass wrecks the coarse-solve conditioning and pins the awake partner. (Gated so
-            // the sleeping-off path is bit-identical.)
-            if (excludeImmovable &&
-                (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
-                 (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
-              return;
-            // Aggregation never crosses a periodic wrap (§2.3): an image slot's position is
-            // shifted, and an aggregate holding it would have no consistent geometry.
-            if (!mldetail::canonical(posPred, realIdx, m.bodyA) ||
-                !mldetail::canonical(posPred, realIdx, m.bodyB))
-              return;
-            const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
-            if (gA == gB)
-              return;
-            const long long key = colorKey(idx);
-            Kokkos::atomic_max(&winner(gA), key);
-            Kokkos::atomic_max(&winner(gB), key);
-          });
-      auto mate = S.mate;
-      Kokkos::parallel_for(
-          "peclet::dem::ml_mate_init", Kokkos::RangePolicy<CpExec>(space, 0, ngPrev),
-          KOKKOS_LAMBDA(int g) { mate(g) = g; });
-      Kokkos::parallel_for(
-          "peclet::dem::ml_match_commit", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-          KOKKOS_LAMBDA(int idx) {
-            const ManifoldC m = manifolds(idx);
-            if (m.bodyB < 0 || !mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred,
-                                                   gHat, qsThr, gateMask))
-              return;
-            if (excludeImmovable &&
-                (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
-                 (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
-              return;
-            // Aggregation never crosses a periodic wrap (§2.3): an image slot's position is
-            // shifted, and an aggregate holding it would have no consistent geometry.
-            if (!mldetail::canonical(posPred, realIdx, m.bodyA) ||
-                !mldetail::canonical(posPred, realIdx, m.bodyB))
-              return;
-            const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
-            if (gA == gB)
-              return;
-            const long long key = colorKey(idx);
-            if (winner(gA) == key && winner(gB) == key) {  // sole winner of both endpoints
-              mate(gA) = gB;
-              mate(gB) = gA;
-            }
-          });
-    }
+    matchMlLevelGroups(space, elig, realIdx, invMass, excludeImmovable, asleep, haveAsleep, S,
+                       winner, ngPrev);
     // ---- compact new group ids: matched pair -> one id (leader = smaller), singleton keeps ----
     int ngNew = 0;
     {
@@ -504,96 +651,7 @@ inline ContactHierarchy buildContactHierarchy(
     if (haveGeometry)
       buildMlLevelGeometry(S, groupOff, ngNew, numReal, posPred, invMass, body.quat, body.invIc);
     // ---- colour the crossing manifolds of this level on the group graph ----
-    // Same round-based random-priority arbitration as colorManifolds, endpoints = groups.
-    // Committed colours land in this level's 6-bit slot of colorPacked (63 stays = skip).
-    {
-      auto grp = S.grp;
-      auto cp = S.colorPacked;
-      const int slotShift = 6 * (lvl - 1);
-      Kokkos::parallel_for(
-          "peclet::dem::ml_color_mask_reset", Kokkos::RangePolicy<CpExec>(space, 0, ngNew),
-          KOKKOS_LAMBDA(int g) { colorMask(g) = 0; });
-      // temp per-manifold state via mate-array-free trick: track "uncoloured" in the packed slot
-      // itself (63 = pending here; eligibility recomputed per round).
-      int remaining = 1, prevRemaining = -1, maxc = -1;
-      for (int round = 0; round < 64 && remaining > 0; ++round) {
-        Kokkos::parallel_for(
-            "peclet::dem::ml_color_reset_winner", Kokkos::RangePolicy<CpExec>(space, 0, ngNew),
-            KOKKOS_LAMBDA(int g) { winner(g) = -1; });
-        Kokkos::parallel_for(
-            "peclet::dem::ml_color_contend", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-            KOKKOS_LAMBDA(int idx) {
-              const ManifoldC m = manifolds(idx);
-              if (!mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred, gHat, qsThr,
-                                      gateMask))
-                return;
-              if (((cp(idx) >> slotShift) & 63) != kMlSlotSkip || !(cp(idx) & kMlPendingSkipBit))
-                return;  // committed (or marked skip) in an earlier round
-              const int gA = grp(realIdx(m.bodyA));
-              const int gB = (m.bodyB >= 0) ? grp(realIdx(m.bodyB)) : -1;
-              if (gB == gA)
-                return;  // internal to an aggregate at this level
-              const long long key = colorKey(idx);
-              Kokkos::atomic_max(&winner(gA), key);
-              if (gB >= 0)
-                Kokkos::atomic_max(&winner(gB), key);
-            });
-        int rem = 0;
-        Kokkos::parallel_reduce(
-            "peclet::dem::ml_color_commit", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-            KOKKOS_LAMBDA(int idx, int& acc) {
-              const ManifoldC m = manifolds(idx);
-              if (!mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred, gHat, qsThr,
-                                      gateMask))
-                return;
-              if (((cp(idx) >> slotShift) & 63) != kMlSlotSkip || !(cp(idx) & kMlPendingSkipBit))
-                return;
-              const int gA = grp(realIdx(m.bodyA));
-              const int gB = (m.bodyB >= 0) ? grp(realIdx(m.bodyB)) : -1;
-              if (gB == gA)
-                return;
-              const long long key = colorKey(idx);
-              if (winner(gA) != key || (gB >= 0 && winner(gB) != key)) {
-                acc += 1;
-                return;
-              }
-              std::uint64_t forbidden = colorMask(gA);
-              if (gB >= 0)
-                forbidden |= colorMask(gB);
-              int c = 0;  // lowest free colour among 0..62; never forced (§4.4)
-              while (c < kMlSlotSkip && ((forbidden >> c) & 1))
-                ++c;
-              if (c == kMlSlotSkip) {
-                cp(idx) &= ~kMlPendingSkipBit;  // keeps slot 63: skipped at this level
-                return;
-              }
-              cp(idx) = (cp(idx) & ~(63ll << slotShift)) | (static_cast<long long>(c) << slotShift);
-              const std::uint64_t bit = std::uint64_t(1) << c;
-              colorMask(gA) |= bit;
-              if (gB >= 0)
-                colorMask(gB) |= bit;
-            },
-            rem);
-        space.fence();
-        if (rem == prevRemaining)
-          break;  // safety bound: leftovers keep slot 63 and are skipped at this level
-        prevRemaining = rem;
-        remaining = rem;
-      }
-      Kokkos::parallel_for(
-          "peclet::dem::ml_color_clear_skip", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-          KOKKOS_LAMBDA(int idx) { cp(idx) |= kMlPendingSkipBit; });
-      Kokkos::parallel_reduce(
-          "peclet::dem::ml_color_max", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-          KOKKOS_LAMBDA(int idx, int& mx) {
-            const int c = static_cast<int>((cp(idx) >> slotShift) & 63);
-            if (c != kMlSlotSkip && c > mx)
-              mx = c;
-          },
-          Kokkos::Max<int>(maxc));
-      space.fence();
-      H.numColors.push_back(maxc + 1);
-    }
+    colorMlLevelManifolds(space, elig, realIdx, S, winner, colorMask, ngNew, lvl, H);
     H.groupOff.push_back(groupOff);
     H.numGroups.push_back(ngNew);
     H.parentOff.push_back(parentOff);
