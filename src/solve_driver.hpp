@@ -1651,6 +1651,42 @@ inline void planColorSweeps(SweepPlan& plan, CpExec& space, Particles& P,
                              plan.fused.maxBucket > 0 ? &plan.fused : nullptr};
 }
 
+/// The velocity phase's solve views and slot override: true masses; the hub copies' split masses;
+/// or each slot's global k_vel (rank-level M). Seeds the copy slots where copies exist.
+struct VelocitySolveViews {
+  Kokkos::View<const float*, CpMem> invMass;
+  Kokkos::View<const float* [3], CpMem> invInertia;
+  SlotOverride ov;
+};
+
+inline VelocitySolveViews openVelocityCopies(Particles& P, int slotBase, bool velM,
+                                             bool velCopiesOn, const PoissonBankViews& pv) {
+  PhaseCopies& vcs = P.velCopies;
+  Kokkos::View<const float*, CpMem> invMassVel = P.invMass;
+  Kokkos::View<const float* [3], CpMem> invInertiaVel = P.invInertia;
+  SlotOverride velOv{};
+  if (velM) {
+    buildSolveViewsRankK(P, vcs, slotBase + (velCopiesOn ? vcs.nCopies : 0), P.invMass,
+                         P.invInertia, Kokkos::View<const int*, CpMem>(P.kVel));
+    invMassVel = P.invMassSolve;
+    invInertiaVel = P.invInertiaSolve;
+    velOv = velCopiesOn ? SlotOverride{vcs.slotA, vcs.slotB, P.splitSlot, kSplitOmegaVelocity}
+                        : SlotOverride{{}, {}, P.splitSlot, kSplitOmegaVelocity};
+    if (velCopiesOn) {
+      seedCopySlotState(P, vcs);
+      markCopySeeds(vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak, /*shareFromBase*/ true);
+    }
+  } else if (velCopiesOn) {
+    buildSolveViews(P, vcs, slotBase + vcs.nCopies, P.invMass, P.invInertia);
+    seedCopySlotState(P, vcs);
+    markCopySeeds(vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak);
+    invMassVel = P.invMassSolve;
+    invInertiaVel = P.invInertiaSolve;
+    velOv = SlotOverride{vcs.slotA, vcs.slotB, P.splitSlot, kSplitOmegaVelocity};
+  }
+  return VelocitySolveViews{.invMass = invMassVel, .invInertia = invInertiaVel, .ov = velOv};
+}
+
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
 /// comment). Runs between the narrow phase and finalCommit; the caller owns ghost construction,
 /// broad/narrow phase and the commit.
@@ -1807,28 +1843,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // views carry each slot's global k_vel (a hub copy its base's); the local fold still divides by
   // the local count a (groupK); the orphan shares B / k are already set by the opening.
   const bool velM = rankM && usePGS;
-  Kokkos::View<const float*, CpMem> invMassVel = P.invMass;
-  Kokkos::View<const float* [3], CpMem> invInertiaVel = P.invInertia;
-  SlotOverride velOv{};
-  if (velM) {
-    buildSolveViewsRankK(P, vcs, slotBase + (velCopiesOn ? vcs.nCopies : 0), P.invMass,
-                         P.invInertia, Kokkos::View<const int*, CpMem>(P.kVel));
-    invMassVel = P.invMassSolve;
-    invInertiaVel = P.invInertiaSolve;
-    velOv = velCopiesOn ? SlotOverride{vcs.slotA, vcs.slotB, P.splitSlot, kSplitOmegaVelocity}
-                        : SlotOverride{{}, {}, P.splitSlot, kSplitOmegaVelocity};
-    if (velCopiesOn) {
-      seedCopySlotState(P, vcs);
-      markCopySeeds(vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak, /*shareFromBase*/ true);
-    }
-  } else if (velCopiesOn) {
-    buildSolveViews(P, vcs, slotBase + vcs.nCopies, P.invMass, P.invInertia);
-    seedCopySlotState(P, vcs);
-    markCopySeeds(vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak);
-    invMassVel = P.invMassSolve;
-    invInertiaVel = P.invInertiaSolve;
-    velOv = SlotOverride{vcs.slotA, vcs.slotB, P.splitSlot, kSplitOmegaVelocity};
-  }
+  const VelocitySolveViews sv = openVelocityCopies(P, slotBase, velM, velCopiesOn, pv);
   // §12 S14: a velocity phase with copies (local hub copies, or rank-level M) has not converged
   // while copies of one body disagree. Its stop votes fold in the largest consensus correction
   // since the previous vote (the local folds and the M syncs atomic-max it into P.maxConsensus),
@@ -1842,9 +1857,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                     .numColors = numColors,
                                     .velPermC = velPlan.sched.perm,
                                     .velFusedP = velPlan.sched.fused,
-                                    .invMassVel = invMassVel,
-                                    .invInertiaVel = invInertiaVel,
-                                    .velOv = velOv,
+                                    .invMassVel = sv.invMass,
+                                    .invInertiaVel = sv.invInertia,
+                                    .velOv = sv.ov,
                                     .poissonViews = pv,
                                     .rk = rk,
                                     .gHat = gHat,
