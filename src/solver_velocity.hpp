@@ -1040,6 +1040,32 @@ struct PGSManifoldSweep {
   // empty = realIdx, no relaxation. Every state access below uses realA / realB.
   SlotOverride ov{};
 
+  /// Linear velocity update of body slot `real` by the world-frame impulse `dLin`.
+  KOKKOS_FORCEINLINE_FUNCTION void applyLinear(int real, F3 dLin, float invMass) const {
+    velPred(real, 0) += dLin.x * invMass;
+    velPred(real, 1) += dLin.y * invMass;
+    velPred(real, 2) += dLin.z * invMass;
+  }
+
+  /// Angular velocity update of body slot `real` by the world-frame angular impulse `dAngWorld`
+  /// (rotated into the body frame, scaled by the diagonal inverse inertia, rotated back).
+  KOKKOS_FORCEINLINE_FUNCTION void applyAngular(int real, F3 dAngWorld, F3 invI, F4 q) const {
+    const F3 Jl = invRotateVector(q, dAngWorld);
+    const F3 dwl{Jl.x * invI.x, Jl.y * invI.y, Jl.z * invI.z};
+    const F3 dww = rotateVector(q, dwl);
+    angVelPred(real, 0) += dww.x;
+    angVelPred(real, 1) += dww.y;
+    angVelPred(real, 2) += dww.z;
+  }
+
+  /// Residual record of one applied correction: the adaptive stop's maxApproach and, on
+  /// quasi-static contacts, maxApproachQS.
+  KOKKOS_FORCEINLINE_FUNCTION void recordCorrection(int idx, float lenN, float corr) const {
+    Kokkos::atomic_max(&maxApproach(), corr);
+    if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
+      Kokkos::atomic_max(&maxApproachQS(), corr);
+  }
+
   KOKKOS_FUNCTION void solveOne(int idx) const {
     using detail::genInvMass;
     using detail::ld3;
@@ -1140,36 +1166,18 @@ struct PGSManifoldSweep {
       const float dApplied = pNew - pOld;
       if (dApplied != 0.0f) {
         lambdaAcc(idx) = pNew;
-        Kokkos::atomic_max(&maxApproach(), Kokkos::fabs(dApplied) * wTotal / lenN);
-        if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
-          Kokkos::atomic_max(&maxApproachQS(), Kokkos::fabs(dApplied) * wTotal / lenN);
+        recordCorrection(idx, lenN, Kokkos::fabs(dApplied) * wTotal / lenN);
         const float lambda = -sgn * dApplied;
         const F3 Jlin = scale3(Nsum, lambda);
         const F3 JangA = scale3(TauA, lambda);
         const F3 JangB = scale3(TauB, lambda);
         if (applyA) {
-          velPred(realA, 0) += Jlin.x * invMassA;
-          velPred(realA, 1) += Jlin.y * invMassA;
-          velPred(realA, 2) += Jlin.z * invMassA;
-          {
-            const F3 Jl = invRotateVector(qA, JangA);
-            const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
-            const F3 dww = rotateVector(qA, dwl);
-            angVelPred(realA, 0) += dww.x;
-            angVelPred(realA, 1) += dww.y;
-            angVelPred(realA, 2) += dww.z;
-          }
+          applyLinear(realA, Jlin, invMassA);
+          applyAngular(realA, JangA, invIA, qA);
         }
         if (idB >= 0 && applyB) {
-          velPred(realB, 0) += -Jlin.x * invMassB;
-          velPred(realB, 1) += -Jlin.y * invMassB;
-          velPred(realB, 2) += -Jlin.z * invMassB;
-          const F3 Jl = invRotateVector(qB, JangB);
-          const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
-          const F3 dww = rotateVector(qB, dwl);
-          angVelPred(realB, 0) += dww.x;
-          angVelPred(realB, 1) += dww.y;
-          angVelPred(realB, 2) += dww.z;
+          applyLinear(realB, F3{-Jlin.x, -Jlin.y, -Jlin.z}, invMassB);
+          applyAngular(realB, JangB, invIB, qB);
         }
       }  // dApplied != 0
 
@@ -1265,32 +1273,16 @@ struct PGSManifoldSweep {
             const float dR = rNew - rOld;
             if (dR != 0.0f) {
               restRel(idx) = rNew;
-              Kokkos::atomic_max(&maxApproach(), Kokkos::fabs(dR) * wRel / lenN);
-              if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
-                Kokkos::atomic_max(&maxApproachQS(), Kokkos::fabs(dR) * wRel / lenN);
+              recordCorrection(idx, lenN, Kokkos::fabs(dR) * wRel / lenN);
               const float lambdaR = -sgn * dR;
               const F3 JlinR = scale3(Nsum, lambdaR);
               if (relA) {
-                velPred(realA, 0) += JlinR.x * invMassA;
-                velPred(realA, 1) += JlinR.y * invMassA;
-                velPred(realA, 2) += JlinR.z * invMassA;
-                const F3 Jl = invRotateVector(qA, scale3(TauA, lambdaR));
-                const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
-                const F3 dww = rotateVector(qA, dwl);
-                angVelPred(realA, 0) += dww.x;
-                angVelPred(realA, 1) += dww.y;
-                angVelPred(realA, 2) += dww.z;
+                applyLinear(realA, JlinR, invMassA);
+                applyAngular(realA, scale3(TauA, lambdaR), invIA, qA);
               }
               if (relB) {
-                velPred(realB, 0) += -JlinR.x * invMassB;
-                velPred(realB, 1) += -JlinR.y * invMassB;
-                velPred(realB, 2) += -JlinR.z * invMassB;
-                const F3 Jl = invRotateVector(qB, scale3(TauB, lambdaR));
-                const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
-                const F3 dww = rotateVector(qB, dwl);
-                angVelPred(realB, 0) += dww.x;
-                angVelPred(realB, 1) += dww.y;
-                angVelPred(realB, 2) += dww.z;
+                applyLinear(realB, F3{-JlinR.x, -JlinR.y, -JlinR.z}, invMassB);
+                applyAngular(realB, scale3(TauB, lambdaR), invIB, qB);
               }
             }
           }
@@ -1370,32 +1362,15 @@ struct PGSManifoldSweep {
             lambdaT(idx, 1) = ltNew.y;
             lambdaT(idx, 2) = ltNew.z;
             const float dLen = Kokkos::sqrt(dot3(dApp, dApp));
-            if (wT > 1e-9f) {
-              Kokkos::atomic_max(&maxApproach(), dLen * wT);
-              if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
-                Kokkos::atomic_max(&maxApproachQS(), dLen * wT);
-            }
+            if (wT > 1e-9f)
+              recordCorrection(idx, lenN, dLen * wT);
             if (applyA) {
-              velPred(realA, 0) += dApp.x * invMassA;
-              velPred(realA, 1) += dApp.y * invMassA;
-              velPred(realA, 2) += dApp.z * invMassA;
-              const F3 Jl = invRotateVector(qA, cross3v(rAavg, dApp));
-              const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
-              const F3 dww = rotateVector(qA, dwl);
-              angVelPred(realA, 0) += dww.x;
-              angVelPred(realA, 1) += dww.y;
-              angVelPred(realA, 2) += dww.z;
+              applyLinear(realA, dApp, invMassA);
+              applyAngular(realA, cross3v(rAavg, dApp), invIA, qA);
             }
             if (idB >= 0 && applyB) {
-              velPred(realB, 0) += -dApp.x * invMassB;
-              velPred(realB, 1) += -dApp.y * invMassB;
-              velPred(realB, 2) += -dApp.z * invMassB;
-              const F3 Jl = invRotateVector(qB, cross3v(rBavg, scale3(dApp, -1.0f)));
-              const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
-              const F3 dww = rotateVector(qB, dwl);
-              angVelPred(realB, 0) += dww.x;
-              angVelPred(realB, 1) += dww.y;
-              angVelPred(realB, 2) += dww.z;
+              applyLinear(realB, F3{-dApp.x, -dApp.y, -dApp.z}, invMassB);
+              applyAngular(realB, cross3v(rBavg, scale3(dApp, -1.0f)), invIB, qB);
             }
           }
         }
