@@ -1040,6 +1040,31 @@ struct PGSManifoldSweep {
   // empty = realIdx, no relaxation. Every state access below uses realA / realB.
   SlotOverride ov{};
 
+  /// The endpoints' velocities (B on a wall: the wall's average velocity, zero spin).
+  struct PairVelocity {
+    F3 vA, wA, vB, wB;
+  };
+
+  /// One manifold's constraint row as the three impulse channels share it: the manifold, its
+  /// endpoints' solve slots, mass data and velocities at the start of this manifold's solve, the
+  /// averaged normal and arm sums, and the substep's sign, effective mass, side gate and
+  /// restitution. Filled by gatherRow then weighRow; read-only afterwards.
+  struct Row {
+    ManifoldC m;
+    int idB, realA, realB;  // idB < 0: wall manifold (realB = idB)
+    float invMassA, invMassB;
+    F3 invIA, invIB;
+    F4 qA, qB;
+    PairVelocity vel;               // loaded by gatherRow
+    float invN, restitution, eMat;  // restitution after the material override; weighRow may zero it
+    F3 Nsum, TauA, TauB, rAavg, rBavg;
+    float lenN;
+    F3 vGrowth;  // from here on: written by weighRow
+    float vn, sgn, wTotal;
+    unsigned char sf;
+    bool applyA, applyB;
+  };
+
   /// Linear velocity update of body slot `real` by the world-frame impulse `dLin`.
   KOKKOS_FORCEINLINE_FUNCTION void applyLinear(int real, F3 dLin, float invMass) const {
     velPred(real, 0) += dLin.x * invMass;
@@ -1066,75 +1091,138 @@ struct PGSManifoldSweep {
       Kokkos::atomic_max(&maxApproachQS(), corr);
   }
 
+  /// Row, part 1: the manifold, its endpoints' slots, mass data and velocities, the averaged
+  /// normal and arm sums and lenN.
+  KOKKOS_FORCEINLINE_FUNCTION void gatherRow(int idx, Row& r) const {
+    using detail::ld3;
+    const ManifoldC m = manifolds(idx);
+    const int idA = m.bodyA, idB = m.bodyB;
+    const int realA = ov.slotA(idx, realIdx(idA));
+    const int realB = (idB >= 0) ? ov.slotB(idx, realIdx(idB)) : idB;
+    const float invMassA = invMass(realA);
+    const float invMassB = (idB >= 0) ? invMass(realB) : 0.0f;
+    const F3 invIA = ld3(invInertia, realA);
+    const F3 invIB = (idB >= 0) ? ld3(invInertia, realB) : F3{0, 0, 0};
+    const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
+    const F4 qB = (idB >= 0) ? F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)}
+                             : F4{0, 0, 0, 1};
+    const F3 vA = ld3(velPred, realA), wA = ld3(angVelPred, realA);
+    F3 vB{0, 0, 0}, wB{0, 0, 0};
+    const float invN = 1.0f / static_cast<float>(m.num_points);
+    float restitution = restitutionNormal;
+    if (idB >= 0) {
+      vB = ld3(velPred, realB);
+      wB = ld3(angVelPred, realB);
+    } else {
+      vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+    }
+    {  // per-wall AND per-pair material override (a < 0 average keeps the global material)
+      const float ra = m.restitution_sum * invN;
+      if (ra >= 0.0f)
+        restitution = ra;
+    }
+    const float eMat = restitution;  // raw material e (release cap), before the event gates
+    const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
+    const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
+    const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
+    const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
+    const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
+    const float lenN = Kokkos::sqrt(dot3(Nsum, Nsum));
+    r = Row{.m = m,
+            .idB = idB,
+            .realA = realA,
+            .realB = realB,
+            .invMassA = invMassA,
+            .invMassB = invMassB,
+            .invIA = invIA,
+            .invIB = invIB,
+            .qA = qA,
+            .qB = qB,
+            .vel = PairVelocity{.vA = vA, .wA = wA, .vB = vB, .wB = wB},
+            .invN = invN,
+            .restitution = restitution,
+            .eMat = eMat,
+            .Nsum = Nsum,
+            .TauA = TauA,
+            .TauB = TauB,
+            .rAavg = rAavg,
+            .rBavg = rBavg,
+            .lenN = lenN};
+  }
+
+  /// Row, part 2: the approach velocity, the sign, the side gates and the effective mass.
+  KOKKOS_FORCEINLINE_FUNCTION void weighRow(int idx, Row& r) const {
+    using detail::genInvMass;
+    const int idB = r.idB;
+    const float invMassA = r.invMassA, invMassB = r.invMassB;
+    const F3 invIA = r.invIA, invIB = r.invIB;
+    const F4 qA = r.qA, qB = r.qB;
+    const F3 vA = r.vel.vA, wA = r.vel.wA, vB = r.vel.vB, wB = r.vel.wB;
+    float restitution = r.restitution;
+    const F3 Nsum = r.Nsum, TauA = r.TauA, TauB = r.TauB, rAavg = r.rAavg, rBavg = r.rBavg;
+    const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
+    const F3 vGrowth = scale3(diffCenters, growthRate);
+    float vn =
+        dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) + dot3(wB, TauB);
+    vn += dot3(vGrowth, Nsum);
+    const float alignment = dot3(Nsum, diffCenters);
+    const float sgn = (alignment > 0.0f) ? 1.0f : -1.0f;
+    const float Nsq = dot3(Nsum, Nsum);
+    float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
+    float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
+    // Shock propagation INSIDE the PGS sweep (Guendelman staged solve, per-contact form):
+    // sidedness was decided ONCE this substep (computeSideFlags) so the warm start,
+    // accumulator and every sweep share one consistent ledger. The held ground side absorbs
+    // the reaction (recursively down to the floor); e is forced 0 on one-sided contacts.
+    bool applyA = true, applyB = true;
+    const unsigned char sf = sideFlag(idx);
+    if (sf == 1) {
+      wB_n = 0.0f;
+      applyB = false;
+      restitution = 0.0f;
+    } else if (sf == 2) {
+      wA_n = 0.0f;
+      applyA = false;
+      restitution = 0.0f;
+    }
+    const float wTotal = wA_n + wB_n;
+    r.vGrowth = vGrowth;
+    r.vn = vn;
+    r.sgn = sgn;
+    r.wTotal = wTotal;
+    r.sf = sf;
+    r.applyA = applyA;
+    r.applyB = applyB;
+    r.restitution = restitution;
+  }
+
   KOKKOS_FUNCTION void solveOne(int idx) const {
     using detail::genInvMass;
     using detail::ld3;
     {
-      const ManifoldC m = manifolds(idx);
-      const int idA = m.bodyA, idB = m.bodyB;
-      const int realA = ov.slotA(idx, realIdx(idA));
-      const int realB = (idB >= 0) ? ov.slotB(idx, realIdx(idB)) : idB;
-      const float invMassA = invMass(realA);
-      const float invMassB = (idB >= 0) ? invMass(realB) : 0.0f;
-      const F3 invIA = ld3(invInertia, realA);
-      const F3 invIB = (idB >= 0) ? ld3(invInertia, realB) : F3{0, 0, 0};
-      const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
-      const F4 qB = (idB >= 0) ? F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)}
-                               : F4{0, 0, 0, 1};
-      const F3 vA = ld3(velPred, realA), wA = ld3(angVelPred, realA);
-      F3 vB{0, 0, 0}, wB{0, 0, 0};
-      const float invN = 1.0f / static_cast<float>(m.num_points);
-      float restitution = restitutionNormal;
-      if (idB >= 0) {
-        vB = ld3(velPred, realB);
-        wB = ld3(angVelPred, realB);
-      } else {
-        vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
-      }
-      {  // per-wall AND per-pair material override (a < 0 average keeps the global material)
-        const float ra = m.restitution_sum * invN;
-        if (ra >= 0.0f)
-          restitution = ra;
-      }
-      const float eMat = restitution;  // raw material e (release cap), before the event gates
-      const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
-      const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
-      const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
-      const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
-      const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
-      const float lenN = Kokkos::sqrt(dot3(Nsum, Nsum));
-      if (lenN < 1e-9f)
+      Row r;
+      gatherRow(idx, r);
+      if (r.lenN < 1e-9f)
         return;
-      const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
-      const F3 vGrowth = scale3(diffCenters, growthRate);
-      float vn = dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
-                 dot3(wB, TauB);
-      vn += dot3(vGrowth, Nsum);
-      const float alignment = dot3(Nsum, diffCenters);
-      const float sgn = (alignment > 0.0f) ? 1.0f : -1.0f;
-      const float Nsq = dot3(Nsum, Nsum);
-      float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
-      float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
-      // Shock propagation INSIDE the PGS sweep (Guendelman staged solve, per-contact form):
-      // sidedness was decided ONCE this substep (computeSideFlags) so the warm start,
-      // accumulator and every sweep share one consistent ledger. The held ground side absorbs
-      // the reaction (recursively down to the floor); e is forced 0 on one-sided contacts.
-      bool applyA = true, applyB = true;
-      const unsigned char sf = sideFlag(idx);
-      if (sf == 1) {
-        wB_n = 0.0f;
-        applyB = false;
-        restitution = 0.0f;
-      } else if (sf == 2) {
-        wA_n = 0.0f;
-        applyA = false;
-        restitution = 0.0f;
-      }
-      const float wTotal = wA_n + wB_n;
-      if (wTotal <= 0.0f)
+      weighRow(idx, r);
+      if (r.wTotal <= 0.0f)
         return;
       // Restitution bias on the PRE-SOLVE approach (resting threshold as in the one-shot path).
-      const float v0til = sgn * vn0(idx);
+      const float v0til = r.sgn * vn0(idx);
+      const ManifoldC m = r.m;
+      const int idB = r.idB, realA = r.realA, realB = r.realB;
+      const float invMassA = r.invMassA, invMassB = r.invMassB;
+      const F3 invIA = r.invIA, invIB = r.invIB;
+      const F4 qA = r.qA, qB = r.qB;
+      const float invN = r.invN, eMat = r.eMat;
+      const F3 Nsum = r.Nsum, TauA = r.TauA, TauB = r.TauB, rAavg = r.rAavg, rBavg = r.rBavg;
+      const float lenN = r.lenN;
+      const F3 vGrowth = r.vGrowth;
+      const float sgn = r.sgn, wTotal = r.wTotal;
+      const unsigned char sf = r.sf;
+      const bool applyA = r.applyA, applyB = r.applyB;
+      float restitution = r.restitution;
+      const float vn = r.vn;
       if (Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN)
         restitution = 0.0f;
       // Poisson mode keeps per-substep Newton restitution ALIVE alongside the bank: the
