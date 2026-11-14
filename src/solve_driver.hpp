@@ -704,6 +704,23 @@ inline void solvePositionPhase(Particles& P, int nc, int nm, const Hooks& hooks,
   Kokkos::Profiling::popRegion();
 }
 
+/// Event-level (Poisson) restitution views, all empty when the model is off.
+struct PoissonBankViews {
+  Kokkos::View<float*, CpMem> bank, rel;
+  Kokkos::View<const float*, CpMem> vPeak;
+  Kokkos::View<float*, CpMem> orphan, orphanPeak;  // orphanPeak writable (the copies' seeds/folds)
+};
+
+/// The solve's Poisson views: the banks and the orphan accounts when the model is on, else empty.
+inline PoissonBankViews poissonBankViews(Particles& P, bool on) {
+  return PoissonBankViews{.bank = on ? P.restBank : Kokkos::View<float*, CpMem>(),
+                          .rel = on ? P.restRel : Kokkos::View<float*, CpMem>(),
+                          .vPeak = on ? Kokkos::View<const float*, CpMem>(P.restVPeak)
+                                      : Kokkos::View<const float*, CpMem>(),
+                          .orphan = on ? P.bodyOrphan : Kokkos::View<float*, CpMem>(),
+                          .orphanPeak = on ? P.bodyOrphanVPeak : Kokkos::View<float*, CpMem>()};
+}
+
 /// The velocity phase's solve context: everything the velocity-phase loops read that
 /// demSolveContacts settles before them -- the colour schedule, the solve views and slot override
 /// (true masses, mass-split copies or rank-level M), the Poisson restitution views, gravity, the
@@ -719,11 +736,7 @@ struct VelocitySolveContext {
   Kokkos::View<const float* [3], CpMem> invInertiaVel;
   SlotOverride velOv;
   // Event-level (Poisson) restitution views (empty when off).
-  Kokkos::View<float*, CpMem> bankV;
-  Kokkos::View<float*, CpMem> relV;
-  Kokkos::View<const float*, CpMem> vpkC;
-  Kokkos::View<float*, CpMem> orphV;
-  Kokkos::View<const float*, CpMem> orphPk;
+  PoissonBankViews poissonViews;
   RankK rk;
   F3 gHat{0, 0, 0};
   float gMagP = 0.0f;
@@ -749,11 +762,11 @@ inline bool launchFusedVelocityLoop(Particles& P, int nm, float vRest,
                                     const VelocitySolveContext& ctx) {
   const auto& velSched = ctx.velSched;
   const auto& velFusedP = ctx.velFusedP;
-  const auto& bankV = ctx.bankV;
-  const auto& relV = ctx.relV;
-  const auto& vpkC = ctx.vpkC;
-  const auto& orphV = ctx.orphV;
-  const auto& orphPk = ctx.orphPk;
+  const auto& bankV = ctx.poissonViews.bank;
+  const auto& relV = ctx.poissonViews.rel;
+  const auto& vpkC = ctx.poissonViews.vPeak;
+  const auto& orphV = ctx.poissonViews.orphan;
+  const Kokkos::View<const float*, CpMem> orphPk = ctx.poissonViews.orphanPeak;
   const auto& usePGS = ctx.usePGS;
   const auto& velCopiesOn = ctx.velCopiesOn;
   const auto& stopsOn = ctx.stopsOn;
@@ -791,11 +804,11 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
   const auto& invMassVel = ctx.invMassVel;
   const auto& invInertiaVel = ctx.invInertiaVel;
   const auto& velOv = ctx.velOv;
-  const auto& bankV = ctx.bankV;
-  const auto& relV = ctx.relV;
-  const auto& vpkC = ctx.vpkC;
-  const auto& orphV = ctx.orphV;
-  const auto& orphPk = ctx.orphPk;
+  const auto& bankV = ctx.poissonViews.bank;
+  const auto& relV = ctx.poissonViews.rel;
+  const auto& vpkC = ctx.poissonViews.vPeak;
+  const auto& orphV = ctx.poissonViews.orphan;
+  const Kokkos::View<const float*, CpMem> orphPk = ctx.poissonViews.orphanPeak;
   const auto& rk = ctx.rk;
   const auto& gMagP = ctx.gMagP;
   const auto& usePGS = ctx.usePGS;
@@ -916,11 +929,11 @@ inline void stabilizeOneSided(Particles& P, int nm, const Hooks& hooks, CpExec& 
   const auto& invMassVel = ctx.invMassVel;
   const auto& invInertiaVel = ctx.invInertiaVel;
   const auto& velOv = ctx.velOv;
-  const auto& bankV = ctx.bankV;
-  const auto& relV = ctx.relV;
-  const auto& vpkC = ctx.vpkC;
-  const auto& orphV = ctx.orphV;
-  const auto& orphPk = ctx.orphPk;
+  const auto& bankV = ctx.poissonViews.bank;
+  const auto& relV = ctx.poissonViews.rel;
+  const auto& vpkC = ctx.poissonViews.vPeak;
+  const auto& orphV = ctx.poissonViews.orphan;
+  const Kokkos::View<const float*, CpMem> orphPk = ctx.poissonViews.orphanPeak;
   const auto& gHat = ctx.gHat;
   const auto& gMagP = ctx.gMagP;
   const auto& velCopiesOn = ctx.velCopiesOn;
@@ -1073,11 +1086,11 @@ inline bool launchFusedMultilevelLoop(Particles& P, int nm, CpExec& space,
   const auto& numColors = ctx.numColors;
   const auto& velPermC = ctx.velPermC;
   const auto& velFusedP = ctx.velFusedP;
-  const auto& bankV = ctx.bankV;
-  const auto& relV = ctx.relV;
-  const auto& vpkC = ctx.vpkC;
-  const auto& orphV = ctx.orphV;
-  const auto& orphPk = ctx.orphPk;
+  const auto& bankV = ctx.poissonViews.bank;
+  const auto& relV = ctx.poissonViews.rel;
+  const auto& vpkC = ctx.poissonViews.vPeak;
+  const auto& orphV = ctx.poissonViews.orphan;
+  const Kokkos::View<const float*, CpMem> orphPk = ctx.poissonViews.orphanPeak;
   const auto& velCopiesOn = ctx.velCopiesOn;
   const auto& stopsOn = ctx.stopsOn;
   const auto& fusedOff = ctx.fusedOff;
@@ -1124,11 +1137,11 @@ inline void stabilizeMultilevel(Particles& P, int nm, int nBodies, const Hooks& 
   const auto& invMassVel = ctx.invMassVel;
   const auto& invInertiaVel = ctx.invInertiaVel;
   const auto& velOv = ctx.velOv;
-  const auto& bankV = ctx.bankV;
-  const auto& relV = ctx.relV;
-  const auto& vpkC = ctx.vpkC;
-  const auto& orphV = ctx.orphV;
-  const auto& orphPk = ctx.orphPk;
+  const auto& bankV = ctx.poissonViews.bank;
+  const auto& relV = ctx.poissonViews.rel;
+  const auto& vpkC = ctx.poissonViews.vPeak;
+  const auto& orphV = ctx.poissonViews.orphan;
+  const Kokkos::View<const float*, CpMem> orphPk = ctx.poissonViews.orphanPeak;
   const auto& gHat = ctx.gHat;
   const auto& gMagP = ctx.gMagP;
   const auto& sleepOn = ctx.sleepOn;
@@ -1250,11 +1263,11 @@ inline void stabilizeOrdered(Particles& P, int nm, int nBodies, const Hooks& hoo
   const auto& invMassVel = ctx.invMassVel;
   const auto& invInertiaVel = ctx.invInertiaVel;
   const auto& velOv = ctx.velOv;
-  const auto& bankV = ctx.bankV;
-  const auto& relV = ctx.relV;
-  const auto& vpkC = ctx.vpkC;
-  const auto& orphV = ctx.orphV;
-  const auto& orphPk = ctx.orphPk;
+  const auto& bankV = ctx.poissonViews.bank;
+  const auto& relV = ctx.poissonViews.rel;
+  const auto& vpkC = ctx.poissonViews.vPeak;
+  const auto& orphV = ctx.poissonViews.orphan;
+  const Kokkos::View<const float*, CpMem> orphPk = ctx.poissonViews.orphanPeak;
   const auto& gHat = ctx.gHat;
   const auto& nmVisible = ctx.nmVisible;
   const auto& velCons = ctx.velCons;
@@ -1326,11 +1339,11 @@ inline void stabilizeEscalation(Particles& P, int nm, const Hooks& hooks, CpExec
   const auto& invMassVel = ctx.invMassVel;
   const auto& invInertiaVel = ctx.invInertiaVel;
   const auto& velOv = ctx.velOv;
-  const auto& bankV = ctx.bankV;
-  const auto& relV = ctx.relV;
-  const auto& vpkC = ctx.vpkC;
-  const auto& orphV = ctx.orphV;
-  const auto& orphPk = ctx.orphPk;
+  const auto& bankV = ctx.poissonViews.bank;
+  const auto& relV = ctx.poissonViews.rel;
+  const auto& vpkC = ctx.poissonViews.vPeak;
+  const auto& orphV = ctx.poissonViews.orphan;
+  const Kokkos::View<const float*, CpMem> orphPk = ctx.poissonViews.orphanPeak;
   const auto& velCons = ctx.velCons;
   const auto& stopsOn = ctx.stopsOn;
   // ESCALATION (diagnostic/fallback): keep running plain symmetric colored sweeps until
@@ -1401,7 +1414,7 @@ template <class Hooks>
 inline void closeVelocityPhase(Particles& P, int nm, const Hooks& hooks,
                                const VelocitySolveContext& ctx) {
   PhaseCopies& vcs = P.velCopies;
-  const auto& orphV = ctx.orphV;
+  const auto& orphV = ctx.poissonViews.orphan;
   const auto& gMagP = ctx.gMagP;
   const auto& usePGS = ctx.usePGS;
   const auto& poisson = ctx.poisson;
@@ -1738,15 +1751,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // budget-capped separation-velocity target during unloading (see updateRestitutionBank /
   // PGSManifoldSweep). Off (empty views) the sweeps run the per-substep Newton path verbatim.
   const bool poisson = usePGS && P.restitutionModel == 1;
-  const Kokkos::View<float*, CpMem> bankV = poisson ? P.restBank : Kokkos::View<float*, CpMem>();
-  const Kokkos::View<float*, CpMem> relV = poisson ? P.restRel : Kokkos::View<float*, CpMem>();
-  const Kokkos::View<const float*, CpMem> vpkC =
-      poisson ? Kokkos::View<const float*, CpMem>(P.restVPeak)
-              : Kokkos::View<const float*, CpMem>();
-  const Kokkos::View<float*, CpMem> orphV = poisson ? P.bodyOrphan : Kokkos::View<float*, CpMem>();
-  const Kokkos::View<const float*, CpMem> orphPk =
-      poisson ? Kokkos::View<const float*, CpMem>(P.bodyOrphanVPeak)
-              : Kokkos::View<const float*, CpMem>();
+  const PoissonBankViews pv = poissonBankViews(P, poisson);
   const WarmStartContext warmCtx{.keyIdx = keyIdx,
                                  .gHat = gHat,
                                  .gMagP = gMagP,
@@ -1767,8 +1772,6 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   Kokkos::View<const float*, CpMem> invMassVel = P.invMass;
   Kokkos::View<const float* [3], CpMem> invInertiaVel = P.invInertia;
   SlotOverride velOv{};
-  const Kokkos::View<float*, CpMem> orphPkW =
-      poisson ? P.bodyOrphanVPeak : Kokkos::View<float*, CpMem>();
   if (velM) {
     buildSolveViewsRankK(P, vcs, slotBase + (velCopiesOn ? vcs.nCopies : 0), P.invMass,
                          P.invInertia, Kokkos::View<const int*, CpMem>(P.kVel));
@@ -1778,19 +1781,19 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                         : SlotOverride{{}, {}, P.splitSlot, kSplitOmegaVelocity};
     if (velCopiesOn) {
       seedCopySlotState(P, vcs);
-      markCopySeeds(vcs, P.velPred, P.angVelPred, orphV, orphPkW, /*shareFromBase*/ true);
+      markCopySeeds(vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak, /*shareFromBase*/ true);
     }
   } else if (velCopiesOn) {
     buildSolveViews(P, vcs, slotBase + vcs.nCopies, P.invMass, P.invInertia);
     seedCopySlotState(P, vcs);
-    markCopySeeds(vcs, P.velPred, P.angVelPred, orphV, orphPkW);
+    markCopySeeds(vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak);
     invMassVel = P.invMassSolve;
     invInertiaVel = P.invInertiaSolve;
     velOv = SlotOverride{vcs.slotA, vcs.slotB, P.splitSlot, kSplitOmegaVelocity};
   }
   auto foldVel = [&] {
     if (velCopiesOn)
-      foldCopies(space, vcs, P.velPred, P.angVelPred, orphV, orphPkW, P.maxConsensus);
+      foldCopies(space, vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak, P.maxConsensus);
   };
   // §12 S14: a velocity phase with copies (local hub copies, or rank-level M) has not converged
   // while copies of one body disagree. Its stop votes fold in the largest consensus correction
@@ -1817,14 +1820,15 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
       if (velM) {
         hooks.syncVelocities(P);
         if (velCopiesOn)
-          markCopySeeds(vcs, P.velPred, P.angVelPred, orphV, orphPkW, /*shareFromBase*/ true);
+          markCopySeeds(vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak,
+                        /*shareFromBase*/ true);
         return;
       }
       if (velCopiesOn)
-        unfoldOrphan(vcs, orphV);
+        unfoldOrphan(vcs, pv.orphan);
       hooks.syncVelocities(P);
       if (velCopiesOn)
-        markCopySeeds(vcs, P.velPred, P.angVelPred, orphV, orphPkW);
+        markCopySeeds(vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak);
     }
   };
   const VelocitySolveContext velCtx{.velSched = velSched,
@@ -1834,11 +1838,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                     .invMassVel = invMassVel,
                                     .invInertiaVel = invInertiaVel,
                                     .velOv = velOv,
-                                    .bankV = bankV,
-                                    .relV = relV,
-                                    .vpkC = vpkC,
-                                    .orphV = orphV,
-                                    .orphPk = orphPk,
+                                    .poissonViews = pv,
                                     .rk = rk,
                                     .gHat = gHat,
                                     .gMagP = gMagP,
