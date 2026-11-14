@@ -355,6 +355,42 @@ struct MlEligibility {
   int gateMask = 0;
 };
 
+/// The pair filter of the coarse matching, shared by the bid and the commit kernel of
+/// matchMlLevelGroups (the two must apply the identical test, or a pair could win the bidding and
+/// never be committed): an eligible crossing manifold between two movable, canonical bodies in
+/// different groups yields those groups (gA, gB).
+struct MlMatchFilter {
+  MlEligibility elig;
+  Kokkos::View<const int*, CpMem> realIdx;
+  Kokkos::View<const float*, CpMem> invMass;
+  Kokkos::View<const unsigned char*, CpMem> asleep;
+  Kokkos::View<int*, CpMem> grp;
+  bool excludeImmovable = false;
+  bool haveAsleep = false;
+
+  KOKKOS_INLINE_FUNCTION bool operator()(int idx, int& gA, int& gB) const {
+    const ManifoldC m = elig.manifolds(idx);
+    if (m.bodyB < 0 || !mldetail::eligible(m, idx, elig.mColor, elig.vn0, elig.vt0, elig.persistent,
+                                           elig.posPred, elig.gHat, elig.qsThr, elig.gateMask))
+      return false;
+    // Never aggregate an immovable (sleeping / pinned) body: a group carrying its huge
+    // effMass wrecks the coarse-solve conditioning and pins the awake partner. (Gated so
+    // the sleeping-off path is bit-identical.)
+    if (excludeImmovable &&
+        (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
+         (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
+      return false;
+    // Aggregation never crosses a periodic wrap (§2.3): an image slot's position is
+    // shifted, and an aggregate holding it would have no consistent geometry.
+    if (!mldetail::canonical(elig.posPred, realIdx, m.bodyA) ||
+        !mldetail::canonical(elig.posPred, realIdx, m.bodyB))
+      return false;
+    gA = grp(realIdx(m.bodyA));
+    gB = grp(realIdx(m.bodyB));
+    return gA != gB;
+  }
+};
+
 /// Greedy random-priority matching on the group graph of the finer level (ngPrev groups, the
 /// composed body -> group map S.grp): every eligible crossing manifold between two movable,
 /// canonical groups bids colorKey on both endpoints, and a manifold that wins both pairs them
@@ -365,41 +401,15 @@ inline void matchMlLevelGroups(CpExec& space, const MlEligibility& elig,
                                Kokkos::View<const unsigned char*, CpMem> asleep, bool haveAsleep,
                                const MlScratch& S, Kokkos::View<long long*, CpMem> winner,
                                int ngPrev) {
-  const auto& manifolds = elig.manifolds;
-  const int numManifolds = elig.numManifolds;
-  const auto& mColor = elig.mColor;
-  const auto& vn0 = elig.vn0;
-  const auto& vt0 = elig.vt0;
-  const auto& persistent = elig.persistent;
-  const auto& posPred = elig.posPred;
-  const auto& gHat = elig.gHat;
-  const auto& qsThr = elig.qsThr;
-  const auto& gateMask = elig.gateMask;
+  const MlMatchFilter pairOf{elig, realIdx, invMass, asleep, S.grp, excludeImmovable, haveAsleep};
   Kokkos::parallel_for(
       "peclet::dem::ml_match_reset", Kokkos::RangePolicy<CpExec>(space, 0, ngPrev),
       KOKKOS_LAMBDA(int g) { winner(g) = -1; });
-  auto grp = S.grp;
   Kokkos::parallel_for(
-      "peclet::dem::ml_match_contend", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      "peclet::dem::ml_match_contend", Kokkos::RangePolicy<CpExec>(space, 0, elig.numManifolds),
       KOKKOS_LAMBDA(int idx) {
-        const ManifoldC m = manifolds(idx);
-        if (m.bodyB < 0 || !mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred, gHat,
-                                               qsThr, gateMask))
-          return;
-        // Never aggregate an immovable (sleeping / pinned) body: a group carrying its huge
-        // effMass wrecks the coarse-solve conditioning and pins the awake partner. (Gated so
-        // the sleeping-off path is bit-identical.)
-        if (excludeImmovable &&
-            (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
-             (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
-          return;
-        // Aggregation never crosses a periodic wrap (§2.3): an image slot's position is
-        // shifted, and an aggregate holding it would have no consistent geometry.
-        if (!mldetail::canonical(posPred, realIdx, m.bodyA) ||
-            !mldetail::canonical(posPred, realIdx, m.bodyB))
-          return;
-        const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
-        if (gA == gB)
+        int gA = 0, gB = 0;
+        if (!pairOf(idx, gA, gB))
           return;
         const long long key = colorKey(idx);
         Kokkos::atomic_max(&winner(gA), key);
@@ -410,23 +420,10 @@ inline void matchMlLevelGroups(CpExec& space, const MlEligibility& elig,
       "peclet::dem::ml_mate_init", Kokkos::RangePolicy<CpExec>(space, 0, ngPrev),
       KOKKOS_LAMBDA(int g) { mate(g) = g; });
   Kokkos::parallel_for(
-      "peclet::dem::ml_match_commit", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+      "peclet::dem::ml_match_commit", Kokkos::RangePolicy<CpExec>(space, 0, elig.numManifolds),
       KOKKOS_LAMBDA(int idx) {
-        const ManifoldC m = manifolds(idx);
-        if (m.bodyB < 0 || !mldetail::eligible(m, idx, mColor, vn0, vt0, persistent, posPred, gHat,
-                                               qsThr, gateMask))
-          return;
-        if (excludeImmovable &&
-            (invMass(realIdx(m.bodyA)) == 0.0f || invMass(realIdx(m.bodyB)) == 0.0f ||
-             (haveAsleep && (asleep(realIdx(m.bodyA)) || asleep(realIdx(m.bodyB))))))
-          return;
-        // Aggregation never crosses a periodic wrap (§2.3): an image slot's position is
-        // shifted, and an aggregate holding it would have no consistent geometry.
-        if (!mldetail::canonical(posPred, realIdx, m.bodyA) ||
-            !mldetail::canonical(posPred, realIdx, m.bodyB))
-          return;
-        const int gA = grp(realIdx(m.bodyA)), gB = grp(realIdx(m.bodyB));
-        if (gA == gB)
+        int gA = 0, gB = 0;
+        if (!pairOf(idx, gA, gB))
           return;
         const long long key = colorKey(idx);
         if (winner(gA) == key && winner(gB) == key) {  // sole winner of both endpoints
