@@ -516,6 +516,16 @@ inline int colorPositionPhase(Particles& P, int nc, int nm, bool usePersistPre, 
   return numPosColors;
 }
 
+/// §12 S14: a stop vote's residual with the largest consensus correction since the previous vote
+/// folded in (read, then zeroed) when the phase has copies (cons); res unchanged otherwise.
+inline float withConsensus(Particles& P, float res, bool cons) {
+  if (!cons)
+    return res;
+  const float c = readFloat(P.maxConsensus);
+  Kokkos::deep_copy(P.maxConsensus, 0.0f);
+  return std::max(res, c);
+}
+
 /// The overlap projection's loop context: what its iterations read that solvePositionPhase settles
 /// before them -- the units and colour schedule, the stop tolerance and the phase's switches.
 /// Host-side only: runOverlapProjection unpacks it into locals before any kernel, so no device
@@ -534,11 +544,10 @@ struct PositionSolveContext {
 /// The overlap projection's iterations to their adaptive stop (WO-12): the fused device loop
 /// (CUDA, single-rank), CUDA-graph replay or host submission of one iteration (emitPosIter), or
 /// mass-split Jacobi; the position syncs and the final owner->ghost refresh.
-template <class Hooks, class EmitPosIter, class SyncPos, class WithConsensus>
+template <class Hooks, class EmitPosIter, class SyncPos>
 inline void runOverlapProjection(Particles& P, int nc, const Hooks& hooks, CpExec& space,
                                  const PositionSolveContext& ctx, EmitPosIter&& emitPosIter,
-                                 SyncPos&& syncPos, ColoringInvariant& inv,
-                                 WithConsensus&& withConsensus) {
+                                 SyncPos&& syncPos, ColoringInvariant& inv) {
   const auto& posUnits = ctx.posUnits;
   const auto& numPosUnits = ctx.numPosUnits;
   const auto& posSched = ctx.posSched;
@@ -580,7 +589,7 @@ inline void runOverlapProjection(Particles& P, int nc, const Hooks& hooks, CpExe
         emitPosIter();
       // Every active unit is coloured (§4.2): the count-averaged fallback is gone; the stop's
       // Allreduce carries the colouring-invariant vote if the velocity loop did not.
-      const float posRes = inv.vote(hooks, withConsensus(readFloat(P.posResidual), posCons));
+      const float posRes = inv.vote(hooks, withConsensus(P, readFloat(P.posResidual), posCons));
       // Adaptive stop (WO-12): end once no contact's projection moves it by more than posTol
       // (|d| w, retractions included). Fixed positionIterations is the cap. Distributed:
       // Allreduce-MAXed so all ranks break together.
@@ -608,12 +617,12 @@ inline void runOverlapProjection(Particles& P, int nc, const Hooks& hooks, CpExe
 /// The position phase (docs/contact_solve_framework.md §4.4, §4.5, §13.3 step 9; WO-12): seed the
 /// position-phase copies, run the accumulated overlap projection to its adaptive stop, and carry
 /// the position-channel Coulomb bound to the next substep. Closes the solve's profiling region.
-template <class Hooks, class WithConsensus>
+template <class Hooks>
 inline void solvePositionPhase(Particles& P, int nc, int nm, const Hooks& hooks, CpExec& space,
                                PhaseCopies& pcs, int slotBase, bool rankM, bool usePGS,
                                const PosUnits posUnits, int numPosUnits,
                                const ColorSchedule& posSched, bool stopsOn, float fusedOff,
-                               ColoringInvariant& inv, WithConsensus&& withConsensus) {
+                               ColoringInvariant& inv) {
   // Position-phase copies (§4.4, §4.5; demStep's periodic images, §WO-4 item 2): seeded after the
   // predict (and, under MPI, the publish). An image is re-seeded to its body's predicted position
   // plus its generation shift, so its increments are relative to the body.
@@ -693,7 +702,7 @@ inline void solvePositionPhase(Particles& P, int nc, int nm, const Hooks& hooks,
                                     .stopsOn = stopsOn,
                                     .posCopiesOn = posCopiesOn,
                                     .posCons = posCons};
-  runOverlapProjection(P, nc, hooks, space, posCtx, emitPosIter, syncPos, inv, withConsensus);
+  runOverlapProjection(P, nc, hooks, space, posCtx, emitPosIter, syncPos, inv);
   // Position-channel Coulomb-bound carry (PGS path): next substep's friction cone sees
   // mu * (velocity-impulse channel + this position-channel load). Without it a jostled bed's
   // bound under-counts the true normal force and stick leaks (measured: 99% sliding wall
@@ -754,6 +763,36 @@ struct VelocitySolveContext {
   float fusedOff = -1.0f;
 };
 
+/// The velocity-phase copies' fold, run in every iteration after the sweep (none without copies).
+inline void foldVelocityCopies(CpExec& space, Particles& P, const VelocitySolveContext& ctx) {
+  if (ctx.velCopiesOn)
+    foldCopies(space, P.velCopies, P.velPred, P.angVelPred, ctx.poissonViews.orphan,
+               ctx.poissonViews.orphanPeak, P.maxConsensus);
+}
+
+/// A rank sync inside the velocity phase: orphan accounts back to balances, the raw reverse +
+/// forward, then the copies' seeds re-marked from the reconciled bases.
+/// Under rank-level M (velM) the sync itself is M (the halo's weighted apply; the bases hold
+/// their shares, so no unfold first) and the copies re-seed from their bases' shares.
+template <class Hooks>
+inline void syncVelocityPhase(Particles& P, const Hooks& hooks, const VelocitySolveContext& ctx) {
+  if constexpr (Hooks::distributed) {
+    if (ctx.velM) {
+      hooks.syncVelocities(P);
+      if (ctx.velCopiesOn)
+        markCopySeeds(P.velCopies, P.velPred, P.angVelPred, ctx.poissonViews.orphan,
+                      ctx.poissonViews.orphanPeak, /*shareFromBase*/ true);
+      return;
+    }
+    if (ctx.velCopiesOn)
+      unfoldOrphan(P.velCopies, ctx.poissonViews.orphan);
+    hooks.syncVelocities(P);
+    if (ctx.velCopiesOn)
+      markCopySeeds(P.velCopies, P.velPred, P.angVelPred, ctx.poissonViews.orphan,
+                    ctx.poissonViews.orphanPeak);
+  }
+}
+
 /// The main velocity phase's device-side iteration loop (CUDA, single-rank PGS with a fused
 /// schedule and no copies): the whole adaptive loop as ONE kernel. Returns whether it ran; when
 /// it did not, solveVelocityPhase iterates on the host.
@@ -794,11 +833,9 @@ inline bool launchFusedVelocityLoop(Particles& P, int nm, float vRest,
 /// one-shot coloured GS with rank-level X, or mass-split Jacobi, each to its adaptive stop, and the
 /// final owner->ghost refresh. Closes the "dem::solve::prep" profiling region and opens
 /// "dem::solve::vel".
-template <class Hooks, class FoldVel, class SyncVel, class WithConsensus>
+template <class Hooks>
 inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks, CpExec& space,
-                               const VelocitySolveContext& ctx, FoldVel&& foldVel,
-                               SyncVel&& syncVel, ColoringInvariant& inv,
-                               WithConsensus&& withConsensus) {
+                               const VelocitySolveContext& ctx, ColoringInvariant& inv) {
   const auto& velSched = ctx.velSched;
   const auto& numColors = ctx.numColors;
   const auto& invMassVel = ctx.invMassVel;
@@ -832,7 +869,7 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
         Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic, P.vt0,
         P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV,
         vpkC, orphV, orphPk, nullptr, velOv);
-    foldVel();
+    foldVelocityCopies(space, P, ctx);
   };
   // Device-side iteration loop (CUDA, single-rank): the whole adaptive velocity loop as ONE
   // kernel — same sweeps, same residual, same stop; the per-iteration readback and the graph
@@ -880,11 +917,11 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
                                invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,
                                P.growthRate, P.restitutionNormal, vRest, P.maxApproach, {}, {}, {},
                                {}, velOv, xGate);
-        foldVel();
+        foldVelocityCopies(space, P, ctx);
       }
       // Every active manifold is coloured (§4.2): the count-averaged fallback is gone. The stop's
       // Allreduce carries the colouring-invariant vote (inv.vote; no extra message).
-      const float velRes = inv.vote(hooks, withConsensus(readFloat(P.maxApproach), velCons));
+      const float velRes = inv.vote(hooks, withConsensus(P, readFloat(P.maxApproach), velCons));
       // Adaptive stop. One-shot GS: end once no pair approaches above the resting threshold. PGS:
       // maxApproach records the largest APPLIED correction, and meaningful increments are ~g dt
       // (they propagate a chain one link per sweep), so the tolerance must sit well below vRest or
@@ -911,19 +948,18 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
     }
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))
-        syncVel();
+        syncVelocityPhase(P, hooks, ctx);
     }
   }
   if constexpr (Hooks::distributed)
-    syncVel();  // final owner->ghost refresh of the main velocity phase
+    syncVelocityPhase(P, hooks, ctx);  // final owner->ghost refresh of the main velocity phase
 }
 
 /// The ONE-SIDED grounded stabilization pass (stabilization mode 1, the default): held-lower-side
 /// impulses, to the adaptive stop at vRestS.
-template <class Hooks, class FoldVel, class SyncVel, class WithConsensus>
+template <class Hooks>
 inline void stabilizeOneSided(Particles& P, int nm, const Hooks& hooks, CpExec& space,
-                              const VelocitySolveContext& ctx, const float vRestS,
-                              FoldVel&& foldVel, SyncVel&& syncVel, WithConsensus&& withConsensus) {
+                              const VelocitySolveContext& ctx, const float vRestS) {
   const auto& velSched = ctx.velSched;
   const auto& velFusedP = ctx.velFusedP;
   const auto& invMassVel = ctx.invMassVel;
@@ -955,7 +991,7 @@ inline void stabilizeOneSided(Particles& P, int nm, const Hooks& hooks, CpExec& 
         Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic, P.vt0,
         P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV,
         vpkC, orphV, orphPk, nullptr, velOv);
-    foldVel();
+    foldVelocityCopies(space, P, ctx);
   };
   bool osLoopDone = false;
   if constexpr (!Hooks::distributed) {
@@ -982,12 +1018,12 @@ inline void stabilizeOneSided(Particles& P, int nm, const Hooks& hooks, CpExec& 
       gOs.launch(space);
     else
       emitOsIter();
-    const float osRes = hooks.allMax(withConsensus(readFloat(P.maxApproach), velCons));
+    const float osRes = hooks.allMax(withConsensus(P, readFloat(P.maxApproach), velCons));
     if (stopsOn && osRes <= vRestS)
       break;
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))
-        syncVel();
+        syncVelocityPhase(P, hooks, ctx);
     }
   }
 }
@@ -1127,11 +1163,10 @@ inline bool launchFusedMultilevelLoop(Particles& P, int nm, CpExec& space,
 }
 #endif
 
-template <class Hooks, class FoldVel, class SyncVel, class WithConsensus>
+template <class Hooks>
 inline void stabilizeMultilevel(Particles& P, int nm, int nBodies, const Hooks& hooks,
-                                CpExec& space, const VelocitySolveContext& ctx, const float vRestS,
-                                FoldVel&& foldVel, SyncVel&& syncVel,
-                                WithConsensus&& withConsensus) {
+                                CpExec& space, const VelocitySolveContext& ctx,
+                                const float vRestS) {
   PhaseCopies& vcs = P.velCopies;
   const auto& velSched = ctx.velSched;
   const auto& invMassVel = ctx.invMassVel;
@@ -1216,7 +1251,7 @@ inline void stabilizeMultilevel(Particles& P, int nm, int nBodies, const Hooks& 
         Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic, P.vt0,
         P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), P.maxApproachQS,
         bankV, relV, vpkC, orphV, orphPk, nullptr, velOv);
-    foldVel();
+    foldVelocityCopies(space, P, ctx);
     if (H.numLevels > 0) {
       multilevelCoarseCycle(P.manifolds, nm, P.realIndices, invMassCoarse, P.velPred, P.lambdaAcc,
                             P.maxApproachQS, nBodies, H, S,
@@ -1244,22 +1279,21 @@ inline void stabilizeMultilevel(Particles& P, int nm, int nBodies, const Hooks& 
       gMl.launch(space);
     else
       emitMlIter();
-    const float mlRes = hooks.allMax(withConsensus(readFloat(P.maxApproachQS), velCons));
+    const float mlRes = hooks.allMax(withConsensus(P, readFloat(P.maxApproachQS), velCons));
     if (stopsOn && mlRes <= vRestS)
       break;
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))
-        syncVel();
+        syncVelocityPhase(P, hooks, ctx);
     }
   }
 }
 
 /// The ORDERED stabilization pass (stabilization mode 4, measurement mode): level-ordered
 /// symmetric sweeps, to the adaptive stop.
-template <class Hooks, class FoldVel, class SyncVel, class WithConsensus>
+template <class Hooks>
 inline void stabilizeOrdered(Particles& P, int nm, int nBodies, const Hooks& hooks, CpExec& space,
-                             const VelocitySolveContext& ctx, const float vRestS, FoldVel&& foldVel,
-                             SyncVel&& syncVel, WithConsensus&& withConsensus) {
+                             const VelocitySolveContext& ctx, const float vRestS) {
   const auto& invMassVel = ctx.invMassVel;
   const auto& invInertiaVel = ctx.invInertiaVel;
   const auto& velOv = ctx.velOv;
@@ -1317,24 +1351,22 @@ inline void stabilizeOrdered(Particles& P, int nm, int nBodies, const Hooks& hoo
                             /*topDown*/ false);
     solveVelocityPGSBuckets(sweep, Kokkos::View<const int*, CpMem>(P.levelPerm), buckets,
                             /*topDown*/ true);
-    foldVel();
-    const float orRes = hooks.allMax(withConsensus(readFloat(P.maxApproach), velCons));
+    foldVelocityCopies(space, P, ctx);
+    const float orRes = hooks.allMax(withConsensus(P, readFloat(P.maxApproach), velCons));
     if (stopsOn && orRes <= vRestS)
       break;
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))
-        syncVel();
+        syncVelocityPhase(P, hooks, ctx);
     }
   }
 }
 
 /// The ESCALATION stabilization pass (stabilization mode 3, diagnostic/fallback): plain symmetric
 /// coloured sweeps, to the adaptive stop or the 256-sweep cap.
-template <class Hooks, class FoldVel, class SyncVel, class WithConsensus>
+template <class Hooks>
 inline void stabilizeEscalation(Particles& P, int nm, const Hooks& hooks, CpExec& space,
-                                const VelocitySolveContext& ctx, const float vRestS,
-                                FoldVel&& foldVel, SyncVel&& syncVel,
-                                WithConsensus&& withConsensus) {
+                                const VelocitySolveContext& ctx, const float vRestS) {
   const auto& velSched = ctx.velSched;
   const auto& invMassVel = ctx.invMassVel;
   const auto& invInertiaVel = ctx.invInertiaVel;
@@ -1359,13 +1391,13 @@ inline void stabilizeEscalation(Particles& P, int nm, const Hooks& hooks, CpExec
         Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic, P.vt0,
         P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV,
         vpkC, orphV, orphPk, nullptr, velOv);
-    foldVel();
-    const float esRes = hooks.allMax(withConsensus(readFloat(P.maxApproach), velCons));
+    foldVelocityCopies(space, P, ctx);
+    const float esRes = hooks.allMax(withConsensus(P, readFloat(P.maxApproach), velCons));
     if (stopsOn && esRes <= vRestS)
       break;
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))
-        syncVel();
+        syncVelocityPhase(P, hooks, ctx);
     }
   }
 }
@@ -1374,11 +1406,9 @@ inline void stabilizeEscalation(Particles& P, int nm, const Hooks& hooks, CpExec
 /// symmetric sweeps leave a residual above 2 g dt, the one-sided grounded pass (default), the
 /// multilevel (GraphMG) pass, the ordered or the escalation pass, each to its adaptive stop, and
 /// the final owner->ghost refresh.
-template <class Hooks, class FoldVel, class SyncVel, class WithConsensus>
+template <class Hooks>
 inline void stabilizeVelocityPhase(Particles& P, int nm, int nBodies, const Hooks& hooks,
-                                   CpExec& space, const VelocitySolveContext& ctx,
-                                   FoldVel&& foldVel, SyncVel&& syncVel,
-                                   WithConsensus&& withConsensus) {
+                                   CpExec& space, const VelocitySolveContext& ctx) {
   const auto& gMagP = ctx.gMagP;
   const auto& usePGS = ctx.usePGS;
   // STABILIZATION PASS: if the symmetric sweeps could not drain the residual (a collapsing
@@ -1391,18 +1421,16 @@ inline void stabilizeVelocityPhase(Particles& P, int nm, int nBodies, const Hook
     const int smode = P.stabilizationMode;
     if (smode != 0 && hooks.allMax(readFloat(P.maxApproach)) > vRestS) {
       if (smode == 1) {  // ONE-SIDED grounded pass (default): held-lower-side impulses
-        stabilizeOneSided(P, nm, hooks, space, ctx, vRestS, foldVel, syncVel, withConsensus);
+        stabilizeOneSided(P, nm, hooks, space, ctx, vRestS);
       } else if (smode == 2) {
-        stabilizeMultilevel(P, nm, nBodies, hooks, space, ctx, vRestS, foldVel, syncVel,
-                            withConsensus);
+        stabilizeMultilevel(P, nm, nBodies, hooks, space, ctx, vRestS);
       } else if (smode == 4) {
-        stabilizeOrdered(P, nm, nBodies, hooks, space, ctx, vRestS, foldVel, syncVel,
-                         withConsensus);
+        stabilizeOrdered(P, nm, nBodies, hooks, space, ctx, vRestS);
       } else if (smode == 3) {
-        stabilizeEscalation(P, nm, hooks, space, ctx, vRestS, foldVel, syncVel, withConsensus);
+        stabilizeEscalation(P, nm, hooks, space, ctx, vRestS);
       }
       if constexpr (Hooks::distributed)
-        syncVel();  // final refresh of the stabilization phase
+        syncVelocityPhase(P, hooks, ctx);  // final refresh of the stabilization phase
     }
   }
 }
@@ -1763,7 +1791,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // Velocity-phase copies (§4.4 step 6, §4.5): seeded once the warm start -- known impulses on
   // true masses -- has been applied (and, under MPI, published). The sweeps, the stabilization
   // passes and the multilevel cycle take the solve views and the slot overrides; the fold runs in
-  // every iteration after the sweep; every rank sync re-marks the seeds (syncVel).
+  // every iteration after the sweep; every rank sync re-marks the seeds (syncVelocityPhase).
   const bool velCopiesOn = vcs.nGroups > 0;
   // Rank-level M in the velocity phase (§13.3): the PGS path on an exchanging rank. The solve
   // views carry each slot's global k_vel (a hub copy its base's); the local fold still divides by
@@ -1791,46 +1819,15 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     invInertiaVel = P.invInertiaSolve;
     velOv = SlotOverride{vcs.slotA, vcs.slotB, P.splitSlot, kSplitOmegaVelocity};
   }
-  auto foldVel = [&] {
-    if (velCopiesOn)
-      foldCopies(space, vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak, P.maxConsensus);
-  };
   // §12 S14: a velocity phase with copies (local hub copies, or rank-level M) has not converged
   // while copies of one body disagree. Its stop votes fold in the largest consensus correction
   // since the previous vote (the local folds and the M syncs atomic-max it into P.maxConsensus),
   // through the SAME Allreduce-MAX; it is zeroed after each read. Without copies nothing is read
   // or written (np 1 without copies stays byte-identical).
   const bool velCons = velCopiesOn || velM;
-  auto withConsensus = [&](float res, bool cons) {
-    if (!cons)
-      return res;
-    const float c = readFloat(P.maxConsensus);
-    Kokkos::deep_copy(P.maxConsensus, 0.0f);
-    return std::max(res, c);
-  };
   // §12 S13 (test-only): with P.noAdaptiveStop every loop runs its cap; the votes still run.
   const bool stopsOn = !P.noAdaptiveStop;
   const float fusedOff = -1.0f;  // a fused device loop's tolerance that never stops
-  // A rank sync inside the velocity phase: orphan accounts back to balances, the raw reverse +
-  // forward, then the copies' seeds re-marked from the reconciled bases.
-  // Under rank-level M (velM) the sync itself is M (the halo's weighted apply; the bases hold
-  // their shares, so no unfold first) and the copies re-seed from their bases' shares.
-  auto syncVel = [&] {
-    if constexpr (Hooks::distributed) {
-      if (velM) {
-        hooks.syncVelocities(P);
-        if (velCopiesOn)
-          markCopySeeds(vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak,
-                        /*shareFromBase*/ true);
-        return;
-      }
-      if (velCopiesOn)
-        unfoldOrphan(vcs, pv.orphan);
-      hooks.syncVelocities(P);
-      if (velCopiesOn)
-        markCopySeeds(vcs, P.velPred, P.angVelPred, pv.orphan, pv.orphanPeak);
-    }
-  };
   const VelocitySolveContext velCtx{.velSched = velSched,
                                     .numColors = numColors,
                                     .velPermC = velPermC,
@@ -1854,10 +1851,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                     .velCons = velCons,
                                     .stopsOn = stopsOn,
                                     .fusedOff = fusedOff};
-  solveVelocityPhase(P, nc, nm, hooks, space, velCtx, foldVel, syncVel, inv, withConsensus);
+  solveVelocityPhase(P, nc, nm, hooks, space, velCtx, inv);
   Kokkos::Profiling::popRegion();
   Kokkos::Profiling::pushRegion("dem::solve::stab_fric");
-  stabilizeVelocityPhase(P, nm, nBodies, hooks, space, velCtx, foldVel, syncVel, withConsensus);
+  stabilizeVelocityPhase(P, nm, nBodies, hooks, space, velCtx);
   closeVelocityPhase(P, nm, hooks, velCtx);
   if (legacyFriction) {
     countFrictionContacts(P.contacts, nc, P.realIndices, P.planeFriction);
@@ -1877,7 +1874,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     hooks.publishPositions(P);
 
   solvePositionPhase(P, nc, nm, hooks, space, pcs, slotBase, rankM, usePGS, posUnits, numPosUnits,
-                     posSched, stopsOn, fusedOff, inv, withConsensus);
+                     posSched, stopsOn, fusedOff, inv);
   (void)space;
 }
 
