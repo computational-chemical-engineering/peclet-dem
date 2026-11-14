@@ -1687,6 +1687,24 @@ inline VelocitySolveViews openVelocityCopies(Particles& P, int slotBase, bool ve
   return VelocitySolveViews{.invMass = invMassVel, .invInertia = invInertiaVel, .ov = velOv};
 }
 
+/// Whether gravity is on (any component non-zero): it gates persistent contacts, warm-started PGS
+/// and island sleeping.
+inline bool gravityOn(const Particles& P) {
+  return P.gravity.x != 0.0f || P.gravity.y != 0.0f || P.gravity.z != 0.0f;
+}
+
+/// Island sleeping: single-GPU statics, gravity on, no external drag.
+template <class Hooks>
+inline bool islandSleepingOn(const Particles& P, bool gravity) {
+  return P.sleepingEnabled && !Hooks::distributed && gravity && !P.extForceActive &&
+         !P.extTorqueActive;
+}
+
+/// A frictional wall drives friction even when the body-body material is frictionless.
+inline bool frictionOn(const Particles& P) {
+  return P.frictionDynamic > 0.0f || P.wallFrictionMax > 0.0f;
+}
+
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
 /// comment). Runs between the narrow phase and finalCommit; the caller owns ghost construction,
 /// broad/narrow phase and the commit.
@@ -1702,9 +1720,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   Kokkos::Profiling::pushRegion("dem::solve::prep");
   const int nmVisible = hooks.visibleManifolds(nm);
 
-  // A frictional wall drives friction even when the body-body material is frictionless.
-  const bool friction = (P.frictionDynamic > 0.0f || P.wallFrictionMax > 0.0f);
-  const bool usePersistPre = (P.gravity.x != 0.0f || P.gravity.y != 0.0f || P.gravity.z != 0.0f);
+  const bool friction = frictionOn(P);
+  const bool usePersistPre = gravityOn(P);
   // Incremental (warm-started) colouring (set_incremental_coloring, default on; single-GPU PGS
   // path). Off forces the full per-substep recolour — the pre-incremental behaviour, kept for
   // validation. The colouring decides the Gauss-Seidel sweep order, so this DOES change results.
@@ -1713,8 +1730,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // contacts are excluded from the colouring / sweeps / multilevel hierarchy (their masks were
   // filled by the caller). Empty views leave every colouring bit-identical to the sleeping-off
   // path. The caller has already swapped P.invMass to the effective (sleeper -> 0) inverse mass.
-  const bool sleepOn = P.sleepingEnabled && !Hooks::distributed && usePersistPre &&
-                       !P.extForceActive && !P.extTorqueActive;
+  const bool sleepOn = islandSleepingOn<Hooks>(P, usePersistPre);
   const Kokkos::View<const unsigned char*, CpMem> mSleep =
       sleepOn ? Kokkos::View<const unsigned char*, CpMem>(P.manifoldSleep)
               : Kokkos::View<const unsigned char*, CpMem>();
@@ -1802,12 +1818,11 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // it gets e = 0 (the impulse still cancels the approach — pure inelastic support), so the
   // velocity solve carries a pile's static weight through impulse chains and a settling column
   // actually cools; material/wall restitution stays reserved for newly formed contacts.
-  const bool usePersist = (P.gravity.x != 0.0f || P.gravity.y != 0.0f || P.gravity.z != 0.0f);
   // Warm-started PGS velocity solve (|g| > 0): gather each manifold's previous-substep converged
   // push impulse by pair key, record the pre-solve approach (restitution bias), and apply the warm
   // impulses up front -- a static pile's force network is re-established in ~one sweep. g = 0
   // keeps the original one-shot colored-GS path bit-identical (HCS, growth packing).
-  const bool usePGS = usePersist && P.velocityUseGS;
+  const bool usePGS = usePersistPre && P.velocityUseGS;
   // Rank-level X (§1.4, WO-6): the g = 0 one-shot on a rank that exchanges, when the rank graph
   // has more than one colour (with one colour no two ranks are adjacent, so no body is split
   // across ranks and every contact fires).
@@ -1819,8 +1834,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
 #endif
   const float gMagP = Kokkos::sqrt(P.gravity.x * P.gravity.x + P.gravity.y * P.gravity.y +
                                    P.gravity.z * P.gravity.z);
-  const F3 gHat =
-      usePersist ? F3{P.gravity.x / gMagP, P.gravity.y / gMagP, P.gravity.z / gMagP} : F3{0, 0, 0};
+  const F3 gHat = usePersistPre ? F3{P.gravity.x / gMagP, P.gravity.y / gMagP, P.gravity.z / gMagP}
+                                : F3{0, 0, 0};
   // Event-level (Poisson) restitution: per-pair banked compression budget, released as a
   // budget-capped separation-velocity target during unloading (see updateRestitutionBank /
   // PGSManifoldSweep). Off (empty views) the sweeps run the per-substep Newton path verbatim.
