@@ -168,9 +168,34 @@ KOKKOS_INLINE_FUNCTION bool unitAsleep(const PosUnits& units,
   return true;
 }
 
+/// The position-unit edge source of colorEdges: a unit's edge is its leader contact's raw
+/// (bodyA, bodyB), or a hub copy slot through `ov`, keyed colorKey(leader). Inactive: all asleep.
+struct UnitEdges {
+  Kokkos::View<const ContactC*, CpMem> contacts;
+  Kokkos::View<const unsigned char*, CpMem> sleepMask;
+  PosUnits units;
+  SlotOverride ov;
+  bool sleepOn;
+  static constexpr ColorLabels labels = {
+      "peclet::dem::pcolor_init_bodies",  "peclet::dem::pcolor_init_contacts",
+      "peclet::dem::pcolor_reset_winner", "peclet::dem::pcolor_contend",
+      "peclet::dem::pcolor_commit",       "peclet::dem::pcolor_max",
+      "peclet::dem::pcolor_leftover"};
+  KOKKOS_INLINE_FUNCTION int initialColor(int idx) const {
+    return (sleepOn && unitAsleep(units, sleepMask, idx)) ? -2 : -1;
+  }
+  KOKKOS_INLINE_FUNCTION ColorEdge edge(int idx) const {
+    const int lead = units.leader(idx);  // a unit's edge: its leader's bodies and key
+    const ContactC c = contacts(lead);
+    const int ea = ov.slotA(idx, c.bodyA);
+    const int eb = (c.bodyB >= 0) ? ov.slotB(idx, c.bodyB) : -1;  // <0: wall/boundary
+    return {ea, eb, colorKey(lead)};                              // hashed priority (see colorKey)
+  }
+};
+
 /// Greedy graph-colour the contacts (raw bodyA/bodyB): no two contacts sharing a body get the same
-/// colour. Round-based max-index arbitration, identical machinery to colorManifolds but over
-/// the per-contact graph with direct (non-realIdx) body slots; every contact is active. `numBodies`
+/// colour. colorEdges over UnitEdges: the machinery of colorManifolds, but over the per-contact
+/// graph with direct (non-realIdx) body slots; every awake contact is active. `numBodies`
 /// is the body-slot count (numParticles, incl. periodic ghosts, which the position solve corrects
 /// independently). Returns the number of colours used.
 ///
@@ -183,107 +208,9 @@ inline int colorContacts(Kokkos::View<const ContactC*, CpMem> contacts, int numC
                          Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover,
                          Kokkos::View<const unsigned char*, CpMem> sleepMask = {},
                          PosUnits units = {}, SlotOverride ov = {}, int vertexSpan = 0) {
-  leftover = 0;
-  CpExec space;
-  if (numContacts <= 0 || numBodies <= 0)
-    return 0;
-  // Colouring vertices: the raw contact body slot, or a hub copy slot through `ov` (§4.4);
-  // vertexSpan covers the copy slots (0 = numBodies, the no-copy span).
-  const int nV = vertexSpan > 0 ? vertexSpan : numBodies;
-  const bool sleepOn = sleepMask.extent(0) > 0;
-  Kokkos::parallel_for(
-      "peclet::dem::pcolor_init_bodies", Kokkos::RangePolicy<CpExec>(space, 0, nV),
-      KOKKOS_LAMBDA(int i) { bodyMask(i) = 0; });
-  Kokkos::parallel_for(
-      "peclet::dem::pcolor_init_contacts", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-      KOKKOS_LAMBDA(int idx) {
-        cColor(idx) = (sleepOn && unitAsleep(units, sleepMask, idx)) ? -2 : -1;
-      });
-
-  int remaining = 1, prevRemaining = -1;
-  // Round cap (docs/contact_solve_framework.md §12 S7): the vertices coloured are the UNITS
-  // (numContacts here), so the bound is their count + 2. Each round commits at least the
-  // globally highest-key uncoloured unit (colorKey(leader) is unique: the leader index is its
-  // low word), so the loop terminates within numContacts rounds; O(log n) in practice.
-  const int maxRounds = numContacts + 2;
-  for (int round = 0; round < maxRounds && remaining > 0; ++round) {
-    Kokkos::parallel_for(
-        "peclet::dem::pcolor_reset_winner", Kokkos::RangePolicy<CpExec>(space, 0, nV),
-        KOKKOS_LAMBDA(int i) { bodyWinner(i) = -1; });
-    Kokkos::parallel_for(
-        "peclet::dem::pcolor_contend", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-        KOKKOS_LAMBDA(int idx) {
-          if (cColor(idx) != -1)
-            return;
-          const int lead = units.leader(idx);  // a unit's edge: its leader's bodies and key
-          const ContactC c = contacts(lead);
-          const long long key = colorKey(lead);  // hashed priority (see solver_velocity.hpp)
-          Kokkos::atomic_max(&bodyWinner(ov.slotA(idx, c.bodyA)), key);
-          if (c.bodyB >= 0)
-            Kokkos::atomic_max(&bodyWinner(ov.slotB(idx, c.bodyB)), key);
-        });
-    int rem = 0;
-    Kokkos::parallel_reduce(
-        "peclet::dem::pcolor_commit", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-        KOKKOS_LAMBDA(int idx, int& acc) {
-          if (cColor(idx) != -1)
-            return;
-          const int lead = units.leader(idx);
-          const ContactC c = contacts(lead);
-          const int ea = ov.slotA(idx, c.bodyA);
-          const int eb = (c.bodyB >= 0) ? ov.slotB(idx, c.bodyB) : -1;  // <0: wall/boundary
-          const long long key = colorKey(lead);
-          if (bodyWinner(ea) != key || (eb >= 0 && bodyWinner(eb) != key)) {
-            acc += 1;
-            return;
-          }
-          std::uint64_t forbidden = bodyMask(ea);
-          if (eb >= 0)
-            forbidden |= bodyMask(eb);
-          int col = 0;  // lowest free colour of 64; never forced (§4.2 item 1)
-          while (col < kColorPalette && ((forbidden >> col) & 1))
-            ++col;
-#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 3
-          if (col > 62)
-            col = 62;  // G13 mutant 3: the old forced colour 62
-#endif
-          if (col == kColorPalette) {
-            cColor(idx) = kColorUncolourable;  // no free colour: neither coloured nor remaining
-            return;
-          }
-          cColor(idx) = col;
-          const std::uint64_t bit = std::uint64_t(1) << col;
-          bodyMask(ea) |= bit;
-          if (eb >= 0)
-            bodyMask(eb) |= bit;
-        },
-        rem);
-    space.fence();
-    // Stall break: a safety bound only -- every round commits (or marks -3) the highest-key
-    // contender, so rem strictly decreases (§12 S7). Anything left -1 is a leftover.
-    if (rem == prevRemaining)
-      break;
-    prevRemaining = rem;
-    remaining = rem;
-  }
-
-  int maxc = -1;
-  Kokkos::parallel_reduce(
-      "peclet::dem::pcolor_max", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-      KOKKOS_LAMBDA(int idx, int& mx) {
-        if (cColor(idx) > mx)
-          mx = cColor(idx);
-      },
-      Kokkos::Max<int>(maxc));
-  Kokkos::parallel_reduce(
-      "peclet::dem::pcolor_leftover", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-      KOKKOS_LAMBDA(int idx, int& acc) {
-        if (cColor(idx) == -1 || cColor(idx) == kColorUncolourable)
-          acc += 1;
-      },
-      leftover);
-  space.fence();
-  return maxc + 1;
+  const UnitEdges edges{contacts, sleepMask, units, ov, sleepMask.extent(0) > 0};
+  return colorEdges(edges, numContacts, numBodies, vertexSpan, cColor, bodyWinner, bodyMask,
+                    leftover);
 }
 
 /// Incremental (warm-started) contact colouring for the single-GPU PGS position solve. Twin of

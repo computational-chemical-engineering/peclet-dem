@@ -312,12 +312,40 @@ inline void applyVelocityDeltasAveraged(int n, V3 velPred, V3 angVelPred, V3 del
 // construction. count==1 (a binary collision) is identical to the Jacobi path; the difference is
 // confined to dense clusters.
 
-/// Greedy graph-colour the manifolds: no two manifolds sharing a real body get the same colour.
-/// Round-based max-index (Jones–Plassmann) arbitration, no adjacency lists: each round every still-
-/// uncoloured manifold contends for its endpoint bodies via atomicMax(bodyWinner, idx); a manifold
-/// that wins BOTH endpoints has no uncoloured conflict this round, so it commits the lowest colour
-/// free at either endpoint (a per-body bitmask) — and, as the unique winner of those bodies,
-/// updates the masks race-free. Inactive manifolds (empty, or the periodic-dedup duplicate
+/// The manifold edge source of colorEdges: vertex realIdx(body) or its hub copy slot through `ov`,
+/// key colorKey(manifold index). Inactive: empty, both-asleep, or the periodic-dedup twin.
+struct ManifoldEdges {
+  Kokkos::View<const ManifoldC*, CpMem> manifolds;
+  Kokkos::View<const int*, CpMem> realIdx;
+  Kokkos::View<const unsigned char*, CpMem> sleepMask;
+  SlotOverride ov;
+  bool sleepOn;
+  bool dedupTwins;
+  static constexpr ColorLabels labels = {
+      "peclet::dem::color_init_bodies",  "peclet::dem::color_init_manifolds",
+      "peclet::dem::color_reset_winner", "peclet::dem::color_contend",
+      "peclet::dem::color_commit",       "peclet::dem::color_max",
+      "peclet::dem::color_leftover"};
+  KOKKOS_INLINE_FUNCTION int initialColor(int idx) const {
+    const ManifoldC m = manifolds(idx);
+    if (m.num_points <= 0 || (sleepOn && sleepMask(idx)))
+      return -2;  // inactive or a frozen (both-asleep) island manifold
+    // Periodic twin dedup (§4.2 item 2): single-rank only; under MPI ownership already
+    // excludes the non-owned twin (dedupTwins = !Hooks::distributed).
+    if (dedupTwins && m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB))
+      return -2;  // periodic dedup: the (realA<=realB) twin carries this contact
+    return -1;
+  }
+  KOKKOS_INLINE_FUNCTION ColorEdge edge(int idx) const {
+    const ManifoldC m = manifolds(idx);
+    const int ea = ov.slotA(idx, realIdx(m.bodyA));
+    const int eb = (m.bodyB >= 0) ? ov.slotB(idx, realIdx(m.bodyB)) : -1;
+    return {ea, eb, colorKey(idx)};
+  }
+};
+
+/// Greedy graph-colour the manifolds: no two manifolds sharing a real body get the same colour
+/// (colorEdges over ManifoldEdges). Inactive manifolds (empty, or the periodic-dedup duplicate
 /// realA>realB) are tagged -2 and skipped by the solve. Runs once per step; the colouring is reused
 /// across the velocity sweeps. Returns the number of colours used (0 if no active manifolds).
 inline int colorManifolds(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
@@ -327,116 +355,9 @@ inline int colorManifolds(Kokkos::View<const ManifoldC*, CpMem> manifolds, int n
                           Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover,
                           Kokkos::View<const unsigned char*, CpMem> sleepMask = {},
                           SlotOverride ov = {}, bool dedupTwins = true, int vertexSpan = 0) {
-  leftover = 0;
-  CpExec space;
-  if (numManifolds <= 0 || numReal <= 0)
-    return 0;
-  // Colouring vertices: realIdx(body), or a hub copy slot through `ov` (§4.4); vertexSpan covers
-  // the copy slots (0 = numReal, the no-copy span).
-  const int nV = vertexSpan > 0 ? vertexSpan : numReal;
-  const bool sleepOn = sleepMask.extent(0) > 0;
-  Kokkos::parallel_for(
-      "peclet::dem::color_init_bodies", Kokkos::RangePolicy<CpExec>(space, 0, nV),
-      KOKKOS_LAMBDA(int i) { bodyMask(i) = 0; });
-  // -2 inactive (skip forever), -1 uncoloured, >=0 committed colour.
-  Kokkos::parallel_for(
-      "peclet::dem::color_init_manifolds", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-      KOKKOS_LAMBDA(int idx) {
-        const ManifoldC m = manifolds(idx);
-        if (m.num_points <= 0 || (sleepOn && sleepMask(idx))) {
-          mColor(idx) = -2;  // inactive or a frozen (both-asleep) island manifold
-          return;
-        }
-        // Periodic twin dedup (§4.2 item 2): single-rank only; under MPI ownership already
-        // excludes the non-owned twin (dedupTwins = !Hooks::distributed).
-        if (dedupTwins && m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB)) {
-          mColor(idx) = -2;  // periodic dedup: the (realA<=realB) twin carries this contact
-          return;
-        }
-        mColor(idx) = -1;
-      });
-
-  int remaining = 1, prevRemaining = -1;
-  // Round cap (docs/contact_solve_framework.md §12 S7): the vertices coloured are MANIFOLDS, so
-  // the bound is their count + 2. Every round commits at least the globally highest-key
-  // uncoloured manifold (keys are unique: colorKey carries the index in its low word), so the
-  // loop terminates within numManifolds rounds; O(log n) in practice.
-  const int maxRounds = numManifolds + 2;
-  for (int round = 0; round < maxRounds && remaining > 0; ++round) {
-    Kokkos::parallel_for(
-        "peclet::dem::color_reset_winner", Kokkos::RangePolicy<CpExec>(space, 0, nV),
-        KOKKOS_LAMBDA(int i) { bodyWinner(i) = -1; });
-    Kokkos::parallel_for(
-        "peclet::dem::color_contend", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-        KOKKOS_LAMBDA(int idx) {
-          if (mColor(idx) != -1)
-            return;
-          const ManifoldC m = manifolds(idx);
-          const long long key = colorKey(idx);
-          Kokkos::atomic_max(&bodyWinner(ov.slotA(idx, realIdx(m.bodyA))), key);
-          if (m.bodyB >= 0)
-            Kokkos::atomic_max(&bodyWinner(ov.slotB(idx, realIdx(m.bodyB))), key);
-        });
-    int rem = 0;
-    Kokkos::parallel_reduce(
-        "peclet::dem::color_commit", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-        KOKKOS_LAMBDA(int idx, int& acc) {
-          if (mColor(idx) != -1)
-            return;
-          const ManifoldC m = manifolds(idx);
-          const int ea = ov.slotA(idx, realIdx(m.bodyA));
-          const int eb = (m.bodyB >= 0) ? ov.slotB(idx, realIdx(m.bodyB)) : -1;
-          // Winner iff it holds BOTH its endpoints -> no uncoloured conflict, sole writer of ea/eb.
-          const long long key = colorKey(idx);
-          if (bodyWinner(ea) != key || (eb >= 0 && bodyWinner(eb) != key)) {
-            acc += 1;
-            return;
-          }
-          std::uint64_t forbidden = bodyMask(ea);
-          if (eb >= 0)
-            forbidden |= bodyMask(eb);
-          int c = 0;  // lowest free colour of 64; never forced (§4.2 item 1)
-          while (c < kColorPalette && ((forbidden >> c) & 1))
-            ++c;
-#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 3
-          if (c > 62)
-            c = 62;  // G13 mutant 3: the old forced colour 62
-#endif
-          if (c == kColorPalette) {
-            mColor(idx) = kColorUncolourable;  // no free colour: neither coloured nor remaining
-            return;
-          }
-          mColor(idx) = c;
-          const std::uint64_t bit = std::uint64_t(1) << c;
-          bodyMask(ea) |= bit;
-          if (eb >= 0)
-            bodyMask(eb) |= bit;
-        },
-        rem);
-    space.fence();
-    if (rem == prevRemaining)
-      break;  // safety bound only: every round commits (or marks -3) the highest-key contender
-    prevRemaining = rem;
-    remaining = rem;
-  }
-
-  int maxc = -1;
-  Kokkos::parallel_reduce(
-      "peclet::dem::color_max", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-      KOKKOS_LAMBDA(int idx, int& mx) {
-        if (mColor(idx) > mx)
-          mx = mColor(idx);
-      },
-      Kokkos::Max<int>(maxc));
-  Kokkos::parallel_reduce(
-      "peclet::dem::color_leftover", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-      KOKKOS_LAMBDA(int idx, int& acc) {
-        if (mColor(idx) == -1 || mColor(idx) == kColorUncolourable)
-          acc += 1;
-      },
-      leftover);
-  space.fence();
-  return maxc + 1;
+  const ManifoldEdges edges{manifolds, realIdx, sleepMask, ov, sleepMask.extent(0) > 0, dedupTwins};
+  return colorEdges(edges, numManifolds, numReal, vertexSpan, mColor, bodyWinner, bodyMask,
+                    leftover);
 }
 
 /// Incremental (warm-started) manifold colouring for the single-GPU PGS path. Carry each surviving
