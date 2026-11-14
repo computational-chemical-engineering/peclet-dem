@@ -1623,6 +1623,34 @@ inline void countRankLevelActivity(Particles& P, int nm, bool usePersistPre,
                  P.aPos);
 }
 
+/// One coloured phase's sweep plan: owns the dense-bucket offsets and the fused context that its
+/// ColorSchedule points at, so it is built in place and never copied or moved.
+struct SweepPlan {
+  std::vector<int> offs;
+  FusedSweepCtx fused{};
+  ColorSchedule sched{};
+  SweepPlan() = default;
+  SweepPlan(const SweepPlan&) = delete;
+  SweepPlan& operator=(const SweepPlan&) = delete;
+};
+
+/// Dense colour buckets for one phase's PGS sweeps (bit-identical: colour classes are
+/// body-disjoint) over its n items, the fused context where wanted, and the schedule over both.
+inline void planColorSweeps(SweepPlan& plan, CpExec& space, Particles& P,
+                            Kokkos::View<int*, CpMem> color, int n, int numColors,
+                            Kokkos::View<int*, CpMem> perm, Kokkos::View<int*, CpMem> offsDev,
+                            bool wantFused) {
+  const bool dense = P.velocityUseGS && n > 0 && numColors > 0;
+  if (dense)
+    buildColorBuckets(Kokkos::View<const int*, CpMem>(color), n, numColors, perm, P.bucketCursor,
+                      plan.offs);
+  const Kokkos::View<const int*, CpMem> permC(perm);
+  plan.fused = (dense && wantFused) ? demMakeFusedCtx(space, plan.offs, offsDev, P.fusedBar)
+                                    : FusedSweepCtx{};
+  plan.sched = ColorSchedule{color, numColors, permC, dense ? &plan.offs : nullptr,
+                             plan.fused.maxBucket > 0 ? &plan.fused : nullptr};
+}
+
 /// One full velocity + position contact solve over the already-built contacts/manifolds (see file
 /// comment). Runs between the narrow phase and finalCommit; the caller owns ghost construction,
 /// broad/narrow phase and the commit.
@@ -1690,25 +1718,16 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   if (P.velocityUseGS)
     numColors = colorVelocityPhase<Hooks>(P, nm, nBodies, usePersistPre, incrColorOff, mSleep, vcs,
                                           slotBase, inv);
-  // Dense colour buckets for the PGS sweeps (bit-identical: colour classes are body-disjoint).
-  std::vector<int> velOffs;
-  const bool velBuckets = P.velocityUseGS && nm > 0 && numColors > 0;
-  if (velBuckets)
-    buildColorBuckets(Kokkos::View<const int*, CpMem>(P.manifoldColor), nm, numColors, P.velPerm,
-                      P.bucketCursor, velOffs);
-  const Kokkos::View<const int*, CpMem> velPermC(P.velPerm);
-  const std::vector<int>* velOffsP = velBuckets ? &velOffs : nullptr;
   // Fused colour sweeps (CUDA): the whole PGS sweep — and where eligible the whole adaptive
   // iteration loop — as ONE kernel iterating device-side (see solver_fused.hpp); same colour
   // ordering, bit-identical. Default policy ("auto"): on exactly where CUDA-graph replay is
   // unavailable — the distributed step, or set_cuda_graphs(False); set_fused_sweeps("on"/"off")
   // forces either way.
   const bool wantFused = demFusedWanted(!Hooks::distributed && P.cudaGraphs, P.fusedSweeps);
-  const FusedSweepCtx velFused = (velBuckets && wantFused)
-                                     ? demMakeFusedCtx(space, velOffs, P.velOffsDev, P.fusedBar)
-                                     : FusedSweepCtx{};
-  const FusedSweepCtx* velFusedP = velFused.maxBucket > 0 ? &velFused : nullptr;
-  const ColorSchedule velSched{P.manifoldColor, numColors, velPermC, velOffsP, velFusedP};
+  // Dense colour buckets + fused sweep for the velocity sweeps.
+  SweepPlan velPlan;
+  planColorSweeps(velPlan, space, P, P.manifoldColor, nm, numColors, P.velPerm, P.velOffsDev,
+                  wantFused);
   // Position colouring, moved here from after the velocity phase (docs/contact_solve_framework.md
   // §4.2 item 3): both phases are coloured at the top of the solve. Its inputs (contacts, sleep
   // masks, the previous substep's ledger) do not change in between, so the move is byte-identical.
@@ -1739,18 +1758,9 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // Dense colour buckets + fused sweep for the position projection (same precedent as the
   // velocity sweeps: colour classes are body-disjoint => bit-identical). The buckets list unit
   // indices.
-  std::vector<int> posOffs;
-  const bool posBuckets = P.velocityUseGS && numPosUnits > 0 && numPosColors > 0;
-  if (posBuckets)
-    buildColorBuckets(Kokkos::View<const int*, CpMem>(P.unitColor), numPosUnits, numPosColors,
-                      P.posPerm, P.bucketCursor, posOffs);
-  const Kokkos::View<const int*, CpMem> posPermC(P.posPerm);
-  const std::vector<int>* posOffsP = posBuckets ? &posOffs : nullptr;
-  const FusedSweepCtx posFused = (posBuckets && wantFused)
-                                     ? demMakeFusedCtx(space, posOffs, P.posOffsDev, P.fusedBar)
-                                     : FusedSweepCtx{};
-  const FusedSweepCtx* posFusedP = posFused.maxBucket > 0 ? &posFused : nullptr;
-  const ColorSchedule posSched{P.unitColor, numPosColors, posPermC, posOffsP, posFusedP};
+  SweepPlan posPlan;
+  planColorSweeps(posPlan, space, P, P.unitColor, numPosUnits, numPosColors, P.posPerm,
+                  P.posOffsDev, wantFused);
   // Persistent-contact restitution, gravity-gated (|g| = 0 leaves behaviour untouched: growth
   // packing / HCS bit-identical). A pair already in contact LAST substep is loaded, not impacting:
   // it gets e = 0 (the impulse still cancels the approach — pure inelastic support), so the
@@ -1828,10 +1838,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   // §12 S13 (test-only): with P.noAdaptiveStop every loop runs its cap; the votes still run.
   const bool stopsOn = !P.noAdaptiveStop;
   const float fusedOff = -1.0f;  // a fused device loop's tolerance that never stops
-  const VelocitySolveContext velCtx{.velSched = velSched,
+  const VelocitySolveContext velCtx{.velSched = velPlan.sched,
                                     .numColors = numColors,
-                                    .velPermC = velPermC,
-                                    .velFusedP = velFusedP,
+                                    .velPermC = velPlan.sched.perm,
+                                    .velFusedP = velPlan.sched.fused,
                                     .invMassVel = invMassVel,
                                     .invInertiaVel = invInertiaVel,
                                     .velOv = velOv,
@@ -1874,7 +1884,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     hooks.publishPositions(P);
 
   solvePositionPhase(P, nc, nm, hooks, space, pcs, slotBase, rankM, usePGS, posUnits, numPosUnits,
-                     posSched, stopsOn, fusedOff, inv);
+                     posPlan.sched, stopsOn, fusedOff, inv);
   (void)space;
 }
 
