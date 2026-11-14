@@ -1065,6 +1065,12 @@ struct PGSManifoldSweep {
     bool applyA, applyB;
   };
 
+  /// The Poisson release's budget: the pair's owed impulse, the release speed scale and the
+  /// endpoints' orphan balances.
+  struct ReleaseBudget {
+    float owed, vPeak, orphA, orphB;
+  };
+
   /// Linear velocity update of body slot `real` by the world-frame impulse `dLin`.
   KOKKOS_FORCEINLINE_FUNCTION void applyLinear(int real, F3 dLin, float invMass) const {
     velPred(real, 0) += dLin.x * invMass;
@@ -1089,6 +1095,15 @@ struct PGSManifoldSweep {
     Kokkos::atomic_max(&maxApproach(), corr);
     if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
       Kokkos::atomic_max(&maxApproachQS(), corr);
+  }
+
+  /// The pair's normal approach velocity along Nsum (arm sums TauA/TauB), growth included.
+  KOKKOS_FORCEINLINE_FUNCTION static float normalVelocity(const PairVelocity& v, F3 Nsum, F3 TauA,
+                                                          F3 TauB, F3 vGrowth) {
+    float vn = dot3(v.vA, Nsum) + dot3(v.wA, TauA) + dot3(v.vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
+               dot3(v.wB, TauB);
+    vn += dot3(vGrowth, Nsum);
+    return vn;
   }
 
   /// Row, part 1: the manifold, its endpoints' slots, mass data and velocities, the averaged
@@ -1157,14 +1172,11 @@ struct PGSManifoldSweep {
     const float invMassA = r.invMassA, invMassB = r.invMassB;
     const F3 invIA = r.invIA, invIB = r.invIB;
     const F4 qA = r.qA, qB = r.qB;
-    const F3 vA = r.vel.vA, wA = r.vel.wA, vB = r.vel.vB, wB = r.vel.wB;
     float restitution = r.restitution;
     const F3 Nsum = r.Nsum, TauA = r.TauA, TauB = r.TauB, rAavg = r.rAavg, rBavg = r.rBavg;
     const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
     const F3 vGrowth = scale3(diffCenters, growthRate);
-    float vn =
-        dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) + dot3(wB, TauB);
-    vn += dot3(vGrowth, Nsum);
+    const float vn = normalVelocity(r.vel, Nsum, TauA, TauB, vGrowth);
     const float alignment = dot3(Nsum, diffCenters);
     const float sgn = (alignment > 0.0f) ? 1.0f : -1.0f;
     const float Nsq = dot3(Nsum, Nsum);
@@ -1196,6 +1208,89 @@ struct PGSManifoldSweep {
     r.restitution = restitution;
   }
 
+  /// One release increment: the budget-capped push toward the event's separation-velocity
+  /// target, drawing orphan balance into the pair bank when its own budget rails.
+  KOKKOS_FORCEINLINE_FUNCTION void releaseIncrement(int idx, const Row& r, const ReleaseBudget& b,
+                                                    float vtil3) const {
+    const int idB = r.idB, realA = r.realA, realB = r.realB;
+    const float invMassA = r.invMassA, invMassB = r.invMassB;
+    const F3 invIA = r.invIA, invIB = r.invIB;
+    const F4 qA = r.qA, qB = r.qB;
+    const F3 Nsum = r.Nsum, TauA = r.TauA, TauB = r.TauB;
+    const float eMat = r.eMat, lenN = r.lenN, sgn = r.sgn, wTotal = r.wTotal;
+    const float vPeak = b.vPeak, orphA = b.orphA, orphB = b.orphB;
+    float owed = b.owed;
+    // Symmetric release: both endpoints are pushed. (A one-sided variant that held a
+    // grounded lower side was measured WORSE on the 25k Dosta impact — +0.60 vs +0.88
+    // rebound — because the light partner's downward reaction is what re-compresses and
+    // re-releases the layers below; it was retired with the env A/B in 1.0.0.)
+    const bool relA = true, relB = (idB >= 0);
+    const float wRel = wTotal;
+    if (wRel > 0.0f) {
+      // Separation-velocity target: the event-level rebound speed e x vPeak. The budget is
+      // enforced by the accumulator clamp alone — folding it into the velocity target
+      // (owed * wRel) prematurely stalls a one-sided release against a heavy impactor
+      // (owed/m_ball ~ cm/s) with most of the budget unspent. Physical velocity -> vtil
+      // units is x lenN.
+      const float vTphys = eMat * vPeak;
+      const float targetR = -vTphys * lenN;
+      const float dpR = (vtil3 - targetR) / wRel;
+      float cap = owed / lenN;  // physical budget in lambda units
+      const float rOld = restRel(idx);
+      float rNew = rOld + dpR;
+      if (rNew < 0.0f)
+        rNew = 0.0f;
+      // Own budget railed with orphan balance at the endpoints: draw the shortfall from the
+      // body accounts INTO the pair bank (heavier-first order is irrelevant; drained in
+      // sequence). The drawn amount is spent by this very increment, so the post-solve
+      // accounting's owed -= released cancels it exactly.
+      if (rNew > cap && (orphA > 0.0f || orphB > 0.0f)) {
+        const float draw = drawOrphans(realA, realB, (rNew - cap) * lenN, orphA, orphB);
+        if (draw > 0.0f) {
+          owed += draw;
+          restBank(idx) = owed;
+          cap = owed / lenN;
+        }
+      }
+      if (rNew > cap)
+        rNew = cap;
+      const float dR = rNew - rOld;
+      if (dR != 0.0f) {
+        restRel(idx) = rNew;
+        recordCorrection(idx, lenN, Kokkos::fabs(dR) * wRel / lenN);
+        const float lambdaR = -sgn * dR;
+        const F3 JlinR = scale3(Nsum, lambdaR);
+        if (relA) {
+          applyLinear(realA, JlinR, invMassA);
+          applyAngular(realA, scale3(TauA, lambdaR), invIA, qA);
+        }
+        if (relB) {
+          applyLinear(realB, F3{-JlinR.x, -JlinR.y, -JlinR.z}, invMassB);
+          applyAngular(realB, scale3(TauB, lambdaR), invIB, qB);
+        }
+      }
+    }
+  }
+
+  /// Draw up to `need` from the endpoints' orphan balances (A first, then B); returns the amount
+  /// drawn.
+  KOKKOS_FORCEINLINE_FUNCTION float drawOrphans(int realA, int realB, float need, float orphA,
+                                                float orphB) const {
+    float draw = 0.0f;
+    if (orphA > 0.0f) {
+      const float d = Kokkos::fmin(need, orphA);
+      restOrphan(realA) = orphA - d;
+      need -= d;
+      draw += d;
+    }
+    if (need > 0.0f && orphB > 0.0f) {
+      const float d = Kokkos::fmin(need, orphB);
+      restOrphan(realB) = orphB - d;
+      draw += d;
+    }
+    return draw;
+  }
+
   KOKKOS_FUNCTION void solveOne(int idx) const {
     using detail::genInvMass;
     using detail::ld3;
@@ -1214,6 +1309,8 @@ struct PGSManifoldSweep {
       const float invMassA = r.invMassA, invMassB = r.invMassB;
       const F3 invIA = r.invIA, invIB = r.invIB;
       const F4 qA = r.qA, qB = r.qB;
+      // eMat is unused here since A3 (the release increment reads r.eMat); removing this unpack
+      // changes GCC's FMA pairing on contracting host builds (code-health WO-14), so it stays.
       const float invN = r.invN, eMat = r.eMat;
       const F3 Nsum = r.Nsum, TauA = r.TauA, TauB = r.TauB, rAavg = r.rAavg, rBavg = r.rBavg;
       const float lenN = r.lenN;
@@ -1312,68 +1409,9 @@ struct PGSManifoldSweep {
                       dot3(wB3, TauB);
           vn3 += dot3(vGrowth, Nsum);
           const float vtil3 = sgn * vn3;
-          // Symmetric release: both endpoints are pushed. (A one-sided variant that held a
-          // grounded lower side was measured WORSE on the 25k Dosta impact — +0.60 vs +0.88
-          // rebound — because the light partner's downward reaction is what re-compresses and
-          // re-releases the layers below; it was retired with the env A/B in 1.0.0.)
-          const bool relA = true, relB = (idB >= 0);
-          const float wRel = wTotal;
-          if (wRel > 0.0f) {
-            // Separation-velocity target: the event-level rebound speed e x vPeak. The budget is
-            // enforced by the accumulator clamp alone — folding it into the velocity target
-            // (owed * wRel) prematurely stalls a one-sided release against a heavy impactor
-            // (owed/m_ball ~ cm/s) with most of the budget unspent. Physical velocity -> vtil
-            // units is x lenN.
-            const float vTphys = eMat * vPeak;
-            const float targetR = -vTphys * lenN;
-            const float dpR = (vtil3 - targetR) / wRel;
-            float cap = owed / lenN;  // physical budget in lambda units
-            const float rOld = restRel(idx);
-            float rNew = rOld + dpR;
-            if (rNew < 0.0f)
-              rNew = 0.0f;
-            // Own budget railed with orphan balance at the endpoints: draw the shortfall from the
-            // body accounts INTO the pair bank (heavier-first order is irrelevant; drained in
-            // sequence). The drawn amount is spent by this very increment, so the post-solve
-            // accounting's owed -= released cancels it exactly.
-            if (rNew > cap && (orphA > 0.0f || orphB > 0.0f)) {
-              float need = (rNew - cap) * lenN;
-              float draw = 0.0f;
-              if (orphA > 0.0f) {
-                const float d = Kokkos::fmin(need, orphA);
-                restOrphan(realA) = orphA - d;
-                need -= d;
-                draw += d;
-              }
-              if (need > 0.0f && orphB > 0.0f) {
-                const float d = Kokkos::fmin(need, orphB);
-                restOrphan(realB) = orphB - d;
-                draw += d;
-              }
-              if (draw > 0.0f) {
-                owed += draw;
-                restBank(idx) = owed;
-                cap = owed / lenN;
-              }
-            }
-            if (rNew > cap)
-              rNew = cap;
-            const float dR = rNew - rOld;
-            if (dR != 0.0f) {
-              restRel(idx) = rNew;
-              recordCorrection(idx, lenN, Kokkos::fabs(dR) * wRel / lenN);
-              const float lambdaR = -sgn * dR;
-              const F3 JlinR = scale3(Nsum, lambdaR);
-              if (relA) {
-                applyLinear(realA, JlinR, invMassA);
-                applyAngular(realA, scale3(TauA, lambdaR), invIA, qA);
-              }
-              if (relB) {
-                applyLinear(realB, F3{-JlinR.x, -JlinR.y, -JlinR.z}, invMassB);
-                applyAngular(realB, scale3(TauB, lambdaR), invIB, qB);
-              }
-            }
-          }
+          releaseIncrement(
+              idx, r, ReleaseBudget{.owed = owed, .vPeak = vPeak, .orphA = orphA, .orphB = orphB},
+              vtil3);
         }
       }
 
