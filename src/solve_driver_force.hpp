@@ -179,12 +179,23 @@ struct HertzMindlinLaw {
                                P.frictionDynamic,
                                P.hertzE,
                                P.hertzNu};
-      hertzWallForces(Kokkos::View<const int*, CpMem>(P.hertzWallCand), P.hertzNumWallCand, P.walls,
-                      P.wallGrid, P.pos, P.vel, P.angVel, P.rad, P.invMass, mat, dt, P.hertzXiWall,
-                      Particles::kHertzMaxWalls, P.deltaVel, P.deltaAngVel,
-                      Kokkos::View<const float* [4], CpMem>(P.quat),
-                      Kokkos::View<const float*, CpMem>(P.scale), P.shapeId, P.shapes, P.shell,
-                      P.globalScale, P.hertzContactRadiusFrac, hasShapes, P.hertzSnWall);
+      const HertzWallState wall{.walls = P.walls,
+                                .wallGrid = P.wallGrid,
+                                .xiWall = P.hertzXiWall,
+                                .maxWalls = Particles::kHertzMaxWalls,
+                                .snWall = P.hertzSnWall};
+      const HertzBodies bodies{
+          .pos = P.pos, .vel = P.vel, .angVel = P.angVel, .rad = P.rad, .invMass = P.invMass};
+      const HertzShapes shp{.quat = Kokkos::View<const float* [4], CpMem>(P.quat),
+                            .scale = Kokkos::View<const float*, CpMem>(P.scale),
+                            .shapeId = P.shapeId,
+                            .shapes = P.shapes,
+                            .shell = P.shell,
+                            .globalScale = P.globalScale,
+                            .contactRadiusFrac = P.hertzContactRadiusFrac,
+                            .hasShapes = hasShapes};
+      hertzWallForces(Kokkos::View<const int*, CpMem>(P.hertzWallCand), P.hertzNumWallCand, wall,
+                      bodies, mat, dt, P.deltaVel, P.deltaAngVel, shp);
     }
   }
   /// Engine-support restrictions of this law (probed once per call).

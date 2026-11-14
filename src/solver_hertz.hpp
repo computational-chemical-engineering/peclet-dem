@@ -48,6 +48,39 @@ struct HertzMaterials {
   Kokkos::View<const float*, CpMem> hertzNu;
 };
 
+/// The body state a Hertz force launcher reads.
+struct HertzBodies {
+  Kokkos::View<const float* [3], CpMem> pos;
+  Kokkos::View<const float* [3], CpMem> vel;
+  Kokkos::View<const float* [3], CpMem> angVel;
+  Kokkos::View<const float*, CpMem> rad;
+  Kokkos::View<const float*, CpMem> invMass;
+};
+
+/// What a non-spherical Hertz contact reads: orientation, scale, shape id, the shape registry and
+/// its shell points, the global scale and the shell spring's contact-radius fraction. The defaults
+/// are a sphere-only run (hasShapes false).
+struct HertzShapes {
+  Kokkos::View<const float* [4], CpMem> quat = {};
+  Kokkos::View<const float*, CpMem> scale = {};
+  ScalarI shapeId = {};
+  Kokkos::View<const ShapeDesc*, CpMem> shapes = {};
+  ShellView shell = {};
+  float globalScale = 1.0f;
+  float contactRadiusFrac = 0.5f;
+  bool hasShapes = false;
+};
+
+/// The SDF walls and their per-(particle, wall) contact history at slot i * maxWalls + wall: the
+/// Mindlin tangential spring xiWall and the shell's normal stiffness snWall (empty = untracked).
+struct HertzWallState {
+  Kokkos::View<const WallSdf*, CpMem> walls;
+  GridView wallGrid;
+  Kokkos::View<float* [3], CpMem> xiWall;
+  int maxWalls;
+  Kokkos::View<float*, CpMem> snWall = {};
+};
+
 /// Restitution -> damping ratio beta_d = ln e / sqrt(ln^2 e + pi^2)  (e in (0, 1]; e <= 0 -> -1,
 /// the critically-damped limit used by LIGGGHTS for e -> 0).
 KOKKOS_INLINE_FUNCTION float hertzBetaD(float e) {
@@ -177,18 +210,26 @@ inline void hertzPairForces(
 
 /// SDF-wall forces (per particle x wall). Gradient by central differences at half a grid cell.
 /// The wall's rigid surface velocity enters vrel; per-(particle, wall) history in xiWall.
-inline void hertzWallForces(
-    Kokkos::View<const int*, CpMem> candSlots, int numCand,
-    Kokkos::View<const WallSdf*, CpMem> walls, GridView wallGrid,
-    Kokkos::View<const float* [3], CpMem> pos, Kokkos::View<const float* [3], CpMem> vel,
-    Kokkos::View<const float* [3], CpMem> angVel, Kokkos::View<const float*, CpMem> rad,
-    Kokkos::View<const float*, CpMem> invMass, const HertzMaterials& mat, float dt,
-    Kokkos::View<float* [3], CpMem> xiWall, int maxWalls, Kokkos::View<float* [3], CpMem> force,
-    Kokkos::View<float* [3], CpMem> torque, Kokkos::View<const float* [4], CpMem> quat = {},
-    Kokkos::View<const float*, CpMem> scale = {}, ScalarI shapeId = {},
-    Kokkos::View<const ShapeDesc*, CpMem> shapes = {}, ShellView shell = {},
-    float globalScale = 1.0f, float contactRadiusFrac = 0.5f, bool hasShapes = false,
-    Kokkos::View<float*, CpMem> snWall = {}) {
+inline void hertzWallForces(Kokkos::View<const int*, CpMem> candSlots, int numCand,
+                            const HertzWallState& wall, const HertzBodies& bodies,
+                            const HertzMaterials& mat, float dt,
+                            Kokkos::View<float* [3], CpMem> force,
+                            Kokkos::View<float* [3], CpMem> torque, const HertzShapes& shp = {}) {
+  const Kokkos::View<const WallSdf*, CpMem> walls = wall.walls;
+  const GridView wallGrid = wall.wallGrid;
+  const Kokkos::View<float* [3], CpMem> xiWall = wall.xiWall;
+  const int maxWalls = wall.maxWalls;
+  const Kokkos::View<float*, CpMem> snWall = wall.snWall;
+  const Kokkos::View<const float* [3], CpMem> pos = bodies.pos, vel = bodies.vel,
+                                              angVel = bodies.angVel;
+  const Kokkos::View<const float*, CpMem> rad = bodies.rad, invMass = bodies.invMass;
+  const Kokkos::View<const float* [4], CpMem> quat = shp.quat;
+  const Kokkos::View<const float*, CpMem> scale = shp.scale;
+  const ScalarI shapeId = shp.shapeId;
+  const Kokkos::View<const ShapeDesc*, CpMem> shapes = shp.shapes;
+  const ShellView shell = shp.shell;
+  const float globalScale = shp.globalScale, contactRadiusFrac = shp.contactRadiusFrac;
+  const bool hasShapes = shp.hasShapes;
   const MatIdView matId = mat.matId;
   const PairTableView pairTable = mat.pairTable;
   const float eGlobal = mat.eGlobal, muGlobal = mat.muGlobal;
