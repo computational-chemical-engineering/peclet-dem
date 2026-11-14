@@ -286,17 +286,81 @@ inline int demReadIterCount(const Particles& P, int slot) {
   return v;
 }
 
+/// The colouring invariant (§4.2 item 4, §12 S3): the failing phase's edges, the accumulated
+/// message, and whether the distributed vote is still owed. A single rank throws at seal(); the
+/// distributed step throws inside the first stop vote, on every rank.
+struct ColoringInvariant {
+  Kokkos::View<int*, CpMem> edgeA, edgeB;  // a failed phase's colouring edges (scratch)
+  std::string msg;
+  bool pending = false;
+
+  void note(const char* phase, Kokkos::View<const int*, CpMem> color, int n,
+            Kokkos::View<const int*, CpMem> vertexDegree) {
+    // Name the first uncolourable edge's vertices and their degrees (host readback, error path).
+    auto hc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), color);
+    auto ha = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), edgeA);
+    auto hb = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), edgeB);
+    auto hd = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), vertexDegree);
+    int bad = 0, first = -1;
+    for (int e = 0; e < n; ++e)
+      if (hc(e) == -1 || hc(e) == kColorUncolourable) {
+        ++bad;
+        if (first < 0)
+          first = e;
+      }
+    std::string m = std::string("colouring invariant violated: ") + std::to_string(bad) + " " +
+                    phase + " uncolourable edges after hub splitting";
+    if (first >= 0) {
+      m += " (first: vertex " + std::to_string(ha(first)) + ", degree " +
+           std::to_string(ha(first) >= 0 ? hd(ha(first)) : 0);
+      if (hb(first) >= 0)
+        m += "; vertex " + std::to_string(hb(first)) + ", degree " + std::to_string(hd(hb(first)));
+      m += ")";
+    }
+    msg += (msg.empty() ? "" : "; ") + m;
+  }
+
+  // The colouring invariant (§4.2 item 4, §12 S3): a single rank throws now; the distributed step
+  // votes the flag in its first stop Allreduce and every rank throws there (a rank-local throw
+  // would leave the others waiting in a collective).
+  template <class Hooks>
+  void seal() {
+    pending = !msg.empty();
+    if constexpr (!Hooks::distributed) {
+      if (pending)
+        throw std::runtime_error(msg);
+    }
+  }
+
+  template <class Hooks>
+  float vote(const Hooks& hooks, float res) {
+    bool bad = pending;
+    pending = false;
+    const float r = hooks.allMaxAny(res, bad);
+    if (bad)
+      throw std::runtime_error(
+          msg.empty() ? std::string("colouring invariant violated on another rank") : msg);
+    return r;
+  }
+};
+
+/// Room for nCopies copy slots appended at slotBase (the colour phases' hub copies).
+inline void growCopySlots(Particles& P, int slotBase, int nCopies) {
+  if (slotBase + nCopies > P.capacity)
+    P.ensureCapacity(slotBase + nCopies + 64);
+}
+
 /// Velocity-phase colouring (docs/contact_solve_framework.md §4.2 item 4, §4.4), the PGS paths
 /// only: colour the manifold graph -- incrementally or in full -- and, if an edge found no free
 /// colour, split the hubs into copies and recolour. Returns the colour count; a failed attempt
-/// leaves its colouring edges in edgeA / edgeB for noteInvariant.
-template <class Hooks, class GrowSlots, class NoteInvariant>
+/// leaves its colouring edges in inv.edgeA / inv.edgeB for inv.note.
+template <class Hooks>
 inline int colorVelocityPhase(Particles& P, int nm, int nBodies, bool usePersistPre,
                               bool incrColorOff,
                               const Kokkos::View<const unsigned char*, CpMem> mSleep,
-                              PhaseCopies& vcs, int slotBase, Kokkos::View<int*, CpMem>& edgeA,
-                              Kokkos::View<int*, CpMem>& edgeB, GrowSlots&& growSlots,
-                              NoteInvariant&& noteInvariant) {
+                              PhaseCopies& vcs, int slotBase, ColoringInvariant& inv) {
+  Kokkos::View<int*, CpMem>& edgeA = inv.edgeA;
+  Kokkos::View<int*, CpMem>& edgeB = inv.edgeB;
   int velLeftover = 0;
   int numColors = 0;
   // Incremental colouring (single-GPU PGS path only): carry surviving pairs' colours across
@@ -337,7 +401,7 @@ inline int colorVelocityPhase(Particles& P, int nm, int nBodies, bool usePersist
     growCopyView(P.vertexDegree, static_cast<std::size_t>(nBodies), "peclet::dem::vertexDegree");
     vertexDegree(edgeA, edgeB, nm, nBodies, P.vertexDegree);
     buildHubCopies(edgeA, edgeB, nm, nBodies, slotBase, P.vertexDegree, vcs);
-    growSlots(vcs.nCopies);
+    growCopySlots(P, slotBase, vcs.nCopies);
     const SlotOverride ovColor{vcs.slotA, vcs.slotB, {}, 1.0f};
     numColors = colorManifolds(P.manifolds, nm, P.realIndices, nBodies, P.manifoldColor,
                                P.bodyWinner, P.bodyColorMask, velLeftover, mSleep, ovColor,
@@ -349,7 +413,7 @@ inline int colorVelocityPhase(Particles& P, int nm, int nBodies, bool usePersist
     P.splitStats.lightHubs = countLightHubs(vcs, edgeA, edgeB, nm, nBodies,
                                             Kokkos::View<const float*, CpMem>(P.invMass));
     if (velLeftover > 0)
-      noteInvariant("velocity", Kokkos::View<const int*, CpMem>(P.manifoldColor), nm);
+      inv.note("velocity", Kokkos::View<const int*, CpMem>(P.manifoldColor), nm, P.vertexDegree);
   }
   P.velCopiesLastSubstep = vcs.nCopies > 0;
   return numColors;
@@ -359,13 +423,14 @@ inline int colorVelocityPhase(Particles& P, int nm, int nBodies, bool usePersist
 /// paths only: build the position units, colour them -- incrementally or in full -- with hub
 /// copies when an edge found no free colour (and fold groups for periodic images), then give
 /// every contact its unit's colour. Returns the colour count; a failed attempt leaves its
-/// colouring edges in edgeA / edgeB for noteInvariant.
-template <class Hooks, class GrowSlots, class NoteInvariant>
+/// colouring edges in inv.edgeA / inv.edgeB for inv.note.
+template <class Hooks>
 inline int colorPositionPhase(Particles& P, int nc, int nm, bool usePersistPre, bool incrColorOff,
                               const Kokkos::View<const unsigned char*, CpMem> cSleep,
-                              PhaseCopies& pcs, int slotBase, Kokkos::View<int*, CpMem>& edgeA,
-                              Kokkos::View<int*, CpMem>& edgeB, GrowSlots&& growSlots,
-                              NoteInvariant&& noteInvariant, int& numPosUnits, PosUnits& posUnits) {
+                              PhaseCopies& pcs, int slotBase, ColoringInvariant& inv,
+                              int& numPosUnits, PosUnits& posUnits) {
+  Kokkos::View<int*, CpMem>& edgeA = inv.edgeA;
+  Kokkos::View<int*, CpMem>& edgeB = inv.edgeB;
   int posLeftover = 0;
   int numPosColors = 0;
   // Incremental position colouring, same single-GPU PGS gate + creep policy as the velocity path.
@@ -419,7 +484,7 @@ inline int colorPositionPhase(Particles& P, int nc, int nm, bool usePersistPre, 
       // Attempt failed: hub copies over the raw slots (§4.4), full recolour (the incremental
       // path falls back to this full path with copies).
       buildHubCopies(edgeA, edgeB, numPosUnits, P.numParticles, slotBase, P.vertexDegree, pcs);
-      growSlots(pcs.nCopies);
+      growCopySlots(P, slotBase, pcs.nCopies);
       const SlotOverride ovColor{pcs.slotA, pcs.slotB, {}, 1.0f};
       numPosColors = colorContacts(P.contacts, numPosUnits, P.numParticles, P.unitColor,
                                    P.bodyWinner, P.bodyColorMask, posLeftover, cSleep, posUnits,
@@ -429,7 +494,8 @@ inline int colorPositionPhase(Particles& P, int nc, int nm, bool usePersistPre, 
         P.posLastFullColors = numPosColors;
       }
       if (posLeftover > 0)
-        noteInvariant("position", Kokkos::View<const int*, CpMem>(P.unitColor), numPosUnits);
+        inv.note("position", Kokkos::View<const int*, CpMem>(P.unitColor), numPosUnits,
+                 P.vertexDegree);
     }
     buildCopyGroups(P.realIndices, P.numParticles, P.numReal, P.vertexDegree,
                     images ? Kokkos::View<const float* [3], CpMem>(P.imageShift)
@@ -468,10 +534,10 @@ struct PositionSolveContext {
 /// The overlap projection's iterations to their adaptive stop (WO-12): the fused device loop
 /// (CUDA, single-rank), CUDA-graph replay or host submission of one iteration (emitPosIter), or
 /// mass-split Jacobi; the position syncs and the final owner->ghost refresh.
-template <class Hooks, class EmitPosIter, class SyncPos, class VoteInvariant, class WithConsensus>
+template <class Hooks, class EmitPosIter, class SyncPos, class WithConsensus>
 inline void runOverlapProjection(Particles& P, int nc, const Hooks& hooks, CpExec& space,
                                  const PositionSolveContext& ctx, EmitPosIter&& emitPosIter,
-                                 SyncPos&& syncPos, VoteInvariant&& voteInvariant,
+                                 SyncPos&& syncPos, ColoringInvariant& inv,
                                  WithConsensus&& withConsensus) {
   const auto& posUnits = ctx.posUnits;
   const auto& numPosUnits = ctx.numPosUnits;
@@ -514,7 +580,7 @@ inline void runOverlapProjection(Particles& P, int nc, const Hooks& hooks, CpExe
         emitPosIter();
       // Every active unit is coloured (§4.2): the count-averaged fallback is gone; the stop's
       // Allreduce carries the colouring-invariant vote if the velocity loop did not.
-      const float posRes = voteInvariant(withConsensus(readFloat(P.posResidual), posCons));
+      const float posRes = inv.vote(hooks, withConsensus(readFloat(P.posResidual), posCons));
       // Adaptive stop (WO-12): end once no contact's projection moves it by more than posTol
       // (|d| w, retractions included). Fixed positionIterations is the cap. Distributed:
       // Allreduce-MAXed so all ranks break together.
@@ -542,12 +608,12 @@ inline void runOverlapProjection(Particles& P, int nc, const Hooks& hooks, CpExe
 /// The position phase (docs/contact_solve_framework.md §4.4, §4.5, §13.3 step 9; WO-12): seed the
 /// position-phase copies, run the accumulated overlap projection to its adaptive stop, and carry
 /// the position-channel Coulomb bound to the next substep. Closes the solve's profiling region.
-template <class Hooks, class VoteInvariant, class WithConsensus>
+template <class Hooks, class WithConsensus>
 inline void solvePositionPhase(Particles& P, int nc, int nm, const Hooks& hooks, CpExec& space,
                                PhaseCopies& pcs, int slotBase, bool rankM, bool usePGS,
                                const PosUnits posUnits, int numPosUnits,
                                const ColorSchedule& posSched, bool stopsOn, float fusedOff,
-                               VoteInvariant&& voteInvariant, WithConsensus&& withConsensus) {
+                               ColoringInvariant& inv, WithConsensus&& withConsensus) {
   // Position-phase copies (§4.4, §4.5; demStep's periodic images, §WO-4 item 2): seeded after the
   // predict (and, under MPI, the publish). An image is re-seeded to its body's predicted position
   // plus its generation shift, so its increments are relative to the body.
@@ -627,8 +693,7 @@ inline void solvePositionPhase(Particles& P, int nc, int nm, const Hooks& hooks,
                                     .stopsOn = stopsOn,
                                     .posCopiesOn = posCopiesOn,
                                     .posCons = posCons};
-  runOverlapProjection(P, nc, hooks, space, posCtx, emitPosIter, syncPos, voteInvariant,
-                       withConsensus);
+  runOverlapProjection(P, nc, hooks, space, posCtx, emitPosIter, syncPos, inv, withConsensus);
   // Position-channel Coulomb-bound carry (PGS path): next substep's friction cone sees
   // mu * (velocity-impulse channel + this position-channel load). Without it a jostled bed's
   // bound under-counts the true normal force and stick leaks (measured: 99% sliding wall
@@ -716,10 +781,10 @@ inline bool launchFusedVelocityLoop(Particles& P, int nm, float vRest,
 /// one-shot coloured GS with rank-level X, or mass-split Jacobi, each to its adaptive stop, and the
 /// final owner->ghost refresh. Closes the "dem::solve::prep" profiling region and opens
 /// "dem::solve::vel".
-template <class Hooks, class FoldVel, class SyncVel, class VoteInvariant, class WithConsensus>
+template <class Hooks, class FoldVel, class SyncVel, class WithConsensus>
 inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks, CpExec& space,
                                const VelocitySolveContext& ctx, FoldVel&& foldVel,
-                               SyncVel&& syncVel, VoteInvariant&& voteInvariant,
+                               SyncVel&& syncVel, ColoringInvariant& inv,
                                WithConsensus&& withConsensus) {
   const auto& velSched = ctx.velSched;
   const auto& numColors = ctx.numColors;
@@ -805,8 +870,8 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
         foldVel();
       }
       // Every active manifold is coloured (§4.2): the count-averaged fallback is gone. The stop's
-      // Allreduce carries the colouring-invariant vote (voteInvariant; no extra message).
-      const float velRes = voteInvariant(withConsensus(readFloat(P.maxApproach), velCons));
+      // Allreduce carries the colouring-invariant vote (inv.vote; no extra message).
+      const float velRes = inv.vote(hooks, withConsensus(readFloat(P.maxApproach), velCons));
       // Adaptive stop. One-shot GS: end once no pair approaches above the resting threshold. PGS:
       // maxApproach records the largest APPLIED correction, and meaningful increments are ~g dt
       // (they propagate a chain one link per sweep), so the tolerance must sit well below vRest or
@@ -1580,39 +1645,10 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     P.splitStats.driftMigrations = drift;
   }
   P.mlLast.numLevels = 0;
-  Kokkos::View<int*, CpMem> edgeA, edgeB;  // a failed phase's colouring edges (scratch)
-  auto growSlots = [&](int nCopies) {
-    if (slotBase + nCopies > P.capacity)
-      P.ensureCapacity(slotBase + nCopies + 64);
-  };
-  std::string invariantMsg;
-  auto noteInvariant = [&](const char* phase, Kokkos::View<const int*, CpMem> color, int n) {
-    // Name the first uncolourable edge's vertices and their degrees (host readback, error path).
-    auto hc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), color);
-    auto ha = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), edgeA);
-    auto hb = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), edgeB);
-    auto hd = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), P.vertexDegree);
-    int bad = 0, first = -1;
-    for (int e = 0; e < n; ++e)
-      if (hc(e) == -1 || hc(e) == kColorUncolourable) {
-        ++bad;
-        if (first < 0)
-          first = e;
-      }
-    std::string m = std::string("colouring invariant violated: ") + std::to_string(bad) + " " +
-                    phase + " uncolourable edges after hub splitting";
-    if (first >= 0) {
-      m += " (first: vertex " + std::to_string(ha(first)) + ", degree " +
-           std::to_string(ha(first) >= 0 ? hd(ha(first)) : 0);
-      if (hb(first) >= 0)
-        m += "; vertex " + std::to_string(hb(first)) + ", degree " + std::to_string(hd(hb(first)));
-      m += ")";
-    }
-    invariantMsg += (invariantMsg.empty() ? "" : "; ") + m;
-  };
+  ColoringInvariant inv;
   if (P.velocityUseGS)
     numColors = colorVelocityPhase<Hooks>(P, nm, nBodies, usePersistPre, incrColorOff, mSleep, vcs,
-                                          slotBase, edgeA, edgeB, growSlots, noteInvariant);
+                                          slotBase, inv);
   // Dense colour buckets for the PGS sweeps (bit-identical: colour classes are body-disjoint).
   std::vector<int> velOffs;
   const bool velBuckets = P.velocityUseGS && nm > 0 && numColors > 0;
@@ -1643,9 +1679,8 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   PosUnits posUnits;
   P.numPosUnits = 0;
   if (P.velocityUseGS)
-    numPosColors =
-        colorPositionPhase<Hooks>(P, nc, nm, usePersistPre, incrColorOff, cSleep, pcs, slotBase,
-                                  edgeA, edgeB, growSlots, noteInvariant, numPosUnits, posUnits);
+    numPosColors = colorPositionPhase<Hooks>(P, nc, nm, usePersistPre, incrColorOff, cSleep, pcs,
+                                             slotBase, inv, numPosUnits, posUnits);
   // Rank-level M (docs/contact_solve_framework.md §13.3): on a rank that exchanges with a
   // neighbour, every body touched through a ghost is a mass-split copy set across ranks. The
   // activity pass gives each slot its local active copy count a per phase (0 or 1 outside a hub
@@ -1659,24 +1694,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
   P.splitStats.posHubCopies = pcs.nCopies;
   P.splitStats.splitBodiesVel = countSplitBodies(vcs);
   P.splitStats.splitBodiesPos = countSplitBodies(pcs);
-  // The colouring invariant (§4.2 item 4, §12 S3): a single rank throws now; the distributed step
-  // votes the flag in its first stop Allreduce and every rank throws there (a rank-local throw
-  // would leave the others waiting in a collective).
-  bool invariantPending = !invariantMsg.empty();
-  if constexpr (!Hooks::distributed) {
-    if (invariantPending)
-      throw std::runtime_error(invariantMsg);
-  }
-  auto voteInvariant = [&](float res) {
-    bool bad = invariantPending;
-    invariantPending = false;
-    const float r = hooks.allMaxAny(res, bad);
-    if (bad)
-      throw std::runtime_error(invariantMsg.empty()
-                                   ? std::string("colouring invariant violated on another rank")
-                                   : invariantMsg);
-    return r;
-  };
+  inv.seal<Hooks>();
   // Dense colour buckets + fused sweep for the position projection (same precedent as the
   // velocity sweeps: colour classes are body-disjoint => bit-identical). The buckets list unit
   // indices.
@@ -1836,8 +1854,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
                                     .velCons = velCons,
                                     .stopsOn = stopsOn,
                                     .fusedOff = fusedOff};
-  solveVelocityPhase(P, nc, nm, hooks, space, velCtx, foldVel, syncVel, voteInvariant,
-                     withConsensus);
+  solveVelocityPhase(P, nc, nm, hooks, space, velCtx, foldVel, syncVel, inv, withConsensus);
   Kokkos::Profiling::popRegion();
   Kokkos::Profiling::pushRegion("dem::solve::stab_fric");
   stabilizeVelocityPhase(P, nm, nBodies, hooks, space, velCtx, foldVel, syncVel, withConsensus);
@@ -1860,7 +1877,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
     hooks.publishPositions(P);
 
   solvePositionPhase(P, nc, nm, hooks, space, pcs, slotBase, rankM, usePGS, posUnits, numPosUnits,
-                     posSched, stopsOn, fusedOff, voteInvariant, withConsensus);
+                     posSched, stopsOn, fusedOff, inv, withConsensus);
   (void)space;
 }
 
