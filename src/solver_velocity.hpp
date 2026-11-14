@@ -1137,12 +1137,12 @@ struct PGSManifoldSweep {
         restitution = ra;
     }
     const float eMat = restitution;  // raw material e (release cap), before the event gates
-    const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
-    const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
-    const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
+    const F3 nSum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
+    const F3 tauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
+    const F3 tauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
     const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
     const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
-    const float lenN = Kokkos::sqrt(dot3(Nsum, Nsum));
+    const float lenN = Kokkos::sqrt(dot3(nSum, nSum));
     r = Row{.m = m,
             .idB = idB,
             .realA = realA,
@@ -1157,9 +1157,9 @@ struct PGSManifoldSweep {
             .invN = invN,
             .restitution = restitution,
             .eMat = eMat,
-            .Nsum = Nsum,
-            .TauA = TauA,
-            .TauB = TauB,
+            .Nsum = nSum,
+            .TauA = tauA,
+            .TauB = tauB,
             .rAavg = rAavg,
             .rBavg = rBavg,
             .lenN = lenN};
@@ -1173,15 +1173,15 @@ struct PGSManifoldSweep {
     const F3 invIA = r.invIA, invIB = r.invIB;
     const F4 qA = r.qA, qB = r.qB;
     float restitution = r.restitution;
-    const F3 Nsum = r.Nsum, TauA = r.TauA, TauB = r.TauB, rAavg = r.rAavg, rBavg = r.rBavg;
+    const F3 nSum = r.Nsum, tauA = r.TauA, tauB = r.TauB, rAavg = r.rAavg, rBavg = r.rBavg;
     const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
     const F3 vGrowth = scale3(diffCenters, growthRate);
-    const float vn = normalVelocity(r.vel, Nsum, TauA, TauB, vGrowth);
-    const float alignment = dot3(Nsum, diffCenters);
+    const float vn = normalVelocity(r.vel, nSum, tauA, tauB, vGrowth);
+    const float alignment = dot3(nSum, diffCenters);
     const float sgn = (alignment > 0.0f) ? 1.0f : -1.0f;
-    const float Nsq = dot3(Nsum, Nsum);
-    float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
-    float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
+    const float nSq = dot3(nSum, nSum);
+    float wAn = nSq * invMassA + genInvMass(tauA, invIA, qA);
+    float wBn = nSq * invMassB + genInvMass(tauB, invIB, qB);
     // Shock propagation INSIDE the PGS sweep (Guendelman staged solve, per-contact form):
     // sidedness was decided ONCE this substep (computeSideFlags) so the warm start,
     // accumulator and every sweep share one consistent ledger. The held ground side absorbs
@@ -1189,15 +1189,15 @@ struct PGSManifoldSweep {
     bool applyA = true, applyB = true;
     const unsigned char sf = sideFlag(idx);
     if (sf == 1) {
-      wB_n = 0.0f;
+      wBn = 0.0f;
       applyB = false;
       restitution = 0.0f;
     } else if (sf == 2) {
-      wA_n = 0.0f;
+      wAn = 0.0f;
       applyA = false;
       restitution = 0.0f;
     }
-    const float wTotal = wA_n + wB_n;
+    const float wTotal = wAn + wBn;
     r.vGrowth = vGrowth;
     r.vn = vn;
     r.sgn = sgn;
@@ -1216,7 +1216,7 @@ struct PGSManifoldSweep {
     const float invMassA = r.invMassA, invMassB = r.invMassB;
     const F3 invIA = r.invIA, invIB = r.invIB;
     const F4 qA = r.qA, qB = r.qB;
-    const F3 Nsum = r.Nsum, TauA = r.TauA, TauB = r.TauB;
+    const F3 nSum = r.Nsum, tauA = r.TauA, tauB = r.TauB;
     const float eMat = r.eMat, lenN = r.lenN, sgn = r.sgn, wTotal = r.wTotal;
     const float vPeak = b.vPeak, orphA = b.orphA, orphB = b.orphB;
     float owed = b.owed;
@@ -1259,14 +1259,14 @@ struct PGSManifoldSweep {
         restRel(idx) = rNew;
         recordCorrection(idx, lenN, Kokkos::fabs(dR) * wRel / lenN);
         const float lambdaR = -sgn * dR;
-        const F3 JlinR = scale3(Nsum, lambdaR);
+        const F3 JlinR = scale3(nSum, lambdaR);
         if (relA) {
           applyLinear(realA, JlinR, invMassA);
-          applyAngular(realA, scale3(TauA, lambdaR), invIA, qA);
+          applyAngular(realA, scale3(tauA, lambdaR), invIA, qA);
         }
         if (relB) {
           applyLinear(realB, F3{-JlinR.x, -JlinR.y, -JlinR.z}, invMassB);
-          applyAngular(realB, scale3(TauB, lambdaR), invIB, qB);
+          applyAngular(realB, scale3(tauB, lambdaR), invIB, qB);
         }
       }
     }
