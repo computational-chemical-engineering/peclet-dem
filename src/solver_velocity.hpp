@@ -1798,10 +1798,10 @@ struct VelocitySweepBodies {
 /// Shock propagation for persistent loaded contacts (see solveVelocity): the persistence flags,
 /// predicted positions, gravity direction and grounded levels. Empty `persistent` = off.
 struct ShockPropagation {
-  Kokkos::View<const unsigned char*, CpMem> persistent = {};
-  Kokkos::View<const float* [3], CpMem> posPred = {};
+  Kokkos::View<const unsigned char*, CpMem> persistent;
+  Kokkos::View<const float* [3], CpMem> posPred;
   F3 gHat = {};
-  Kokkos::View<const unsigned char*, CpMem> grounded = {};
+  Kokkos::View<const unsigned char*, CpMem> grounded;
 };
 
 /// World-frame angular velocity change of an angular impulse `jang` on a body with diagonal
