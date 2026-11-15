@@ -30,8 +30,8 @@ KOKKOS_INLINE_FUNCTION float computeW(F3 r, F3 dir, float invM, F3 invI) {
 /// number of contacts the Jacobi position solve visits (every contact; a wall side counts
 /// nothing). Accumulates into `counts`, handed over zeroed (the apply clears it). Under MPI the
 /// caller then makes the counts global (syncContactCounts).
-inline void countPositionJacobiKokkos(Kokkos::View<const ContactC*, CpMem> contacts,
-                                      int numContacts, Kokkos::View<int*, CpMem> counts) {
+inline void countPositionJacobi(Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
+                                Kokkos::View<int*, CpMem> counts) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::count_position_jacobi", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
@@ -46,13 +46,13 @@ inline void countPositionJacobiKokkos(Kokkos::View<const ContactC*, CpMem> conta
 
 /// Accumulate XPBD position corrections for `numContacts` contacts.
 /// massSplit (the 'jacobi' diagnostic, §3.1): `constraintCounts` holds the global per-body counts
-/// n of countPositionJacobiKokkos and is only read; each contact's correction is solved against
+/// n of countPositionJacobi and is only read; each contact's correction is solved against
 /// copies of mass m / n (w~ = n_A w_A + n_B w_B, a wall side 0) and the TRUE-mass deltas are
 /// accumulated, to be applied with factor 1. Off: the solve bumps the counts and the caller
 /// averages the sum by 1/count -- the pre-framework count-averaged Jacobi, kept ONLY for the kernel
 /// unit test against its serial reference; no production path calls it (the colour-saturation
 /// fallbacks were deleted with complete colouring, docs/contact_solve_framework.md §4.2 / §12 S3).
-inline void solvePositionKokkos(
+inline void solvePosition(
     Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> posPred,
     Kokkos::View<const float* [4], CpMem> quatPred,
@@ -62,7 +62,7 @@ inline void solvePositionKokkos(
     Kokkos::View<float, CpMem> maxOverlap, Kokkos::View<const int*, CpMem> onlyColor = {},
     int colorFilter = 0, bool massSplit = false) {
   (void)invInertia;  // translation-only diagonal (below); kept in the signature for the callers
-  (void)deltaQuat;   // never written: the rotation was never applied (applyUpdatesKokkos)
+  (void)deltaQuat;   // never written: the rotation was never applied (applyUpdates)
   CpExec space;
   const bool filt = onlyColor.extent(0) > 0;
   Kokkos::parallel_for(
@@ -124,7 +124,7 @@ inline void solvePositionKokkos(
 
         const float dLambda = -C / wSolve;
 
-        // Translation-only correction (applyUpdatesKokkos commits deltaPos only).
+        // Translation-only correction (applyUpdates commits deltaPos only).
         Kokkos::atomic_add(&deltaPos(idA, 0), n.x * dLambda * invMassA);
         Kokkos::atomic_add(&deltaPos(idA, 1), n.y * dLambda * invMassA);
         Kokkos::atomic_add(&deltaPos(idA, 2), n.z * dLambda * invMassA);
@@ -147,14 +147,14 @@ inline void solvePositionKokkos(
 // ============================ colored Gauss–Seidel position solve ============================
 // The overlap solve above is the position-side twin of the Jacobi restitution solve: one thread per
 // contact scatters an XPBD non-penetration correction, and the caller relaxes the per-body SUM by
-// the contact count (applyUpdatesKokkos, 1/count). Same trade-off — stable but under-converged, so
+// the contact count (applyUpdates, 1/count). Same trade-off — stable but under-converged, so
 // a body wedged by many neighbours keeps residual overlap. The colored path removes the averaging:
 // graph- colour the CONTACT graph (vertices = body slots, edges = contacts; raw bodyA/bodyB, the
 // same indices the solve writes) so no two contacts sharing a body get one colour, then sweep
 // colour-by- colour applying each correction IN PLACE. Within a colour the contacts are an
 // independent set, so the read-modify-write is race-free without atomics, and each sweep sees the
 // previous colours' moves — a true sequential projection that resolves stacked contacts far better
-// per iteration. Translation only, matching the Jacobi path (applyUpdatesKokkos applies deltaPos,
+// per iteration. Translation only, matching the Jacobi path (applyUpdates applies deltaPos,
 // not deltaQuat; the angular contact response lives in the velocity solve), and it never touches
 // velocity — overlap removal stays decoupled from the velocity update.
 
@@ -168,126 +168,54 @@ KOKKOS_INLINE_FUNCTION bool unitAsleep(const PosUnits& units,
   return true;
 }
 
+/// The position-unit edge source of colorEdges: a unit's edge is its leader contact's raw
+/// (bodyA, bodyB), or a hub copy slot through `ov`, keyed colorKey(leader). Inactive: all asleep.
+struct UnitEdges {
+  Kokkos::View<const ContactC*, CpMem> contacts;
+  Kokkos::View<const unsigned char*, CpMem> sleepMask;
+  PosUnits units;
+  SlotOverride ov;
+  bool sleepOn;
+  static constexpr ColorLabels labels() {
+    return {"peclet::dem::pcolor_init_bodies",  "peclet::dem::pcolor_init_contacts",
+            "peclet::dem::pcolor_reset_winner", "peclet::dem::pcolor_contend",
+            "peclet::dem::pcolor_commit",       "peclet::dem::pcolor_max",
+            "peclet::dem::pcolor_leftover"};
+  }
+  KOKKOS_INLINE_FUNCTION int initialColor(int idx) const {
+    return (sleepOn && unitAsleep(units, sleepMask, idx)) ? -2 : -1;
+  }
+  KOKKOS_INLINE_FUNCTION ColorEdge edge(int idx) const {
+    const int lead = units.leader(idx);  // a unit's edge: its leader's bodies and key
+    const ContactC c = contacts(lead);
+    const int ea = ov.slotA(idx, c.bodyA);
+    const int eb = (c.bodyB >= 0) ? ov.slotB(idx, c.bodyB) : -1;  // <0: wall/boundary
+    return {ea, eb, colorKey(lead)};                              // hashed priority (see colorKey)
+  }
+};
+
 /// Greedy graph-colour the contacts (raw bodyA/bodyB): no two contacts sharing a body get the same
-/// colour. Round-based max-index arbitration, identical machinery to colorManifoldsKokkos but over
-/// the per-contact graph with direct (non-realIdx) body slots; every contact is active. `numBodies`
+/// colour. colorEdges over UnitEdges: the machinery of colorManifolds, but over the per-contact
+/// graph with direct (non-realIdx) body slots; every awake contact is active. `numBodies`
 /// is the body-slot count (numParticles, incl. periodic ghosts, which the position solve corrects
 /// independently). Returns the number of colours used.
 ///
 /// With `units` (docs/contact_solve_framework.md §4.3) the edges are position UNITS, not contacts:
 /// numContacts is then the unit count and cColor is per unit; a unit's edge is its leader
 /// contact's (bodyA, bodyB) with key colorKey(leader). A one-point unit is exactly today's edge.
-inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
-                               int numBodies, Kokkos::View<int*, CpMem> cColor,
-                               Kokkos::View<long long*, CpMem> bodyWinner,
-                               Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover,
-                               Kokkos::View<const unsigned char*, CpMem> sleepMask = {},
-                               PosUnits units = {}, SlotOverride ov = {}, int vertexSpan = 0) {
-  leftover = 0;
-  CpExec space;
-  if (numContacts <= 0 || numBodies <= 0)
-    return 0;
-  // Colouring vertices: the raw contact body slot, or a hub copy slot through `ov` (§4.4);
-  // vertexSpan covers the copy slots (0 = numBodies, the no-copy span).
-  const int nV = vertexSpan > 0 ? vertexSpan : numBodies;
-  const bool sleepOn = sleepMask.extent(0) > 0;
-  Kokkos::parallel_for(
-      "peclet::dem::pcolor_init_bodies", Kokkos::RangePolicy<CpExec>(space, 0, nV),
-      KOKKOS_LAMBDA(int i) { bodyMask(i) = 0; });
-  Kokkos::parallel_for(
-      "peclet::dem::pcolor_init_contacts", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-      KOKKOS_LAMBDA(int idx) {
-        cColor(idx) = (sleepOn && unitAsleep(units, sleepMask, idx)) ? -2 : -1;
-      });
-
-  int remaining = 1, prevRemaining = -1;
-  // Round cap (docs/contact_solve_framework.md §12 S7): the vertices coloured are the UNITS
-  // (numContacts here), so the bound is their count + 2. Each round commits at least the
-  // globally highest-key uncoloured unit (colorKey(leader) is unique: the leader index is its
-  // low word), so the loop terminates within numContacts rounds; O(log n) in practice.
-  const int maxRounds = numContacts + 2;
-  for (int round = 0; round < maxRounds && remaining > 0; ++round) {
-    Kokkos::parallel_for(
-        "peclet::dem::pcolor_reset_winner", Kokkos::RangePolicy<CpExec>(space, 0, nV),
-        KOKKOS_LAMBDA(int i) { bodyWinner(i) = -1; });
-    Kokkos::parallel_for(
-        "peclet::dem::pcolor_contend", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-        KOKKOS_LAMBDA(int idx) {
-          if (cColor(idx) != -1)
-            return;
-          const int lead = units.leader(idx);  // a unit's edge: its leader's bodies and key
-          const ContactC c = contacts(lead);
-          const long long key = colorKey(lead);  // hashed priority (see solver_velocity.hpp)
-          Kokkos::atomic_max(&bodyWinner(ov.slotA(idx, c.bodyA)), key);
-          if (c.bodyB >= 0)
-            Kokkos::atomic_max(&bodyWinner(ov.slotB(idx, c.bodyB)), key);
-        });
-    int rem = 0;
-    Kokkos::parallel_reduce(
-        "peclet::dem::pcolor_commit", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-        KOKKOS_LAMBDA(int idx, int& acc) {
-          if (cColor(idx) != -1)
-            return;
-          const int lead = units.leader(idx);
-          const ContactC c = contacts(lead);
-          const int ea = ov.slotA(idx, c.bodyA);
-          const int eb = (c.bodyB >= 0) ? ov.slotB(idx, c.bodyB) : -1;  // <0: wall/boundary
-          const long long key = colorKey(lead);
-          if (bodyWinner(ea) != key || (eb >= 0 && bodyWinner(eb) != key)) {
-            acc += 1;
-            return;
-          }
-          std::uint64_t forbidden = bodyMask(ea);
-          if (eb >= 0)
-            forbidden |= bodyMask(eb);
-          int col = 0;  // lowest free colour of 64; never forced (§4.2 item 1)
-          while (col < kColorPalette && ((forbidden >> col) & 1))
-            ++col;
-#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 3
-          if (col > 62)
-            col = 62;  // G13 mutant 3: the old forced colour 62
-#endif
-          if (col == kColorPalette) {
-            cColor(idx) = kColorUncolourable;  // no free colour: neither coloured nor remaining
-            return;
-          }
-          cColor(idx) = col;
-          const std::uint64_t bit = std::uint64_t(1) << col;
-          bodyMask(ea) |= bit;
-          if (eb >= 0)
-            bodyMask(eb) |= bit;
-        },
-        rem);
-    space.fence();
-    // Stall break: a safety bound only -- every round commits (or marks -3) the highest-key
-    // contender, so rem strictly decreases (§12 S7). Anything left -1 is a leftover.
-    if (rem == prevRemaining)
-      break;
-    prevRemaining = rem;
-    remaining = rem;
-  }
-
-  int maxc = -1;
-  Kokkos::parallel_reduce(
-      "peclet::dem::pcolor_max", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-      KOKKOS_LAMBDA(int idx, int& mx) {
-        if (cColor(idx) > mx)
-          mx = cColor(idx);
-      },
-      Kokkos::Max<int>(maxc));
-  Kokkos::parallel_reduce(
-      "peclet::dem::pcolor_leftover", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
-      KOKKOS_LAMBDA(int idx, int& acc) {
-        if (cColor(idx) == -1 || cColor(idx) == kColorUncolourable)
-          acc += 1;
-      },
-      leftover);
-  space.fence();
-  return maxc + 1;
+inline int colorContacts(Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
+                         int numBodies, Kokkos::View<int*, CpMem> cColor,
+                         Kokkos::View<long long*, CpMem> bodyWinner,
+                         Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover,
+                         Kokkos::View<const unsigned char*, CpMem> sleepMask = {},
+                         PosUnits units = {}, SlotOverride ov = {}, int vertexSpan = 0) {
+  const UnitEdges edges{contacts, sleepMask, units, ov, sleepMask.extent(0) > 0};
+  return colorEdges(edges, numContacts, numBodies, vertexSpan, cColor, bodyWinner, bodyMask,
+                    leftover);
 }
 
 /// Incremental (warm-started) contact colouring for the single-GPU PGS position solve. Twin of
-/// colorManifoldsIncrementalKokkos, but over the per-contact graph: key every contact by its
+/// colorManifoldsIncremental, but over the per-contact graph: key every contact by its
 /// canonical pair, carry the previous substep's colour by that key (sorted ledger), seed the
 /// per-body masks, and re-arbitrate only the NEW (-1) contacts. A pair can own MORE than one
 /// contact (non-spherical multi-point patches) and periodic ghost slots churn, so the carried
@@ -295,7 +223,7 @@ inline int colorContactsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, in
 /// a full recolour that substep) — the sphere / non-periodic bed hits the fast path, everything
 /// else stays correct by falling back. `forceFull` bypasses the carry. keysOut holds this substep's
 /// contact keys for the subsequent commit. Returns the number of colours used.
-inline int colorContactsIncrementalKokkos(
+inline int colorContactsIncremental(
     Kokkos::View<const ContactC*, CpMem> contacts, int numContacts, int numBodies,
     Kokkos::View<const unsigned long long*, CpMem> prevKeys,
     Kokkos::View<const int*, CpMem> prevColor, int prevCount, Kokkos::View<int*, CpMem> cColor,
@@ -370,7 +298,7 @@ inline int colorContactsIncrementalKokkos(
         });
   }
   // Jones-Plassmann rounds over the uncoloured (-1) contacts only (identical to
-  // colorContactsKokkos).
+  // colorContacts).
   int remaining = 1, prevRemaining = -1;
   // Round cap (docs/contact_solve_framework.md §12 S7): the vertices coloured are the UNITS
   // (numContacts here), so the bound is their count + 2. Each round commits at least the
@@ -455,9 +383,9 @@ inline int colorContactsIncrementalKokkos(
 }
 
 /// Copy each position unit's colour onto its contacts (contactColor(i) = unitColor(unit of i)).
-inline void expandUnitColorsKokkos(const PosUnits& units, int numUnits,
-                                   Kokkos::View<const int*, CpMem> unitColor,
-                                   Kokkos::View<int*, CpMem> contactColor) {
+inline void expandUnitColors(const PosUnits& units, int numUnits,
+                             Kokkos::View<const int*, CpMem> unitColor,
+                             Kokkos::View<int*, CpMem> contactColor) {
   if (numUnits <= 0)
     return;
   CpExec space;
@@ -471,11 +399,11 @@ inline void expandUnitColorsKokkos(const PosUnits& units, int numUnits,
 }
 
 /// Commit this substep's per-contact (key, colour) sorted by key, for next substep's warm gather.
-inline void commitContactColorKokkos(Kokkos::View<const unsigned long long*, CpMem> keys,
-                                     Kokkos::View<const int*, CpMem> color,
-                                     Kokkos::View<unsigned long long*, CpMem> prevKeys,
-                                     Kokkos::View<int*, CpMem> prevColor,
-                                     Kokkos::View<int*, CpMem> perm, int numContacts) {
+inline void commitContactColor(Kokkos::View<const unsigned long long*, CpMem> keys,
+                               Kokkos::View<const int*, CpMem> color,
+                               Kokkos::View<unsigned long long*, CpMem> prevKeys,
+                               Kokkos::View<int*, CpMem> prevColor, Kokkos::View<int*, CpMem> perm,
+                               int numContacts) {
   if (numContacts <= 0)
     return;
   CpExec space;
@@ -613,7 +541,7 @@ struct PositionContactSweep {
     // impulse units and carries it into the next substep's Coulomb bound -- else a jostled bed's
     // bound under-counts and stick leaks, measured as 99% sliding wall contacts in the drum).
 
-    // Translation-only correction, in place (rotation discarded to match applyUpdatesKokkos).
+    // Translation-only correction, in place (rotation discarded to match applyUpdates).
     posPred(idA, 0) += n.x * dLambda * invMassA;
     posPred(idA, 1) += n.y * dLambda * invMassA;
     posPred(idA, 2) += n.z * dLambda * invMassA;
@@ -627,23 +555,25 @@ struct PositionContactSweep {
 
 /// Colored Gauss–Seidel XPBD overlap solve: sweep the `numColors` colour classes in order, applying
 /// each contact's non-penetration correction directly to posPred (in place, translation only). Same
-/// per-contact math as solvePositionKokkos — only the write-back differs (in-place RMW instead of
+/// per-contact math as solvePosition — only the write-back differs (in-place RMW instead of
 /// atomic-accumulate + count-average). Race-free because a colour is an independent set of
 /// contacts. One outer call = one full sweep over all colours; the caller loops it
-/// positionIterations times. Dense-bucket mode (colorPerm/colorOffs from buildColorBucketsKokkos)
+/// positionIterations times. Dense-bucket mode (sched.perm/sched.offs from buildColorBuckets)
 /// covers only each colour's own contacts; the fused mode collapses the whole sweep into one kernel
 /// — both bit-identical.
-inline bool solvePositionColoredGSKokkos(
+inline bool solvePositionColoredGS(
     Kokkos::View<const ContactC*, CpMem> contacts, const PosUnits& units, int numContacts,
-    Kokkos::View<const int*, CpMem> cColor, int numColors,
-    Kokkos::View<const float*, CpMem> invMass, Kokkos::View<float* [3], CpMem> posPred,
-    Kokkos::View<const float* [4], CpMem> quatPred,
+    const ColorSchedule& sched, Kokkos::View<const float*, CpMem> invMass,
+    Kokkos::View<float* [3], CpMem> posPred, Kokkos::View<const float* [4], CpMem> quatPred,
     Kokkos::View<const float* [4], CpMem> quatStatic,
     Kokkos::View<const float* [3], CpMem> invInertia, Kokkos::View<float, CpMem> maxOverlap,
-    Kokkos::View<float*, CpMem> posLambdaAcc = {}, Kokkos::View<const int*, CpMem> colorPerm = {},
-    const std::vector<int>* colorOffs = nullptr, const FusedSweepCtx* fused = nullptr,
-    const FusedLoopSpec* loop = nullptr, SlotOverride ov = {},
-    Kokkos::View<float, CpMem> posResidual = {}, float omega = 1.0f) {
+    Kokkos::View<float*, CpMem> posLambdaAcc = {}, const FusedLoopSpec* loop = nullptr,
+    SlotOverride ov = {}, Kokkos::View<float, CpMem> posResidual = {}, float omega = 1.0f) {
+  const Kokkos::View<const int*, CpMem> cColor = sched.color;
+  const int numColors = sched.numColors;
+  const Kokkos::View<const int*, CpMem> colorPerm = sched.perm;
+  const std::vector<int>* colorOffs = sched.offs;
+  const FusedSweepCtx* fused = sched.fused;
   CpExec space;
   const PositionContactSweep f{contacts,   invMass,      posPred, quatPred, quatStatic,  invInertia,
                                maxOverlap, posLambdaAcc, units,   ov,       posResidual, omega};

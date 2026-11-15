@@ -43,7 +43,7 @@
 #include "solver_multilevel.hpp"
 #include "solver_position.hpp"
 #include "solver_velocity.hpp"
-#include "step_solve.hpp"  // demStep / computeOverlapsKokkos / growContactBuffers
+#include "step_solve.hpp"  // demStep / computeOverlaps / growContactBuffers
 
 #ifdef PECLET_DEM_MPI
 #include "mpi_halo.hpp"        // ParticleHalo (gated; default module never includes it)
@@ -332,7 +332,7 @@ class Simulation : public ShapeRegistry {
   /// against the other's SDF) or "two_way" (shell pairs are probed from both sides, and a
   /// sphere-shell pair always takes the exact sphere probe). CHANGES RESULTS for non-sphere
   /// bodies; costs up to 2x the narrow phase and contacts of shell pairs
-  /// (docs/solver_details.md, "Two-way shell detection"; detectContactsKokkos).
+  /// (docs/solver_details.md, "Two-way shell detection"; detectContacts).
   void setShellDetection(const std::string& mode) {
     if (mode == "one_way")
       P_.shellDetection = 0;
@@ -739,7 +739,7 @@ class Simulation : public ShapeRegistry {
       P_.growthFactor = new_factor;
     P_.growthRate = rate;
     if (P_.growthFactor > 0.0f)
-      updateGrowthScalesKokkos(P_.numReal, P_.scale, P_.targetScale, P_.growthFactor);
+      updateGrowthScales(P_.numReal, P_.scale, P_.targetScale, P_.growthFactor);
   }
   float growthFactor() const { return P_.growthFactor; }
   float getGrowthRate() const { return P_.growthRate; }
@@ -790,7 +790,7 @@ class Simulation : public ShapeRegistry {
   }
 
   // Max pair interpenetration on the current committed state (CUDA Simulation::compute_overlaps).
-  float computeOverlaps() { return computeOverlapsKokkos(P_); }
+  float computeOverlaps() { return peclet::dem::computeOverlaps(P_); }
 
   // LAMMPS "dump custom" of the current committed state (CUDA Simulation::export_lammps). Radius =
   // scale*globalScale*baseRadius; bounds computed from the particle AABBs.
@@ -896,7 +896,7 @@ class Simulation : public ShapeRegistry {
     MPI_Exscan(&mine, &base, 1, MPI_LONG, MPI_SUM, halo_->comm());
     if (halo_->rank() == 0)
       base = 0;  // MPI_Exscan leaves rank 0's recvbuf undefined
-    fillGidBaseKokkos(P_.gid, P_.numReal, static_cast<int>(base));
+    fillGidBase(P_.gid, P_.numReal, static_cast<int>(base));
     P_.prevPairCount = 0;
     P_.hertzPrevCount = 0;
     P_.hertzNumPairs = -1;
@@ -949,10 +949,10 @@ class Simulation : public ShapeRegistry {
   // SDF grid (get_sdf_grid): Eikonal reconstruction over the domain, flat x-fastest, negative
   // inside solid.
   std::vector<float> getSdfGrid(int rx, int ry, int rz) {
-    return peclet::dem::generateSdfKokkos(rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal,
-                                          P_.pos, P_.quat, P_.scale, P_.shapeId, P_.shapes,
-                                          P_.domain.periodic_x, P_.domain.periodic_y,
-                                          P_.domain.periodic_z, P_.sdfGrid, P_.globalScale);
+    return peclet::dem::generateSdf(rx, ry, rz, P_.domain.min, P_.domain.max, P_.numReal, P_.pos,
+                                    P_.quat, P_.scale, P_.shapeId, P_.shapes, P_.domain.periodic_x,
+                                    P_.domain.periodic_y, P_.domain.periodic_z, P_.sdfGrid,
+                                    P_.globalScale);
   }
 
   int numParticles() const { return P_.numReal; }
@@ -1130,11 +1130,11 @@ class Simulation : public ShapeRegistry {
   /// Poisson-restitution diagnostics: (sum, max, count>0) of the committed per-pair owed
   /// separation impulse (prevRestBank[0:prevPairCount], physical units).
   std::tuple<double, float, int> restBankStats() {
-    return restBankStatsKokkos(P_.prevRestBank, P_.prevPairCount);
+    return peclet::dem::restBankStats(P_.prevRestBank, P_.prevPairCount);
   }
   /// Orphan-account diagnostics: (sum, max, count>0) of the per-body orphaned budget.
   std::tuple<double, float, int> restOrphanStats() {
-    return restBankStatsKokkos(P_.bodyOrphan, P_.numReal);
+    return peclet::dem::restBankStats(P_.bodyOrphan, P_.numReal);
   }
 
   // ParaView PolyData (points + Radius + Velocity), faithful to CUDA Simulation::write_vtp:

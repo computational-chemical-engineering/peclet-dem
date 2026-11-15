@@ -38,8 +38,8 @@ every run below** (BEFORE: 3–43), from other sessions; see each section.
 
 ## WO-3b: global per-body counts for the count-averaged Jacobi solves (was open, G7 / R10)
 
-**The failure.** The count-averaged solves (`velocityUseGS = false`: `solveVelocityKokkos` →
-`applyVelocityDeltasAveragedKokkos`, `solvePositionKokkos` → `applyUpdatesKokkos`, plus the
+**The failure.** The count-averaged solves (`velocityUseGS = false`: `solveVelocity` →
+`applyVelocityDeltasAveraged`, `solvePosition` → `applyUpdates`, plus the
 colour-saturation fallbacks of the GS loops) divide each body's summed correction by its per-body
 `constraintCounts`. Serial semantics: the factor is **per body**, not per contact (velocity
 `min(1, 2/count_i)`, position `1/count_i`; body A and B of one contact are scaled by their own

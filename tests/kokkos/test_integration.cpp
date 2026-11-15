@@ -118,9 +118,9 @@ int main(int argc, char** argv) {
     // --- device sequence ---
     V3 extF = mk3("extF", efx, efy, efz);  // CFD-DEM drag buffer
     V3 extT = mk3("extT", etx, ety, etz);  // resolved-CFD-DEM couple (world frame)
-    predictVelocityKokkos(N, pos, invMass, vel, quat, angVel, invI, posPred, quatPred, velPred,
-                          angVelPred, deltaPos, deltaQuat, deltaVel, deltaAngVel, cc, gravity, dt,
-                          extF, extT);
+    predictVelocity(N, pos, invMass, vel, quat, angVel, invI, posPred, quatPred, velPred,
+                    angVelPred, deltaPos, deltaQuat, deltaVel, deltaAngVel, cc, gravity, dt, extF,
+                    extT);
     // inject delta velocities
     {
       auto h = Kokkos::create_mirror_view(deltaVel);
@@ -138,9 +138,9 @@ int main(int argc, char** argv) {
       }
       Kokkos::deep_copy(deltaAngVel, g);
     }
-    applyVelocityDeltasKokkos(N, velPred, angVelPred, deltaVel, deltaAngVel);
-    applyVelocityAndPredictPositionKokkos(N, pos, invMass, vel, quat, velPred, angVelPred, posPred,
-                                          quatPred, angVel, dt);
+    applyVelocityDeltas(N, velPred, angVelPred, deltaVel, deltaAngVel);
+    applyVelocityAndPredictPosition(N, pos, invMass, vel, quat, velPred, angVelPred, posPred,
+                                    quatPred, angVel, dt);
     // inject delta positions + counts (emulate a position-solve result)
     {
       auto h = Kokkos::create_mirror_view(deltaPos);
@@ -157,8 +157,8 @@ int main(int argc, char** argv) {
       for (int i = 0; i < N; ++i)
         cnt[i] = 1 + (i % 3);
     }
-    applyUpdatesKokkos(N, posPred, velPred, deltaPos, deltaVel, cc);
-    finalCommitKokkos(N, pos, invMass, posPred, quat, quatPred, dom);
+    applyUpdates(N, posPred, velPred, deltaPos, deltaVel, cc);
+    finalCommit(N, pos, invMass, posPred, quat, quatPred, dom);
 
     // gather
     auto g3 = [&](V3 v) {

@@ -185,7 +185,7 @@ child regions inside it) found it:
 1. **The position-unit build sorted every contact key on the host** (Kokkos sort_by_key is a
    serial std::sort on the host backends) only to discover that every unit is one contact:
    4.9 ms/step. The manifold count already proves it (the manifold key is never finer than the unit
-   key on the owned range), so `buildPositionUnitsKokkos(..., numManifolds)` writes the identity
+   key on the owned range), so `buildPositionUnits(..., numManifolds)` writes the identity
    CSR directly when nm == nc.
 2. **`mapVelocitySlots` sorted every owned and ghost gid on the host** each rebuild: 1.8 ms/step.
    The topology already names the owned row of every self ghost (selfIdx), and a cross-rank ghost's

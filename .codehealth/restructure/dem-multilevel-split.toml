@@ -1,0 +1,11 @@
+# Restructure plan: approved by Frank Peters in the code-health session on 2026-11-14 (decision form,
+# option "Split the file"; the session writes this file in his name at his instruction).
+# Proposal: suite umbrella branch code-health-docs, docs/code_health/briefs/RESTRUCTURE-dem-multilevel-proposal.md.
+id = "dem-multilevel-split"
+approved_by = "Frank Peters"
+reason = """S6 (6df7eb6) took src/solver_multilevel.hpp from NLOC 957 to 1003 (cpp@0 large_file limit 1000).
+The file holds two separable jobs: building the contact hierarchy (matching, level geometry, level
+colouring) and running the coarse cycle on it. Move the hierarchy build verbatim into its own header;
+solver_multilevel.hpp includes it, so every existing include path keeps working. No name changes."""
+new_files = ["src/solver_multilevel_hierarchy.hpp"]
+new_public = []

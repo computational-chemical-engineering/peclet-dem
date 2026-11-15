@@ -41,11 +41,10 @@ KOKKOS_INLINE_FUNCTION void st4(const V4& v, int i, F4 a) {
 }  // namespace detail
 
 /// Predict velocity (gravity + gyroscopic precession), speculative position, and clear all deltas.
-inline void predictVelocityKokkos(int n, V3 pos, Vf invMass, V3 vel, V4 quat, V3 angVel,
-                                  V3 invInertia, V3 posPred, V4 quatPred, V3 velPred, V3 angVelPred,
-                                  V3 deltaPos, V4 deltaQuat, V3 deltaVel, V3 deltaAngVel,
-                                  Vi constraintCounts, F3 gravity, float dt, V3 extForce,
-                                  V3 extTorque) {
+inline void predictVelocity(int n, V3 pos, Vf invMass, V3 vel, V4 quat, V3 angVel, V3 invInertia,
+                            V3 posPred, V4 quatPred, V3 velPred, V3 angVelPred, V3 deltaPos,
+                            V4 deltaQuat, V3 deltaVel, V3 deltaAngVel, Vi constraintCounts,
+                            F3 gravity, float dt, V3 extForce, V3 extTorque) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::predict_velocity", Kokkos::RangePolicy<CpExec>(space, 0, n),
@@ -101,8 +100,7 @@ inline void predictVelocityKokkos(int n, V3 pos, Vf invMass, V3 vel, V4 quat, V3
 
 /// Add accumulated velocity/angular deltas onto the predicted velocity, then clear the delta
 /// buffers.
-inline void applyVelocityDeltasKokkos(int n, V3 velPred, V3 angVelPred, V3 deltaVel,
-                                      V3 deltaAngVel) {
+inline void applyVelocityDeltas(int n, V3 velPred, V3 angVelPred, V3 deltaVel, V3 deltaAngVel) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::apply_velocity_deltas", Kokkos::RangePolicy<CpExec>(space, 0, n),
@@ -116,9 +114,9 @@ inline void applyVelocityDeltasKokkos(int n, V3 velPred, V3 angVelPred, V3 delta
 }
 
 /// Re-integration: persist solved velocity, trapezoidal position predict, quaternion integrate.
-inline void applyVelocityAndPredictPositionKokkos(int n, V3 pos, Vf invMass, V3 vel, V4 quat,
-                                                  V3 velPred, V3 angVelPred, V3 posPred,
-                                                  V4 quatPred, V3 angVel, float dt) {
+inline void applyVelocityAndPredictPosition(int n, V3 pos, Vf invMass, V3 vel, V4 quat, V3 velPred,
+                                            V3 angVelPred, V3 posPred, V4 quatPred, V3 angVel,
+                                            float dt) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::apply_vel_predict_pos", Kokkos::RangePolicy<CpExec>(space, 0, n),
@@ -155,8 +153,8 @@ inline void applyVelocityAndPredictPositionKokkos(int n, V3 pos, Vf invMass, V3 
 }
 
 /// Per-contact constraint-count pre-pass (active contacts, dist <= 0).
-inline void computeContactCountsKokkos(Kokkos::View<const ContactC*, CpMem> contacts,
-                                       int numContacts, Vi constraintCounts) {
+inline void computeContactCounts(Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
+                                 Vi constraintCounts) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::contact_counts", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
@@ -175,8 +173,8 @@ inline void computeContactCountsKokkos(Kokkos::View<const ContactC*, CpMem> cont
 /// averaged = false (the mass-split 'jacobi' diagnostic, docs/contact_solve_framework.md §3.1):
 /// the deltas are already true-mass corrections against copies of mass m / count, so the apply is
 /// a plain add (factor 1).
-inline void applyUpdatesKokkos(int n, V3 posPred, V3 velPred, V3 deltaPos, V3 deltaVel,
-                               Vi constraintCounts, bool averaged = true) {
+inline void applyUpdates(int n, V3 posPred, V3 velPred, V3 deltaPos, V3 deltaVel,
+                         Vi constraintCounts, bool averaged = true) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::apply_updates", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
@@ -194,8 +192,7 @@ inline void applyUpdatesKokkos(int n, V3 posPred, V3 velPred, V3 deltaPos, V3 de
 }
 
 /// Final commit: periodic wrap of the predicted position into the domain, commit position + quat.
-inline void finalCommitKokkos(int n, V3 pos, Vf invMass, V3 posPred, V4 quat, V4 quatPred,
-                              Domain dom) {
+inline void finalCommit(int n, V3 pos, Vf invMass, V3 posPred, V4 quat, V4 quatPred, Domain dom) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::final_commit", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
@@ -236,8 +233,8 @@ struct KE2 {
     return *this;
   }
 };
-inline void applyThermostatKokkos(int numReal, V3 vel, Vf invMass, V3 angVel, V3 invInertia,
-                                  V4 quat, double kB, double tau, double Ttarget, float dt) {
+inline void applyThermostat(int numReal, V3 vel, Vf invMass, V3 angVel, V3 invInertia, V4 quat,
+                            double kB, double tau, double Ttarget, float dt) {
   CpExec space;
   KE2 sum;
   Kokkos::parallel_reduce(
@@ -282,7 +279,7 @@ inline void applyThermostatKokkos(int numReal, V3 vel, Vf invMass, V3 angVel, V3
 }
 
 /// Growth mode: scale = target * factor (when active).
-inline void updateGrowthScalesKokkos(int n, Vf scale, Vf targetScale, float factor) {
+inline void updateGrowthScales(int n, Vf scale, Vf targetScale, float factor) {
   if (!(factor > 0.0f))
     return;
   CpExec space;

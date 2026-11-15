@@ -6,7 +6,7 @@
 // 0 same-colour pairs at every colouring vertex and leftover = 0.
 //
 // The history the test was written against (kept for the record):
-// Both greedy colourings (colorManifoldsKokkos: the velocity sweeps; colorContactsKokkos: the
+// Both greedy colourings (colorManifolds: the velocity sweeps; colorContacts: the
 // position sweeps) pick the lowest colour free at both endpoints with
 //     while (c < 62 && (forbidden & (1 << c))) ++c;
 // so once colours 0..61 are all taken at a body, every further contact of that body gets colour
@@ -31,7 +31,7 @@
 #include <utility>
 #include <vector>
 
-#include "solve_copies.hpp"  // the hub-copy builder (buildHubCopiesKokkos)
+#include "solve_copies.hpp"  // the hub-copy builder (buildHubCopies)
 #include "solver_position.hpp"
 #include "solver_velocity.hpp"
 
@@ -83,21 +83,21 @@ int main(int argc, char** argv) {
         Kokkos::deep_copy(c, hc);
         Kokkos::View<int*, CpMem> col("col", ne);
         int leftover = -1;
-        int nc = colorContactsKokkos(c, ne, nb, col, winner, mask, leftover);
+        int nc = colorContacts(c, ne, nb, col, winner, mask, leftover);
         const int leftover0 = leftover;
         std::vector<std::pair<int, int>> vEdges = edges;  // colouring vertices (copies after split)
         int copies = 0;
         if (leftover > 0) {
           PhaseCopies H;
           Kokkos::View<int*, CpMem> eA("eA", ne), eB("eB", ne), deg("deg", nb);
-          positionEdgeEndsKokkos(c, PosUnits{}, ne, col, eA, eB);
-          vertexDegreeKokkos(eA, eB, ne, nb, deg);
-          buildHubCopiesKokkos(eA, eB, ne, nb, /*slotBase*/ nb, deg, H);
+          positionEdgeEnds(c, PosUnits{}, ne, col, eA, eB);
+          vertexDegree(eA, eB, ne, nb, deg);
+          buildHubCopies(eA, eB, ne, nb, /*slotBase*/ nb, deg, H);
           copies = H.nCopies;
           Kokkos::View<long long*, CpMem> w2("w2", nb + H.nCopies);
           Kokkos::View<std::uint64_t*, CpMem> m2("m2", nb + H.nCopies);
-          nc = colorContactsKokkos(c, ne, nb, col, w2, m2, leftover, {}, PosUnits{},
-                                   SlotOverride{H.slotA, H.slotB, {}, 1.0f}, nb + H.nCopies);
+          nc = colorContacts(c, ne, nb, col, w2, m2, leftover, {}, PosUnits{},
+                             SlotOverride{H.slotA, H.slotB, {}, 1.0f}, nb + H.nCopies);
           auto ha = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), H.slotA);
           auto hb = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), H.slotB);
           for (int e = 0; e < ne; ++e)
@@ -134,21 +134,21 @@ int main(int argc, char** argv) {
         Kokkos::deep_copy(realIdx, hr);
         Kokkos::View<int*, CpMem> col("col", ne);
         int leftover = -1;
-        int nc = colorManifoldsKokkos(m, ne, realIdx, nb, col, winner, mask, leftover);
+        int nc = colorManifolds(m, ne, realIdx, nb, col, winner, mask, leftover);
         const int leftover0 = leftover;
         std::vector<std::pair<int, int>> vEdges = edges;
         int copies = 0;
         if (leftover > 0) {
           PhaseCopies H;
           Kokkos::View<int*, CpMem> eA("eA", ne), eB("eB", ne), deg("deg", nb);
-          velocityEdgeEndsKokkos(m, ne, realIdx, col, eA, eB);
-          vertexDegreeKokkos(eA, eB, ne, nb, deg);
-          buildHubCopiesKokkos(eA, eB, ne, nb, /*slotBase*/ nb, deg, H);
+          velocityEdgeEnds(m, ne, realIdx, col, eA, eB);
+          vertexDegree(eA, eB, ne, nb, deg);
+          buildHubCopies(eA, eB, ne, nb, /*slotBase*/ nb, deg, H);
           copies = H.nCopies;
           Kokkos::View<long long*, CpMem> w2("w2", nb + H.nCopies);
           Kokkos::View<std::uint64_t*, CpMem> m2("m2", nb + H.nCopies);
-          nc = colorManifoldsKokkos(m, ne, realIdx, nb, col, w2, m2, leftover, {},
-                                    SlotOverride{H.slotA, H.slotB, {}, 1.0f}, true, nb + H.nCopies);
+          nc = colorManifolds(m, ne, realIdx, nb, col, w2, m2, leftover, {},
+                              SlotOverride{H.slotA, H.slotB, {}, 1.0f}, true, nb + H.nCopies);
           auto ha = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), H.slotA);
           auto hb = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), H.slotB);
           for (int e = 0; e < ne; ++e)

@@ -1,6 +1,6 @@
 /// @file
 /// @brief dem — the single-rank step drivers over the particle SoA: the XPBD substep (`demStep`),
-/// its committed-state overlap probe (`computeOverlapsKokkos`), and the contact-buffer sizing the
+/// its committed-state overlap probe (`computeOverlaps`), and the contact-buffer sizing the
 /// narrow phase relies on (`growContactBuffers` / `narrowPhaseGrow`). Free functions; the
 /// `Simulation` facade in sim.hpp calls them, the distributed drivers in step_solve_mpi.hpp share
 /// the buffer sizing and the narrow phase.
@@ -119,17 +119,17 @@ inline int narrowPhaseGrow(Particles& P, int np, float margin) {
   CpExec space;
   auto detect = [&]() {
     Kokkos::deep_copy(space, P.contactCount, 0);
-    detectContactsKokkos(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
-                         P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid,
-                         P.materialId, P.pairMaterials, /*twoWay=*/P.shellDetection == 1);
-    detectBoundaryKokkos(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId,
-                         P.shapes, P.shell, P.planes, P.globalScale, margin, P.contacts,
-                         P.contactCount, P.maxOverlap);
+    detectContacts(P.pairs, np, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes, P.shell,
+                   P.globalScale, margin, P.contacts, P.contactCount, P.maxOverlap, P.sdfGrid,
+                   P.materialId, P.pairMaterials, /*twoWay=*/P.shellDetection == 1);
+    detectBoundary(P.numReal, P.numPlanes, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
+                   P.shell, P.planes, P.globalScale, margin, P.contacts, P.contactCount,
+                   P.maxOverlap);
     if (P.numWalls > 0)
-      detectWallSdfKokkos(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId,
-                          P.shapes, P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts,
-                          P.contactCount, P.maxOverlap, P.materialId, P.pairMaterials,
-                          /*wallIdBase=*/P.numPlanes);
+      detectWallSdf(P.numReal, P.numWalls, P.posPred, P.quatPred, P.scale, P.shapeId, P.shapes,
+                    P.shell, P.walls, P.wallGrid, P.globalScale, margin, P.contacts, P.contactCount,
+                    P.maxOverlap, P.materialId, P.pairMaterials,
+                    /*wallIdBase=*/P.numPlanes);
     return readInt(P.contactCount);
   };
   int nc = detect();
@@ -152,7 +152,7 @@ inline void demStep(Particles& P) {
       P.growthFactor = 1.0f;
   }
   if (P.growthFactor > 0.0f)
-    updateGrowthScalesKokkos(P.numReal, P.scale, P.targetScale, P.growthFactor);
+    updateGrowthScales(P.numReal, P.scale, P.targetScale, P.growthFactor);
 
   // ghost band + broadphase margin sized off the ACTUAL max grain radius (post-growth), so SI-unit
   // particles just work; identical to the old 0.1/1.0*globalScale when globalScale ~ the grain
@@ -160,10 +160,9 @@ inline void demStep(Particles& P) {
   const float maxRad = maxOwnedRadius(P);
   const float margin = 0.1f * maxRad;
 
-  predictVelocityKokkos(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia,
-                        P.posPred, P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat,
-                        P.deltaVel, P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce,
-                        P.extTorque);
+  predictVelocity(P.numReal, P.pos, P.invMass, P.vel, P.quat, P.angVel, P.invInertia, P.posPred,
+                  P.quatPred, P.velPred, P.angVelPred, P.deltaPos, P.deltaQuat, P.deltaVel,
+                  P.deltaAngVel, P.constraintCounts, P.gravity, P.dt, P.extForce, P.extTorque);
 
   // Island sleeping (single-GPU statics, opt-in, gravity on, no external drag): freeze the
   // currently-asleep bodies so gravity/prediction do not move them; the wake pass + both-asleep
@@ -175,8 +174,8 @@ inline void demStep(Particles& P) {
       P.sleepingEnabled && gMag > 0.0f && !P.extForceActive && !P.extTorqueActive;
   const float sleepVRest = 2.0f * P.dt * gMag;
   if (sleepStep)
-    freezeAsleepKokkos(P.numReal, P.asleep, P.pos, P.quat, P.posPred, P.quatPred, P.velPred,
-                       P.angVelPred);
+    freezeAsleep(P.numReal, P.asleep, P.pos, P.quat, P.posPred, P.quatPred, P.velPred,
+                 P.angVelPred);
 
   {
     auto ri = P.realIndices;
@@ -197,11 +196,11 @@ inline void demStep(Particles& P) {
   const float ghostBand = 2.0f * maxRad + margin;
   // Size the SoA for the ghost boundary layer BEFORE emitting (CUDA did this in initialize() via
   // calculate_capacity). Without it a Simulation(numReal) leaves capacity==numReal, so every ghost
-  // overflows P.capacity in generateGhostsKokkos and cross-boundary contacts are never detected.
+  // overflows P.capacity in generateGhosts and cross-boundary contacts are never detected.
   P.ensureCapacity(calculateGhostCapacity(P.numReal, P.domain, ghostBand));
-  generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred,
-                       P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
-                       P.shapeId, P.realIndices, P.topGhost, P.gid, P.materialId);
+  generateGhosts(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred, P.vel,
+                 P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale, P.shapeId,
+                 P.realIndices, P.topGhost, P.gid, P.materialId);
   P.numParticles = readInt(P.topGhost);
   if (P.numParticles > P.numReal) {
     // Each image's periodic shift at generation (the position-phase copy seed, §WO-4 item 2).
@@ -218,7 +217,7 @@ inline void demStep(Particles& P) {
         });
   }
 
-  fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
+  fillWorldRadii(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
   // Collision detection runs on the PREDICTED state (speculative positions/orientations), matching
   // the CUDA solver — the position solve then corrects posPred against these contacts.
   // findCollisionsGrow fences + reads the pair count back to host and guarantees np ≤ P.pairs
@@ -234,7 +233,7 @@ inline void demStep(Particles& P) {
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);
   const int nc = narrowPhaseGrow(P, np, margin);
 
-  reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot);
+  reduceContactsToManifolds(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot);
   const int nm = readInt(P.manifoldCount);
 
   // Island sleeping: wake any sleeper actually disturbed (fast approaching neighbour, moving wall,
@@ -245,14 +244,14 @@ inline void demStep(Particles& P) {
   // unchanged for awake bodies and the ledger still carries the frozen force network.
   Vf savedInvMass = P.invMass;
   if (sleepStep) {
-    wakeDisturbedKokkos(P.manifolds, nm, P.realIndices, P.velPred, P.wakeScale * sleepVRest,
-                        P.asleep, P.sleepCounter, P.sleepMovingWall, P.sleepCurCount, P.numReal);
-    wakeContactChangeKokkos(P.numReal, P.sleepCurCount, P.sleepPrevCount, P.sleepMovingWall,
-                            P.asleep, P.sleepCounter, P.sleepWakeLostContact);
-    computeManifoldSleepKokkos(P.manifolds, nm, P.realIndices, P.asleep, P.manifoldSleep);
-    computeContactSleepKokkos(P.contacts, nc, P.realIndices, P.asleep, P.contactSleep);
-    buildInvMassEffKokkos(P.numParticles, P.asleep, P.realIndices, P.invMass, P.invMassEff,
-                          P.sleepImmovableFrac);
+    wakeDisturbed(P.manifolds, nm, P.realIndices, P.velPred, P.wakeScale * sleepVRest, P.asleep,
+                  P.sleepCounter, P.sleepMovingWall, P.sleepCurCount, P.numReal);
+    wakeContactChange(P.numReal, P.sleepCurCount, P.sleepPrevCount, P.sleepMovingWall, P.asleep,
+                      P.sleepCounter, P.sleepWakeLostContact);
+    computeManifoldSleep(P.manifolds, nm, P.realIndices, P.asleep, P.manifoldSleep);
+    computeContactSleep(P.contacts, nc, P.realIndices, P.asleep, P.contactSleep);
+    buildInvMassEff(P.numParticles, P.asleep, P.realIndices, P.invMass, P.invMassEff,
+                    P.sleepImmovableFrac);
     P.invMass = P.invMassEff;
   }
 
@@ -267,27 +266,26 @@ inline void demStep(Particles& P) {
       Kokkos::resize(savedInvMass, P.capacity);
     P.invMass = savedInvMass;  // restore the real inverse mass for the commit / next step
   }
-  finalCommitKokkos(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
+  finalCommit(P.numReal, P.pos, P.invMass, P.posPred, P.quat, P.quatPred, P.domain);
 
   // Sleep detection: a grounded body whose motion stayed below the resting floor for K substeps
   // goes to sleep (velocity zeroed). Runs on the committed velocities + the solve's grounded
   // levels.
   if (sleepStep)
-    updateSleepKokkos(P.numReal, P.vel, P.angVel, P.rad, P.groundedLevel, P.sleepMovingWall,
-                      P.asleep, P.sleepCounter, P.sleepScale * sleepVRest, P.sleepK, P.vel,
-                      P.angVel);
+    updateSleep(P.numReal, P.vel, P.angVel, P.rad, P.groundedLevel, P.sleepMovingWall, P.asleep,
+                P.sleepCounter, P.sleepScale * sleepVRest, P.sleepK, P.vel, P.angVel);
 
   // Berendsen thermostat at the end of the step (CUDA Simulation::step), tau>0 enables.
   if (P.thermostatTau > 0.0f && P.dt > 0.0f)
-    applyThermostatKokkos(P.numReal, P.vel, P.invMass, P.angVel, P.invInertia, P.quat,
-                          P.thermostatKB, P.thermostatTau, P.thermostatTemp, P.dt);
+    applyThermostat(P.numReal, P.vel, P.invMass, P.angVel, P.invInertia, P.quat, P.thermostatKB,
+                    P.thermostatTau, P.thermostatTemp, P.dt);
 }
 
 /// Max pair interpenetration on the *committed* state (faithful to CUDA
 /// Simulation::compute_overlaps): copy committed pos/quat into the predicted buffers, regenerate
 /// the periodic ghosts from that state, then run the same broad/narrow phase as demStep and return
 /// the recorded max overlap. No solve.
-inline float computeOverlapsKokkos(Particles& P) {
+inline float computeOverlaps(Particles& P) {
   CpExec space;
   const float maxRad = maxOwnedRadius(P);
   const float margin = 0.1f * maxRad;
@@ -305,11 +303,11 @@ inline float computeOverlapsKokkos(Particles& P) {
   // Match demStep: ensure ghost-boundary-layer headroom so cross-boundary overlaps are counted (a
   // Simulation(numReal) otherwise has capacity==numReal and every ghost overflows). See demStep.
   P.ensureCapacity(calculateGhostCapacity(P.numReal, P.domain, ghostBand));
-  generateGhostsKokkos(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred,
-                       P.vel, P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale,
-                       P.shapeId, P.realIndices, P.topGhost, P.gid, P.materialId);
+  generateGhosts(P.numReal, P.capacity, P.domain, ghostBand, P.pos, P.invMass, P.posPred, P.vel,
+                 P.velPred, P.quat, P.quatPred, P.angVel, P.angVelPred, P.scale, P.shapeId,
+                 P.realIndices, P.topGhost, P.gid, P.materialId);
   P.numParticles = readInt(P.topGhost);
-  fillWorldRadiiKokkos(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
+  fillWorldRadii(P.scale, P.rad, P.globalScale, P.baseRadius, P.numParticles);
   const int np = findCollisionsGrow(P, margin);
   Kokkos::deep_copy(space, P.contactCount, 0);
   Kokkos::deep_copy(space, P.maxOverlap, 0.0f);

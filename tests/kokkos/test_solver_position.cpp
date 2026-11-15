@@ -1,4 +1,4 @@
-// Correctness of the Kokkos XPBD position solve (dem::solvePositionKokkos) against a host
+// Correctness of the Kokkos XPBD position solve (dem::solvePosition) against a host
 // replication of the identical math. Random bodies + contacts; candidate contacts with a borderline
 // constraint value |C| are dropped so the active/inactive decision is decisive on both host and
 // device (keeps constraint_counts exactly comparable). Compares accumulated delta_pos (within tol;
@@ -162,7 +162,7 @@ int main(int argc, char** argv) {
     Kokkos::View<int*, CpMem> dCount("cnt", N);
     Kokkos::View<float, CpMem> dMaxOv("mo");
 
-    solvePositionKokkos(dC, M, dIM, dPos, dQp, dQs, dInvI, dDpos, dDquat, dCount, dMaxOv);
+    solvePosition(dC, M, dIM, dPos, dQp, dQs, dInvI, dDpos, dDquat, dCount, dMaxOv);
 
     std::vector<float> gdp(3 * N), gdq(4 * N);
     std::vector<int> gcn(N);

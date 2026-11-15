@@ -34,7 +34,7 @@ All runs: host-openmp, Release, `--bind-to none`, OMP_NUM_THREADS=1 unless state
 **Severity: should fix. Needs a decision; I would fix it. Status: CONFIRMED.**
 
 **Where**
-- `src/solve_driver.hpp:484`: `solveVelocityColoredGSKokkos`, the non-PGS path taken whenever g = 0.
+- `src/solve_driver.hpp:484`: `solveVelocityColoredGS`, the non-PGS path taken whenever g = 0.
 - `src/solver_velocity.hpp:1652-1694`: the kernel applies the full `(1+e)` impulse whenever the pair
   is approaching. It keeps no accumulator, so a later iteration can never take back an over-push.
 
@@ -127,7 +127,7 @@ percent, at e = 0.5 and e = 0.8.
 
 **Where**
 - `src/mpi_halo.hpp:826`: MigratePack carries each ledger entry on both locally owned endpoints.
-- `src/solve_driver.hpp:403`: `scatterOrphanBanksKokkos`.
+- `src/solve_driver.hpp:403`: `scatterOrphanBanks`.
 
 **Scenario**
 1. A and B are owned by one rank and migrate to different ranks. Both ranks now hold the entry.

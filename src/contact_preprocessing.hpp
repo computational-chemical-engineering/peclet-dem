@@ -125,13 +125,12 @@ KOKKOS_INLINE_FUNCTION unsigned long long pairKeyOf(const ManifoldC& m,
 /// `keyIdx` maps a body slot to the identity the pair key is built from: the REAL index map on the
 /// single-GPU path (stable within a run), or the GLOBAL particle id under MPI (stable across ranks,
 /// halo rebuilds and ownership migration — local slots are neither).
-inline void markPersistentManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                          int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
-                                          Kokkos::View<const int*, CpMem> keyIdx,
-                                          Kokkos::View<const unsigned long long*, CpMem> prevKeys,
-                                          int prevCount,
-                                          Kokkos::View<unsigned long long*, CpMem> outKeys,
-                                          Kokkos::View<unsigned char*, CpMem> outFlags) {
+inline void markPersistentManifolds(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                    int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
+                                    Kokkos::View<const int*, CpMem> keyIdx,
+                                    Kokkos::View<const unsigned long long*, CpMem> prevKeys,
+                                    int prevCount, Kokkos::View<unsigned long long*, CpMem> outKeys,
+                                    Kokkos::View<unsigned char*, CpMem> outFlags) {
   (void)realIdx;
   CpExec space;
   Kokkos::parallel_for(
@@ -153,9 +152,9 @@ inline void markPersistentManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> 
 /// Warm-start gather for the PGS velocity solve: per manifold, write its pair key and look up the
 /// previous substep's converged push impulse (0 for a new contact). Periodic-ghost duplicate
 /// manifolds (realA > realB twin) get key ~0 and warm 0 -- the canonical twin carries the impulse.
-/// `keyIdx`: see markPersistentManifoldsKokkos (realIdx keeps the periodic-dedup role; keyIdx
+/// `keyIdx`: see markPersistentManifolds (realIdx keeps the periodic-dedup role; keyIdx
 /// builds the cross-substep pair identity).
-inline void gatherWarmLambdaKokkos(
+inline void gatherWarmLambda(
     Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
     Kokkos::View<const int*, CpMem> realIdx, Kokkos::View<const int*, CpMem> keyIdx,
     Kokkos::View<const unsigned long long*, CpMem> prevKeys,
@@ -202,7 +201,7 @@ inline void gatherWarmLambdaKokkos(
 
 /// Save this substep's keys + converged impulses (normal AND tangential) and key-sort them for
 /// next substep's gather. A permutation sort carries both value arrays through one key sort.
-inline void commitPairKeysLambdaKokkos(
+inline void commitPairKeysLambda(
     Kokkos::View<const unsigned long long*, CpMem> keys, Kokkos::View<const float*, CpMem> lambda,
     Kokkos::View<const float* [3], CpMem> lambdaT, Kokkos::View<const float*, CpMem> restBank,
     Kokkos::View<const float*, CpMem> restVPeak, Kokkos::View<unsigned long long*, CpMem> prevKeys,
@@ -250,9 +249,8 @@ inline void commitPairKeysLambdaKokkos(
 }
 
 /// Copy this substep's keys into prevKeys and sort them for next substep's binary search.
-inline void commitPairKeysKokkos(Kokkos::View<const unsigned long long*, CpMem> keys,
-                                 Kokkos::View<unsigned long long*, CpMem> prevKeys,
-                                 int numManifolds) {
+inline void commitPairKeys(Kokkos::View<const unsigned long long*, CpMem> keys,
+                           Kokkos::View<unsigned long long*, CpMem> prevKeys, int numManifolds) {
   if (numManifolds <= 0)
     return;
   CpExec space;
@@ -268,11 +266,11 @@ inline void commitPairKeysKokkos(Kokkos::View<const unsigned long long*, CpMem> 
 /// ...) through the manifold graph. Warm start makes a few sweeps per substep track slowly-moving
 /// support fronts; the decay retires groundedness ~32 substeps after lift-off. Geometry-only (no
 /// persistence / velocity condition): grounded means "has a contact path down to the floor".
-inline void updateGroundedLevelsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                       int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
-                                       Kokkos::View<const float* [3], CpMem> posPred, F3 gHat,
-                                       Kokkos::View<unsigned char*, CpMem> grounded, int numReal,
-                                       int sweeps, int decay) {
+inline void updateGroundedLevels(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                                 Kokkos::View<const int*, CpMem> realIdx,
+                                 Kokkos::View<const float* [3], CpMem> posPred, F3 gHat,
+                                 Kokkos::View<unsigned char*, CpMem> grounded, int numReal,
+                                 int sweeps, int decay) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::grounded_decay", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
@@ -314,13 +312,13 @@ inline void updateGroundedLevelsKokkos(Kokkos::View<const ManifoldC*, CpMem> man
 /// the floor. Recomputed FRESH each time the pass triggers -- no warm start and no decay: a
 /// stale-low height would mis-order the sweeps, and the pass runs rarely enough that the exact
 /// BFS (early exit once a sweep changes nothing) is affordable. The support-orientation test
-/// (up vs 0.3|dx|) matches updateGroundedLevelsKokkos; ghost-slot positions keep the pair
+/// (up vs 0.3|dx|) matches updateGroundedLevels; ghost-slot positions keep the pair
 /// geometry periodic-aware.
 inline constexpr int kLevelInf = 1 << 28;
-inline void computeHeightLevelsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                      int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
-                                      Kokkos::View<const float* [3], CpMem> posPred, F3 gHat,
-                                      Kokkos::View<int*, CpMem> heights, int numReal) {
+inline void computeHeightLevels(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                                Kokkos::View<const int*, CpMem> realIdx,
+                                Kokkos::View<const float* [3], CpMem> posPred, F3 gHat,
+                                Kokkos::View<int*, CpMem> heights, int numReal) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::height_init", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
@@ -368,10 +366,10 @@ inline void computeHeightLevelsKokkos(Kokkos::View<const ManifoldC*, CpMem> mani
 /// host-submission-bound). Within a colour the scatter order is arbitrary — colour classes are
 /// body-disjoint, so the sweep result is bit-identical. Items with colour < 0 (inactive, dups,
 /// mask-saturation leftovers) are excluded, exactly like the scan-mode colour filter.
-inline void buildColorBucketsKokkos(Kokkos::View<const int*, CpMem> colorOf, int n, int numColors,
-                                    Kokkos::View<int*, CpMem> perm,
-                                    Kokkos::View<int*, CpMem> cursor,  // scratch, >= 64 ints
-                                    std::vector<int>& offs) {
+inline void buildColorBuckets(Kokkos::View<const int*, CpMem> colorOf, int n, int numColors,
+                              Kokkos::View<int*, CpMem> perm,
+                              Kokkos::View<int*, CpMem> cursor,  // scratch, >= 64 ints
+                              std::vector<int>& offs) {
   offs.assign(static_cast<std::size_t>(numColors) + 1, 0);
   if (n <= 0 || numColors <= 0)
     return;
@@ -467,6 +465,133 @@ struct SlotOverride {
   }
 };
 
+/// One colouring edge as the arbitration sees it: the colouring vertices of its A / B ends (b = -1
+/// for a wall/boundary edge) and its unique priority key (a colorKey).
+struct ColorEdge {
+  int a, b;
+  long long key;
+};
+
+/// Kernel labels of one colorEdges instantiation (each caller keeps its own profiling names).
+struct ColorLabels {
+  const char* initBodies;
+  const char* initEdges;
+  const char* resetWinner;
+  const char* contend;
+  const char* commit;
+  const char* max;
+  const char* leftover;
+};
+
+/// Greedy graph colouring of an edge set: no two edges sharing a colouring vertex get the same
+/// colour. Round-based max-key (Jones–Plassmann) arbitration, no adjacency lists: each round every
+/// still-uncoloured edge contends for its endpoint vertices via atomic_max(bodyWinner, key); an
+/// edge that wins BOTH endpoints has no uncoloured conflict this round, so it commits the lowest
+/// colour free at either endpoint (a per-vertex bitmask) — and, as the unique winner of those
+/// vertices, updates the masks race-free. -2 inactive (skip forever), -1 uncoloured, >= 0
+/// committed colour. Returns the number of colours used (0 if no active edges).
+///
+/// `EdgeAccessor` is the compile-time edge source, holding its Views by value, with device members
+/// `int initialColor(int e)` (-2 inactive or -1) and `ColorEdge edge(int e)`, and a static
+/// `labels()`. `numVertices` is the vertex count; `vertexSpan` covers hub copy slots (§4.4; 0 = the
+/// no-copy span numVertices).
+template <class EdgeAccessor>
+int colorEdges(const EdgeAccessor& edges, int numEdges, int numVertices, int vertexSpan,
+               Kokkos::View<int*, CpMem> color, Kokkos::View<long long*, CpMem> bodyWinner,
+               Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover) {
+  constexpr ColorLabels labels = EdgeAccessor::labels();
+  leftover = 0;
+  CpExec space;
+  if (numEdges <= 0 || numVertices <= 0)
+    return 0;
+  const int nV = vertexSpan > 0 ? vertexSpan : numVertices;
+  Kokkos::parallel_for(
+      labels.initBodies, Kokkos::RangePolicy<CpExec>(space, 0, nV),
+      KOKKOS_LAMBDA(int i) { bodyMask(i) = 0; });
+  Kokkos::parallel_for(
+      labels.initEdges, Kokkos::RangePolicy<CpExec>(space, 0, numEdges),
+      KOKKOS_LAMBDA(int idx) { color(idx) = edges.initialColor(idx); });
+
+  int remaining = 1, prevRemaining = -1;
+  // Round cap (docs/contact_solve_framework.md §12 S7): the bound is the edge count + 2. Every
+  // round commits at least the globally highest-key uncoloured edge (keys are unique: colorKey
+  // carries the index in its low word), so the loop terminates within numEdges rounds; O(log n)
+  // in practice.
+  const int maxRounds = numEdges + 2;
+  for (int round = 0; round < maxRounds && remaining > 0; ++round) {
+    Kokkos::parallel_for(
+        labels.resetWinner, Kokkos::RangePolicy<CpExec>(space, 0, nV),
+        KOKKOS_LAMBDA(int i) { bodyWinner(i) = -1; });
+    Kokkos::parallel_for(
+        labels.contend, Kokkos::RangePolicy<CpExec>(space, 0, numEdges), KOKKOS_LAMBDA(int idx) {
+          if (color(idx) != -1)
+            return;
+          const ColorEdge e = edges.edge(idx);
+          Kokkos::atomic_max(&bodyWinner(e.a), e.key);
+          if (e.b >= 0)
+            Kokkos::atomic_max(&bodyWinner(e.b), e.key);
+        });
+    int rem = 0;
+    Kokkos::parallel_reduce(
+        labels.commit, Kokkos::RangePolicy<CpExec>(space, 0, numEdges),
+        KOKKOS_LAMBDA(int idx, int& acc) {
+          if (color(idx) != -1)
+            return;
+          const ColorEdge e = edges.edge(idx);
+          // Winner iff it holds BOTH its endpoints -> no uncoloured conflict, sole writer of a/b.
+          if (bodyWinner(e.a) != e.key || (e.b >= 0 && bodyWinner(e.b) != e.key)) {
+            acc += 1;
+            return;
+          }
+          std::uint64_t forbidden = bodyMask(e.a);
+          if (e.b >= 0)
+            forbidden |= bodyMask(e.b);
+          int c = 0;  // lowest free colour of 64; never forced (§4.2 item 1)
+          while (c < kColorPalette && ((forbidden >> c) & 1))
+            ++c;
+#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 3
+          if (c > 62)
+            c = 62;  // G13 mutant 3: the old forced colour 62
+#endif
+          if (c == kColorPalette) {
+            color(idx) = kColorUncolourable;  // no free colour: neither coloured nor remaining
+            return;
+          }
+          color(idx) = c;
+          const std::uint64_t bit = std::uint64_t(1) << c;
+          bodyMask(e.a) |= bit;
+          if (e.b >= 0)
+            bodyMask(e.b) |= bit;
+        },
+        rem);
+    space.fence();
+    // Stall break: a safety bound only -- every round commits (or marks -3) the highest-key
+    // contender, so rem strictly decreases (§12 S7). Anything left -1 is a leftover.
+    if (rem == prevRemaining)
+      break;
+    prevRemaining = rem;
+    remaining = rem;
+  }
+
+  int maxc = -1;
+  Kokkos::parallel_reduce(
+      labels.max, Kokkos::RangePolicy<CpExec>(space, 0, numEdges),
+      KOKKOS_LAMBDA(int idx, int& mx) {
+        if (color(idx) > mx)
+          mx = color(idx);
+      },
+      Kokkos::Max<int>(maxc));
+  Kokkos::parallel_reduce(
+      labels.leftover, Kokkos::RangePolicy<CpExec>(space, 0, numEdges),
+      KOKKOS_LAMBDA(int idx, int& acc) {
+        if (color(idx) == -1 || color(idx) == kColorUncolourable)
+          acc += 1;
+      },
+      leftover);
+  space.fence();
+  return maxc + 1;
+}
+
 /// Decode the canonical (bodyA, bodyB) from a pair key (bodyB = -1 for boundary). Bit 63
 /// (kNonOwnedPairBit) is masked: the identity on every key below 2^63.
 KOKKOS_INLINE_FUNCTION void decodeKey(std::uint64_t key, int& bodyA, int& bodyB) {
@@ -521,8 +646,7 @@ KOKKOS_INLINE_FUNCTION ManifoldC transformContact(const ContactC& c) {
 /// with every contact owned (np = 1 on a closed domain) the contacts are unchanged bit for bit.
 /// Returns ncOwned.
 template <class Owns>
-inline int partitionContactsKokkos(Kokkos::View<ContactC*, CpMem> contacts, int n,
-                                   const Owns& owns) {
+inline int partitionContacts(Kokkos::View<ContactC*, CpMem> contacts, int n, const Owns& owns) {
   if (n == 0)
     return 0;
   CpExec space;
@@ -560,16 +684,15 @@ inline int partitionContactsKokkos(Kokkos::View<ContactC*, CpMem> contacts, int 
 /// least the number of unique pairs; returns that count (also written to outCount).
 ///
 /// Distributed step (docs/mpi_momentum_conservation.md §2.2): with `numOwnedContacts` >= 0 the
-/// contacts at index >= numOwnedContacts (not owned by this rank, after partitionContactsKokkos)
+/// contacts at index >= numOwnedContacts (not owned by this rank, after partitionContacts)
 /// get kNonOwnedPairBit in their key, so the sort puts the owned manifolds first, [0, nmOwned) in
 /// their old relative order, and the non-owned ones after them; `*numOwnedManifolds` receives
 /// nmOwned. The defaults reproduce the single-rank reduction exactly.
-inline int reduceContactsToManifoldsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, int n,
-                                           Kokkos::View<ManifoldC*, CpMem> outManifolds,
-                                           Kokkos::View<int, CpMem> outCount,
-                                           Kokkos::View<int*, CpMem> contactSlot = {},
-                                           int numOwnedContacts = -1,
-                                           int* numOwnedManifolds = nullptr) {
+inline int reduceContactsToManifolds(Kokkos::View<const ContactC*, CpMem> contacts, int n,
+                                     Kokkos::View<ManifoldC*, CpMem> outManifolds,
+                                     Kokkos::View<int, CpMem> outCount,
+                                     Kokkos::View<int*, CpMem> contactSlot = {},
+                                     int numOwnedContacts = -1, int* numOwnedManifolds = nullptr) {
   CpExec space;
   if (n == 0) {
     Kokkos::deep_copy(space, outCount, 0);
@@ -713,9 +836,9 @@ struct PosUnits {
 /// is constant on it) is never finer than the unit key, so numManifolds == n
 /// already proves every unit is one contact and the identity CSR is written without the key sort
 /// (a serial host sort on the host backends) -- the same result the sort would find.
-inline int buildPositionUnitsKokkos(Kokkos::View<const ContactC*, CpMem> contacts, int n,
-                                    Kokkos::View<int*, CpMem> unitStart,
-                                    Kokkos::View<int*, CpMem> unitContacts, int numManifolds = -1) {
+inline int buildPositionUnits(Kokkos::View<const ContactC*, CpMem> contacts, int n,
+                              Kokkos::View<int*, CpMem> unitStart,
+                              Kokkos::View<int*, CpMem> unitContacts, int numManifolds = -1) {
   CpExec space;
   if (n <= 0) {
     Kokkos::deep_copy(space, Kokkos::subview(unitStart, 0), 0);
@@ -807,10 +930,10 @@ inline int buildPositionUnitsKokkos(Kokkos::View<const ContactC*, CpMem> contact
 /// PGS push impulse (lambdaAcc, shared equally over the manifold's contact points). The legacy
 /// accumulateNormalImpulse bound derives from approach velocities, which the PGS warm start has
 /// already cancelled -- without this the Coulomb bound is ~0 and friction is inert.
-inline void frictionBoundFromLambdaKokkos(Kokkos::View<ContactC*, CpMem> contacts, int numContacts,
-                                          Kokkos::View<const int*, CpMem> contactSlot,
-                                          Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                          Kokkos::View<const float*, CpMem> lambdaAcc) {
+inline void frictionBoundFromLambda(Kokkos::View<ContactC*, CpMem> contacts, int numContacts,
+                                    Kokkos::View<const int*, CpMem> contactSlot,
+                                    Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                    Kokkos::View<const float*, CpMem> lambdaAcc) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::cp::pgs_friction_bound", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
@@ -829,12 +952,13 @@ inline void frictionBoundFromLambdaKokkos(Kokkos::View<ContactC*, CpMem> contact
 /// impulse equivalent over the substep is lambda_pos / dt * dt = lambda_pos / (w*...) -- we
 /// store lambda_pos/dt * dt = lambda_pos scaled by 1/dt to velocity-impulse units) and write
 /// it into the sorted prev-store so next substep's warm gather can top up the Coulomb bound.
-inline void commitPosImpulseKokkos(
-    Kokkos::View<const float*, CpMem> posLambdaContact, int numContacts,
-    Kokkos::View<const int*, CpMem> contactSlot, Kokkos::View<const ManifoldC*, CpMem> manifolds,
-    int numManifolds, Kokkos::View<const unsigned long long*, CpMem> keys,
-    Kokkos::View<const unsigned long long*, CpMem> prevKeysSorted, int prevCount, float dt,
-    Kokkos::View<float*, CpMem> scratchManifold, Kokkos::View<float*, CpMem> prevPosImpulse) {
+inline void commitPosImpulse(Kokkos::View<const float*, CpMem> posLambdaContact, int numContacts,
+                             Kokkos::View<const int*, CpMem> contactSlot,
+                             Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                             Kokkos::View<const unsigned long long*, CpMem> keys,
+                             Kokkos::View<const unsigned long long*, CpMem> prevKeysSorted,
+                             int prevCount, float dt, Kokkos::View<float*, CpMem> scratchManifold,
+                             Kokkos::View<float*, CpMem> prevPosImpulse) {
   CpExec space;
   auto sm = Kokkos::subview(scratchManifold, Kokkos::pair<int, int>(0, numManifolds));
   Kokkos::deep_copy(space, sm, 0.0f);

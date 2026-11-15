@@ -30,7 +30,7 @@ inline void demSolveContacts(Particles& P, int nc, int nm, int nBodies,
 
 5. **Velocity phase** (l.400–505):
    - Side-flags zeroed (fully symmetric main sweeps; one-sided only in stabilization)
-   - Approach velocity recorded (`computeVn0Kokkos`)
+   - Approach velocity recorded (`computeVn0`)
    - Warm impulses applied (if PGS)
    - **Hook call:** `hooks.syncVelocities(P)` if MPI, to refresh ghosts after warm start
    - Coloured-GS (or Jacobi) velocity sweeps, per-iteration residual max-reduced (`hooks.allMax`)
@@ -112,7 +112,7 @@ Band = `(2.0 + skinFrac) * R_max_global` (Allreduce MAX over ranks). Calls `demS
 
 ### Velocity impulse kernel sketch (`solver_velocity.hpp:55–225`)
 
-**Kernel:** `solveVelocityKokkos`, one thread per manifold.
+**Kernel:** `solveVelocity`, one thread per manifold.
 
 ```cpp
 // Per-manifold normal impulse (simplified):
@@ -166,7 +166,7 @@ Kokkos::atomic_add(&velCounts(realA), 1);
 if (idB >= 0) Kokkos::atomic_add(&velCounts(realB), 1);
 ```
 
-**Averaged apply** (`applyVelocityDeltasAveragedKokkos`, l.233–253):
+**Averaged apply** (`applyVelocityDeltasAveraged`, l.233–253):
 ```cpp
 const float f = Kokkos::fmin(1.0f, 2.0f / static_cast<float>(count));
 velPred(i, c) += deltaVel(i, c) * f;  // Over-relaxed: f ∈ [1, 2/count]
@@ -176,7 +176,7 @@ velPred(i, c) += deltaVel(i, c) * f;  // Over-relaxed: f ∈ [1, 2/count]
 
 ### Position impulse kernel (`solver_position.hpp:36–133`)
 
-**Kernel:** `solvePositionKokkos`, one thread per contact (not manifold).
+**Kernel:** `solvePosition`, one thread per contact (not manifold).
 
 ```cpp
 const int idA = c.bodyA, idB = c.bodyB;  // Raw body slots
@@ -210,7 +210,7 @@ if (idB >= 0) {
 }
 ```
 
-**Ghost bodies:** Position kernel writes to BOTH owned AND ghost slots (identified by raw body index `idA`, `idB`). Ghost deltas are discarded by `applyUpdatesKokkos` after the colour sweep (only owned rows ∈ [0, numReal) are kept).
+**Ghost bodies:** Position kernel writes to BOTH owned AND ghost slots (identified by raw body index `idA`, `idB`). Ghost deltas are discarded by `applyUpdates` after the colour sweep (only owned rows ∈ [0, numReal) are kept).
 
 ---
 
@@ -267,7 +267,7 @@ void forward4(V4 field) {  // Quaternions
 
 ### Pair force computation
 
-**Signature:** `hertzPairForcesKokkos(pairs, np, pos, vel, angVel, rad, invMass, matId, pairMaterials, …, hertzE, hertzNu, dt, hertzXi, deltaVel, deltaAngVel)`
+**Signature:** `hertzPairForces(pairs, np, pos, vel, angVel, rad, invMass, matId, pairMaterials, …, hertzE, hertzNu, dt, hertzXi, deltaVel, deltaAngVel)`
 
 **Per-pair:** Load positions, velocities, radii from the pairs array (both bodies by slot index). Compute Hertz contact stiffness (elastic moduli, contact radius). Apply normal spring force + Mindlin tangential history xi. Scatter forces (sign opposite) to both bodies' slots.
 
@@ -275,7 +275,7 @@ void forward4(V4 field) {  // Quaternions
 
 **Single-rank behaviour:** Local slot indices ≡ gids (identity mapping) → history carries transparently. Under MPI, gid carries across halo rebuilds and ownership changes.
 
-**Ghost participation:** Pair kernels atomically write forces to both bodies' deltaVel/deltaAngVel (owned or ghost slots). Ghost forces are cleared by `zeroForceScratchKokkos` (l.180–192) after integration; only owned rows are kept.
+**Ghost participation:** Pair kernels atomically write forces to both bodies' deltaVel/deltaAngVel (owned or ghost slots). Ghost forces are cleared by `zeroForceScratch` (l.180–192) after integration; only owned rows are kept.
 
 ---
 

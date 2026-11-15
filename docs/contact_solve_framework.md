@@ -111,7 +111,7 @@ Every per-contact update in dem has one of two forms:
   - the Jacobi solves.
 - **Event form.** `Δλ_c = (1 + e) · approach_c(v_current) / w_c`, applied only while approaching,
   never retracted. The target depends on the **current** iterate. This is the `g = 0` one-shot
-  sweep, `solveVelocityColoredGSKokkos` (`src/solver_velocity.hpp:1582-1732`), called at
+  sweep, `solveVelocityColoredGS` (`src/solver_velocity.hpp:1582-1732`), called at
   `src/solve_driver.hpp:484`. Each application is an exact binary collision of the two *whole*
   bodies along `J_c`:
   `ΔKE = ½ (e² − 1) approach² / w_c ≤ 0`.
@@ -307,10 +307,10 @@ M converges much better where the rank faces dominate (strong scaling), and need
 - The legacy friction pass uses the two surface points. That gives `ΔL = dist · n × J_t`, measured
   ratio 1.000 (FOLLOWUPS §2).
 - Decision: every per-contact velocity computation of the legacy pass uses the midpoint arms, in
-  `accumulateNormalImpulseKokkos`, `solveContactFrictionKokkos` and every other arm use in
+  `accumulateNormalImpulse`, `solveContactFriction` and every other arm use in
   `src/solver_friction.hpp`.
 - Wall contacts keep their current arm (`src/solver_friction.hpp` wall branch and
-  `computePlaneLoadKokkos`). A wall is external, so any point is conservative, and wall-only runs
+  `computePlaneLoad`). A wall is external, so any point is conservative, and wall-only runs
   stay bitwise.
 
 ### 1.8 Visibility theorem
@@ -360,8 +360,8 @@ place of `reach` (§5.5).
 
 | Phase (code) | Form | Rank-split bodies | Local hub copies | np 1 change |
 |---|---|---|---|---|
-| Warm start (`warmStartApplyKokkos`, PGS path) | known impulses | applied on true masses **before** copies are seeded. The opening sync reconciles it raw (exact for known λ) | not yet seeded | none |
-| One-shot restitution, `g = 0` GS (`solveVelocityColoredGSKokkos`) | event | **X** (gate, true masses, raw reverse) | M with `k_local = s` (§4.1) | only where today's colouring fails |
+| Warm start (`warmStartApply`, PGS path) | known impulses | applied on true masses **before** copies are seeded. The opening sync reconciles it raw (exact for known λ) | not yet seeded | none |
+| One-shot restitution, `g = 0` GS (`solveVelocityColoredGS`) | event | **X** (gate, true masses, raw reverse) | M with `k_local = s` (§4.1) | only where today's colouring fails |
 | PGS normal + cone + Poisson release, `g ≠ 0` (`PGSManifoldSweep::solveOne`) | projection | **M**, `ω_vel = 1` (normal only) | M | only where the colouring fails |
 | Stabilization: one-sided (smode 1), escalate (3), ordered (4) | projection (side flags hold one side: a sink by design, unchanged) | M | M | same |
 | Multilevel (smode 2): fine sweep + coarse cycle | projection + coarse accelerator | M (ghost copies enter aggregates with solve masses via `effMass(invMassSolve)`; **superseded by §13.2**: a coarse vertex has mass `a·m/k`) | fold before the coarse cycle, re-seed after (coarse vertex mass: §13.2) | coarse colouring: skip instead of forcing colour 62 |
@@ -382,7 +382,7 @@ place of `reach` (§5.5).
   numerator is `−C`.
 - It accumulates **true-mass** deltas `J_c λ_c / m`.
 - The apply is a plain add, factor 1. This replaces `min(1, 2/count_i)` in
-  `applyVelocityDeltasAveragedKokkos` and `1/count_i` in `applyUpdatesKokkos`.
+  `applyVelocityDeltasAveraged` and `1/count_i` in `applyUpdates`.
 - Properties: conservative (P1 with `k = n`), KE non-increasing (per-copy exact collisions plus
   Jensen), binary collisions exact (`n = 1`).
 - It is more strongly damped than the legacy ω = 2 average at multi-contact bodies. It is a
@@ -407,10 +407,10 @@ equal masses), which is geometrically impossible for spheres in the velocity gra
 
 ### 4.2 The colouring procedure (all four fine colourings)
 The four fine colourings are:
-- `colorManifoldsKokkos` (`src/solver_velocity.hpp:277`);
-- `colorManifoldsIncrementalKokkos` (`:395`);
-- `colorContactsKokkos` (`src/solver_position.hpp:154`), which becomes `colorUnitsKokkos` (§4.3);
-- `colorContactsIncrementalKokkos` (`:253`), which becomes the unit version.
+- `colorManifolds` (`src/solver_velocity.hpp:277`);
+- `colorManifoldsIncremental` (`:395`);
+- `colorContacts` (`src/solver_position.hpp:154`), which becomes `colorUnits` (§4.3);
+- `colorContactsIncremental` (`:253`), which becomes the unit version.
 
 Changes:
 1. **No forced colour.** The free-colour search runs over bits 0..63:
@@ -446,7 +446,7 @@ Changes:
 
 ### 4.3 Position units (the ring-bed fix)
 - A **unit** is the set of contacts of one body pair (walls: one body and one wall).
-- The unit list reuses the manifold reduction's sort. `reduceContactsToManifoldsKokkos`
+- The unit list reuses the manifold reduction's sort. `reduceContactsToManifolds`
   (`src/contact_preprocessing.hpp`) sorts contacts by pair key and builds segments.
 - Extend it (optional outputs, default off, so np 1 callers without units are byte-identical) to
   emit:
@@ -678,7 +678,7 @@ hubs are folded first (§4.4).
 At the top of `demStepMpi` (`src/step_solve_mpi.hpp`), **before** the growth update and predict,
 compute over owned `i`:
 - `d_i = |v_i| dt + |g + extForce_i · invMass_i| dt²`. This is the exact bound on
-  `predictVelocityKokkos`'s centre displacement: `v' = v + a dt`, `x' = x + v' dt`.
+  `predictVelocity`'s centre displacement: `v' = v + a dt`, `x' = x + v' dt`.
 - `E_i = min over periodic images of dist(x_i, block_rank) + d_i`.
 - `D_i = |x_i − x_i^b| + d_i` when `verlet_skin > 0`, where `x^b` is the halo's build-time position
   `refPos_`; else 0.
@@ -801,7 +801,7 @@ written copies. That breaks X and makes the np 1 periodic twin Jacobi-lagged.
 - Velocity writes to any image land in the canonical slot, and non-canonical ghost slots report a
   zero increment.
 - Positions stay per slot.
-- `updateGroundedLevelsKokkos` and the orphan accounts become per body per rank, which is better.
+- `updateGroundedLevels` and the orphan accounts become per body per rank, which is better.
 - np 1 periodic `step_mpi` changes (named).
 
 ### 6.3 Warm-start ledger and Poisson bank under splitting
@@ -813,7 +813,7 @@ written copies. That breaks X and makes the np 1 periodic twin Jacobi-lagged.
 - **Orphan accounts** (Poisson, `g ≠ 0`, M). The per-copy share `B/k` (§4.6) makes concurrent draws
   from several copies bounded by the balance **exactly**. This fixes c771e07's R5 overdraw.
 - **Double credit after migration** (review finding 3, `src/mpi_halo.hpp:826` carry,
-  `src/solve_driver.hpp:403` scatter). `scatterOrphanBanksKokkos` gains an argument: under MPI,
+  `src/solve_driver.hpp:403` scatter). `scatterOrphanBanks` gains an argument: under MPI,
   credit a dead entry only if its **lower-gid endpoint is owned by this rank**. Under §5.1's
   symmetric visibility that is exactly the pair's owner, so the entry is credited once. A stale
   copy on the other rank is never credited.
@@ -975,7 +975,7 @@ Files: `tests/kokkos_mpi/test_momentum_mpi.cpp`, `tests/kokkos_mpi/test_ownershi
 ### WO-1: Single application point (D2)
 File: `src/solver_friction.hpp`.
 - Every body–body use of `c.rA` / `c.rB` in the legacy pass switches to the midpoint arms. That is
-  `accumulateNormalImpulseKokkos`'s pair branch (`:70-78`) and `solveContactFrictionKokkos`
+  `accumulateNormalImpulse`'s pair branch (`:70-78`) and `solveContactFriction`
   (`:165-217`).
 - Add `KOKKOS_INLINE_FUNCTION void contactArmsMid(const ContactC&, F3& rA, F3& rB)`, identical to
   `transformContact`'s shift.
@@ -988,8 +988,8 @@ File: `src/solver_friction.hpp`.
 - Every frictionless mode is byte-identical to baseline (np 1 OMP 1 dumps).
 
 ### WO-2: Mass-split Jacobi (D3)
-Files: `src/solver_velocity.hpp` (`solveVelocityKokkos`, `applyVelocityDeltasAveragedKokkos`),
-`src/solver_position.hpp` (`solvePositionKokkos`), `src/integration.hpp` (`applyUpdatesKokkos`),
+Files: `src/solver_velocity.hpp` (`solveVelocity`, `applyVelocityDeltasAveraged`),
+`src/solver_position.hpp` (`solvePosition`), `src/integration.hpp` (`applyUpdates`),
 `src/solve_driver.hpp` (the Jacobi branches `:518-526`, `:932-938`).
 - Implement §3.1:
   - a count kernel first, then `hooks.syncContactCounts`;
@@ -1089,7 +1089,7 @@ one-shot lambda), `src/solve_driver.hpp` (gate kernel, `solveEpoch`, interval in
 **Superseded by §13.5**, which keeps this text and adds to it.
 Files: `src/step_solve_mpi.hpp`, `src/mpi_halo.hpp` (`migrateToBlocks`, `MigratePack` ext
 force/torque, the gather rebuild predicate), `src/solve_driver_force.hpp` / `MpiForceHooks`,
-`src/sim.hpp` (stepMpi loop unchanged except the counter), and `scatterOrphanBanksKokkos` +
+`src/sim.hpp` (stepMpi loop unchanged except the counter), and `scatterOrphanBanks` +
 `src/solve_driver.hpp:403` (§6.3 credit rule).
 
 **Acceptance:**
@@ -1420,7 +1420,7 @@ Every item has a default, so work proceeds unattended.
 
 **The models.** Throwaway Python models (not committed) of the velocity kernels, for frictionless
 spheres, equal density, unit-norm manifolds:
-- the event-form one-shot exactly as `solveVelocityColoredGSKokkos` (`(1 + e)·approach`, applied
+- the event-form one-shot exactly as `solveVelocityColoredGS` (`(1 + e)·approach`, applied
   while approaching, colour order);
 - PGS exactly as `PGSManifoldSweep`'s normal update (`target = −e·max(vn0, 0)`, accumulated, clamp
   ≥ 0);
@@ -1612,7 +1612,7 @@ fixed. After reconciliation, its own constraint moves by `ω_eff·(−C_c)`, whe
     1.5 δ and left 0.5 δ clear. The "s = 4, ω = 1.5: 2 iterations" row of A.4 was this
     over-separation, not faster convergence.
   - **At rank faces:** any mix of the two.
-- **Physical harm.** Position corrections do not feed velocities in dem (`finalCommitKokkos`
+- **Physical harm.** Position corrections do not feed velocities in dem (`finalCommit`
   commits `posPred`), so the over-separation is a pure displacement.
   - Under gravity it lifts grains, which is potential energy from nothing.
   - It makes np 1 and np N disagree (`validate_periodic`).
@@ -1658,8 +1658,8 @@ fixed. After reconciliation, its own constraint moves by `ω_eff·(−C_c)`, whe
 
 ### 13.2 B: the coarse vertex mass
 
-**The hole.** WO-4 passes the solve view (`k × invMass`) to `buildContactHierarchyKokkos` and
-`multilevelCoarseCycleKokkos`. Take a hub with `s` local copies at np 1 (`k = s`). It is folded
+**The hole.** WO-4 passes the solve view (`k × invMass`) to `buildContactHierarchy` and
+`multilevelCoarseCycle`. Take a hub with `s` local copies at np 1 (`k = s`). It is folded
 before the coarse cycle, so its base stands for all `s` copies.
 - The base enters its group with mass `m/s`, and a coarse impulse moves the group by `dV`.
 - Prolongation adds `dV` to the base; the re-seed copies it to the other `s − 1` copies; the next
@@ -1774,8 +1774,8 @@ The local fold divides by `a`, not by `k`:
   - Every distributed M velocity phase ends with a sync, after which the formula returns `B_seed`
     exactly.
   - At np 1 there is no sync and `a = k = s`, so it returns `s × share`, which is
-    `unfoldOrphanKokkos`'s sum. One formula serves both.
-  - `unfoldOrphanKokkos` is therefore no longer called before a rank sync.
+    `unfoldOrphan`'s sum. One formula serves both.
+  - `unfoldOrphan` is therefore no longer called before a rank sync.
   - Ghost accounts are dead after the phase: the next `gather` forwards `B` again.
 - **No overdraw, by construction.** The accessible total is `Σ_copies share = k·B/k = B`. This
   closes c771e07's R5.

@@ -36,6 +36,51 @@ KOKKOS_INLINE_FUNCTION void hertzPairEMu(int matA, int matB, PairTableView pairT
   }
 }
 
+/// The Hertz–Mindlin contact materials: each body's material id, the optional pair table of
+/// (e, mu) (empty = the global eGlobal / muGlobal for every pair, see hertzPairEMu), and the
+/// per-material Young's modulus and Poisson ratio.
+struct HertzMaterials {
+  MatIdView matId;
+  PairTableView pairTable;
+  float eGlobal;
+  float muGlobal;
+  Kokkos::View<const float*, CpMem> hertzE;
+  Kokkos::View<const float*, CpMem> hertzNu;
+};
+
+/// The body state a Hertz force launcher reads.
+struct HertzBodies {
+  Kokkos::View<const float* [3], CpMem> pos;
+  Kokkos::View<const float* [3], CpMem> vel;
+  Kokkos::View<const float* [3], CpMem> angVel;
+  Kokkos::View<const float*, CpMem> rad;
+  Kokkos::View<const float*, CpMem> invMass;
+};
+
+/// What a non-spherical Hertz contact reads: orientation, scale, shape id, the shape registry and
+/// its shell points, the global scale and the shell spring's contact-radius fraction. The defaults
+/// are a sphere-only run (hasShapes false).
+struct HertzShapes {
+  Kokkos::View<const float* [4], CpMem> quat;
+  Kokkos::View<const float*, CpMem> scale;
+  ScalarI shapeId;
+  Kokkos::View<const ShapeDesc*, CpMem> shapes;
+  ShellView shell;
+  float globalScale = 1.0f;
+  float contactRadiusFrac = 0.5f;
+  bool hasShapes = false;
+};
+
+/// The SDF walls and their per-(particle, wall) contact history at slot i * maxWalls + wall: the
+/// Mindlin tangential spring xiWall and the shell's normal stiffness snWall (empty = untracked).
+struct HertzWallState {
+  Kokkos::View<const WallSdf*, CpMem> walls;
+  GridView wallGrid;
+  Kokkos::View<float* [3], CpMem> xiWall;
+  int maxWalls;
+  Kokkos::View<float*, CpMem> snWall;
+};
+
 /// Restitution -> damping ratio beta_d = ln e / sqrt(ln^2 e + pi^2)  (e in (0, 1]; e <= 0 -> -1,
 /// the critically-damped limit used by LIGGGHTS for e -> 0).
 KOKKOS_INLINE_FUNCTION float hertzBetaD(float e) {
@@ -85,7 +130,7 @@ KOKKOS_INLINE_FUNCTION F3 hertzForce(float delta, F3 nhat, F3 vrel, float rStar,
 
 /// A body's Hertz sphere radius: a SPHERE shape's own radius, scale * globalScale * params.x (the
 /// radius the XPBD narrow phase probes with); otherwise the world reach radius rad(i). rad(i) is
-/// scale * globalScale * the registry's LARGEST bounding radius (fillWorldRadiiKokkos), so in a
+/// scale * globalScale * the registry's LARGEST bounding radius (fillWorldRadii), so in a
 /// mixture with tubes or boxes (circumscribed radius) it overstates a sphere; alone it is equal,
 /// computed in the same order, bit for bit.
 KOKKOS_INLINE_FUNCTION float hertzSphereRadius(int i, Kokkos::View<const float*, CpMem> rad,
@@ -103,16 +148,19 @@ KOKKOS_INLINE_FUNCTION float hertzSphereRadius(int i, Kokkos::View<const float*,
 
 /// Cached-pair forces: overlap from current positions; history resets when a cached pair is
 /// currently separated. Forces/torques accumulate atomically (a body appears in many pairs).
-inline void hertzPairForcesKokkos(
+inline void hertzPairForces(
     Kokkos::View<const int* [2], CpMem> pairs, int numPairs,
     Kokkos::View<const float* [3], CpMem> pos, Kokkos::View<const float* [3], CpMem> vel,
     Kokkos::View<const float* [3], CpMem> angVel, Kokkos::View<const float*, CpMem> rad,
-    Kokkos::View<const float*, CpMem> invMass, MatIdView matId, PairTableView pairTable,
-    float eGlobal, float muGlobal, Kokkos::View<const float*, CpMem> hertzE,
-    Kokkos::View<const float*, CpMem> hertzNu, float dt, Kokkos::View<float* [3], CpMem> xi,
-    Kokkos::View<float* [3], CpMem> force, Kokkos::View<float* [3], CpMem> torque,
-    Kokkos::View<const float*, CpMem> scale = {}, ScalarI shapeId = {},
-    Kokkos::View<const ShapeDesc*, CpMem> shapes = {}, float globalScale = 1.0f) {
+    Kokkos::View<const float*, CpMem> invMass, const HertzMaterials& mat, float dt,
+    Kokkos::View<float* [3], CpMem> xi, Kokkos::View<float* [3], CpMem> force,
+    Kokkos::View<float* [3], CpMem> torque, Kokkos::View<const float*, CpMem> scale = {},
+    ScalarI shapeId = {}, Kokkos::View<const ShapeDesc*, CpMem> shapes = {},
+    float globalScale = 1.0f) {
+  const MatIdView matId = mat.matId;
+  const PairTableView pairTable = mat.pairTable;
+  const float eGlobal = mat.eGlobal, muGlobal = mat.muGlobal;
+  const Kokkos::View<const float*, CpMem> hertzE = mat.hertzE, hertzNu = mat.hertzNu;
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::hertz_pairs", Kokkos::RangePolicy<CpExec>(space, 0, numPairs),
@@ -160,21 +208,55 @@ inline void hertzPairForcesKokkos(
   space.fence();
 }
 
+/// A particle-wall pair's (e, mu): the wall's material id through the pair table when both are
+/// set, else the wall's own binary material.
+KOKKOS_FORCEINLINE_FUNCTION void hertzWallEMu(int ma, const WallSdf& w, PairTableView pairTable,
+                                              float eGlobal, float muGlobal, float& e, float& mu) {
+  if (w.materialId >= 0 && pairTable.extent(0) > 0) {
+    hertzPairEMu(ma, w.materialId, pairTable, eGlobal, muGlobal, e, mu);
+  } else {
+    e = w.restitution;
+    mu = w.friction;
+  }
+}
+
+/// The wall SDF's gradient at q by central differences at half a grid cell (unnormalized).
+KOKKOS_FORCEINLINE_FUNCTION F3 wallSdfGradient(F3 q, const WallSdf& w, GridView wallGrid) {
+  const float hx = 0.5f / w.grid.invSpacing.x;
+  return F3{(sampleWallSdf(F3{q.x + hx, q.y, q.z}, w, wallGrid) -
+             sampleWallSdf(F3{q.x - hx, q.y, q.z}, w, wallGrid)),
+            (sampleWallSdf(F3{q.x, q.y + hx, q.z}, w, wallGrid) -
+             sampleWallSdf(F3{q.x, q.y - hx, q.z}, w, wallGrid)),
+            (sampleWallSdf(F3{q.x, q.y, q.z + hx}, w, wallGrid) -
+             sampleWallSdf(F3{q.x, q.y, q.z - hx}, w, wallGrid))};
+}
+
 /// SDF-wall forces (per particle x wall). Gradient by central differences at half a grid cell.
 /// The wall's rigid surface velocity enters vrel; per-(particle, wall) history in xiWall.
-inline void hertzWallForcesKokkos(
-    Kokkos::View<const int*, CpMem> candSlots, int numCand,
-    Kokkos::View<const WallSdf*, CpMem> walls, GridView wallGrid,
-    Kokkos::View<const float* [3], CpMem> pos, Kokkos::View<const float* [3], CpMem> vel,
-    Kokkos::View<const float* [3], CpMem> angVel, Kokkos::View<const float*, CpMem> rad,
-    Kokkos::View<const float*, CpMem> invMass, MatIdView matId, PairTableView pairTable,
-    float eGlobal, float muGlobal, Kokkos::View<const float*, CpMem> hertzE,
-    Kokkos::View<const float*, CpMem> hertzNu, float dt, Kokkos::View<float* [3], CpMem> xiWall,
-    int maxWalls, Kokkos::View<float* [3], CpMem> force, Kokkos::View<float* [3], CpMem> torque,
-    Kokkos::View<const float* [4], CpMem> quat = {}, Kokkos::View<const float*, CpMem> scale = {},
-    ScalarI shapeId = {}, Kokkos::View<const ShapeDesc*, CpMem> shapes = {}, ShellView shell = {},
-    float globalScale = 1.0f, float contactRadiusFrac = 0.5f, bool hasShapes = false,
-    Kokkos::View<float*, CpMem> snWall = {}) {
+inline void hertzWallForces(Kokkos::View<const int*, CpMem> candSlots, int numCand,
+                            const HertzWallState& wall, const HertzBodies& bodies,
+                            const HertzMaterials& mat, float dt,
+                            Kokkos::View<float* [3], CpMem> force,
+                            Kokkos::View<float* [3], CpMem> torque, const HertzShapes& shp = {}) {
+  const Kokkos::View<const WallSdf*, CpMem> walls = wall.walls;
+  const GridView wallGrid = wall.wallGrid;
+  const Kokkos::View<float* [3], CpMem> xiWall = wall.xiWall;
+  const int maxWalls = wall.maxWalls;
+  const Kokkos::View<float*, CpMem> snWall = wall.snWall;
+  const Kokkos::View<const float* [3], CpMem> pos = bodies.pos, vel = bodies.vel,
+                                              angVel = bodies.angVel;
+  const Kokkos::View<const float*, CpMem> rad = bodies.rad, invMass = bodies.invMass;
+  const Kokkos::View<const float* [4], CpMem> quat = shp.quat;
+  const Kokkos::View<const float*, CpMem> scale = shp.scale;
+  const ScalarI shapeId = shp.shapeId;
+  const Kokkos::View<const ShapeDesc*, CpMem> shapes = shp.shapes;
+  const ShellView shell = shp.shell;
+  const float globalScale = shp.globalScale, contactRadiusFrac = shp.contactRadiusFrac;
+  const bool hasShapes = shp.hasShapes;
+  const MatIdView matId = mat.matId;
+  const PairTableView pairTable = mat.pairTable;
+  const float eGlobal = mat.eGlobal, muGlobal = mat.muGlobal;
+  const Kokkos::View<const float*, CpMem> hertzE = mat.hertzE, hertzNu = mat.hertzNu;
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::hertz_walls", Kokkos::RangePolicy<CpExec>(space, 0, numCand),
@@ -195,12 +277,7 @@ inline void hertzWallForcesKokkos(
           const float effScale = scale(i) * globalScale;
           const float rc = contactRadiusFrac * dS.params.x * effScale;
           float e, mu;
-          if (w.materialId >= 0 && pairTable.extent(0) > 0)
-            hertzPairEMu(ma, w.materialId, pairTable, eGlobal, muGlobal, e, mu);
-          else {
-            e = w.restitution;
-            mu = w.friction;
-          }
+          hertzWallEMu(ma, w, pairTable, eGlobal, muGlobal, e, mu);
           const int mw = (w.materialId >= 0) ? w.materialId : ma;
           const float Ei = hertzE(ma), Ew = hertzE(mw);
           const float ni = hertzNu(ma), nw = hertzNu(mw);
@@ -223,13 +300,7 @@ inline void hertzWallForcesKokkos(
             if (sd >= 0.0f)
               continue;
             const float delta = -sd;
-            const float hx = 0.5f / w.grid.invSpacing.x;
-            F3 g{(sampleWallSdf(F3{pW.x + hx, pW.y, pW.z}, w, wallGrid) -
-                  sampleWallSdf(F3{pW.x - hx, pW.y, pW.z}, w, wallGrid)),
-                 (sampleWallSdf(F3{pW.x, pW.y + hx, pW.z}, w, wallGrid) -
-                  sampleWallSdf(F3{pW.x, pW.y - hx, pW.z}, w, wallGrid)),
-                 (sampleWallSdf(F3{pW.x, pW.y, pW.z + hx}, w, wallGrid) -
-                  sampleWallSdf(F3{pW.x, pW.y, pW.z - hx}, w, wallGrid))};
+            F3 g = wallSdfGradient(pW, w, wallGrid);
             const float gl = len3(g);
             if (gl < 1e-12f)
               continue;
@@ -302,13 +373,7 @@ inline void hertzWallForcesKokkos(
             xiWall(slot, 0) = xiWall(slot, 1) = xiWall(slot, 2) = 0.0f;
             return;
           }
-          const float hx = 0.5f / w.grid.invSpacing.x;
-          F3 g{(sampleWallSdf(F3{p.x + hx, p.y, p.z}, w, wallGrid) -
-                sampleWallSdf(F3{p.x - hx, p.y, p.z}, w, wallGrid)),
-               (sampleWallSdf(F3{p.x, p.y + hx, p.z}, w, wallGrid) -
-                sampleWallSdf(F3{p.x, p.y - hx, p.z}, w, wallGrid)),
-               (sampleWallSdf(F3{p.x, p.y, p.z + hx}, w, wallGrid) -
-                sampleWallSdf(F3{p.x, p.y, p.z - hx}, w, wallGrid))};
+          F3 g = wallSdfGradient(p, w, wallGrid);
           const float gl = Kokkos::sqrt(dot3(g, g));
           if (gl < 1e-12f)
             return;
@@ -318,12 +383,7 @@ inline void hertzWallForcesKokkos(
           const F3 vWall = add3(w.linVel, cross3v(w.angVel, sub3(cpt, w.center)));
           const F3 vrel = sub3(add3(loadF3(vel, i), cross3v(loadF3(angVel, i), rA)), vWall);
           float e, mu;
-          if (w.materialId >= 0 && pairTable.extent(0) > 0) {
-            hertzPairEMu(ma, w.materialId, pairTable, eGlobal, muGlobal, e, mu);
-          } else {
-            e = w.restitution;
-            mu = w.friction;
-          }
+          hertzWallEMu(ma, w, pairTable, eGlobal, muGlobal, e, mu);
           const int mw = (w.materialId >= 0) ? w.materialId : ma;
           const float Ei = hertzE(ma), Ew = hertzE(mw);
           const float ni = hertzNu(ma), nw = hertzNu(mw);
@@ -349,10 +409,12 @@ inline void hertzWallForcesKokkos(
 /// Build the wall candidate list: particles within (radius + skin) of any wall's zero level.
 /// Between pair rebuilds nothing else can reach a wall (same Verlet-skin argument as the pair
 /// list), so the per-step wall pass only visits these slots. Encodes i * maxWalls + wallIdx.
-inline int hertzBuildWallCandidatesKokkos(
-    int numReal, int numWalls, Kokkos::View<const WallSdf*, CpMem> walls, GridView wallGrid,
-    Kokkos::View<const float* [3], CpMem> pos, Kokkos::View<const float*, CpMem> rad, float skin,
-    Kokkos::View<int*, CpMem> outSlots, Kokkos::View<int, CpMem> outCount) {
+inline int hertzBuildWallCandidates(int numReal, int numWalls,
+                                    Kokkos::View<const WallSdf*, CpMem> walls, GridView wallGrid,
+                                    Kokkos::View<const float* [3], CpMem> pos,
+                                    Kokkos::View<const float*, CpMem> rad, float skin,
+                                    Kokkos::View<int*, CpMem> outSlots,
+                                    Kokkos::View<int, CpMem> outCount) {
   CpExec space;
   Kokkos::deep_copy(space, outCount, 0);
   const int cap = static_cast<int>(outSlots.extent(0));
@@ -377,7 +439,7 @@ inline int hertzBuildWallCandidatesKokkos(
 
 /// Symplectic-Euler kick-drift (MUSEN-style) + displacement tracking for the Verlet rebuild.
 /// Spheres: isotropic inertia, angular update needs no orientation.
-inline void hertzIntegrateKokkos(
+inline void hertzIntegrate(
     int numReal, Kokkos::View<float* [3], CpMem> force, Kokkos::View<float* [3], CpMem> torque,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
     F3 gravity, float dt, Kokkos::View<float* [3], CpMem> vel,
@@ -429,8 +491,8 @@ inline void hertzIntegrateKokkos(
 
 /// Max squared displacement since the last pair build (called only at rebuild checks --
 /// keeping this out of the integrate kernel avoids a per-step single-address atomic).
-inline float hertzMaxDisp2Kokkos(int numReal, Kokkos::View<const float* [3], CpMem> pos,
-                                 Kokkos::View<const float* [3], CpMem> refPos) {
+inline float hertzMaxDisp2(int numReal, Kokkos::View<const float* [3], CpMem> pos,
+                           Kokkos::View<const float* [3], CpMem> refPos) {
   CpExec space;
   float m = 0.0f;
   Kokkos::parallel_reduce(
@@ -453,17 +515,20 @@ inline float hertzMaxDisp2Kokkos(int numReal, Kokkos::View<const float* [3], CpM
 /// spring acts at the load-weighted patch centroid, bounded by mu * (sum of point spring forces).
 /// R* combines per-shape CONTACT radii (Hertz curvature is undefined at faces/edges -- this is
 /// the standard point-spring approximation; spheres use their true radii via params.x).
-inline void hertzShapePairForcesKokkos(
+inline void hertzShapePairForces(
     Kokkos::View<const int* [2], CpMem> pairs, int numPairs,
     Kokkos::View<const float* [3], CpMem> pos, Kokkos::View<const float* [4], CpMem> quat,
     Kokkos::View<const float* [3], CpMem> vel, Kokkos::View<const float* [3], CpMem> angVel,
     Kokkos::View<const float*, CpMem> scale, ScalarI shapeId,
     Kokkos::View<const ShapeDesc*, CpMem> shapes, ShellView shell, GridView sdfGrid,
     float globalScale, float contactRadiusFrac, Kokkos::View<const float*, CpMem> invMass,
-    MatIdView matId, PairTableView pairTable, float eGlobal, float muGlobal,
-    Kokkos::View<const float*, CpMem> hertzE, Kokkos::View<const float*, CpMem> hertzNu, float dt,
-    Kokkos::View<float* [3], CpMem> xi, Kokkos::View<float*, CpMem> snPrev,
-    Kokkos::View<float* [3], CpMem> force, Kokkos::View<float* [3], CpMem> torque) {
+    const HertzMaterials& mat, float dt, Kokkos::View<float* [3], CpMem> xi,
+    Kokkos::View<float*, CpMem> snPrev, Kokkos::View<float* [3], CpMem> force,
+    Kokkos::View<float* [3], CpMem> torque) {
+  const MatIdView matId = mat.matId;
+  const PairTableView pairTable = mat.pairTable;
+  const float eGlobal = mat.eGlobal, muGlobal = mat.muGlobal;
+  const Kokkos::View<const float*, CpMem> hertzE = mat.hertzE, hertzNu = mat.hertzNu;
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::hertz_shape_pairs", Kokkos::RangePolicy<CpExec>(space, 0, numPairs),

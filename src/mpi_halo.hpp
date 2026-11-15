@@ -364,9 +364,22 @@ inline void haloUnpackGather(V3 vel, V3 velPred, V3 angVel, V3 angVelPred, V3 in
 // ghost kernel g in [0, ng) is the TOPOLOGY ghost index (the order core's forward/reverse use) and
 // s = no + slot(g) its canonical SoA slot. ---
 
+// The velocity phase's per-slot state that the halo kernels read and write: the predicted
+// linear / angular velocity, the orphan account B and its peak.
+struct VelocityPhaseViews {
+  V3 velPred;
+  V3 angVelPred;
+  Vf orphan;
+  Vf orphanPeak;
+};
+
 // Velocity baselines: base*(g) = the ghost slot's current value.
-inline void haloMarkVelocityBaseline(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak, V3 baseV,
-                                     V3 baseW, Vf baseO, Vf basePk, Vi slot, int no, int ng) {
+inline void haloMarkVelocityBaseline(const VelocityPhaseViews& vel, V3 baseV, V3 baseW, Vf baseO,
+                                     Vf basePk, Vi slot, int no, int ng) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   Kokkos::parallel_for(
       "peclet::dem::halo::markVelBase", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
         const int s = no + slot(g);
@@ -380,10 +393,13 @@ inline void haloMarkVelocityBaseline(V3 velPred, V3 angVelPred, Vf orphan, Vf or
 }
 // inc(g) = ghost slot - baseline, component-wise; the peak travels only if it rose above its
 // baseline (else 0), so a decayed owner peak is never undone.
-inline void haloPackVelocityIncrement(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak, V3 baseV,
-                                      V3 baseW, Vf baseO, Vf basePk,
-                                      peclet::core::View<VelocityIncrement> inc, Vi slot, int no,
-                                      int ng) {
+inline void haloPackVelocityIncrement(const VelocityPhaseViews& vel, V3 baseV, V3 baseW, Vf baseO,
+                                      Vf basePk, peclet::core::View<VelocityIncrement> inc, Vi slot,
+                                      int no, int ng) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   Kokkos::parallel_for(
       "peclet::dem::halo::packVelInc", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
         const int s = no + slot(g);
@@ -398,8 +414,12 @@ inline void haloPackVelocityIncrement(V3 velPred, V3 angVelPred, Vf orphan, Vf o
       });
 }
 // Owned rows [0, no) take the summed increments of all their ghost copies.
-inline void haloApplyVelocityIncrement(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak,
+inline void haloApplyVelocityIncrement(const VelocityPhaseViews& vel,
                                        peclet::core::View<VelocityIncrement> ownedInc, int no) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   Kokkos::parallel_for(
       "peclet::dem::halo::applyVelInc", Kokkos::RangePolicy<CpExec>(0, no), KOKKOS_LAMBDA(int i) {
         const VelocityIncrement r = ownedInc(i);
@@ -624,10 +644,14 @@ struct VelocityStateBNoRot {
   float peak;
 };
 
-inline void haloPackOpeningIncrement(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak, V3 baseV,
-                                     V3 baseW, Vf baseO, Vf basePk, Vi aVel, Vi aPos,
+inline void haloPackOpeningIncrement(const VelocityPhaseViews& vel, V3 baseV, V3 baseW, Vf baseO,
+                                     Vf basePk, Vi aVel, Vi aPos,
                                      peclet::core::View<OpeningIncrement> inc, Vi slot, int no,
                                      int ng) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   Kokkos::parallel_for(
       "peclet::dem::halo::packOpenInc", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
         const int s = no + slot(g);
@@ -644,9 +668,12 @@ inline void haloPackOpeningIncrement(V3 velPred, V3 angVelPred, Vf orphan, Vf or
       });
 }
 // Owned rows: the raw add (exactly haloApplyVelocityIncrement), then k = max(1, a(own) + sum a).
-inline void haloApplyOpening(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak, Vi aVel, Vi aPos,
-                             Vi kVel, Vi kPos, peclet::core::View<OpeningIncrement> ownedInc,
-                             int no) {
+inline void haloApplyOpening(const VelocityPhaseViews& vel, Vi aVel, Vi aPos, Vi kVel, Vi kPos,
+                             peclet::core::View<OpeningIncrement> ownedInc, int no) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   Kokkos::parallel_for(
       "peclet::dem::halo::applyOpen", Kokkos::RangePolicy<CpExec>(0, no), KOKKOS_LAMBDA(int i) {
         const OpeningIncrement r = ownedInc(i);
@@ -662,8 +689,12 @@ inline void haloApplyOpening(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak
       });
 }
 template <class S>
-inline void haloPackOpeningState(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak, Vi kVel,
-                                 Vi kPos, peclet::core::View<S> owned, int no) {
+inline void haloPackOpeningState(const VelocityPhaseViews& vel, Vi kVel, Vi kPos,
+                                 peclet::core::View<S> owned, int no) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   Kokkos::parallel_for(
       "peclet::dem::halo::packOpenState", Kokkos::RangePolicy<CpExec>(0, no), KOKKOS_LAMBDA(int i) {
         const V3& wv = angVelPred;  // captured outside the constexpr-if (nvcc)
@@ -682,8 +713,12 @@ inline void haloPackOpeningState(V3 velPred, V3 angVelPred, Vf orphan, Vf orphan
       });
 }
 template <class S>
-inline void haloUnpackOpeningState(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak, Vi kVel,
-                                   Vi kPos, peclet::core::View<S> ghost, Vi slot, int no, int ng) {
+inline void haloUnpackOpeningState(const VelocityPhaseViews& vel, Vi kVel, Vi kPos,
+                                   peclet::core::View<S> ghost, Vi slot, int no, int ng) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   Kokkos::parallel_for(
       "peclet::dem::halo::unpackOpenState", Kokkos::RangePolicy<CpExec>(0, ng),
       KOKKOS_LAMBDA(int g) {
@@ -703,8 +738,12 @@ inline void haloUnpackOpeningState(V3 velPred, V3 angVelPred, Vf orphan, Vf orph
       });
 }
 template <class S>
-inline void haloPackVelocityStateB(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak,
-                                   peclet::core::View<S> owned, int no, Vi rows = {}) {
+inline void haloPackVelocityStateB(const VelocityPhaseViews& vel, peclet::core::View<S> owned,
+                                   int no, Vi rows = {}) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   const bool list = rows.extent(0) > 0;
   Kokkos::parallel_for(
       "peclet::dem::halo::packVelStateB", Kokkos::RangePolicy<CpExec>(0, no), KOKKOS_LAMBDA(int j) {
@@ -723,8 +762,12 @@ inline void haloPackVelocityStateB(V3 velPred, V3 angVelPred, Vf orphan, Vf orph
       });
 }
 template <class S>
-inline void haloUnpackVelocityStateB(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak,
-                                     peclet::core::View<S> ghost, Vi slot, int no, int ng) {
+inline void haloUnpackVelocityStateB(const VelocityPhaseViews& vel, peclet::core::View<S> ghost,
+                                     Vi slot, int no, int ng) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   Kokkos::parallel_for(
       "peclet::dem::halo::unpackVelStateB", Kokkos::RangePolicy<CpExec>(0, ng),
       KOKKOS_LAMBDA(int g) {
@@ -839,11 +882,15 @@ inline constexpr bool kPayloadB =
 // 1 (velocity). inc = a(s) (x - baseline) for v, w and the orphan account; the peak travels only
 // from an active slot that raised it. A slot with a = 0 is never written by the phase; a debug
 // build checks that its increment is zero (a non-zero one would be dropped).
-inline void haloVelocityMPackZero(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak, V3 baseV,
-                                  V3 baseW, Vf baseO, Vf basePk, Vi aVel,
-                                  peclet::core::View<VelocityIncrement> inc, Vi slot, int no,
-                                  int ng, peclet::core::View<VelocityIncrement> ownedInc, Vi rows,
+inline void haloVelocityMPackZero(const VelocityPhaseViews& vel, V3 baseV, V3 baseW, Vf baseO,
+                                  Vf basePk, Vi aVel, peclet::core::View<VelocityIncrement> inc,
+                                  Vi slot, int no, int ng,
+                                  peclet::core::View<VelocityIncrement> ownedInc, Vi rows,
                                   int nRows) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   Kokkos::parallel_for(
       "peclet::dem::halo::velMPackZero", Kokkos::RangePolicy<CpExec>(0, ng + nRows),
       KOKKOS_LAMBDA(int j) {
@@ -881,13 +928,16 @@ inline void haloVelocityMPackZero(V3 velPred, V3 angVelPred, Vf orphan, Vf orpha
 // pre-clamp balance is >= -1e-6 max(B, 1e-30). Then the payload (interface rows), the seeds, and
 // under Poisson (`shares`) the owner's share B / k.
 template <class S>
-inline void haloVelocityMApply(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak, V3 seedV,
-                               V3 seedW, Vf seedO, Vi aVel, Vi kVel,
-                               peclet::core::View<VelocityIncrement> ownedInc,
+inline void haloVelocityMApply(const VelocityPhaseViews& vel, V3 seedV, V3 seedW, Vf seedO, Vi aVel,
+                               Vi kVel, peclet::core::View<VelocityIncrement> ownedInc,
                                Kokkos::View<int, CpMem> clamps,
                                Kokkos::View<float, CpMem> consensus, Vi rows, int nRows,
                                Kokkos::View<const unsigned char*, CpMem> iface,
                                peclet::core::View<S> out, bool shares) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   Kokkos::parallel_for(
       "peclet::dem::halo::velMApply", Kokkos::RangePolicy<CpExec>(0, nRows), KOKKOS_LAMBDA(int j) {
         const V3& wv = angVelPred;  // captured outside the constexpr-if (nvcc)
@@ -957,12 +1007,15 @@ inline void haloVelocityMApply(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPe
 // copy (a > 0) of a k > 1 body, |(x_new - baseline) - inc / a| (inc = the a-weighted increment it
 // packed, still in the send buffer), atomic-maxed into `consensus`; the share B / k; the baseline.
 template <class S>
-inline void haloVelocityMUnpack(V3 velPred, V3 angVelPred, Vf orphan, Vf orphanPeak,
-                                peclet::core::View<S> ghost, V3 baseV, V3 baseW, Vf baseO,
-                                Vf basePk, Vi aVel, Vi kVel,
+inline void haloVelocityMUnpack(const VelocityPhaseViews& vel, peclet::core::View<S> ghost,
+                                V3 baseV, V3 baseW, Vf baseO, Vf basePk, Vi aVel, Vi kVel,
                                 peclet::core::View<VelocityIncrement> inc,
                                 Kokkos::View<float, CpMem> consensus, Vi slot, int no, int ng,
                                 bool shares) {
+  const V3 velPred = vel.velPred;
+  const V3 angVelPred = vel.angVelPred;
+  const Vf orphan = vel.orphan;
+  const Vf orphanPeak = vel.orphanPeak;
   Kokkos::parallel_for(
       "peclet::dem::halo::velMUnpack", Kokkos::RangePolicy<CpExec>(0, ng), KOKKOS_LAMBDA(int g) {
         const V3& wv = angVelPred;  // captured outside the constexpr-if (nvcc)
@@ -1960,9 +2013,9 @@ class ParticleHalo {
   void markVelocityBaseline(Particles& P) {
     if (numGhost_ <= 0)
       return;
-    haloMarkVelocityBaseline(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, baseVel_,
-                             baseAngVel_, baseOrphan_, baseOrphanPeak_, ghostSlot_, numReal_,
-                             numGhost_);
+    haloMarkVelocityBaseline(
+        VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak}, baseVel_,
+        baseAngVel_, baseOrphan_, baseOrphanPeak_, ghostSlot_, numReal_, numGhost_);
   }
   /// Deliver every ghost's velocity-phase change since its baseline onto its owner (reverse), then
   /// republish the owners (forward) and re-mark the baselines.
@@ -1978,15 +2031,16 @@ class ParticleHalo {
       syncVelocitiesM(P, rotation);
       return;
     }
-    haloPackVelocityIncrement(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, baseVel_,
-                              baseAngVel_, baseOrphan_, baseOrphanPeak_, ghostVelInc_, ghostSlot_,
-                              numReal_, numGhost_);
+    haloPackVelocityIncrement(
+        VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak}, baseVel_,
+        baseAngVel_, baseOrphan_, baseOrphanPeak_, ghostVelInc_, ghostSlot_, numReal_, numGhost_);
     Kokkos::deep_copy(
         Kokkos::subview(ownedVelInc_, std::pair<std::size_t, std::size_t>(0, numReal_)),
         VelocityIncrement{});
     dev_.reverse(ghostVelInc_, ownedVelInc_);
-    haloApplyVelocityIncrement(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak,
-                               ownedVelInc_, numReal_);
+    haloApplyVelocityIncrement(
+        VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak}, ownedVelInc_,
+        numReal_);
     if (rotation) {  // one fused exchange of (velPred, angVelPred)
       haloPackVelocityState(P.velPred, P.angVelPred, ownedVelState_, nIface_, iface_);
       dev_.forward(ownedVelState_, ghostVelState_);
@@ -2066,26 +2120,31 @@ class ParticleHalo {
       return;
     ensureClampCounter(P);
     const int no = numReal_, ng = numGhost_;
-    haloPackOpeningIncrement(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, baseVel_,
-                             baseAngVel_, baseOrphan_, baseOrphanPeak_, P.aVel, P.aPos,
-                             ghostOpenInc_, ghostSlot_, no, ng);
+    haloPackOpeningIncrement(
+        VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak}, baseVel_,
+        baseAngVel_, baseOrphan_, baseOrphanPeak_, P.aVel, P.aPos, ghostOpenInc_, ghostSlot_, no,
+        ng);
     Kokkos::deep_copy(Kokkos::subview(ownedOpenInc_, std::pair<std::size_t, std::size_t>(0, no)),
                       OpeningIncrement{});
     dev_.reverse(ghostOpenInc_, ownedOpenInc_);
-    haloApplyOpening(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, P.aVel, P.aPos,
-                     P.kVel, P.kPos, ownedOpenInc_, no);
+    haloApplyOpening(VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak},
+                     P.aVel, P.aPos, P.kVel, P.kPos, ownedOpenInc_, no);
     if (rotation) {
-      haloPackOpeningState(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, P.kVel, P.kPos,
-                           ownedOpenState_, no);
+      haloPackOpeningState(
+          VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak}, P.kVel,
+          P.kPos, ownedOpenState_, no);
       dev_.forward(ownedOpenState_, ghostOpenState_);
-      haloUnpackOpeningState(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, P.kVel,
-                             P.kPos, ghostOpenState_, ghostSlot_, no, ng);
+      haloUnpackOpeningState(
+          VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak}, P.kVel,
+          P.kPos, ghostOpenState_, ghostSlot_, no, ng);
     } else {
-      haloPackOpeningState(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, P.kVel, P.kPos,
-                           ownedOpenStateNR_, no);
+      haloPackOpeningState(
+          VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak}, P.kVel,
+          P.kPos, ownedOpenStateNR_, no);
       dev_.forward(ownedOpenStateNR_, ghostOpenStateNR_);
-      haloUnpackOpeningState(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, P.kVel,
-                             P.kPos, ghostOpenStateNR_, ghostSlot_, no, ng);
+      haloUnpackOpeningState(
+          VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak}, P.kVel,
+          P.kPos, ghostOpenStateNR_, ghostSlot_, no, ng);
     }
     buildMRows(P.kVel, velRows_, nVelRows_);
     buildMRows(P.kPos, posRows_, nPosRows_);
@@ -2286,9 +2345,10 @@ class ParticleHalo {
   /// The M velocity sync (§13.3 step 6): pack a (x - baseline), weighted apply, forward
   /// VelocityState (+ B and the peak under Poisson), re-mark seeds, shares and baselines.
   void syncVelocitiesM(Particles& P, bool rotation) {
-    haloVelocityMPackZero(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, baseVel_,
-                          baseAngVel_, baseOrphan_, baseOrphanPeak_, P.aVel, ghostVelInc_,
-                          ghostSlot_, numReal_, numGhost_, ownedVelInc_, velRows_, nVelRows_);
+    haloVelocityMPackZero(
+        VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak}, baseVel_,
+        baseAngVel_, baseOrphan_, baseOrphanPeak_, P.aVel, ghostVelInc_, ghostSlot_, numReal_,
+        numGhost_, ownedVelInc_, velRows_, nVelRows_);
     dev_.reverse(ghostVelInc_, ownedVelInc_);
     if (orphanShares_) {
       if (rotation)
@@ -2304,14 +2364,15 @@ class ParticleHalo {
   /// MApply, forward, MUnpack of one velocity reconciliation, payload S.
   template <class S>
   void velocityMRound(Particles& P, peclet::core::View<S> owned, peclet::core::View<S> ghost) {
-    haloVelocityMApply(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, ownerSeedVel_,
-                       ownerSeedAngVel_, ownerSeedOrphan_, P.aVel, P.kVel, ownedVelInc_,
-                       P.orphanClampCount, P.maxConsensus, velRows_, nVelRows_, ifaceMark_, owned,
-                       orphanShares_);
+    haloVelocityMApply(VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak},
+                       ownerSeedVel_, ownerSeedAngVel_, ownerSeedOrphan_, P.aVel, P.kVel,
+                       ownedVelInc_, P.orphanClampCount, P.maxConsensus, velRows_, nVelRows_,
+                       ifaceMark_, owned, orphanShares_);
     dev_.forward(owned, ghost);
-    haloVelocityMUnpack(P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak, ghost, baseVel_,
-                        baseAngVel_, baseOrphan_, baseOrphanPeak_, P.aVel, P.kVel, ghostVelInc_,
-                        P.maxConsensus, ghostSlot_, numReal_, numGhost_, orphanShares_);
+    haloVelocityMUnpack(
+        VelocityPhaseViews{P.velPred, P.angVelPred, P.bodyOrphan, P.bodyOrphanVPeak}, ghost,
+        baseVel_, baseAngVel_, baseOrphan_, baseOrphanPeak_, P.aVel, P.kVel, ghostVelInc_,
+        P.maxConsensus, ghostSlot_, numReal_, numGhost_, orphanShares_);
   }
   /// MApply, forward, MUnpack of one position reconciliation, payload S.
   template <class S>

@@ -68,10 +68,10 @@ Five colourings share the cap:
 
 | colouring | file:line | used by |
 |---|---|---|
-| `colorManifoldsKokkos` | `src/solver_velocity.hpp:343` | velocity sweeps (every configuration) |
-| `colorManifoldsIncrementalKokkos` | `src/solver_velocity.hpp:495` | velocity, single-GPU, g ≠ 0 |
-| `colorContactsKokkos` | `src/solver_position.hpp:206` | position sweeps (every configuration, **defaults included**) |
-| `colorContactsIncrementalKokkos` | `src/solver_position.hpp:360` | position, single-GPU, g ≠ 0 |
+| `colorManifolds` | `src/solver_velocity.hpp:343` | velocity sweeps (every configuration) |
+| `colorManifoldsIncremental` | `src/solver_velocity.hpp:495` | velocity, single-GPU, g ≠ 0 |
+| `colorContacts` | `src/solver_position.hpp:206` | position sweeps (every configuration, **defaults included**) |
+| `colorContactsIncremental` | `src/solver_position.hpp:360` | position, single-GPU, g ≠ 0 |
 | multilevel (aggregate groups) | `src/solver_multilevel.hpp:328` (`kMlSlotSkip - 1` = 62) | gravity statics, ordered sweeps |
 
 `src/solver_velocity.hpp:339-354`:
@@ -378,14 +378,14 @@ np ≥ 2 reproduces np = 1 (`jacobi.txt`):
 (`cluster_jacobi`, OMP 1. The GS modes are at 1e-9.)
 
 ### Code
-`src/solver_velocity.hpp:244`, `applyVelocityDeltasAveragedKokkos`:
+`src/solver_velocity.hpp:244`, `applyVelocityDeltasAveraged`:
 ```cpp
         const float f = Kokkos::fmin(1.0f, 2.0f / static_cast<float>(count));
         for (int c = 0; c < 3; ++c) {
           velPred(i, c) += deltaVel(i, c) * f;
           angVelPred(i, c) += deltaAngVel(i, c) * f;
 ```
-`src/integration.hpp:180-185`, `applyUpdatesKokkos`:
+`src/integration.hpp:180-185`, `applyUpdates`:
 ```cpp
         const int count = constraintCounts(i);
         if (count <= 0)
@@ -398,8 +398,8 @@ np ≥ 2 reproduces np = 1 (`jacobi.txt`):
 ### Every place a per-body factor is applied
 | # | where | trigger | reachable from defaults? |
 |---|---|---|---|
-| 1 | `solve_driver.hpp:520-525`: velocity Jacobi (`solveVelocityKokkos` → `applyVelocityDeltasAveragedKokkos`) | `velocityUseGS = false`, i.e. `diagnostics.set_velocity_solver('jacobi')` (`dem_bindings.cpp:161`), with velocity iterations > 0 | **No.** Diagnostic A/B only. |
-| 2 | `solve_driver.hpp:933-937`: position Jacobi (`solvePositionKokkos` → `applyUpdatesKokkos`) | the same switch (`velocityUseGS` also selects the position solver) | **No.** |
+| 1 | `solve_driver.hpp:520-525`: velocity Jacobi (`solveVelocity` → `applyVelocityDeltasAveraged`) | `velocityUseGS = false`, i.e. `diagnostics.set_velocity_solver('jacobi')` (`dem_bindings.cpp:161`), with velocity iterations > 0 | **No.** Diagnostic A/B only. |
+| 2 | `solve_driver.hpp:933-937`: position Jacobi (`solvePosition` → `applyUpdates`) | the same switch (`velocityUseGS` also selects the position solver) | **No.** |
 | 3 | `solve_driver.hpp:496-507`: GS velocity fallback | `velLeftover > 0` | **No. Unreachable:** defect 1, `leftover` is always 0. |
 | 4 | `solve_driver.hpp:917-927`: GS position fallback | `posLeftover > 0` | **No. Unreachable,** likewise. |
 

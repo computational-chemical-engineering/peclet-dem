@@ -2,7 +2,7 @@
 // §2.3-§2.4, gate G-A2). 40 bodies (spheres + tubes with random inertia frames), 2 hand-built
 // levels (pairs at level 1, pairs of pairs at level 2, singletons at both), one wall, random v and
 // omega and a random warm accumulator. ONE coarse cycle on the device (the level geometry of
-// buildMlLevelGeometryKokkos + multilevelCoarseCycleKokkos) against a host DOUBLE reference of the
+// buildMlLevelGeometry + multilevelCoarseCycle) against a host DOUBLE reference of the
 // same algebra:
 //   rigid      : per-group V, Omega and member v, omega within 1e-5 (relative to the largest);
 //                |dP| <= 1e-6 sum|J|, |dL| <= 1e-6 sum|J| R_g,max (wall impulses subtracted);
@@ -492,17 +492,15 @@ DevOut runDevice(const Scene& s, bool rot) {
     Kokkos::parallel_for(
         "compose", Kokkos::RangePolicy<CpExec>(0, N),
         KOKKOS_LAMBDA(int i) { grp(i) = parent(pOff + (lvl == 1 ? i : grp(i))); });
-    bad += buildMlLevelGeometryKokkos(S, H.groupOff[lvl - 1], H.numGroups[lvl - 1], N, posC,
-                                      Kokkos::View<const float*, CpMem>(invMass), body.quat,
-                                      body.invIc);
+    bad += buildMlLevelGeometry(S, H.groupOff[lvl - 1], H.numGroups[lvl - 1], N, posC,
+                                Kokkos::View<const float*, CpMem>(invMass), body.quat, body.invIc);
   }
   if (bad)
     std::printf("  WARNING: %d singular groups\n", bad);
   if (!rot)
     Kokkos::deep_copy(S.invIG, 0.0f);  // every group translation-only (the release fallback)
   Kokkos::View<float, CpMem> maxApp("maxApp");
-  multilevelCoarseCycleKokkos(man, M, realIdx, invMass, vel, lambda, maxApp, N, H, S, kSweeps,
-                              body);
+  multilevelCoarseCycle(man, M, realIdx, invMass, vel, lambda, maxApp, N, H, S, kSweeps, body);
   Kokkos::fence();
   DevOut o;
   auto down = [](auto d, std::vector<float>& h) {

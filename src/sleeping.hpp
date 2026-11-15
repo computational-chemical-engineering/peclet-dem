@@ -28,13 +28,13 @@ namespace peclet::dem {
 
 /// After predictVelocity: re-freeze the currently-asleep bodies so gravity/prediction do not move
 /// them — velPred = angVelPred = 0, posPred = pos, quatPred = quat.
-inline void freezeAsleepKokkos(int numReal, Kokkos::View<const unsigned char*, CpMem> asleep,
-                               Kokkos::View<const float* [3], CpMem> pos,
-                               Kokkos::View<const float* [4], CpMem> quat,
-                               Kokkos::View<float* [3], CpMem> posPred,
-                               Kokkos::View<float* [4], CpMem> quatPred,
-                               Kokkos::View<float* [3], CpMem> velPred,
-                               Kokkos::View<float* [3], CpMem> angVelPred) {
+inline void freezeAsleep(int numReal, Kokkos::View<const unsigned char*, CpMem> asleep,
+                         Kokkos::View<const float* [3], CpMem> pos,
+                         Kokkos::View<const float* [4], CpMem> quat,
+                         Kokkos::View<float* [3], CpMem> posPred,
+                         Kokkos::View<float* [4], CpMem> quatPred,
+                         Kokkos::View<float* [3], CpMem> velPred,
+                         Kokkos::View<float* [3], CpMem> angVelPred) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::freeze_asleep", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
@@ -55,10 +55,10 @@ inline void freezeAsleepKokkos(int numReal, Kokkos::View<const unsigned char*, C
 /// Effective inverse mass for the solve: a sleeping body (real, or a periodic ghost whose real is
 /// asleep) is immovable — invMassEff = 0. Everything else keeps its real invMass. Built over the
 /// full body-slot span (owned + ghosts); the driver's swap points every solve kernel at it.
-inline void buildInvMassEffKokkos(int numBodies, Kokkos::View<const unsigned char*, CpMem> asleep,
-                                  Kokkos::View<const int*, CpMem> realIdx,
-                                  Kokkos::View<const float*, CpMem> invMass,
-                                  Kokkos::View<float*, CpMem> invMassEff, float sleeperFrac) {
+inline void buildInvMassEff(int numBodies, Kokkos::View<const unsigned char*, CpMem> asleep,
+                            Kokkos::View<const int*, CpMem> realIdx,
+                            Kokkos::View<const float*, CpMem> invMass,
+                            Kokkos::View<float*, CpMem> invMassEff, float sleeperFrac) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::inv_mass_eff", Kokkos::RangePolicy<CpExec>(space, 0, numBodies),
@@ -71,10 +71,10 @@ inline void buildInvMassEffKokkos(int numBodies, Kokkos::View<const unsigned cha
 /// Per-manifold "both endpoints asleep" flag (a static wall, bodyB < 0, counts as asleep). Such
 /// manifolds are excluded from colouring / sweeps / the multilevel hierarchy but STILL carry their
 /// frozen force network through the warm-start ledger (the caller never skips the ledger kernels).
-inline void computeManifoldSleepKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                       int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
-                                       Kokkos::View<const unsigned char*, CpMem> asleep,
-                                       Kokkos::View<unsigned char*, CpMem> manifoldSleep) {
+inline void computeManifoldSleep(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                                 Kokkos::View<const int*, CpMem> realIdx,
+                                 Kokkos::View<const unsigned char*, CpMem> asleep,
+                                 Kokkos::View<unsigned char*, CpMem> manifoldSleep) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::manifold_sleep", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -91,11 +91,11 @@ inline void computeManifoldSleepKokkos(Kokkos::View<const ManifoldC*, CpMem> man
   space.fence();
 }
 
-/// Per-contact twin of computeManifoldSleepKokkos for the position colouring.
-inline void computeContactSleepKokkos(Kokkos::View<const ContactC*, CpMem> contacts,
-                                      int numContacts, Kokkos::View<const int*, CpMem> realIdx,
-                                      Kokkos::View<const unsigned char*, CpMem> asleep,
-                                      Kokkos::View<unsigned char*, CpMem> contactSleep) {
+/// Per-contact twin of computeManifoldSleep for the position colouring.
+inline void computeContactSleep(Kokkos::View<const ContactC*, CpMem> contacts, int numContacts,
+                                Kokkos::View<const int*, CpMem> realIdx,
+                                Kokkos::View<const unsigned char*, CpMem> asleep,
+                                Kokkos::View<unsigned char*, CpMem> contactSleep) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::contact_sleep", Kokkos::RangePolicy<CpExec>(space, 0, numContacts),
@@ -114,13 +114,13 @@ inline void computeContactSleepKokkos(Kokkos::View<const ContactC*, CpMem> conta
 /// substep). Also tallies each real body's live contact count into curCount for the caller's
 /// contact-set-change wake rule (b). velPred is the post-predict / post-freeze velocity (awake
 /// bodies carry their real speed, sleepers carry 0).
-inline void wakeDisturbedKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
-                                Kokkos::View<const int*, CpMem> realIdx,
-                                Kokkos::View<const float* [3], CpMem> velPred, float wakeSpeed,
-                                Kokkos::View<unsigned char*, CpMem> asleep,
-                                Kokkos::View<unsigned char*, CpMem> sleepCounter,
-                                Kokkos::View<unsigned char*, CpMem> movingWall,
-                                Kokkos::View<int*, CpMem> curCount, int numReal) {
+inline void wakeDisturbed(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                          Kokkos::View<const int*, CpMem> realIdx,
+                          Kokkos::View<const float* [3], CpMem> velPred, float wakeSpeed,
+                          Kokkos::View<unsigned char*, CpMem> asleep,
+                          Kokkos::View<unsigned char*, CpMem> sleepCounter,
+                          Kokkos::View<unsigned char*, CpMem> movingWall,
+                          Kokkos::View<int*, CpMem> curCount, int numReal) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::wake_reset", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
@@ -173,12 +173,11 @@ inline void wakeDisturbedKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
 /// Contact-set-change wake rule (b): wake any still-asleep body whose live contact count differs
 /// from the stored one (a support gained or lost), then refresh the store. Also clears the counter
 /// of a moving-wall body so it can never accumulate toward sleep.
-inline void wakeContactChangeKokkos(int numReal, Kokkos::View<const int*, CpMem> curCount,
-                                    Kokkos::View<int*, CpMem> prevCount,
-                                    Kokkos::View<const unsigned char*, CpMem> movingWall,
-                                    Kokkos::View<unsigned char*, CpMem> asleep,
-                                    Kokkos::View<unsigned char*, CpMem> sleepCounter,
-                                    bool wakeOnChange) {
+inline void wakeContactChange(int numReal, Kokkos::View<const int*, CpMem> curCount,
+                              Kokkos::View<int*, CpMem> prevCount,
+                              Kokkos::View<const unsigned char*, CpMem> movingWall,
+                              Kokkos::View<unsigned char*, CpMem> asleep,
+                              Kokkos::View<unsigned char*, CpMem> sleepCounter, bool wakeOnChange) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::wake_contact_change", Kokkos::RangePolicy<CpExec>(space, 0, numReal),
@@ -202,15 +201,15 @@ inline void wakeContactChangeKokkos(int numReal, Kokkos::View<const int*, CpMem>
 /// stayed below sleepSpeed for K consecutive substeps is put to sleep (velocity + spin zeroed).
 /// Any body at/above the threshold, ungrounded, or on a moving wall resets its counter. `vel` /
 /// `angVel` are the committed velocities of this substep.
-inline void updateSleepKokkos(int numReal, Kokkos::View<const float* [3], CpMem> vel,
-                              Kokkos::View<const float* [3], CpMem> angVel,
-                              Kokkos::View<const float*, CpMem> rad,
-                              Kokkos::View<const unsigned char*, CpMem> grounded,
-                              Kokkos::View<const unsigned char*, CpMem> movingWall,
-                              Kokkos::View<unsigned char*, CpMem> asleep,
-                              Kokkos::View<unsigned char*, CpMem> sleepCounter, float sleepSpeed,
-                              int K, Kokkos::View<float* [3], CpMem> velOut,
-                              Kokkos::View<float* [3], CpMem> angVelOut) {
+inline void updateSleep(int numReal, Kokkos::View<const float* [3], CpMem> vel,
+                        Kokkos::View<const float* [3], CpMem> angVel,
+                        Kokkos::View<const float*, CpMem> rad,
+                        Kokkos::View<const unsigned char*, CpMem> grounded,
+                        Kokkos::View<const unsigned char*, CpMem> movingWall,
+                        Kokkos::View<unsigned char*, CpMem> asleep,
+                        Kokkos::View<unsigned char*, CpMem> sleepCounter, float sleepSpeed, int K,
+                        Kokkos::View<float* [3], CpMem> velOut,
+                        Kokkos::View<float* [3], CpMem> angVelOut) {
   CpExec space;
   const float s2 = sleepSpeed * sleepSpeed;
   Kokkos::parallel_for(

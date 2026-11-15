@@ -101,7 +101,7 @@ is correct there **because the evaluation is a pure function of a state that bot
 identically**. That is exactly the property the GS sweeps lack.
 
 ### 1.4 The friction serial floor (dLvel = 1.9e-5 at np = 1, `cluster_friction`) is real
-`solveContactFrictionKokkos` applies:
+`solveContactFriction` applies:
 - +J_t at A's surface point p_A = x_A + r_A;
 - −J_t at B's surface point p_B = x_B + r_B.
 
@@ -178,10 +178,10 @@ Recorded in §9 R8.
 ### 2.2 Owned and visible lists (filter at the source; no kernel changes)
 The narrow phase keeps reporting every contact with at least one owned body (the *visible* set).
 Right after it:
-1. **Stable partition of contacts.** `partitionContactsKokkos(P.contacts, nc, ownership)` puts owned
+1. **Stable partition of contacts.** `partitionContacts(P.contacts, nc, ownership)` puts owned
    contacts first, [0, ncOwned), then non-owned contacts, [ncOwned, nc). Each part keeps its
    relative order. It is not a sort; see §6 WO-2 for the exact algorithm.
-2. **Manifold reduction with owned manifolds first.** `reduceContactsToManifoldsKokkos(...,
+2. **Manifold reduction with owned manifolds first.** `reduceContactsToManifolds(...,
    numOwnedContacts = ncOwned, &nmOwned)` ORs bit 63 (`kNonOwnedPairBit`) into the local sort key
    of every contact at index ≥ ncOwned. After the existing `sort_by_key`, the owned manifolds are
    [0, nmOwned) in their old relative order and the non-owned ones are [nmOwned, nmVisible).
@@ -192,10 +192,10 @@ Right after it:
    commit, colouring and friction pass therefore runs on owned items only. The visible count
    `nmVisible` is used **only** by the three label computations that must see the whole
    neighbourhood and write no body state:
-   - `gatherWarmLambdaKokkos`, so that a stale ledger copy of a pair owned elsewhere is "matched"
+   - `gatherWarmLambda`, so that a stale ledger copy of a pair owned elsewhere is "matched"
      and never orphaned (§4.6);
-   - `updateGroundedLevelsKokkos`;
-   - `computeHeightLevelsKokkos`.
+   - `updateGroundedLevels`;
+   - `computeHeightLevels`.
 
    `P.contactCount` and `P.manifoldCount` keep reporting the visible counts, so the getters are
    unchanged.
@@ -243,11 +243,11 @@ The quaternion needs no reverse: the position projection is translation-only
 | where in `demSolveContacts` | hook today | hook after |
 |---|---|---|
 | top of the function, before any body write | none | `beginSolve` = mark velocity baselines (no MPI) |
-| after `warmStartApplyKokkos` (PGS) | `syncVelocities` | `syncVelocities` = reverse, then forward |
+| after `warmStartApply` (PGS) | `syncVelocities` | `syncVelocities` = reverse, then forward |
 | main, stabilization, escalate and ordered loops: `syncPoint(it)` and the final call of each phase | `syncVelocities` | same (now reverse, then forward) |
-| legacy friction, after `countFrictionContactsKokkos` | none | `syncFrictionCounts` = reverse, then forward of the count column |
-| legacy friction, after `applyVelocityDeltasKokkos` | `syncVelocities` | same |
-| after `applyVelocityAndPredictPositionKokkos` | `syncPositions` | **`publishPositions`**: forward and mark baselines, **no reverse**. The ghost's change there is integration, not an interaction. |
+| legacy friction, after `countFrictionContacts` | none | `syncFrictionCounts` = reverse, then forward of the count column |
+| legacy friction, after `applyVelocityDeltas` | `syncVelocities` | same |
+| after `applyVelocityAndPredictPosition` | `syncPositions` | **`publishPositions`**: forward and mark baselines, **no reverse**. The ghost's change there is integration, not an interaction. |
 | position loop `syncPoint(it)` and final | `syncPositions` | `syncPositions` = reverse, then forward |
 
 ### 2.4 Proof sketch: equal and opposite, applied once
@@ -354,25 +354,25 @@ modern GS stack it is the redundant solve that breaks conservation. The conserva
 
 **4.1 Warm start, persistent keys, accumulated-impulse clamps and the friction cone.**
 - Only the owner sweeps a pair, so only the owner accumulates its λ, λ_T and posImpulse and commits
-  them (`commitPairKeysLambdaKokkos` over [0, nmOwned)). The clamps λ ≥ 0 and |λ_T| ≤ μ·λ act on
+  them (`commitPairKeysLambda` over [0, nmOwned)). The clamps λ ≥ 0 and |λ_T| ≤ μ·λ act on
   that single copy.
-- A ledger entry of a pair this rank no longer owns is still gathered (`gatherWarmLambdaKokkos`
+- A ledger entry of a pair this rank no longer owns is still gathered (`gatherWarmLambda`
   over nmVisible, harmless per-manifold writes above nmOwned), is never applied, and is dropped at
   the next commit.
 - If ownership moves (a drifted particle, §1.2), the new owner warm-starts that pair cold once.
   Accepted (R3).
-- `markPersistentManifoldsKokkos`, `computeVn0Kokkos`, `warmStartApplyKokkos` and
-  `commitPosImpulseKokkos` all run on the owned range.
+- `markPersistentManifolds`, `computeVn0`, `warmStartApply` and
+  `commitPosImpulse` all run on the owned range.
 
 **4.2 Count-averaging factors (per body, and they differ between ranks).**
 - **Legacy friction.** `inv_n = 1/max(n_A, n_B, 1)` is **per contact and symmetric**, so it is
   conservative. What was wrong at np ≥ 2 was the counts themselves: a ghost's count covered only
   this rank's contacts. `syncFrictionCounts` (reverse-sum, then forward of `planeFriction(:,1)`,
-  after `countFrictionContactsKokkos` over owned contacts) makes every count the serial count,
+  after `countFrictionContacts` over owned contacts) makes every count the serial count,
   because each owned contact is counted once at each endpoint. The friction impulse therefore
   equals serial's except for the lag.
-- **The colour-saturation Jacobi fallbacks** (`applyVelocityDeltasAveragedKokkos` with
-  `min(1, 2/count)` and `applyUpdatesKokkos` with `1/count`) use a **per-body** factor. They are
+- **The colour-saturation Jacobi fallbacks** (`applyVelocityDeltasAveraged` with
+  `min(1, 2/count)` and `applyUpdates` with `1/count`) use a **per-body** factor. They are
   non-conservative in serial as well whenever count_A ≠ count_B. After the fix the ghost's averaged
   increment is delivered exactly as applied, so np ≥ 2 inherits np = 1's property, no worse. They
   trigger only above colour-mask degree 62, which is impossible for the gate scenes.
@@ -406,7 +406,7 @@ the last sweep's increments.
 
 **4.6 Poisson (event-level) restitution.**
 - The per-pair bank lives in the owner's ledger.
-- Orphan credits to a ghost endpoint (`scatterOrphanBanksKokkos`) and draws from a ghost's account
+- Orphan credits to a ghost endpoint (`scatterOrphanBanks`) and draws from a ghost's account
   inside the sweeps are delivered by the velocity reverse.
 - This replaces today's "the owner's redundant ledger copy applies the same credit
   authoritatively", which no longer exists.
@@ -624,7 +624,7 @@ Files: `src/contact_preprocessing.hpp`, `src/mpi_halo.hpp`, the test from WO-1.
    - In `decodeKey`, change `bodyA = static_cast<int>(key >> 32)` to
      `bodyA = static_cast<int>((key >> 32) & 0x7FFFFFFFu)`.
 2. In `contact_preprocessing.hpp`, add
-   `template <class Owns> inline int partitionContactsKokkos(Kokkos::View<ContactC*, CpMem> contacts, int n, const Owns& owns)`:
+   `template <class Owns> inline int partitionContacts(Kokkos::View<ContactC*, CpMem> contacts, int n, const Owns& owns)`:
    1. `parallel_scan` over i with `f = owns(contacts(i)) ? 1 : 0`, storing `before(i)` (exclusive).
       The return value is ncOwned.
    2. Scatter into a per-call scratch `View<ContactC*>` (`view_alloc(space, "peclet::dem::cp::part",
@@ -634,7 +634,7 @@ Files: `src/contact_preprocessing.hpp`, `src/mpi_halo.hpp`, the test from WO-1.
    4. Return ncOwned.
 
    If `n == 0`, return 0.
-3. Extend `reduceContactsToManifoldsKokkos` with `int numOwnedContacts = -1, int* numOwnedManifolds = nullptr`:
+3. Extend `reduceContactsToManifolds` with `int numOwnedContacts = -1, int* numOwnedManifolds = nullptr`:
    - step 1 becomes `keys(i) = pairKey(contacts(i)) | ((numOwnedContacts >= 0 && i >= numOwnedContacts) ? kNonOwnedPairBit : 0)`;
    - after the segment scan, if `numOwnedManifolds`, `parallel_reduce` the count of leaders
      (p == 0 or k(p) ≠ k(p−1)) with (k(p) & kNonOwnedPairBit) == 0 into it;
@@ -645,7 +645,7 @@ Files: `src/contact_preprocessing.hpp`, `src/mpi_halo.hpp`, the test from WO-1.
 5. In `test_ownership_mpi`, add modes `exactly_once_closed`, `exactly_once_periodic` and
    `exactly_once_drift`, registered for np 1, 2, 4, 8:
    - build the global set, distribute it by the ORB, gather, run `findCollisionsGrow` +
-     `narrowPhaseGrow` + `partitionContactsKokkos`;
+     `narrowPhaseGrow` + `partitionContacts`;
    - collect every rank's owned **active** (`dist <= 0`) pair keys `pairKeyFromGids(gid_a, gid_b)`
      (walls: `(gid, 0xFFFFFFFF)`) and gather them to rank 0;
    - run the same narrow phase on the global set on `MPI_COMM_SELF`;
@@ -685,9 +685,9 @@ Files: `src/step_solve_mpi.hpp`, `src/solve_driver.hpp`.
    `beginSolve`, `publishPositions` and `syncFrictionCounts`.
 3. `demStepMpi`, after `narrowPhaseGrow`:
    ```
-   const int ncOwned = partitionContactsKokkos(P.contacts, nc, halo.contactOwnership(P));
+   const int ncOwned = partitionContacts(P.contacts, nc, halo.contactOwnership(P));
    int nmOwned = 0;
-   reduceContactsToManifoldsKokkos(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot, ncOwned, &nmOwned);
+   reduceContactsToManifolds(P.contacts, nc, P.manifolds, P.manifoldCount, P.contactSlot, ncOwned, &nmOwned);
    const int nmVisible = readInt(P.manifoldCount);
    demSolveContacts(P, ncOwned, nmOwned, P.numParticles, P.gid,
                     MpiSolveHooks{halo, syncEvery < 1 ? 1 : syncEvery, forwardRotation, nmVisible});
@@ -695,12 +695,12 @@ Files: `src/step_solve_mpi.hpp`, `src/solve_driver.hpp`.
    Rewrite the `demStepMpi` comment ("identical physics ... not bit-exact") to §2.6's wording.
 4. `demSolveContacts`, exactly these edits and no others:
    1. After `CpExec space;`: `hooks.beginSolve(P); const int nmVisible = hooks.visibleManifolds(nm);`.
-   2. `gatherWarmLambdaKokkos(P.manifolds, nm, ...)` → `nmVisible`.
-   3. `updateGroundedLevelsKokkos(P.manifolds, nm, ...)` → `nmVisible`.
-   4. `computeHeightLevelsKokkos(P.manifolds, nm, ...)` → `nmVisible`. `buildLevelColorBucketsKokkos`
+   2. `gatherWarmLambda(P.manifolds, nm, ...)` → `nmVisible`.
+   3. `updateGroundedLevels(P.manifolds, nm, ...)` → `nmVisible`.
+   4. `computeHeightLevels(P.manifolds, nm, ...)` → `nmVisible`. `buildLevelColorBuckets`
       keeps `nm`.
-   5. After `countFrictionContactsKokkos(...)`: `hooks.syncFrictionCounts(P);`.
-   6. After `applyVelocityAndPredictPositionKokkos(...)`, replace `hooks.syncPositions(P)` with
+   5. After `countFrictionContacts(...)`: `hooks.syncFrictionCounts(P);`.
+   6. After `applyVelocityAndPredictPosition(...)`, replace `hooks.syncPositions(P)` with
       `hooks.publishPositions(P)`.
    7. Rewrite the file comment (lines 10–17): single owner, reverse accumulate, visible vs owned
       counts.
@@ -878,7 +878,7 @@ In "Settled decisions", add the bullet:
 ```
 
 ### 8.4 Separate issues to record (not in this package)
-1. **Legacy friction lever-arm couple.** `solveContactFrictionKokkos` applies ±J_t at two different
+1. **Legacy friction lever-arm couple.** `solveContactFriction` applies ±J_t at two different
    surface points, which gives ΔL = δ n × J_t per contact (serial dLvel 1.9e-5). Fix: one common
    application point. It changes np = 1.
 2. **The count-averaged Jacobi fallbacks** (velocity `min(1, 2/count)`, position `1/count`, and the

@@ -91,15 +91,15 @@ if (C >= 0 && lam <= 0) return;
 const float wTotal = computeW(rA,n,invMassA,invIA) + computeW(rB,n,invMassB,invIB);   // :625
 lamNew = fmax(0, lam - omega*C/wTotal);  dLambda = lamNew - lam;   // omega_pos = 1.5
 posLambdaAcc(idx) = lamNew;  atomic_max(posResidual, |dLambda|*wTotal);  // stop: < 1e-4 R
-// Translation-only correction, in place (rotation discarded to match applyUpdatesKokkos).
+// Translation-only correction, in place (rotation discarded to match applyUpdates).
 posPred(idA) += n*dLambda*invMassA;   posPred(idB) -= n*dLambda*invMassB;
 ```
 
 - `posLambdaAcc` is the contact's net position impulse. The caller converts it to impulse units
   and carries it into the next substep's **Coulomb bound**, so the friction cone sees the total
   normal load. Changing w̃ changes that number.
-- The Jacobi twin `solvePositionKokkos` computes a world-frame dθ (S15) and scatters `deltaQuat`,
-  but `applyUpdatesKokkos` commits `deltaPos` only.
+- The Jacobi twin `solvePosition` computes a world-frame dθ (S15) and scatters `deltaQuat`,
+  but `applyUpdates` commits `deltaPos` only.
 - For spheres, rA ∥ n, so the rotational term is 0: **spheres are unaffected by every Q-B option.**
 - Mass splitting divides w̃ per copy (k·w, S-decisions); the rank-level M consensus averages
   positions. Any rotation applied would need an orientation consensus too.

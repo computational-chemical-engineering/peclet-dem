@@ -232,15 +232,14 @@ KOKKOS_INLINE_FUNCTION F3 sdfGradShape(F3 p, const ShapeDesc& d, GridView grid) 
 /// position units, the warm-start ledger and the MPI contact ownership all treat it as one more
 /// point of the same pair. The two directions are not merged: each is a separate constraint row of
 /// the pair (docs/solver_details.md, "Two-way shell detection", for the measurement).
-inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int numPairs,
-                                 PosView pos, QuatView quat, ScalarF scale, ScalarI shapeId,
-                                 Kokkos::View<const ShapeDesc*, CpMem> shapes, ShellView shell,
-                                 float globalScale, float margin,
-                                 Kokkos::View<ContactC*, CpMem> outContacts,
-                                 Kokkos::View<int, CpMem> outCount,
-                                 Kokkos::View<float, CpMem> maxOverlap,
-                                 GridView sdfGrid = GridView{}, MatIdView matId = MatIdView{},
-                                 PairTableView pairTable = PairTableView{}, bool twoWay = false) {
+inline void detectContacts(Kokkos::View<const int* [2], CpMem> pairs, int numPairs, PosView pos,
+                           QuatView quat, ScalarF scale, ScalarI shapeId,
+                           Kokkos::View<const ShapeDesc*, CpMem> shapes, ShellView shell,
+                           float globalScale, float margin,
+                           Kokkos::View<ContactC*, CpMem> outContacts,
+                           Kokkos::View<int, CpMem> outCount, Kokkos::View<float, CpMem> maxOverlap,
+                           GridView sdfGrid = GridView{}, MatIdView matId = MatIdView{},
+                           PairTableView pairTable = PairTableView{}, bool twoWay = false) {
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
@@ -386,7 +385,7 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
 }
 
 /// Per-real-particle contacts against a static world-space wall SDF set (a drum barrel, hopper,
-/// vibrating tray, ...). Mirrors detectBoundaryKokkos but the boundary is the wall's zero level
+/// vibrating tray, ...). Mirrors detectBoundary but the boundary is the wall's zero level
 /// set: each surface point (or the sphere centre) is tested against sampleWallSdf, the outward
 /// gradient is the contact normal, and every emitted contact carries the wall's rigid-body surface
 /// velocity at the contact point plus the wall's binary (particle–wall) restitution/friction — so
@@ -394,13 +393,14 @@ inline void detectContactsKokkos(Kokkos::View<const int* [2], CpMem> pairs, int 
 /// sweep. bodyB = wallContactId(wallIdBase + wallIndex), wallIdBase = numPlanes (a boundary, like a
 /// plane); the wall surface point is stored in rB for the position solve's plane-linearised
 /// non-penetration constraint.
-inline void detectWallSdfKokkos(
-    int numReal, int numWalls, PosView pos, QuatView quat, ScalarF scale, ScalarI shapeId,
-    Kokkos::View<const ShapeDesc*, CpMem> shapes, ShellView shell,
-    Kokkos::View<const WallSdf*, CpMem> walls, GridView wallGrid, float globalScale, float margin,
-    Kokkos::View<ContactC*, CpMem> outContacts, Kokkos::View<int, CpMem> outCount,
-    Kokkos::View<float, CpMem> maxOverlap, MatIdView matId = MatIdView{},
-    PairTableView pairTable = PairTableView{}, int wallIdBase = 0) {
+inline void detectWallSdf(int numReal, int numWalls, PosView pos, QuatView quat, ScalarF scale,
+                          ScalarI shapeId, Kokkos::View<const ShapeDesc*, CpMem> shapes,
+                          ShellView shell, Kokkos::View<const WallSdf*, CpMem> walls,
+                          GridView wallGrid, float globalScale, float margin,
+                          Kokkos::View<ContactC*, CpMem> outContacts,
+                          Kokkos::View<int, CpMem> outCount, Kokkos::View<float, CpMem> maxOverlap,
+                          MatIdView matId = MatIdView{}, PairTableView pairTable = PairTableView{},
+                          int wallIdBase = 0) {
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(
@@ -502,13 +502,13 @@ inline void detectWallSdfKokkos(
 /// Per-real-particle contacts against explicit planes (point-shell shapes test each surface point;
 /// analytic spheres use centre-minus-radius). bodyB = wallContactId(planeIndex); plane anchor in
 /// rB.
-inline void detectBoundaryKokkos(int numReal, int numPlanes, PosView pos, QuatView quat,
-                                 ScalarF scale, ScalarI shapeId,
-                                 Kokkos::View<const ShapeDesc*, CpMem> shapes, ShellView shell,
-                                 Kokkos::View<const PlaneP*, CpMem> planes, float globalScale,
-                                 float margin, Kokkos::View<ContactC*, CpMem> outContacts,
-                                 Kokkos::View<int, CpMem> outCount,
-                                 Kokkos::View<float, CpMem> maxOverlap) {
+inline void detectBoundary(int numReal, int numPlanes, PosView pos, QuatView quat, ScalarF scale,
+                           ScalarI shapeId, Kokkos::View<const ShapeDesc*, CpMem> shapes,
+                           ShellView shell, Kokkos::View<const PlaneP*, CpMem> planes,
+                           float globalScale, float margin,
+                           Kokkos::View<ContactC*, CpMem> outContacts,
+                           Kokkos::View<int, CpMem> outCount,
+                           Kokkos::View<float, CpMem> maxOverlap) {
   CpExec space;
   const int maxContacts = static_cast<int>(outContacts.extent(0));
   Kokkos::parallel_for(

@@ -1,4 +1,4 @@
-// Correctness of the Kokkos Berendsen thermostat (dem::applyThermostatKokkos) against a host
+// Correctness of the Kokkos Berendsen thermostat (dem::applyThermostat) against a host
 // replication: reduce translational + rotational KE, compute the two scaling factors, rescale
 // velocities. Device reduction order differs from the host sequential sum, so compare the rescaled
 // velocities within tolerance. Runs on whatever backend Kokkos was built for.
@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
       Kokkos::deep_copy(invMass, h);
     }
 
-    applyThermostatKokkos(N, vel, invMass, ang, invI, quat, kB, tau, Ttarget, dt);
+    applyThermostat(N, vel, invMass, ang, invI, quat, kB, tau, Ttarget, dt);
 
     std::vector<float> gv(3 * N), gw(3 * N);
     {

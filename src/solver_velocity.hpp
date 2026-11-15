@@ -43,9 +43,9 @@ KOKKOS_INLINE_FUNCTION float genInvMass(F3 tau, F3 invIlocal, F4 q) {
 /// dedupTwins (docs/contact_solve_framework.md §4.2 item 2, §6.2): the single-rank periodic twin
 /// rule (skip realIdx(A) > realIdx(B)); off under MPI, where ownership already excludes the
 /// non-owned twin and the velocity slot map would make the two rules disagree.
-inline void countVelocityJacobiKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                      int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
-                                      Kokkos::View<int*, CpMem> counts, bool dedupTwins = true) {
+inline void countVelocityJacobi(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                                Kokkos::View<const int*, CpMem> realIdx,
+                                Kokkos::View<int*, CpMem> counts, bool dedupTwins = true) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::count_velocity_jacobi", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
@@ -57,7 +57,7 @@ inline void countVelocityJacobiKokkos(Kokkos::View<const ManifoldC*, CpMem> mani
         if (m.bodyB >= 0) {
           const int realB = realIdx(m.bodyB);
           if (dedupTwins && realA > realB)
-            return;  // periodic dedup, as in solveVelocityKokkos
+            return;  // periodic dedup, as in solveVelocity
           Kokkos::atomic_add(&counts(realB), 1);
         }
         Kokkos::atomic_add(&counts(realA), 1);
@@ -67,13 +67,13 @@ inline void countVelocityJacobiKokkos(Kokkos::View<const ManifoldC*, CpMem> mani
 
 /// Accumulate normal-restitution velocity deltas for `numManifolds` manifolds.
 /// massSplit (the 'jacobi' diagnostic, §3.1): `velCounts` holds the global per-body counts n of
-/// countVelocityJacobiKokkos and is only read; each manifold is solved against copies of mass
+/// countVelocityJacobi and is only read; each manifold is solved against copies of mass
 /// m / n (w~ = n_A w_A + n_B w_B, a wall side 0) and the TRUE-mass deltas are accumulated, to be
 /// applied with factor 1. Off: the solve bumps `velCounts` and the caller count-averages the sum
 /// -- the pre-framework count-averaged Jacobi, kept ONLY for the kernel unit test against its
 /// serial reference; no production path calls it (the colour-saturation fallbacks were deleted
 /// with complete colouring, docs/contact_solve_framework.md §4.2 / §12 S3).
-inline void solveVelocityKokkos(
+inline void solveVelocity(
     Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
     Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<const float* [3], CpMem> velPred,
@@ -269,15 +269,15 @@ inline void solveVelocityKokkos(
 }
 
 /// Apply the accumulated velocity deltas AVERAGED by the per-body manifold count — the velocity-
-/// solve twin of the position solve's constraint-count averaging (applyUpdatesKokkos). A body in a
+/// solve twin of the position solve's constraint-count averaging (applyUpdates). A body in a
 /// dense pile receives one full-strength impulse per touching manifold; the raw Jacobi SUM
 /// overshoots by ~the contact count and diverges hard for e ≳ 0.5 (a settled 180k glass-bead bed
 /// switched to e=0.8 grew |v| by ~5x per substep). A lone binary collision (count 1) is unchanged.
 /// averaged = false (the mass-split 'jacobi' diagnostic, §3.1): the deltas are already true-mass
 /// impulses against copies of mass m / count, so the apply is a plain add (factor 1).
 template <class V3, class Vi>
-inline void applyVelocityDeltasAveragedKokkos(int n, V3 velPred, V3 angVelPred, V3 deltaVel,
-                                              V3 deltaAngVel, Vi velCounts, bool averaged = true) {
+inline void applyVelocityDeltasAveraged(int n, V3 velPred, V3 angVelPred, V3 deltaVel,
+                                        V3 deltaAngVel, Vi velCounts, bool averaged = true) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::apply_vel_avg", Kokkos::RangePolicy<CpExec>(space, 0, n), KOKKOS_LAMBDA(int i) {
@@ -312,138 +312,60 @@ inline void applyVelocityDeltasAveragedKokkos(int n, V3 velPred, V3 angVelPred, 
 // construction. count==1 (a binary collision) is identical to the Jacobi path; the difference is
 // confined to dense clusters.
 
-/// Greedy graph-colour the manifolds: no two manifolds sharing a real body get the same colour.
-/// Round-based max-index (Jones–Plassmann) arbitration, no adjacency lists: each round every still-
-/// uncoloured manifold contends for its endpoint bodies via atomicMax(bodyWinner, idx); a manifold
-/// that wins BOTH endpoints has no uncoloured conflict this round, so it commits the lowest colour
-/// free at either endpoint (a per-body bitmask) — and, as the unique winner of those bodies,
-/// updates the masks race-free. Inactive manifolds (empty, or the periodic-dedup duplicate
+/// The manifold edge source of colorEdges: vertex realIdx(body) or its hub copy slot through `ov`,
+/// key colorKey(manifold index). Inactive: empty, both-asleep, or the periodic-dedup twin.
+struct ManifoldEdges {
+  Kokkos::View<const ManifoldC*, CpMem> manifolds;
+  Kokkos::View<const int*, CpMem> realIdx;
+  Kokkos::View<const unsigned char*, CpMem> sleepMask;
+  SlotOverride ov;
+  bool sleepOn;
+  bool dedupTwins;
+  static constexpr ColorLabels labels() {
+    return {"peclet::dem::color_init_bodies",  "peclet::dem::color_init_manifolds",
+            "peclet::dem::color_reset_winner", "peclet::dem::color_contend",
+            "peclet::dem::color_commit",       "peclet::dem::color_max",
+            "peclet::dem::color_leftover"};
+  }
+  KOKKOS_INLINE_FUNCTION int initialColor(int idx) const {
+    const ManifoldC m = manifolds(idx);
+    if (m.num_points <= 0 || (sleepOn && sleepMask(idx) != 0))
+      return -2;  // inactive or a frozen (both-asleep) island manifold
+    // Periodic twin dedup (§4.2 item 2): single-rank only; under MPI ownership already
+    // excludes the non-owned twin (dedupTwins = !Hooks::distributed).
+    if (dedupTwins && m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB))
+      return -2;  // periodic dedup: the (realA<=realB) twin carries this contact
+    return -1;
+  }
+  KOKKOS_INLINE_FUNCTION ColorEdge edge(int idx) const {
+    const ManifoldC m = manifolds(idx);
+    const int ea = ov.slotA(idx, realIdx(m.bodyA));
+    const int eb = (m.bodyB >= 0) ? ov.slotB(idx, realIdx(m.bodyB)) : -1;
+    return {ea, eb, colorKey(idx)};
+  }
+};
+
+/// Greedy graph-colour the manifolds: no two manifolds sharing a real body get the same colour
+/// (colorEdges over ManifoldEdges). Inactive manifolds (empty, or the periodic-dedup duplicate
 /// realA>realB) are tagged -2 and skipped by the solve. Runs once per step; the colouring is reused
 /// across the velocity sweeps. Returns the number of colours used (0 if no active manifolds).
-inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
-                                Kokkos::View<const int*, CpMem> realIdx, int numReal,
-                                Kokkos::View<int*, CpMem> mColor,
-                                Kokkos::View<long long*, CpMem> bodyWinner,
-                                Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover,
-                                Kokkos::View<const unsigned char*, CpMem> sleepMask = {},
-                                SlotOverride ov = {}, bool dedupTwins = true, int vertexSpan = 0) {
-  leftover = 0;
-  CpExec space;
-  if (numManifolds <= 0 || numReal <= 0)
-    return 0;
-  // Colouring vertices: realIdx(body), or a hub copy slot through `ov` (§4.4); vertexSpan covers
-  // the copy slots (0 = numReal, the no-copy span).
-  const int nV = vertexSpan > 0 ? vertexSpan : numReal;
-  const bool sleepOn = sleepMask.extent(0) > 0;
-  Kokkos::parallel_for(
-      "peclet::dem::color_init_bodies", Kokkos::RangePolicy<CpExec>(space, 0, nV),
-      KOKKOS_LAMBDA(int i) { bodyMask(i) = 0; });
-  // -2 inactive (skip forever), -1 uncoloured, >=0 committed colour.
-  Kokkos::parallel_for(
-      "peclet::dem::color_init_manifolds", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-      KOKKOS_LAMBDA(int idx) {
-        const ManifoldC m = manifolds(idx);
-        if (m.num_points <= 0 || (sleepOn && sleepMask(idx))) {
-          mColor(idx) = -2;  // inactive or a frozen (both-asleep) island manifold
-          return;
-        }
-        // Periodic twin dedup (§4.2 item 2): single-rank only; under MPI ownership already
-        // excludes the non-owned twin (dedupTwins = !Hooks::distributed).
-        if (dedupTwins && m.bodyB >= 0 && realIdx(m.bodyA) > realIdx(m.bodyB)) {
-          mColor(idx) = -2;  // periodic dedup: the (realA<=realB) twin carries this contact
-          return;
-        }
-        mColor(idx) = -1;
-      });
-
-  int remaining = 1, prevRemaining = -1;
-  // Round cap (docs/contact_solve_framework.md §12 S7): the vertices coloured are MANIFOLDS, so
-  // the bound is their count + 2. Every round commits at least the globally highest-key
-  // uncoloured manifold (keys are unique: colorKey carries the index in its low word), so the
-  // loop terminates within numManifolds rounds; O(log n) in practice.
-  const int maxRounds = numManifolds + 2;
-  for (int round = 0; round < maxRounds && remaining > 0; ++round) {
-    Kokkos::parallel_for(
-        "peclet::dem::color_reset_winner", Kokkos::RangePolicy<CpExec>(space, 0, nV),
-        KOKKOS_LAMBDA(int i) { bodyWinner(i) = -1; });
-    Kokkos::parallel_for(
-        "peclet::dem::color_contend", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-        KOKKOS_LAMBDA(int idx) {
-          if (mColor(idx) != -1)
-            return;
-          const ManifoldC m = manifolds(idx);
-          const long long key = colorKey(idx);
-          Kokkos::atomic_max(&bodyWinner(ov.slotA(idx, realIdx(m.bodyA))), key);
-          if (m.bodyB >= 0)
-            Kokkos::atomic_max(&bodyWinner(ov.slotB(idx, realIdx(m.bodyB))), key);
-        });
-    int rem = 0;
-    Kokkos::parallel_reduce(
-        "peclet::dem::color_commit", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-        KOKKOS_LAMBDA(int idx, int& acc) {
-          if (mColor(idx) != -1)
-            return;
-          const ManifoldC m = manifolds(idx);
-          const int ea = ov.slotA(idx, realIdx(m.bodyA));
-          const int eb = (m.bodyB >= 0) ? ov.slotB(idx, realIdx(m.bodyB)) : -1;
-          // Winner iff it holds BOTH its endpoints -> no uncoloured conflict, sole writer of ea/eb.
-          const long long key = colorKey(idx);
-          if (bodyWinner(ea) != key || (eb >= 0 && bodyWinner(eb) != key)) {
-            acc += 1;
-            return;
-          }
-          std::uint64_t forbidden = bodyMask(ea);
-          if (eb >= 0)
-            forbidden |= bodyMask(eb);
-          int c = 0;  // lowest free colour of 64; never forced (§4.2 item 1)
-          while (c < kColorPalette && ((forbidden >> c) & 1))
-            ++c;
-#if defined(PECLET_DEM_TEST_MUTANT) && PECLET_DEM_TEST_MUTANT == 3
-          if (c > 62)
-            c = 62;  // G13 mutant 3: the old forced colour 62
-#endif
-          if (c == kColorPalette) {
-            mColor(idx) = kColorUncolourable;  // no free colour: neither coloured nor remaining
-            return;
-          }
-          mColor(idx) = c;
-          const std::uint64_t bit = std::uint64_t(1) << c;
-          bodyMask(ea) |= bit;
-          if (eb >= 0)
-            bodyMask(eb) |= bit;
-        },
-        rem);
-    space.fence();
-    if (rem == prevRemaining)
-      break;  // safety bound only: every round commits (or marks -3) the highest-key contender
-    prevRemaining = rem;
-    remaining = rem;
-  }
-
-  int maxc = -1;
-  Kokkos::parallel_reduce(
-      "peclet::dem::color_max", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-      KOKKOS_LAMBDA(int idx, int& mx) {
-        if (mColor(idx) > mx)
-          mx = mColor(idx);
-      },
-      Kokkos::Max<int>(maxc));
-  Kokkos::parallel_reduce(
-      "peclet::dem::color_leftover", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
-      KOKKOS_LAMBDA(int idx, int& acc) {
-        if (mColor(idx) == -1 || mColor(idx) == kColorUncolourable)
-          acc += 1;
-      },
-      leftover);
-  space.fence();
-  return maxc + 1;
+inline int colorManifolds(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                          Kokkos::View<const int*, CpMem> realIdx, int numReal,
+                          Kokkos::View<int*, CpMem> mColor,
+                          Kokkos::View<long long*, CpMem> bodyWinner,
+                          Kokkos::View<std::uint64_t*, CpMem> bodyMask, int& leftover,
+                          Kokkos::View<const unsigned char*, CpMem> sleepMask = {},
+                          SlotOverride ov = {}, bool dedupTwins = true, int vertexSpan = 0) {
+  const ManifoldEdges edges{manifolds, realIdx, sleepMask, ov, sleepMask.extent(0) > 0, dedupTwins};
+  return colorEdges(edges, numManifolds, numReal, vertexSpan, mColor, bodyWinner, bodyMask,
+                    leftover);
 }
 
 /// Incremental (warm-started) manifold colouring for the single-GPU PGS path. Carry each surviving
 /// pair's colour from the previous substep — matched by pair key against the sorted (prevPairKeys,
 /// prevColor) ledger committed alongside the warm impulses — seed the per-body colour masks from
 /// those carried colours, then run the SAME Jones-Plassmann arbitration ONLY over the NEW
-/// (colour == -1) manifolds. Result is bit-identical in FORM to colorManifoldsKokkos (a valid
+/// (colour == -1) manifolds. Result is bit-identical in FORM to colorManifolds (a valid
 /// body-disjoint colouring + numColors); only the assignment differs.
 ///
 /// VALIDITY (why the carried colours need no re-arbitration): within a single-GPU run realIndices
@@ -453,9 +375,9 @@ inline int colorManifoldsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
 /// arbitrated against the frozen (carried) masks. Hence seeding the masks non-atomically-safe with
 /// atomic_or and running the rounds over the -1 set reproduces a valid colouring. `forceFull`
 /// bypasses the carry entirely (fresh substep / colour-count-creep recompaction) — identical output
-/// to colorManifoldsKokkos. Single-GPU only: under MPI migration a carried colour can cross into a
+/// to colorManifolds. Single-GPU only: under MPI migration a carried colour can cross into a
 /// neighbourhood it never arbitrated against, so the distributed path keeps the full recolour.
-inline int colorManifoldsIncrementalKokkos(
+inline int colorManifoldsIncremental(
     Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
     Kokkos::View<const int*, CpMem> realIdx, int numReal,
     Kokkos::View<const unsigned long long*, CpMem> prevKeys,
@@ -520,7 +442,7 @@ inline int colorManifoldsIncrementalKokkos(
             Kokkos::atomic_or(&bodyMask(realIdx(m.bodyB)), bit);
         });
   // Jones-Plassmann arbitration over the uncoloured (-1) set only — identical body of work to
-  // colorManifoldsKokkos, but the frozen carried colours restrict it to the few new manifolds.
+  // colorManifolds, but the frozen carried colours restrict it to the few new manifolds.
   int remaining = 1, prevRemaining = -1;
   const int maxRounds = numManifolds + 2;  // §12 S7: bounded by the vertices coloured
   for (int round = 0; round < maxRounds && remaining > 0; ++round) {
@@ -575,7 +497,7 @@ inline int colorManifoldsIncrementalKokkos(
         rem);
     space.fence();
     if (rem == prevRemaining)
-      break;  // safety bound only (see colorManifoldsKokkos)
+      break;  // safety bound only (see colorManifolds)
     prevRemaining = rem;
     remaining = rem;
   }
@@ -612,12 +534,12 @@ inline int colorManifoldsIncrementalKokkos(
 
 /// Pre-solve approach velocity per manifold (the restitution bias), measured BEFORE the warm-start
 /// application. Same kinematics as the sweep kernel.
-inline void computeVn0Kokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
-                             Kokkos::View<const float* [3], CpMem> velPred,
-                             Kokkos::View<const float* [3], CpMem> angVelPred,
-                             Kokkos::View<const int*, CpMem> realIdx, float growthRate,
-                             Kokkos::View<float*, CpMem> vn0, Kokkos::View<float* [3], CpMem> vt0,
-                             bool dedupTwins = true) {
+inline void computeVn0(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                       Kokkos::View<const float* [3], CpMem> velPred,
+                       Kokkos::View<const float* [3], CpMem> angVelPred,
+                       Kokkos::View<const int*, CpMem> realIdx, float growthRate,
+                       Kokkos::View<float*, CpMem> vn0, Kokkos::View<float* [3], CpMem> vt0,
+                       bool dedupTwins = true) {
   using detail::ld3;
   CpExec space;
   Kokkos::parallel_for(
@@ -682,7 +604,7 @@ inline void computeVn0Kokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, in
 ///    actually transmitted; a per-substep kinetic gate would miss the co-moving compression
 ///    plateau where vn0 ~ 0), minus the separation already delivered (pR — so a clean one-substep
 ///    binary impact nets exactly 0), minus what the sweep's release channel injected (restRel).
-inline void updateRestitutionBankKokkos(
+inline void updateRestitutionBank(
     Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
     Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<const float* [3], CpMem> velPred,
@@ -781,9 +703,9 @@ inline void updateRestitutionBankKokkos(
 /// slowly re-fed credit cannot keep fluidizing its crater: with the pair-state 1/256 decay the
 /// 100k Dosta plateau crept 0.007 deeper), and once the peak ages below the resting threshold
 /// the whole account evaporates — stranded credit on a settling body never pops the pile later.
-inline void decayBodyOrphanKokkos(Kokkos::View<float*, CpMem> orphan,
-                                  Kokkos::View<float*, CpMem> orphanVPeak, int numOwned,
-                                  float restVelThreshold) {
+inline void decayBodyOrphan(Kokkos::View<float*, CpMem> orphan,
+                            Kokkos::View<float*, CpMem> orphanVPeak, int numOwned,
+                            float restVelThreshold) {
   CpExec space;
   Kokkos::parallel_for(
       "peclet::dem::rest_orphan_decay", Kokkos::RangePolicy<CpExec>(space, 0, numOwned),
@@ -811,7 +733,7 @@ inline void decayBodyOrphanKokkos(Kokkos::View<float*, CpMem> orphan,
 /// is delivered to that body's owner by the velocity reverse at the next sync, and an endpoint
 /// that has left this rank's halo is not found (it gets the conservative half, and that half is
 /// dropped).
-inline void scatterOrphanBanksKokkos(
+inline void scatterOrphanBanks(
     Kokkos::View<const unsigned long long*, CpMem> prevKeys,
     Kokkos::View<const float*, CpMem> prevRestBank, Kokkos::View<const float*, CpMem> prevRestVPeak,
     Kokkos::View<const unsigned char*, CpMem> matched, int prevCount,
@@ -879,8 +801,7 @@ inline void scatterOrphanBanksKokkos(
 
 /// Poisson-restitution diagnostics: (sum, max, count>0) over the committed owed-impulse store
 /// (namespace scope: nvcc forbids KOKKOS_LAMBDA in member functions).
-inline std::tuple<double, float, int> restBankStatsKokkos(Kokkos::View<const float*, CpMem> bank,
-                                                          int n) {
+inline std::tuple<double, float, int> restBankStats(Kokkos::View<const float*, CpMem> bank, int n) {
   double s = 0.0;
   float mx = 0.0f;
   int cnt = 0;
@@ -907,15 +828,15 @@ inline std::tuple<double, float, int> restBankStatsKokkos(Kokkos::View<const flo
 /// to the floor), so the correct per-substep impulse is only the ~m g dt refill, accumulated from
 /// zero -- warm-applying last substep's chain impulse one-sidedly would inject the whole column
 /// weight as upward velocity (measured: instant crush + churn from the inconsistent ledger).
-inline void computeSideFlagsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                   int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
-                                   Kokkos::View<const unsigned char*, CpMem> persistent,
-                                   Kokkos::View<const unsigned char*, CpMem> grounded,
-                                   Kokkos::View<const float* [3], CpMem> posPred,
-                                   Kokkos::View<const float* [3], CpMem> velPred, F3 gHat,
-                                   float riseThr, Kokkos::View<unsigned char*, CpMem> sideFlag,
-                                   Kokkos::View<const float*, CpMem> vn0, float approachThr,
-                                   bool dedupTwins = true) {
+inline void computeSideFlags(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                             Kokkos::View<const int*, CpMem> realIdx,
+                             Kokkos::View<const unsigned char*, CpMem> persistent,
+                             Kokkos::View<const unsigned char*, CpMem> grounded,
+                             Kokkos::View<const float* [3], CpMem> posPred,
+                             Kokkos::View<const float* [3], CpMem> velPred, F3 gHat, float riseThr,
+                             Kokkos::View<unsigned char*, CpMem> sideFlag,
+                             Kokkos::View<const float*, CpMem> vn0, float approachThr,
+                             bool dedupTwins = true) {
   using detail::ld3;
   CpExec space;
   Kokkos::parallel_for(
@@ -949,15 +870,15 @@ inline void computeSideFlagsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifol
 }
 
 /// Apply the warm-start impulses up front (order-independent: fixed impulses, atomic adds).
-inline void warmStartApplyKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
-                                 Kokkos::View<const float*, CpMem> invMass,
-                                 Kokkos::View<const float* [3], CpMem> invInertia,
-                                 Kokkos::View<const float* [4], CpMem> quat,
-                                 Kokkos::View<float* [3], CpMem> velPred,
-                                 Kokkos::View<float* [3], CpMem> angVelPred,
-                                 Kokkos::View<const int*, CpMem> realIdx,
-                                 Kokkos::View<const float*, CpMem> warmP,
-                                 Kokkos::View<float* [3], CpMem> warmT, bool dedupTwins = true) {
+inline void warmStartApply(Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
+                           Kokkos::View<const float*, CpMem> invMass,
+                           Kokkos::View<const float* [3], CpMem> invInertia,
+                           Kokkos::View<const float* [4], CpMem> quat,
+                           Kokkos::View<float* [3], CpMem> velPred,
+                           Kokkos::View<float* [3], CpMem> angVelPred,
+                           Kokkos::View<const int*, CpMem> realIdx,
+                           Kokkos::View<const float*, CpMem> warmP,
+                           Kokkos::View<float* [3], CpMem> warmT, bool dedupTwins = true) {
   using detail::ld3;
   CpExec space;
   Kokkos::parallel_for(
@@ -1119,75 +1040,286 @@ struct PGSManifoldSweep {
   // empty = realIdx, no relaxation. Every state access below uses realA / realB.
   SlotOverride ov{};
 
+  /// The endpoints' velocities (B on a wall: the wall's average velocity, zero spin).
+  struct PairVelocity {
+    F3 vA, wA, vB, wB;
+  };
+
+  /// One manifold's constraint row as the three impulse channels share it: the manifold, its
+  /// endpoints' solve slots, mass data and velocities at the start of this manifold's solve, the
+  /// averaged normal and arm sums, and the substep's sign, effective mass, side gate and
+  /// restitution. Filled by gatherRow then weighRow; read-only afterwards.
+  struct Row {
+    ManifoldC m;
+    int idB, realA, realB;  // idB < 0: wall manifold (realB = idB)
+    float invMassA, invMassB;
+    F3 invIA, invIB;
+    F4 qA, qB;
+    PairVelocity vel;               // loaded by gatherRow
+    float invN, restitution, eMat;  // restitution after the material override; weighRow may zero it
+    F3 Nsum, TauA, TauB, rAavg, rBavg;
+    float lenN;
+    F3 vGrowth;  // from here on: written by weighRow
+    float vn, sgn, wTotal;
+    unsigned char sf;
+    bool applyA, applyB;
+  };
+
+  /// The Poisson release's budget: the pair's owed impulse, the release speed scale and the
+  /// endpoints' orphan balances.
+  struct ReleaseBudget {
+    float owed, vPeak, orphA, orphB;
+  };
+
+  /// Linear velocity update of body slot `real` by the world-frame impulse `dLin`.
+  KOKKOS_FORCEINLINE_FUNCTION void applyLinear(int real, F3 dLin, float invMass) const {
+    velPred(real, 0) += dLin.x * invMass;
+    velPred(real, 1) += dLin.y * invMass;
+    velPred(real, 2) += dLin.z * invMass;
+  }
+
+  /// Angular velocity update of body slot `real` by the world-frame angular impulse `dAngWorld`
+  /// (rotated into the body frame, scaled by the diagonal inverse inertia, rotated back).
+  KOKKOS_FORCEINLINE_FUNCTION void applyAngular(int real, F3 dAngWorld, F3 invI, F4 q) const {
+    const F3 Jl = invRotateVector(q, dAngWorld);
+    const F3 dwl{Jl.x * invI.x, Jl.y * invI.y, Jl.z * invI.z};
+    const F3 dww = rotateVector(q, dwl);
+    angVelPred(real, 0) += dww.x;
+    angVelPred(real, 1) += dww.y;
+    angVelPred(real, 2) += dww.z;
+  }
+
+  /// Residual record of one applied correction: the adaptive stop's maxApproach and, on
+  /// quasi-static contacts, maxApproachQS.
+  KOKKOS_FORCEINLINE_FUNCTION void recordCorrection(int idx, float lenN, float corr) const {
+    Kokkos::atomic_max(&maxApproach(), corr);
+    if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
+      Kokkos::atomic_max(&maxApproachQS(), corr);
+  }
+
+  /// The pair's normal approach velocity along Nsum (arm sums TauA/TauB), growth included.
+  KOKKOS_FORCEINLINE_FUNCTION static float normalVelocity(const PairVelocity& v, F3 Nsum, F3 TauA,
+                                                          F3 TauB, F3 vGrowth) {
+    float vn = dot3(v.vA, Nsum) + dot3(v.wA, TauA) + dot3(v.vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
+               dot3(v.wB, TauB);
+    vn += dot3(vGrowth, Nsum);
+    return vn;
+  }
+
+  /// Row, part 1: the manifold, its endpoints' slots, mass data and velocities, the averaged
+  /// normal and arm sums and lenN.
+  KOKKOS_FORCEINLINE_FUNCTION void gatherRow(int idx, Row& r) const {
+    using detail::ld3;
+    const ManifoldC m = manifolds(idx);
+    const int idA = m.bodyA, idB = m.bodyB;
+    const int realA = ov.slotA(idx, realIdx(idA));
+    const int realB = (idB >= 0) ? ov.slotB(idx, realIdx(idB)) : idB;
+    const float invMassA = invMass(realA);
+    const float invMassB = (idB >= 0) ? invMass(realB) : 0.0f;
+    const F3 invIA = ld3(invInertia, realA);
+    const F3 invIB = (idB >= 0) ? ld3(invInertia, realB) : F3{0, 0, 0};
+    const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
+    const F4 qB = (idB >= 0) ? F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)}
+                             : F4{0, 0, 0, 1};
+    const F3 vA = ld3(velPred, realA), wA = ld3(angVelPred, realA);
+    F3 vB{0, 0, 0}, wB{0, 0, 0};
+    const float invN = 1.0f / static_cast<float>(m.num_points);
+    float restitution = restitutionNormal;
+    if (idB >= 0) {
+      vB = ld3(velPred, realB);
+      wB = ld3(angVelPred, realB);
+    } else {
+      vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
+    }
+    {  // per-wall AND per-pair material override (a < 0 average keeps the global material)
+      const float ra = m.restitution_sum * invN;
+      if (ra >= 0.0f)
+        restitution = ra;
+    }
+    const float eMat = restitution;  // raw material e (release cap), before the event gates
+    const F3 nSum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
+    const F3 tauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
+    const F3 tauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
+    const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
+    const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
+    const float lenN = Kokkos::sqrt(dot3(nSum, nSum));
+    r = Row{.m = m,
+            .idB = idB,
+            .realA = realA,
+            .realB = realB,
+            .invMassA = invMassA,
+            .invMassB = invMassB,
+            .invIA = invIA,
+            .invIB = invIB,
+            .qA = qA,
+            .qB = qB,
+            .vel = PairVelocity{.vA = vA, .wA = wA, .vB = vB, .wB = wB},
+            .invN = invN,
+            .restitution = restitution,
+            .eMat = eMat,
+            .Nsum = nSum,
+            .TauA = tauA,
+            .TauB = tauB,
+            .rAavg = rAavg,
+            .rBavg = rBavg,
+            .lenN = lenN};
+  }
+
+  /// Row, part 2: the approach velocity, the sign, the side gates and the effective mass.
+  KOKKOS_FORCEINLINE_FUNCTION void weighRow(int idx, Row& r) const {
+    using detail::genInvMass;
+    const int idB = r.idB;
+    const float invMassA = r.invMassA, invMassB = r.invMassB;
+    const F3 invIA = r.invIA, invIB = r.invIB;
+    const F4 qA = r.qA, qB = r.qB;
+    float restitution = r.restitution;
+    const F3 nSum = r.Nsum, tauA = r.TauA, tauB = r.TauB, rAavg = r.rAavg, rBavg = r.rBavg;
+    const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
+    const F3 vGrowth = scale3(diffCenters, growthRate);
+    const float vn = normalVelocity(r.vel, nSum, tauA, tauB, vGrowth);
+    const float alignment = dot3(nSum, diffCenters);
+    const float sgn = (alignment > 0.0f) ? 1.0f : -1.0f;
+    const float nSq = dot3(nSum, nSum);
+    float wAn = nSq * invMassA + genInvMass(tauA, invIA, qA);
+    float wBn = nSq * invMassB + genInvMass(tauB, invIB, qB);
+    // Shock propagation INSIDE the PGS sweep (Guendelman staged solve, per-contact form):
+    // sidedness was decided ONCE this substep (computeSideFlags) so the warm start,
+    // accumulator and every sweep share one consistent ledger. The held ground side absorbs
+    // the reaction (recursively down to the floor); e is forced 0 on one-sided contacts.
+    bool applyA = true, applyB = true;
+    const unsigned char sf = sideFlag(idx);
+    if (sf == 1) {
+      wBn = 0.0f;
+      applyB = false;
+      restitution = 0.0f;
+    } else if (sf == 2) {
+      wAn = 0.0f;
+      applyA = false;
+      restitution = 0.0f;
+    }
+    const float wTotal = wAn + wBn;
+    r.vGrowth = vGrowth;
+    r.vn = vn;
+    r.sgn = sgn;
+    r.wTotal = wTotal;
+    r.sf = sf;
+    r.applyA = applyA;
+    r.applyB = applyB;
+    r.restitution = restitution;
+  }
+
+  /// One release increment: the budget-capped push toward the event's separation-velocity
+  /// target, drawing orphan balance into the pair bank when its own budget rails.
+  KOKKOS_FORCEINLINE_FUNCTION void releaseIncrement(int idx, const Row& r, const ReleaseBudget& b,
+                                                    float vtil3) const {
+    const int idB = r.idB, realA = r.realA, realB = r.realB;
+    const float invMassA = r.invMassA, invMassB = r.invMassB;
+    const F3 invIA = r.invIA, invIB = r.invIB;
+    const F4 qA = r.qA, qB = r.qB;
+    const F3 nSum = r.Nsum, tauA = r.TauA, tauB = r.TauB;
+    const float eMat = r.eMat, lenN = r.lenN, sgn = r.sgn, wTotal = r.wTotal;
+    const float vPeak = b.vPeak, orphA = b.orphA, orphB = b.orphB;
+    float owed = b.owed;
+    // Symmetric release: both endpoints are pushed. (A one-sided variant that held a
+    // grounded lower side was measured WORSE on the 25k Dosta impact — +0.60 vs +0.88
+    // rebound — because the light partner's downward reaction is what re-compresses and
+    // re-releases the layers below; it was retired with the env A/B in 1.0.0.)
+    const bool relA = true, relB = (idB >= 0);
+    const float wRel = wTotal;
+    if (wRel > 0.0f) {
+      // Separation-velocity target: the event-level rebound speed e x vPeak. The budget is
+      // enforced by the accumulator clamp alone — folding it into the velocity target
+      // (owed * wRel) prematurely stalls a one-sided release against a heavy impactor
+      // (owed/m_ball ~ cm/s) with most of the budget unspent. Physical velocity -> vtil
+      // units is x lenN.
+      const float vTphys = eMat * vPeak;
+      const float targetR = -vTphys * lenN;
+      const float dpR = (vtil3 - targetR) / wRel;
+      float cap = owed / lenN;  // physical budget in lambda units
+      const float rOld = restRel(idx);
+      float rNew = rOld + dpR;
+      if (rNew < 0.0f)
+        rNew = 0.0f;
+      // Own budget railed with orphan balance at the endpoints: draw the shortfall from the
+      // body accounts INTO the pair bank (heavier-first order is irrelevant; drained in
+      // sequence). The drawn amount is spent by this very increment, so the post-solve
+      // accounting's owed -= released cancels it exactly.
+      if (rNew > cap && (orphA > 0.0f || orphB > 0.0f)) {
+        const float draw = drawOrphans(realA, realB, (rNew - cap) * lenN, orphA, orphB);
+        if (draw > 0.0f) {
+          owed += draw;
+          restBank(idx) = owed;
+          cap = owed / lenN;
+        }
+      }
+      if (rNew > cap)
+        rNew = cap;
+      const float dR = rNew - rOld;
+      if (dR != 0.0f) {
+        restRel(idx) = rNew;
+        recordCorrection(idx, lenN, Kokkos::fabs(dR) * wRel / lenN);
+        const float lambdaR = -sgn * dR;
+        const F3 JlinR = scale3(nSum, lambdaR);
+        if (relA) {
+          applyLinear(realA, JlinR, invMassA);
+          applyAngular(realA, scale3(tauA, lambdaR), invIA, qA);
+        }
+        if (relB) {
+          applyLinear(realB, F3{-JlinR.x, -JlinR.y, -JlinR.z}, invMassB);
+          applyAngular(realB, scale3(tauB, lambdaR), invIB, qB);
+        }
+      }
+    }
+  }
+
+  /// Draw up to `need` from the endpoints' orphan balances (A first, then B); returns the amount
+  /// drawn.
+  KOKKOS_FORCEINLINE_FUNCTION float drawOrphans(int realA, int realB, float need, float orphA,
+                                                float orphB) const {
+    float draw = 0.0f;
+    if (orphA > 0.0f) {
+      const float d = Kokkos::fmin(need, orphA);
+      restOrphan(realA) = orphA - d;
+      need -= d;
+      draw += d;
+    }
+    if (need > 0.0f && orphB > 0.0f) {
+      const float d = Kokkos::fmin(need, orphB);
+      restOrphan(realB) = orphB - d;
+      draw += d;
+    }
+    return draw;
+  }
+
   KOKKOS_FUNCTION void solveOne(int idx) const {
     using detail::genInvMass;
     using detail::ld3;
     {
-      const ManifoldC m = manifolds(idx);
-      const int idA = m.bodyA, idB = m.bodyB;
-      const int realA = ov.slotA(idx, realIdx(idA));
-      const int realB = (idB >= 0) ? ov.slotB(idx, realIdx(idB)) : idB;
-      const float invMassA = invMass(realA);
-      const float invMassB = (idB >= 0) ? invMass(realB) : 0.0f;
-      const F3 invIA = ld3(invInertia, realA);
-      const F3 invIB = (idB >= 0) ? ld3(invInertia, realB) : F3{0, 0, 0};
-      const F4 qA = F4{quat(realA, 0), quat(realA, 1), quat(realA, 2), quat(realA, 3)};
-      const F4 qB = (idB >= 0) ? F4{quat(realB, 0), quat(realB, 1), quat(realB, 2), quat(realB, 3)}
-                               : F4{0, 0, 0, 1};
-      const F3 vA = ld3(velPred, realA), wA = ld3(angVelPred, realA);
-      F3 vB{0, 0, 0}, wB{0, 0, 0};
-      const float invN = 1.0f / static_cast<float>(m.num_points);
-      float restitution = restitutionNormal;
-      if (idB >= 0) {
-        vB = ld3(velPred, realB);
-        wB = ld3(angVelPred, realB);
-      } else {
-        vB = scale3(F3{m.wallVel_sum.x, m.wallVel_sum.y, m.wallVel_sum.z}, invN);
-      }
-      {  // per-wall AND per-pair material override (a < 0 average keeps the global material)
-        const float ra = m.restitution_sum * invN;
-        if (ra >= 0.0f)
-          restitution = ra;
-      }
-      const float eMat = restitution;  // raw material e (release cap), before the event gates
-      const F3 Nsum{m.normal_sum.x, m.normal_sum.y, m.normal_sum.z};
-      const F3 TauA{m.torque_armA_sum.x, m.torque_armA_sum.y, m.torque_armA_sum.z};
-      const F3 TauB{m.torque_armB_sum.x, m.torque_armB_sum.y, m.torque_armB_sum.z};
-      const F3 rAavg = scale3(F3{m.rA_sum.x, m.rA_sum.y, m.rA_sum.z}, invN);
-      const F3 rBavg = scale3(F3{m.rB_sum.x, m.rB_sum.y, m.rB_sum.z}, invN);
-      const float lenN = Kokkos::sqrt(dot3(Nsum, Nsum));
-      if (lenN < 1e-9f)
+      Row r;
+      gatherRow(idx, r);
+      if (r.lenN < 1e-9f)
         return;
-      const F3 diffCenters = (idB < 0) ? rAavg : sub3(rAavg, rBavg);
-      const F3 vGrowth = scale3(diffCenters, growthRate);
-      float vn = dot3(vA, Nsum) + dot3(wA, TauA) + dot3(vB, F3{-Nsum.x, -Nsum.y, -Nsum.z}) +
-                 dot3(wB, TauB);
-      vn += dot3(vGrowth, Nsum);
-      const float alignment = dot3(Nsum, diffCenters);
-      const float sgn = (alignment > 0.0f) ? 1.0f : -1.0f;
-      const float Nsq = dot3(Nsum, Nsum);
-      float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
-      float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
-      // Shock propagation INSIDE the PGS sweep (Guendelman staged solve, per-contact form):
-      // sidedness was decided ONCE this substep (computeSideFlagsKokkos) so the warm start,
-      // accumulator and every sweep share one consistent ledger. The held ground side absorbs
-      // the reaction (recursively down to the floor); e is forced 0 on one-sided contacts.
-      bool applyA = true, applyB = true;
-      const unsigned char sf = sideFlag(idx);
-      if (sf == 1) {
-        wB_n = 0.0f;
-        applyB = false;
-        restitution = 0.0f;
-      } else if (sf == 2) {
-        wA_n = 0.0f;
-        applyA = false;
-        restitution = 0.0f;
-      }
-      const float wTotal = wA_n + wB_n;
-      if (wTotal <= 0.0f)
+      weighRow(idx, r);
+      if (r.wTotal <= 0.0f)
         return;
       // Restitution bias on the PRE-SOLVE approach (resting threshold as in the one-shot path).
-      const float v0til = sgn * vn0(idx);
+      const float v0til = r.sgn * vn0(idx);
+      const ManifoldC m = r.m;
+      const int idB = r.idB, realA = r.realA, realB = r.realB;
+      const float invMassA = r.invMassA, invMassB = r.invMassB;
+      const F3 invIA = r.invIA, invIB = r.invIB;
+      const F4 qA = r.qA, qB = r.qB;
+      // eMat is unused here since A3 (the release increment reads r.eMat); removing this unpack
+      // changes GCC's FMA pairing on contracting host builds (code-health WO-14), so it stays.
+      const float invN = r.invN, eMat = r.eMat;
+      const F3 Nsum = r.Nsum, TauA = r.TauA, TauB = r.TauB, rAavg = r.rAavg, rBavg = r.rBavg;
+      const float lenN = r.lenN;
+      const F3 vGrowth = r.vGrowth;
+      const float sgn = r.sgn, wTotal = r.wTotal;
+      const unsigned char sf = r.sf;
+      const bool applyA = r.applyA, applyB = r.applyB;
+      float restitution = r.restitution;
+      const float vn = r.vn;
       if (Kokkos::fabs(vn0(idx)) < restVelThreshold * lenN)
         restitution = 0.0f;
       // Poisson mode keeps per-substep Newton restitution ALIVE alongside the bank: the
@@ -1219,36 +1351,18 @@ struct PGSManifoldSweep {
       const float dApplied = pNew - pOld;
       if (dApplied != 0.0f) {
         lambdaAcc(idx) = pNew;
-        Kokkos::atomic_max(&maxApproach(), Kokkos::fabs(dApplied) * wTotal / lenN);
-        if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
-          Kokkos::atomic_max(&maxApproachQS(), Kokkos::fabs(dApplied) * wTotal / lenN);
+        recordCorrection(idx, lenN, Kokkos::fabs(dApplied) * wTotal / lenN);
         const float lambda = -sgn * dApplied;
         const F3 Jlin = scale3(Nsum, lambda);
         const F3 JangA = scale3(TauA, lambda);
         const F3 JangB = scale3(TauB, lambda);
         if (applyA) {
-          velPred(realA, 0) += Jlin.x * invMassA;
-          velPred(realA, 1) += Jlin.y * invMassA;
-          velPred(realA, 2) += Jlin.z * invMassA;
-          {
-            const F3 Jl = invRotateVector(qA, JangA);
-            const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
-            const F3 dww = rotateVector(qA, dwl);
-            angVelPred(realA, 0) += dww.x;
-            angVelPred(realA, 1) += dww.y;
-            angVelPred(realA, 2) += dww.z;
-          }
+          applyLinear(realA, Jlin, invMassA);
+          applyAngular(realA, JangA, invIA, qA);
         }
         if (idB >= 0 && applyB) {
-          velPred(realB, 0) += -Jlin.x * invMassB;
-          velPred(realB, 1) += -Jlin.y * invMassB;
-          velPred(realB, 2) += -Jlin.z * invMassB;
-          const F3 Jl = invRotateVector(qB, JangB);
-          const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
-          const F3 dww = rotateVector(qB, dwl);
-          angVelPred(realB, 0) += dww.x;
-          angVelPred(realB, 1) += dww.y;
-          angVelPred(realB, 2) += dww.z;
+          applyLinear(realB, F3{-Jlin.x, -Jlin.y, -Jlin.z}, invMassB);
+          applyAngular(realB, JangB, invIB, qB);
         }
       }  // dApplied != 0
 
@@ -1261,7 +1375,7 @@ struct PGSManifoldSweep {
       // attempt through lambda >= 0 on its other contacts with the total injected impulse bounded
       // by the budget — velocity-targeted, never impulsive, no unbounded force fight. One-sided
       // (side-flagged) contacts are held externally and never release. Spent budget is deducted
-      // once per substep by updateRestitutionBankKokkos. Unloading detection: KINETICALLY
+      // once per substep by updateRestitutionBank. Unloading detection: KINETICALLY
       // separating pre-solve approach (beyond the resting threshold) — jitter separations during
       // compression (position-solve pushback, chain oscillation) fire sub-threshold every substep
       // and would drain the bank as fast as it fills (measured: bank plateaued at ~1/6 of the
@@ -1295,84 +1409,9 @@ struct PGSManifoldSweep {
                       dot3(wB3, TauB);
           vn3 += dot3(vGrowth, Nsum);
           const float vtil3 = sgn * vn3;
-          // Symmetric release: both endpoints are pushed. (A one-sided variant that held a
-          // grounded lower side was measured WORSE on the 25k Dosta impact — +0.60 vs +0.88
-          // rebound — because the light partner's downward reaction is what re-compresses and
-          // re-releases the layers below; it was retired with the env A/B in 1.0.0.)
-          const bool relA = true, relB = (idB >= 0);
-          const float wRel = wTotal;
-          if (wRel > 0.0f) {
-            // Separation-velocity target: the event-level rebound speed e x vPeak. The budget is
-            // enforced by the accumulator clamp alone — folding it into the velocity target
-            // (owed * wRel) prematurely stalls a one-sided release against a heavy impactor
-            // (owed/m_ball ~ cm/s) with most of the budget unspent. Physical velocity -> vtil
-            // units is x lenN.
-            const float vTphys = eMat * vPeak;
-            const float targetR = -vTphys * lenN;
-            const float dpR = (vtil3 - targetR) / wRel;
-            float cap = owed / lenN;  // physical budget in lambda units
-            const float rOld = restRel(idx);
-            float rNew = rOld + dpR;
-            if (rNew < 0.0f)
-              rNew = 0.0f;
-            // Own budget railed with orphan balance at the endpoints: draw the shortfall from the
-            // body accounts INTO the pair bank (heavier-first order is irrelevant; drained in
-            // sequence). The drawn amount is spent by this very increment, so the post-solve
-            // accounting's owed -= released cancels it exactly.
-            if (rNew > cap && (orphA > 0.0f || orphB > 0.0f)) {
-              float need = (rNew - cap) * lenN;
-              float draw = 0.0f;
-              if (orphA > 0.0f) {
-                const float d = Kokkos::fmin(need, orphA);
-                restOrphan(realA) = orphA - d;
-                need -= d;
-                draw += d;
-              }
-              if (need > 0.0f && orphB > 0.0f) {
-                const float d = Kokkos::fmin(need, orphB);
-                restOrphan(realB) = orphB - d;
-                draw += d;
-              }
-              if (draw > 0.0f) {
-                owed += draw;
-                restBank(idx) = owed;
-                cap = owed / lenN;
-              }
-            }
-            if (rNew > cap)
-              rNew = cap;
-            const float dR = rNew - rOld;
-            if (dR != 0.0f) {
-              restRel(idx) = rNew;
-              Kokkos::atomic_max(&maxApproach(), Kokkos::fabs(dR) * wRel / lenN);
-              if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
-                Kokkos::atomic_max(&maxApproachQS(), Kokkos::fabs(dR) * wRel / lenN);
-              const float lambdaR = -sgn * dR;
-              const F3 JlinR = scale3(Nsum, lambdaR);
-              if (relA) {
-                velPred(realA, 0) += JlinR.x * invMassA;
-                velPred(realA, 1) += JlinR.y * invMassA;
-                velPred(realA, 2) += JlinR.z * invMassA;
-                const F3 Jl = invRotateVector(qA, scale3(TauA, lambdaR));
-                const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
-                const F3 dww = rotateVector(qA, dwl);
-                angVelPred(realA, 0) += dww.x;
-                angVelPred(realA, 1) += dww.y;
-                angVelPred(realA, 2) += dww.z;
-              }
-              if (relB) {
-                velPred(realB, 0) += -JlinR.x * invMassB;
-                velPred(realB, 1) += -JlinR.y * invMassB;
-                velPred(realB, 2) += -JlinR.z * invMassB;
-                const F3 Jl = invRotateVector(qB, scale3(TauB, lambdaR));
-                const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
-                const F3 dww = rotateVector(qB, dwl);
-                angVelPred(realB, 0) += dww.x;
-                angVelPred(realB, 1) += dww.y;
-                angVelPred(realB, 2) += dww.z;
-              }
-            }
-          }
+          releaseIncrement(
+              idx, r, ReleaseBudget{.owed = owed, .vPeak = vPeak, .orphA = orphA, .orphB = orphB},
+              vtil3);
         }
       }
 
@@ -1449,32 +1488,15 @@ struct PGSManifoldSweep {
             lambdaT(idx, 1) = ltNew.y;
             lambdaT(idx, 2) = ltNew.z;
             const float dLen = Kokkos::sqrt(dot3(dApp, dApp));
-            if (wT > 1e-9f) {
-              Kokkos::atomic_max(&maxApproach(), dLen * wT);
-              if (Kokkos::fabs(vn0(idx)) <= 4.0f * restVelThreshold * lenN)
-                Kokkos::atomic_max(&maxApproachQS(), dLen * wT);
-            }
+            if (wT > 1e-9f)
+              recordCorrection(idx, lenN, dLen * wT);
             if (applyA) {
-              velPred(realA, 0) += dApp.x * invMassA;
-              velPred(realA, 1) += dApp.y * invMassA;
-              velPred(realA, 2) += dApp.z * invMassA;
-              const F3 Jl = invRotateVector(qA, cross3v(rAavg, dApp));
-              const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
-              const F3 dww = rotateVector(qA, dwl);
-              angVelPred(realA, 0) += dww.x;
-              angVelPred(realA, 1) += dww.y;
-              angVelPred(realA, 2) += dww.z;
+              applyLinear(realA, dApp, invMassA);
+              applyAngular(realA, cross3v(rAavg, dApp), invIA, qA);
             }
             if (idB >= 0 && applyB) {
-              velPred(realB, 0) += -dApp.x * invMassB;
-              velPred(realB, 1) += -dApp.y * invMassB;
-              velPred(realB, 2) += -dApp.z * invMassB;
-              const F3 Jl = invRotateVector(qB, cross3v(rBavg, scale3(dApp, -1.0f)));
-              const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
-              const F3 dww = rotateVector(qB, dwl);
-              angVelPred(realB, 0) += dww.x;
-              angVelPred(realB, 1) += dww.y;
-              angVelPred(realB, 2) += dww.z;
+              applyLinear(realB, F3{-dApp.x, -dApp.y, -dApp.z}, invMassB);
+              applyAngular(realB, cross3v(rBavg, scale3(dApp, -1.0f)), invIB, qB);
             }
           }
         }
@@ -1531,9 +1553,8 @@ inline PGSManifoldSweep makePGSManifoldSweep(
 /// Returns true when the sweep (or, with `loop`, the whole iteration loop) was submitted;
 /// false ONLY in loop mode when the fused path is unavailable — the caller then runs its own
 /// host-side iteration loop (which calls back in per-iteration mode).
-inline bool solveVelocityPGSKokkos(
-    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
-    Kokkos::View<const int*, CpMem> mColor, int numColors,
+inline bool solveVelocityPGS(
+    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds, const ColorSchedule& sched,
     Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
     Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<float* [3], CpMem> velPred,
     Kokkos::View<float* [3], CpMem> angVelPred, Kokkos::View<const int*, CpMem> realIdx,
@@ -1546,10 +1567,13 @@ inline bool solveVelocityPGSKokkos(
     Kokkos::View<float, CpMem> maxApproachQS = {}, Kokkos::View<float*, CpMem> restBank = {},
     Kokkos::View<float*, CpMem> restRel = {}, Kokkos::View<const float*, CpMem> restVPeak = {},
     Kokkos::View<float*, CpMem> restOrphan = {},
-    Kokkos::View<const float*, CpMem> restOrphanVPeak = {},
-    Kokkos::View<const int*, CpMem> colorPerm = {}, const std::vector<int>* colorOffs = nullptr,
-    const FusedSweepCtx* fused = nullptr, const FusedLoopSpec* loop = nullptr,
+    Kokkos::View<const float*, CpMem> restOrphanVPeak = {}, const FusedLoopSpec* loop = nullptr,
     SlotOverride ov = {}) {
+  const Kokkos::View<const int*, CpMem> mColor = sched.color;
+  const int numColors = sched.numColors;
+  const Kokkos::View<const int*, CpMem> colorPerm = sched.perm;
+  const std::vector<int>* colorOffs = sched.offs;
+  const FusedSweepCtx* fused = sched.fused;
   CpExec space;
   const PGSManifoldSweep f = makePGSManifoldSweep(
       manifolds, invMass, invInertia, quat, velPred, angVelPred, realIdx, growthRate,
@@ -1575,7 +1599,7 @@ inline bool solveVelocityPGSKokkos(
   if (loop)
     return false;
 #endif
-  // Dense-bucket mode (colorOffs from buildColorBucketsKokkos): each colour launch covers only
+  // Dense-bucket mode (colorOffs from buildColorBuckets): each colour launch covers only
   // its own manifolds instead of scanning all of them — bit-identical (colour classes are
   // body-disjoint). No fence: the caller's residual readback synchronizes, and an explicit fence
   // here would serialize host submission with GPU execution (the step is submission-bound).
@@ -1607,13 +1631,12 @@ inline bool solveVelocityPGSKokkos(
 /// bucket list (begin, end into the permutation) drives the ordered sweeps. Inactive and
 /// uncoloured manifolds (colour < 0: periodic dups, empty) are keyed out entirely. (Complete
 /// colouring leaves no active manifold uncoloured: docs/contact_solve_framework.md §4.2.)
-inline void buildLevelColorBucketsKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                         int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
-                                         Kokkos::View<const int*, CpMem> mColor,
-                                         Kokkos::View<const int*, CpMem> heights,
-                                         Kokkos::View<int*, CpMem> keys,
-                                         Kokkos::View<int*, CpMem> perm,
-                                         std::vector<std::pair<int, int>>& buckets) {
+inline void buildLevelColorBuckets(Kokkos::View<const ManifoldC*, CpMem> manifolds,
+                                   int numManifolds, Kokkos::View<const int*, CpMem> realIdx,
+                                   Kokkos::View<const int*, CpMem> mColor,
+                                   Kokkos::View<const int*, CpMem> heights,
+                                   Kokkos::View<int*, CpMem> keys, Kokkos::View<int*, CpMem> perm,
+                                   std::vector<std::pair<int, int>>& buckets) {
   buckets.clear();
   if (numManifolds <= 0)
     return;
@@ -1659,10 +1682,8 @@ inline void buildLevelColorBucketsKokkos(Kokkos::View<const ManifoldC*, CpMem> m
 /// as the colored sweep (shared PGSManifoldSweep) -- fully symmetric, exact momentum
 /// conservation; the ordering only accelerates transport. Launches are stream-ordered, so the
 /// Gauss-Seidel dependency between buckets needs no per-bucket fence.
-inline void solveVelocityPGSBucketsKokkos(const PGSManifoldSweep& f,
-                                          Kokkos::View<const int*, CpMem> perm,
-                                          const std::vector<std::pair<int, int>>& buckets,
-                                          bool topDown) {
+inline void solveVelocityPGSBuckets(const PGSManifoldSweep& f, Kokkos::View<const int*, CpMem> perm,
+                                    const std::vector<std::pair<int, int>>& buckets, bool topDown) {
   CpExec space;
   const int nb = static_cast<int>(buckets.size());
   for (int i = 0; i < nb; ++i) {
@@ -1700,7 +1721,7 @@ KOKKOS_INLINE_FUNCTION int xHolder(unsigned long long mask, long long t, int num
   return -1;  // unreachable: popcount(mask) >= 2 at every call
 }
 /// Rank-level X evaluated inline in the one-shot sweep (only for the manifolds of the colour being
-/// swept): the same test as computeXGateKokkos, without a separate pass over every manifold per
+/// swept): the same test as computeXGate, without a separate pass over every manifold per
 /// iteration. `mask` empty = off (every contact fires).
 struct XGateSpec {
   Kokkos::View<const unsigned long long*, CpMem> mask;
@@ -1723,11 +1744,11 @@ struct XGateSpec {
 /// The per-manifold fire gate of sync interval t: 1 iff this rank (colour `color`) holds every
 /// endpoint whose mask names two or more ranks. Masks live at the canonical velocity slot
 /// realIdx(body), so every image and hub copy of one body on this rank shares the decision.
-inline void computeXGateKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, int nm,
-                               Kokkos::View<const int*, CpMem> realIdx,
-                               Kokkos::View<const unsigned long long*, CpMem> velMask,
-                               Kokkos::View<unsigned char*, CpMem> gate, int color, int numColors,
-                               long long t) {
+inline void computeXGate(Kokkos::View<const ManifoldC*, CpMem> manifolds, int nm,
+                         Kokkos::View<const int*, CpMem> realIdx,
+                         Kokkos::View<const unsigned long long*, CpMem> velMask,
+                         Kokkos::View<unsigned char*, CpMem> gate, int color, int numColors,
+                         long long t) {
   Kokkos::parallel_for(
       "peclet::dem::x_gate", Kokkos::RangePolicy<CpExec>(0, nm), KOKKOS_LAMBDA(int idx) {
         const ManifoldC m = manifolds(idx);
@@ -1744,7 +1765,7 @@ inline void computeXGateKokkos(Kokkos::View<const ManifoldC*, CpMem> manifolds, 
       });
 }
 /// Diagnostics (iterCounters): the number of gated-off manifolds of one sweep.
-inline long long countUnfiredKokkos(Kokkos::View<const unsigned char*, CpMem> gate, int nm) {
+inline long long countUnfired(Kokkos::View<const unsigned char*, CpMem> gate, int nm) {
   long long n = 0;
   Kokkos::parallel_reduce(
       "peclet::dem::x_unfired", Kokkos::RangePolicy<CpExec>(0, nm),
@@ -1752,25 +1773,70 @@ inline long long countUnfiredKokkos(Kokkos::View<const unsigned char*, CpMem> ga
   return n;
 }
 
+/// The colour classes one coloured sweep visits: manifolds [0, numManifolds), labelled by mColor
+/// in [0, numColors).
+struct ColoredManifolds {
+  Kokkos::View<const ManifoldC*, CpMem> manifolds;
+  int numManifolds;
+  Kokkos::View<const int*, CpMem> mColor;
+  int numColors;
+};
+
+/// The bodies a velocity sweep reads and updates in place: mass data and orientation, the
+/// predicted velocities, the canonical velocity slot realIdx and the hub-copy slot overrides
+/// (`ov`, §4.4; empty = realIdx).
+struct VelocitySweepBodies {
+  Kokkos::View<const float*, CpMem> invMass;
+  Kokkos::View<const float* [3], CpMem> invInertia;
+  Kokkos::View<const float* [4], CpMem> quat;
+  Kokkos::View<float* [3], CpMem> velPred;
+  Kokkos::View<float* [3], CpMem> angVelPred;
+  Kokkos::View<const int*, CpMem> realIdx;
+  SlotOverride ov = {};
+};
+
+/// Shock propagation for persistent loaded contacts (see solveVelocity): the persistence flags,
+/// predicted positions, gravity direction and grounded levels. Empty `persistent` = off.
+struct ShockPropagation {
+  Kokkos::View<const unsigned char*, CpMem> persistent;
+  Kokkos::View<const float* [3], CpMem> posPred;
+  F3 gHat = {};
+  Kokkos::View<const unsigned char*, CpMem> grounded;
+};
+
+/// World-frame angular velocity change of an angular impulse `jang` on a body with diagonal
+/// local inverse inertia `invI` and orientation `q`: R (invI_local * (R^T jang)).
+KOKKOS_FORCEINLINE_FUNCTION F3 angularDelta(F3 jang, F3 invI, F4 q) {
+  const F3 Jl = invRotateVector(q, jang);
+  const F3 dwl{Jl.x * invI.x, Jl.y * invI.y, Jl.z * invI.z};
+  return rotateVector(q, dwl);
+}
+
 /// Colored Gauss–Seidel normal-restitution solve: sweep the `numColors` colour classes in order,
 /// applying each manifold's impulse directly to velPred/angVelPred (in place). Same per-manifold
-/// impulse math as solveVelocityKokkos (growth-velocity term, approach gate, resting-contact e=0
+/// impulse math as solveVelocity (growth-velocity term, approach gate, resting-contact e=0
 /// threshold, and the R·(invI_local·(Rᵀ J))·… world-space angular update) — only the write-back
 /// differs (in-place RMW instead of atomic-accumulate + count-average). Race-free because a colour
 /// is an independent set of manifolds. One outer call = one full sweep over all colours; the caller
 /// loops it velocityIterations times.
-inline void solveVelocityColoredGSKokkos(
-    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
-    Kokkos::View<const int*, CpMem> mColor, int numColors,
-    Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
-    Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<float* [3], CpMem> velPred,
-    Kokkos::View<float* [3], CpMem> angVelPred, Kokkos::View<const int*, CpMem> realIdx,
-    float growthRate, float restitutionNormal, float restVelThreshold,
-    Kokkos::View<float, CpMem> maxApproach,
-    Kokkos::View<const unsigned char*, CpMem> persistent = {},
-    Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {},
-    Kokkos::View<const unsigned char*, CpMem> grounded = {}, SlotOverride ov = {},
-    XGateSpec xg = {}) {
+inline void solveVelocityColoredGS(const ColoredManifolds& colored,
+                                   const VelocitySweepBodies& bodies, float growthRate,
+                                   float restitutionNormal, float restVelThreshold,
+                                   Kokkos::View<float, CpMem> maxApproach, XGateSpec xg = {},
+                                   const ShockPropagation& shock = {}) {
+  const Kokkos::View<const ManifoldC*, CpMem> manifolds = colored.manifolds;
+  const int numManifolds = colored.numManifolds, numColors = colored.numColors;
+  const Kokkos::View<const int*, CpMem> mColor = colored.mColor;
+  const Kokkos::View<const float*, CpMem> invMass = bodies.invMass;
+  const Kokkos::View<const float* [3], CpMem> invInertia = bodies.invInertia;
+  const Kokkos::View<const float* [4], CpMem> quat = bodies.quat;
+  const Kokkos::View<float* [3], CpMem> velPred = bodies.velPred, angVelPred = bodies.angVelPred;
+  const Kokkos::View<const int*, CpMem> realIdx = bodies.realIdx;
+  const SlotOverride ov = bodies.ov;
+  const Kokkos::View<const unsigned char*, CpMem> persistent = shock.persistent,
+                                                  grounded = shock.grounded;
+  const Kokkos::View<const float* [3], CpMem> posPred = shock.posPred;
+  const F3 gHat = shock.gHat;
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -1844,7 +1910,7 @@ inline void solveVelocityColoredGSKokkos(
           const float Nsq = dot3(Nsum, Nsum);
           float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
           float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
-          // Shock propagation for persistent loaded contacts -- see solveVelocityKokkos.
+          // Shock propagation for persistent loaded contacts -- see solveVelocity.
           bool applyA = true, applyB = true;
           if (usePersist && persistent(idx) != 0 && idB >= 0) {
             const F3 dx = sub3(ldF3(posPred, idA), ldF3(posPred, idB));
@@ -1854,7 +1920,7 @@ inline void solveVelocityColoredGSKokkos(
             if (up > thr && -dot3(vB, gHat) <= riseThr && grounded(realB) > 0) {
               wB_n = 0.0f;
               applyB = false;
-              restitution = 0.0f;  // shock pass is inelastic — see solveVelocityKokkos
+              restitution = 0.0f;  // shock pass is inelastic — see solveVelocity
             } else if (up < -thr && -dot3(vA, gHat) <= riseThr && grounded(realA) > 0) {
               wA_n = 0.0f;
               applyA = false;
@@ -1890,9 +1956,7 @@ inline void solveVelocityColoredGSKokkos(
             velPred(realA, 1) += Jlin.y * invMassA;
             velPred(realA, 2) += Jlin.z * invMassA;
             {
-              const F3 Jl = invRotateVector(qA, JangA);
-              const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
-              const F3 dww = rotateVector(qA, dwl);
+              const F3 dww = angularDelta(JangA, invIA, qA);
               angVelPred(realA, 0) += dww.x;
               angVelPred(realA, 1) += dww.y;
               angVelPred(realA, 2) += dww.z;
@@ -1902,9 +1966,7 @@ inline void solveVelocityColoredGSKokkos(
             velPred(realB, 0) += -Jlin.x * invMassB;
             velPred(realB, 1) += -Jlin.y * invMassB;
             velPred(realB, 2) += -Jlin.z * invMassB;
-            const F3 Jl = invRotateVector(qB, JangB);
-            const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
-            const F3 dww = rotateVector(qB, dwl);
+            const F3 dww = angularDelta(JangB, invIB, qB);
             angVelPred(realB, 0) += dww.x;
             angVelPred(realB, 1) += dww.y;
             angVelPred(realB, 2) += dww.z;
