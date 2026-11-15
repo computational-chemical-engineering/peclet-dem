@@ -155,8 +155,11 @@ Outputs runCase(const Case& c, int solver) {
   if (solver == 0) {
     Kokkos::View<float* [3], CpMem> dDV("dv", kSlots), dDW("dw", kSlots);
     Kokkos::View<int*, CpMem> dCounts("counts", kSlots);
-    solveVelocity(dMan, 1, dInvMass, dInvI, dQuat, dVel, dAng, dReal, /*growthRate=*/0.0f, kRest,
-                  kVRest, dDV, dDW, dCounts, {}, 0, dPersist, dPos, gHat, dGrounded);
+    solveVelocity(
+        dMan, 1, dInvMass, dInvI, dQuat, dVel, dAng, dReal, /*growthRate=*/0.0f, kRest, kVRest, dDV,
+        dDW, dCounts, {}, 0,
+        ShockPropagation{
+            .persistent = dPersist, .posPred = dPos, .gHat = gHat, .grounded = dGrounded});
     append3(o.floats, dDV);
     append3(o.floats, dDW);
     auto hc = Kokkos::create_mirror_view(dCounts);

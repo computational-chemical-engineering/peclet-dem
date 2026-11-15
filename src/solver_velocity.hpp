@@ -65,6 +65,15 @@ inline void countVelocityJacobi(Kokkos::View<const ManifoldC*, CpMem> manifolds,
   space.fence();
 }
 
+/// Shock propagation for persistent loaded contacts (see solveVelocity): the persistence flags,
+/// predicted positions, gravity direction and grounded levels. Empty `persistent` = off.
+struct ShockPropagation {
+  Kokkos::View<const unsigned char*, CpMem> persistent;
+  Kokkos::View<const float* [3], CpMem> posPred;
+  F3 gHat = {};
+  Kokkos::View<const unsigned char*, CpMem> grounded;
+};
+
 /// The geometric and rise gate of shock propagation (see solveVelocity) for one persistent
 /// body-body pair with separation `dx` = x_A - x_B: the LOWER body may be held static (|up| >
 /// 0.3 |dx|, so near-horizontal pairs stay symmetric) ONLY when it is not moving UPWARD faster
@@ -109,10 +118,12 @@ inline void solveVelocity(
     float growthRate, float restitutionNormal, float restVelThreshold,
     Kokkos::View<float* [3], CpMem> deltaVel, Kokkos::View<float* [3], CpMem> deltaAngVel,
     Kokkos::View<int*, CpMem> velCounts, Kokkos::View<const int*, CpMem> onlyColor = {},
-    int colorFilter = 0, Kokkos::View<const unsigned char*, CpMem> persistent = {},
-    Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {},
-    Kokkos::View<const unsigned char*, CpMem> grounded = {}, bool massSplit = false,
+    int colorFilter = 0, const ShockPropagation& shock = {}, bool massSplit = false,
     bool dedupTwins = true) {
+  const Kokkos::View<const unsigned char*, CpMem> persistent = shock.persistent,
+                                                  grounded = shock.grounded;
+  const Kokkos::View<const float* [3], CpMem> posPred = shock.posPred;
+  const F3 gHat = shock.gHat;
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -1811,15 +1822,6 @@ struct VelocitySweepBodies {
   Kokkos::View<float* [3], CpMem> angVelPred;
   Kokkos::View<const int*, CpMem> realIdx;
   SlotOverride ov = {};
-};
-
-/// Shock propagation for persistent loaded contacts (see solveVelocity): the persistence flags,
-/// predicted positions, gravity direction and grounded levels. Empty `persistent` = off.
-struct ShockPropagation {
-  Kokkos::View<const unsigned char*, CpMem> persistent;
-  Kokkos::View<const float* [3], CpMem> posPred;
-  F3 gHat = {};
-  Kokkos::View<const unsigned char*, CpMem> grounded;
 };
 
 /// World-frame angular velocity change of an angular impulse `jang` on a body with diagonal
