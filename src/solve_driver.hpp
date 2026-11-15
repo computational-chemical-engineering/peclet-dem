@@ -949,8 +949,8 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
       hooks.syncContactCounts(P);
       solveVelocity(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
                     P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
-                    P.deltaAngVel, P.constraintCounts, {}, 0, {}, {}, {}, {},
-                    /*massSplit=*/true, /*dedupTwins*/ !Hooks::distributed);
+                    P.deltaAngVel, P.constraintCounts, {}, 0, {}, /*massSplit=*/true,
+                    /*dedupTwins*/ !Hooks::distributed);
       applyVelocityDeltasAveraged(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
                                   P.deltaAngVel, P.constraintCounts, /*averaged=*/false);
     }

@@ -44,6 +44,11 @@ Evidence from `codehealth stats` over dem-s1..s8 (38 records, 2026-11-15):
 - dedup-colouring: 1/1, drop 24.6. dedup-device-predicate: 1/1, drop 14.0. split-flag-argument: 1/1, drop 53.1 (43 % relocated).
 - restructure-split-file: 0/2 (gate-fail: new duplication smell, then no gain once a dedupe had cleared large_file). Do the dedupe first; split only if the size smell survives it.
 - functor-from-lambda: no tries.
+- S9 (WO-19, Frank: keep the unused shock-propagation path, refactor allowed): a value-type predicate (`ShockGate`:
+  up/thr/riseThr + `lowerA`/`lowerB`) shared by both velocity solvers passed every gate bitwise (SASS 625 S0 + 2 S1);
+  the brief's enum-returning `staticSide` changed the shock block's SASS in every variant tried (+8/+16 instr.), and
+  capturing a struct in `solveVelocity`'s lambda changed fma state_hash (4/9). Unpack a struct into the old by-value
+  locals before the lambda. Gain small (debt 1475.6 -> 1468.3, brains 7): the inline if/else skeleton stays.
 
 ## Anti-patterns (review rejects)
 
@@ -70,6 +75,9 @@ Evidence from `codehealth stats` over dem-s1..s8 (38 records, 2026-11-15):
   expect friction/cone arithmetic to be unsplittable without accepting last-bit drift.
 - **Success-flag out-params in device helpers** (`bool row(idx, Row&)`): raised `solveOne` registers 96 -> 128.
   Return the value, or keep the early-out inline.
+- **Coverage commits are not refactor steps**: a new test that covers a dead path (S9 `test_shock_propagation`) is
+  its own commit before the refactor; refactor-mode forbid (`tests/*`) rejects it and any later call-site update
+  there, so gate those steps with a trial config that admits the test file and log them gate-fail (forbid only).
 - **Moving uncovered device code**: a seam in a branch no G-branch scenario reaches (counting build = 0) is not
   proven by any gate. Cover it first, or leave it; dead paths (e.g. the shock-propagation block that the caller
   always passes empty) need a decision, not a refactor.

@@ -65,6 +65,43 @@ inline void countVelocityJacobi(Kokkos::View<const ManifoldC*, CpMem> manifolds,
   space.fence();
 }
 
+/// Shock propagation for persistent loaded contacts (see solveVelocity): the persistence flags,
+/// predicted positions, gravity direction and grounded levels. Empty `persistent` = off.
+struct ShockPropagation {
+  Kokkos::View<const unsigned char*, CpMem> persistent;
+  Kokkos::View<const float* [3], CpMem> posPred;
+  F3 gHat = {};
+  Kokkos::View<const unsigned char*, CpMem> grounded;
+};
+
+/// The geometric and rise gate of shock propagation (see solveVelocity) for one persistent
+/// body-body pair with separation `dx` = x_A - x_B: the LOWER body may be held static (|up| >
+/// 0.3 |dx|, so near-horizontal pairs stay symmetric) ONLY when it is not moving UPWARD faster
+/// than 4 * restVelThreshold. Correcting the upper body against a static or FALLING support
+/// strictly removes momentum (monotone drainage into the ground), while one-sidedness against a
+/// RISING support copies its bounce velocity up the chain with no mass penalty and fountains the
+/// whole column; rising supports (floor bounces, bubble eruptions) keep the symmetric impulse. The
+/// caller adds the GROUNDED condition (a contact path to the floor): a gas-borne emulsion or lifted
+/// slug keeps symmetric momentum-conserving impulses, so its weight stays on the gas -- only
+/// genuinely supported chains drain into the ground.
+struct ShockGate {
+  float up;       // > 0: A above B
+  float thr;      // the near-horizontal band
+  float riseThr;  // rise = -v.gHat (gHat points down-gravity)
+  KOKKOS_INLINE_FUNCTION ShockGate(F3 dx, F3 gHat, float restVelThreshold)
+      : up(-(dx.x * gHat.x + dx.y * gHat.y + dx.z * gHat.z))
+      , thr(0.3f * Kokkos::sqrt(dot3(dx, dx)))
+      , riseThr(4.0f * restVelThreshold) {}
+  /// B is the lower, non-rising body (velocity vB).
+  KOKKOS_INLINE_FUNCTION bool lowerB(F3 vB, F3 gHat) const {
+    return up > thr && -dot3(vB, gHat) <= riseThr;
+  }
+  /// A is the lower, non-rising body (velocity vA).
+  KOKKOS_INLINE_FUNCTION bool lowerA(F3 vA, F3 gHat) const {
+    return up < -thr && -dot3(vA, gHat) <= riseThr;
+  }
+};
+
 /// Accumulate normal-restitution velocity deltas for `numManifolds` manifolds.
 /// massSplit (the 'jacobi' diagnostic, §3.1): `velCounts` holds the global per-body counts n of
 /// countVelocityJacobi and is only read; each manifold is solved against copies of mass
@@ -81,10 +118,12 @@ inline void solveVelocity(
     float growthRate, float restitutionNormal, float restVelThreshold,
     Kokkos::View<float* [3], CpMem> deltaVel, Kokkos::View<float* [3], CpMem> deltaAngVel,
     Kokkos::View<int*, CpMem> velCounts, Kokkos::View<const int*, CpMem> onlyColor = {},
-    int colorFilter = 0, Kokkos::View<const unsigned char*, CpMem> persistent = {},
-    Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {},
-    Kokkos::View<const unsigned char*, CpMem> grounded = {}, bool massSplit = false,
+    int colorFilter = 0, const ShockPropagation& shock = {}, bool massSplit = false,
     bool dedupTwins = true) {
+  const Kokkos::View<const unsigned char*, CpMem> persistent = shock.persistent,
+                                                  grounded = shock.grounded;
+  const Kokkos::View<const float* [3], CpMem> posPred = shock.posPred;
+  const F3 gHat = shock.gHat;
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;
@@ -183,27 +222,17 @@ inline void solveVelocity(
         // lower keeps its (already supported) velocity. Near-horizontal pairs stay symmetric; new
         // contacts and g = 0 runs are untouched (momentum-conserving impacts with material
         // restitution).
-        // ... but ONLY when the lower body is not moving UPWARD: correcting the upper body against
-        // a static or FALLING support strictly removes momentum (monotone drainage into the
-        // ground), while one-sidedness against a RISING support copies its bounce velocity up the
-        // chain with no mass penalty and fountains the whole column. Rising supports (floor
-        // bounces, bubble eruptions) therefore keep the symmetric momentum-conserving impulse.
+        // ... but ONLY when the lower body is not rising and is grounded (ShockGate).
         bool applyA = true, applyB = true;
         if (usePersist && persistent(idx) != 0 && idB >= 0) {
-          const F3 dx = sub3(ldF3(posPred, idA), ldF3(posPred, idB));  // ghost-aware pair geometry
-          const float up = -(dx.x * gHat.x + dx.y * gHat.y + dx.z * gHat.z);  // >0: A above B
-          const float thr = 0.3f * Kokkos::sqrt(dot3(dx, dx));
-          const float riseThr =
-              4.0f * restVelThreshold;  // rise = -v.gHat (gHat points down-gravity)
-          // ... and the support must be GROUNDED (contact path to the floor): a gas-borne emulsion
-          // or lifted slug keeps symmetric momentum-conserving impulses, so its weight stays on
-          // the gas -- only genuinely supported chains drain into the ground.
-          if (up > thr && -dot3(vB, gHat) <= riseThr && grounded(realB) > 0) {
+          const ShockGate gate(sub3(ldF3(posPred, idA), ldF3(posPred, idB)), gHat,
+                               restVelThreshold);  // ghost-aware pair geometry
+          if (gate.lowerB(vB, gHat) && grounded(realB) > 0) {
             wB_n = 0.0f;
             applyB = false;
             restitution = 0.0f;  // shock pass is inelastic: e > 0 one-sided would bounce bodies
                                  // off the ground with unpaid momentum
-          } else if (up < -thr && -dot3(vA, gHat) <= riseThr && grounded(realA) > 0) {
+          } else if (gate.lowerA(vA, gHat) && grounded(realA) > 0) {
             wA_n = 0.0f;
             applyA = false;
             restitution = 0.0f;
@@ -1795,15 +1824,6 @@ struct VelocitySweepBodies {
   SlotOverride ov = {};
 };
 
-/// Shock propagation for persistent loaded contacts (see solveVelocity): the persistence flags,
-/// predicted positions, gravity direction and grounded levels. Empty `persistent` = off.
-struct ShockPropagation {
-  Kokkos::View<const unsigned char*, CpMem> persistent;
-  Kokkos::View<const float* [3], CpMem> posPred;
-  F3 gHat = {};
-  Kokkos::View<const unsigned char*, CpMem> grounded;
-};
-
 /// World-frame angular velocity change of an angular impulse `jang` on a body with diagonal
 /// local inverse inertia `invI` and orientation `q`: R (invI_local * (R^T jang)).
 KOKKOS_FORCEINLINE_FUNCTION F3 angularDelta(F3 jang, F3 invI, F4 q) {
@@ -1910,18 +1930,16 @@ inline void solveVelocityColoredGS(const ColoredManifolds& colored,
           const float Nsq = dot3(Nsum, Nsum);
           float wA_n = Nsq * invMassA + genInvMass(TauA, invIA, qA);
           float wB_n = Nsq * invMassB + genInvMass(TauB, invIB, qB);
-          // Shock propagation for persistent loaded contacts -- see solveVelocity.
+          // Shock propagation for persistent loaded contacts -- see solveVelocity and ShockGate.
           bool applyA = true, applyB = true;
           if (usePersist && persistent(idx) != 0 && idB >= 0) {
-            const F3 dx = sub3(ldF3(posPred, idA), ldF3(posPred, idB));
-            const float up = -(dx.x * gHat.x + dx.y * gHat.y + dx.z * gHat.z);
-            const float thr = 0.3f * Kokkos::sqrt(dot3(dx, dx));
-            const float riseThr = 4.0f * restVelThreshold;  // non-rising + grounded support gate
-            if (up > thr && -dot3(vB, gHat) <= riseThr && grounded(realB) > 0) {
+            const ShockGate gate(sub3(ldF3(posPred, idA), ldF3(posPred, idB)), gHat,
+                                 restVelThreshold);
+            if (gate.lowerB(vB, gHat) && grounded(realB) > 0) {
               wB_n = 0.0f;
               applyB = false;
               restitution = 0.0f;  // shock pass is inelastic — see solveVelocity
-            } else if (up < -thr && -dot3(vA, gHat) <= riseThr && grounded(realA) > 0) {
+            } else if (gate.lowerA(vA, gHat) && grounded(realA) > 0) {
               wA_n = 0.0f;
               applyA = false;
               restitution = 0.0f;
