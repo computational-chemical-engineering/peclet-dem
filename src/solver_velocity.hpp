@@ -1773,6 +1773,37 @@ inline long long countUnfired(Kokkos::View<const unsigned char*, CpMem> gate, in
   return n;
 }
 
+/// The colour classes one coloured sweep visits: manifolds [0, numManifolds), labelled by mColor
+/// in [0, numColors).
+struct ColoredManifolds {
+  Kokkos::View<const ManifoldC*, CpMem> manifolds;
+  int numManifolds;
+  Kokkos::View<const int*, CpMem> mColor;
+  int numColors;
+};
+
+/// The bodies a velocity sweep reads and updates in place: mass data and orientation, the
+/// predicted velocities, the canonical velocity slot realIdx and the hub-copy slot overrides
+/// (`ov`, §4.4; empty = realIdx).
+struct VelocitySweepBodies {
+  Kokkos::View<const float*, CpMem> invMass;
+  Kokkos::View<const float* [3], CpMem> invInertia;
+  Kokkos::View<const float* [4], CpMem> quat;
+  Kokkos::View<float* [3], CpMem> velPred;
+  Kokkos::View<float* [3], CpMem> angVelPred;
+  Kokkos::View<const int*, CpMem> realIdx;
+  SlotOverride ov = {};
+};
+
+/// Shock propagation for persistent loaded contacts (see solveVelocity): the persistence flags,
+/// predicted positions, gravity direction and grounded levels. Empty `persistent` = off.
+struct ShockPropagation {
+  Kokkos::View<const unsigned char*, CpMem> persistent = {};
+  Kokkos::View<const float* [3], CpMem> posPred = {};
+  F3 gHat = {};
+  Kokkos::View<const unsigned char*, CpMem> grounded = {};
+};
+
 /// Colored Gauss–Seidel normal-restitution solve: sweep the `numColors` colour classes in order,
 /// applying each manifold's impulse directly to velPred/angVelPred (in place). Same per-manifold
 /// impulse math as solveVelocity (growth-velocity term, approach gate, resting-contact e=0
@@ -1780,20 +1811,24 @@ inline long long countUnfired(Kokkos::View<const unsigned char*, CpMem> gate, in
 /// differs (in-place RMW instead of atomic-accumulate + count-average). Race-free because a colour
 /// is an independent set of manifolds. One outer call = one full sweep over all colours; the caller
 /// loops it velocityIterations times.
-inline void solveVelocityColoredGS(Kokkos::View<const ManifoldC*, CpMem> manifolds,
-                                   int numManifolds, Kokkos::View<const int*, CpMem> mColor,
-                                   int numColors, Kokkos::View<const float*, CpMem> invMass,
-                                   Kokkos::View<const float* [3], CpMem> invInertia,
-                                   Kokkos::View<const float* [4], CpMem> quat,
-                                   Kokkos::View<float* [3], CpMem> velPred,
-                                   Kokkos::View<float* [3], CpMem> angVelPred,
-                                   Kokkos::View<const int*, CpMem> realIdx, float growthRate,
+inline void solveVelocityColoredGS(const ColoredManifolds& colored,
+                                   const VelocitySweepBodies& bodies, float growthRate,
                                    float restitutionNormal, float restVelThreshold,
-                                   Kokkos::View<float, CpMem> maxApproach,
-                                   Kokkos::View<const unsigned char*, CpMem> persistent = {},
-                                   Kokkos::View<const float* [3], CpMem> posPred = {}, F3 gHat = {},
-                                   Kokkos::View<const unsigned char*, CpMem> grounded = {},
-                                   SlotOverride ov = {}, XGateSpec xg = {}) {
+                                   Kokkos::View<float, CpMem> maxApproach, XGateSpec xg = {},
+                                   const ShockPropagation& shock = {}) {
+  const Kokkos::View<const ManifoldC*, CpMem> manifolds = colored.manifolds;
+  const int numManifolds = colored.numManifolds, numColors = colored.numColors;
+  const Kokkos::View<const int*, CpMem> mColor = colored.mColor;
+  const Kokkos::View<const float*, CpMem> invMass = bodies.invMass;
+  const Kokkos::View<const float* [3], CpMem> invInertia = bodies.invInertia;
+  const Kokkos::View<const float* [4], CpMem> quat = bodies.quat;
+  const Kokkos::View<float* [3], CpMem> velPred = bodies.velPred, angVelPred = bodies.angVelPred;
+  const Kokkos::View<const int*, CpMem> realIdx = bodies.realIdx;
+  const SlotOverride ov = bodies.ov;
+  const Kokkos::View<const unsigned char*, CpMem> persistent = shock.persistent,
+                                                  grounded = shock.grounded;
+  const Kokkos::View<const float* [3], CpMem> posPred = shock.posPred;
+  const F3 gHat = shock.gHat;
   using detail::genInvMass;
   using detail::ld3;
   CpExec space;

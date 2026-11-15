@@ -913,10 +913,18 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
             P.splitStats.unfiredSplitContacts += countUnfired(P.xGate, nm);
           }
         }
-        solveVelocityColoredGS(P.manifolds, nm, P.manifoldColor, numColors, invMassVel,
-                               invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,
-                               P.growthRate, P.restitutionNormal, vRest, P.maxApproach, {}, {}, {},
-                               {}, velOv, xGate);
+        solveVelocityColoredGS(ColoredManifolds{.manifolds = P.manifolds,
+                                                .numManifolds = nm,
+                                                .mColor = P.manifoldColor,
+                                                .numColors = numColors},
+                               VelocitySweepBodies{.invMass = invMassVel,
+                                                   .invInertia = invInertiaVel,
+                                                   .quat = P.quat,
+                                                   .velPred = P.velPred,
+                                                   .angVelPred = P.angVelPred,
+                                                   .realIdx = P.realIndices,
+                                                   .ov = velOv},
+                               P.growthRate, P.restitutionNormal, vRest, P.maxApproach, xGate);
         foldVelocityCopies(space, P, ctx);
       }
       // Every active manifold is coloured (§4.2): the count-averaged fallback is gone. The stop's
