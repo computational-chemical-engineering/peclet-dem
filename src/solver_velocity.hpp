@@ -1804,6 +1804,14 @@ struct ShockPropagation {
   Kokkos::View<const unsigned char*, CpMem> grounded = {};
 };
 
+/// World-frame angular velocity change of an angular impulse `jang` on a body with diagonal
+/// local inverse inertia `invI` and orientation `q`: R (invI_local * (R^T jang)).
+KOKKOS_FORCEINLINE_FUNCTION F3 angularDelta(F3 jang, F3 invI, F4 q) {
+  const F3 Jl = invRotateVector(q, jang);
+  const F3 dwl{Jl.x * invI.x, Jl.y * invI.y, Jl.z * invI.z};
+  return rotateVector(q, dwl);
+}
+
 /// Colored Gauss–Seidel normal-restitution solve: sweep the `numColors` colour classes in order,
 /// applying each manifold's impulse directly to velPred/angVelPred (in place). Same per-manifold
 /// impulse math as solveVelocity (growth-velocity term, approach gate, resting-contact e=0
@@ -1948,9 +1956,7 @@ inline void solveVelocityColoredGS(const ColoredManifolds& colored,
             velPred(realA, 1) += Jlin.y * invMassA;
             velPred(realA, 2) += Jlin.z * invMassA;
             {
-              const F3 Jl = invRotateVector(qA, JangA);
-              const F3 dwl{Jl.x * invIA.x, Jl.y * invIA.y, Jl.z * invIA.z};
-              const F3 dww = rotateVector(qA, dwl);
+              const F3 dww = angularDelta(JangA, invIA, qA);
               angVelPred(realA, 0) += dww.x;
               angVelPred(realA, 1) += dww.y;
               angVelPred(realA, 2) += dww.z;
@@ -1960,9 +1966,7 @@ inline void solveVelocityColoredGS(const ColoredManifolds& colored,
             velPred(realB, 0) += -Jlin.x * invMassB;
             velPred(realB, 1) += -Jlin.y * invMassB;
             velPred(realB, 2) += -Jlin.z * invMassB;
-            const F3 Jl = invRotateVector(qB, JangB);
-            const F3 dwl{Jl.x * invIB.x, Jl.y * invIB.y, Jl.z * invIB.z};
-            const F3 dww = rotateVector(qB, dwl);
+            const F3 dww = angularDelta(JangB, invIB, qB);
             angVelPred(realB, 0) += dww.x;
             angVelPred(realB, 1) += dww.y;
             angVelPred(realB, 2) += dww.z;
