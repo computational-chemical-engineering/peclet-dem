@@ -208,6 +208,29 @@ inline void hertzPairForces(
   space.fence();
 }
 
+/// A particle-wall pair's (e, mu): the wall's material id through the pair table when both are
+/// set, else the wall's own binary material.
+KOKKOS_FORCEINLINE_FUNCTION void hertzWallEMu(int ma, const WallSdf& w, PairTableView pairTable,
+                                              float eGlobal, float muGlobal, float& e, float& mu) {
+  if (w.materialId >= 0 && pairTable.extent(0) > 0) {
+    hertzPairEMu(ma, w.materialId, pairTable, eGlobal, muGlobal, e, mu);
+  } else {
+    e = w.restitution;
+    mu = w.friction;
+  }
+}
+
+/// The wall SDF's gradient at q by central differences at half a grid cell (unnormalized).
+KOKKOS_FORCEINLINE_FUNCTION F3 wallSdfGradient(F3 q, const WallSdf& w, GridView wallGrid) {
+  const float hx = 0.5f / w.grid.invSpacing.x;
+  return F3{(sampleWallSdf(F3{q.x + hx, q.y, q.z}, w, wallGrid) -
+             sampleWallSdf(F3{q.x - hx, q.y, q.z}, w, wallGrid)),
+            (sampleWallSdf(F3{q.x, q.y + hx, q.z}, w, wallGrid) -
+             sampleWallSdf(F3{q.x, q.y - hx, q.z}, w, wallGrid)),
+            (sampleWallSdf(F3{q.x, q.y, q.z + hx}, w, wallGrid) -
+             sampleWallSdf(F3{q.x, q.y, q.z - hx}, w, wallGrid))};
+}
+
 /// SDF-wall forces (per particle x wall). Gradient by central differences at half a grid cell.
 /// The wall's rigid surface velocity enters vrel; per-(particle, wall) history in xiWall.
 inline void hertzWallForces(Kokkos::View<const int*, CpMem> candSlots, int numCand,
@@ -254,12 +277,7 @@ inline void hertzWallForces(Kokkos::View<const int*, CpMem> candSlots, int numCa
           const float effScale = scale(i) * globalScale;
           const float rc = contactRadiusFrac * dS.params.x * effScale;
           float e, mu;
-          if (w.materialId >= 0 && pairTable.extent(0) > 0)
-            hertzPairEMu(ma, w.materialId, pairTable, eGlobal, muGlobal, e, mu);
-          else {
-            e = w.restitution;
-            mu = w.friction;
-          }
+          hertzWallEMu(ma, w, pairTable, eGlobal, muGlobal, e, mu);
           const int mw = (w.materialId >= 0) ? w.materialId : ma;
           const float Ei = hertzE(ma), Ew = hertzE(mw);
           const float ni = hertzNu(ma), nw = hertzNu(mw);
@@ -282,13 +300,7 @@ inline void hertzWallForces(Kokkos::View<const int*, CpMem> candSlots, int numCa
             if (sd >= 0.0f)
               continue;
             const float delta = -sd;
-            const float hx = 0.5f / w.grid.invSpacing.x;
-            F3 g{(sampleWallSdf(F3{pW.x + hx, pW.y, pW.z}, w, wallGrid) -
-                  sampleWallSdf(F3{pW.x - hx, pW.y, pW.z}, w, wallGrid)),
-                 (sampleWallSdf(F3{pW.x, pW.y + hx, pW.z}, w, wallGrid) -
-                  sampleWallSdf(F3{pW.x, pW.y - hx, pW.z}, w, wallGrid)),
-                 (sampleWallSdf(F3{pW.x, pW.y, pW.z + hx}, w, wallGrid) -
-                  sampleWallSdf(F3{pW.x, pW.y, pW.z - hx}, w, wallGrid))};
+            F3 g = wallSdfGradient(pW, w, wallGrid);
             const float gl = len3(g);
             if (gl < 1e-12f)
               continue;
@@ -361,13 +373,7 @@ inline void hertzWallForces(Kokkos::View<const int*, CpMem> candSlots, int numCa
             xiWall(slot, 0) = xiWall(slot, 1) = xiWall(slot, 2) = 0.0f;
             return;
           }
-          const float hx = 0.5f / w.grid.invSpacing.x;
-          F3 g{(sampleWallSdf(F3{p.x + hx, p.y, p.z}, w, wallGrid) -
-                sampleWallSdf(F3{p.x - hx, p.y, p.z}, w, wallGrid)),
-               (sampleWallSdf(F3{p.x, p.y + hx, p.z}, w, wallGrid) -
-                sampleWallSdf(F3{p.x, p.y - hx, p.z}, w, wallGrid)),
-               (sampleWallSdf(F3{p.x, p.y, p.z + hx}, w, wallGrid) -
-                sampleWallSdf(F3{p.x, p.y, p.z - hx}, w, wallGrid))};
+          F3 g = wallSdfGradient(p, w, wallGrid);
           const float gl = Kokkos::sqrt(dot3(g, g));
           if (gl < 1e-12f)
             return;
@@ -377,12 +383,7 @@ inline void hertzWallForces(Kokkos::View<const int*, CpMem> candSlots, int numCa
           const F3 vWall = add3(w.linVel, cross3v(w.angVel, sub3(cpt, w.center)));
           const F3 vrel = sub3(add3(loadF3(vel, i), cross3v(loadF3(angVel, i), rA)), vWall);
           float e, mu;
-          if (w.materialId >= 0 && pairTable.extent(0) > 0) {
-            hertzPairEMu(ma, w.materialId, pairTable, eGlobal, muGlobal, e, mu);
-          } else {
-            e = w.restitution;
-            mu = w.friction;
-          }
+          hertzWallEMu(ma, w, pairTable, eGlobal, muGlobal, e, mu);
           const int mw = (w.materialId >= 0) ? w.materialId : ma;
           const float Ei = hertzE(ma), Ew = hertzE(mw);
           const float ni = hertzNu(ma), nw = hertzNu(mw);
