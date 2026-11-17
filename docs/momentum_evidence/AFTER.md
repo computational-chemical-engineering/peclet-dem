@@ -328,7 +328,7 @@ last): **128 passed, 2 failed** (`demstep_jacobi_closed_np2`, `_np4`, above). Al
 
 ## Coupling (G10)
 
-`coupling/tests/test_mpi_moving_suspension.py` and `test_mpi_fixed_bed_ergun.py` at np 1/2/4,
+`coupling/tests/test_mpi_moving_suspension.py` and `coupling/tests/test_mpi_fixed_bed_ergun.py` at np 1/2/4,
 copied to a scratch directory (the moving test writes its np-1 reference next to itself), with
 coupling built from `coupling` `8191a1e` and flow built from `flow` `f4b105e` (`-DPECLET_FLOW_MPI=ON`,
 host-openmp), both in scratch trees. Before = dem `e4e17f0` `src/`; after = this branch.

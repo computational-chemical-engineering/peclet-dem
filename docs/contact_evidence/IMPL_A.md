@@ -512,7 +512,7 @@ collective-safe; its effect is nil where measured.
 
 The implementing agent was interrupted by a usage limit, so the session verified the change itself.
 Host load 0.3. Reference: a build of 0ea32ba (WO-5) in `../dem-ref5`. Raw outputs are in the
-session scratchpad, `wo5b/`.
+session scratchpad (wo5b; not kept).
 
 - **np 1 byte identity against WO-5 (`wo5_dumps.sh`):** 45 of 47 mode dumps are identical. The 2
   that differ are `ring_mini` and `ring_mini_solo`, i.e. non-spherical, the named change. The S6
@@ -544,7 +544,7 @@ The Opus subagents had hit their weekly usage limit, so the session implemented 
   records its approach and writes nothing.
 - `RankK` gained `color`, `numColors` and `syncInterval`.
 
-**Results** (OMP 1 unless stated; raw output in the session scratchpad `wo6/`):
+**Results** (OMP 1 unless stated; raw output in the session scratchpad wo6, not kept):
 
 | gate | result |
 |---|---|

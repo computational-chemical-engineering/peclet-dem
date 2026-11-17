@@ -208,7 +208,7 @@ vote on every rank. Also add a test when the colour-62 fix makes this path reach
   - `exchanges()` counts self-ghosts, so the np 1 periodic reverse runs.
 - **Ownership.**
   - The exactly-once proof holds under P1, given core's single nearest image per destination
-    (`particle_migrator.hpp` `withinRcutOfBlock`).
+    (`../../../../core/include/peclet/core/halo/particle_migrator.hpp` `withinRcutOfBlock`).
   - Self-image twins are handled correctly at np 1 and np 2.
   - Flips cold-start a pair's warm start, as accepted in R3.
 - **Collective schedule.**

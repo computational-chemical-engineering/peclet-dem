@@ -178,9 +178,9 @@ thin ones. Tune `cells` (init_mpi) so the ORB blocks are compact (low surface/vo
 
 - **Periodicity needs ≥2 ranks per *decomposed* periodic axis.** A rank never ghosts to itself for the
   cross-rank wrap; undecomposed periodic axes use the local periodic self-ghosts instead.
-  `validate_exact.py` is deliberately non-periodic (floor + gravity) so ghosts arise only at the
+  `tests/python/mpi/test_validate_exact.py` is deliberately non-periodic (floor + gravity) so ghosts arise only at the
   inter-rank split. For periodic validation, decompose the periodic axis across ≥2 ranks and compare
-  aggregate observables (`verify_distributed.py`).
+  aggregate observables (`tests/python/mpi/test_verify_distributed.py`).
 - **Bit-exactness is not expected** at np>1 even when physics matches: Jacobi accumulates contact deltas
   with atomic adds whose order differs between the serial (all-N) and distributed (per-block) contact
   lists. Compare to ~1e-3 per-particle and to tight tolerance on aggregate observables. np=1 (0 ghosts)

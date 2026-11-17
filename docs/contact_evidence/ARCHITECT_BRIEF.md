@@ -166,7 +166,7 @@ acts at one point, whether or not it has converged.
    the GPU than an unbounded colouring? Quantify the launches per sweep.
 4. **What happens to the one-shot g = 0 restitution sweep.** Is it kept as a mass-split one-shot, or
    folded into the accumulated-impulse (PGS) form? Check what the register says before changing the
-   restitution model (`docs/decisions/dem.md`: colored GS restitution, the Poisson bank,
+   restitution model (`../../../docs/decisions/dem.md`: colored GS restitution, the Poisson bank,
    restitution threshold).
 5. **What is kept from c771e07.** Owner-exclusive contacts, owned-first lists, the reverse primitive,
    baselines, WO-3b count sync, allMaxAny. Remove whatever mass splitting makes redundant; say

@@ -855,7 +855,7 @@ In "Settled decisions", add the bullet:
 > **Distributed contacts are owner-exclusive with reverse accumulation**, not solved redundantly
 > on both owners (the redundant solve was momentum-non-conserving under Gauss–Seidel).
 
-### 8.3 Register entry (umbrella `docs/decisions/dem.md`, index in `docs/DECISIONS.md`)
+### 8.3 Register entry (umbrella `../../docs/decisions/dem.md`, index in `../../docs/DECISIONS.md`)
 ```
 ### Distributed XPBD contacts are owner-exclusive, with ghost→owner reverse accumulation at every sync
 - area: dem
