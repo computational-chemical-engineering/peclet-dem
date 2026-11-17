@@ -33,7 +33,9 @@
 #include <nanobind/stl/vector.h>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <Kokkos_Core.hpp>
 #include <optional>
 #include <stdexcept>
@@ -59,6 +61,68 @@ using F3Arg = std::array<float, 3>;
 peclet::dem::F3 f3(const F3Arg& a) {
   return peclet::dem::F3{a[0], a[1], a[2]};
 }
+
+// ---- input validation at the Python boundary ---------------------------------------------------
+// The C++ API (sim.hpp) is internal and trusts its caller; the public setters refuse a NaN/Inf or
+// a physically inadmissible value HERE, as ValueError (std::invalid_argument), before it reaches
+// the solver. A valid value takes exactly the path it took before. The message names the setter,
+// the parameter, the admissible range with its dimension (dem works in the caller's consistent
+// units) and the offending value.
+std::string num(double v) {
+  char b[32];
+  std::snprintf(b, sizeof b, "%g", v);
+  return b;
+}
+void require(bool ok, const char* who, const std::string& name, const std::string& rule, double v) {
+  if (!ok)
+    throw std::invalid_argument(std::string(who) + ": " + name + " must be " + rule + ", got " +
+                                num(v));
+}
+void finite(const char* who, const std::string& name, float v, const char* dim) {
+  require(std::isfinite(v), who, name, std::string("finite (") + dim + ")", v);
+}
+void positive(const char* who, const std::string& name, float v, const char* dim) {
+  require(std::isfinite(v) && v > 0.0f, who, name, std::string("finite and > 0 (") + dim + ")", v);
+}
+void nonneg(const char* who, const std::string& name, float v, const char* dim) {
+  require(std::isfinite(v) && v >= 0.0f, who, name, std::string("finite and >= 0 (") + dim + ")",
+          v);
+}
+/// A restitution coefficient: [0, 1], dimensionless.
+void restitution_coef(const char* who, const char* name, float v) {
+  require(std::isfinite(v) && v >= 0.0f && v <= 1.0f, who, name,
+          "finite and in [0, 1] (dimensionless)", v);
+}
+/// Per-component forms for a triple: the parameter is named `name[i]` in the message.
+std::string component(const char* name, int i) {
+  return std::string(name) + "[" + std::to_string(i) + "]";
+}
+void finite3(const char* who, const char* name, const F3Arg& a, const char* dim) {
+  for (int i = 0; i < 3; ++i)
+    finite(who, component(name, i), a[i], dim);
+}
+void positive3(const char* who, const char* name, const F3Arg& a, const char* dim) {
+  for (int i = 0; i < 3; ++i)
+    positive(who, component(name, i), a[i], dim);
+}
+void nonneg3(const char* who, const char* name, const F3Arg& a, const char* dim) {
+  for (int i = 0; i < 3; ++i)
+    nonneg(who, component(name, i), a[i], dim);
+}
+/// A count (capacity, iterations, samples per axis): an integer >= `lo`.
+void count(const char* who, const std::string& name, long v, long lo) {
+  require(v >= lo, who, name, "an integer >= " + std::to_string(lo), static_cast<double>(v));
+}
+/// The shared arguments of set_sdf_shape / add_sdf_shape.
+void sdf_shape_args(const char* who, const F3Arg& origin, const F3Arg& spacing,
+                    const F3Arg& inv_inertia, float bounding_radius) {
+  finite3(who, "origin", origin, "length");
+  positive3(who, "spacing", spacing, "length");
+  nonneg3(who, "inv_inertia", inv_inertia, "1/length^2");
+  positive(who, "bounding_radius", bounding_radius, "length");
+}
+/// Material ids index the 8-entry pair tables (narrowphase.hpp kMaxMaterials).
+constexpr int kMaxMaterialId = peclet::dem::kMaxMaterials - 1;
 
 /// A grid SDF: ONE 3-D `(nx, ny, nz)` array indexed `[x, y, z]` (Fortran order = x-fastest, the
 /// suite's grid layout, CONVENTIONS.md §6); nanobind converts a C-order input. Never a flat
@@ -285,9 +349,15 @@ NB_MODULE(_dem, m) {
       "the same particle set). Set up shapes -> domain -> positions -> materials, `set_dt`, then "
       "`step(n)`; read out with the `get_*` arrays. Developer instruments live on "
       "`.diagnostics`.")
-      .def(nb::init<int>(), nb::arg("capacity"),
-           "Allocate for up to `capacity` particles (owned + periodic ghost slots); set_positions "
-           "refuses more.")
+      .def(
+          "__init__",
+          [](Simulation* self, int capacity) {
+            count("Simulation", "capacity", capacity, 0);
+            new (self) Simulation(capacity);
+          },
+          nb::arg("capacity"),
+          "Allocate for up to `capacity` particles (owned + periodic ghost slots); set_positions "
+          "refuses more.")
       .def_prop_ro("capacity", &Simulation::capacity, "The particle capacity this was built with.")
       .def_prop_ro(
           "diagnostics", [](Simulation& s) { return Diagnostics{&s}; }, nb::keep_alive<0, 1>(),
@@ -296,6 +366,9 @@ NB_MODULE(_dem, m) {
       .def(
           "initialize_shape",
           [](Simulation& s, const std::string& shape, float radius, float height, float thickness) {
+            positive("initialize_shape", "radius", radius, "length");
+            nonneg("initialize_shape", "height", height, "length");
+            nonneg("initialize_shape", "thickness", thickness, "length");
             s.initializeShape(shape_kind(shape, "initialize_shape"), radius, height, thickness);
           },
           nb::arg("shape"), nb::arg("radius"), nb::arg("height") = 0.0f,
@@ -309,6 +382,7 @@ NB_MODULE(_dem, m) {
           "set_sdf_shape",
           [](Simulation& s, Grid3 grid, F3Arg origin, F3Arg spacing,
              nb::ndarray<float, nb::c_contig> shell, F3Arg inv_inertia, float bounding_radius) {
+            sdf_shape_args("set_sdf_shape", origin, spacing, inv_inertia, bounding_radius);
             const int nx = (int)grid.shape(0), ny = (int)grid.shape(1), nz = (int)grid.shape(2);
             s.setSdfShape(grid_to_vec(grid), nx, ny, nz, f3(origin), f3(spacing), to_vec(shell),
                           f3(inv_inertia), bounding_radius);
@@ -324,6 +398,9 @@ NB_MODULE(_dem, m) {
       .def(
           "add_shape",
           [](Simulation& s, const std::string& shape, float radius, float height, float thickness) {
+            positive("add_shape", "radius", radius, "length");
+            nonneg("add_shape", "height", height, "length");
+            nonneg("add_shape", "thickness", thickness, "length");
             return s.addShape(shape_kind(shape, "add_shape"), radius, height, thickness);
           },
           nb::arg("shape"), nb::arg("radius"), nb::arg("height") = 0.0f,
@@ -336,6 +413,7 @@ NB_MODULE(_dem, m) {
           "add_sdf_shape",
           [](Simulation& s, Grid3 grid, F3Arg origin, F3Arg spacing,
              nb::ndarray<float, nb::c_contig> shell, F3Arg inv_inertia, float bounding_radius) {
+            sdf_shape_args("add_sdf_shape", origin, spacing, inv_inertia, bounding_radius);
             const int nx = (int)grid.shape(0), ny = (int)grid.shape(1), nz = (int)grid.shape(2);
             return s.addSdfShape(grid_to_vec(grid), nx, ny, nz, f3(origin), f3(spacing),
                                  to_vec(shell), f3(inv_inertia), bounding_radius);
@@ -349,6 +427,8 @@ NB_MODULE(_dem, m) {
           [](Simulation& s, nb::ndarray<int, nb::c_contig> ni, nb::ndarray<float, nb::c_contig> nr,
              int root, nb::ndarray<float, nb::c_contig> shell, F3Arg inv_inertia,
              float bounding_radius) {
+            nonneg3("add_scene_shape", "inv_inertia", inv_inertia, "1/length^2");
+            positive("add_scene_shape", "bounding_radius", bounding_radius, "length");
             return s.addSceneShape(std::vector<int>(ni.data(), ni.data() + ni.size()),
                                    std::vector<float>(nr.data(), nr.data() + nr.size()), root,
                                    std::vector<float>(shell.data(), shell.data() + shell.size()),
@@ -381,7 +461,14 @@ NB_MODULE(_dem, m) {
       // periodicity.
       .def(
           "set_domain",
-          [](Simulation& s, F3Arg mn, F3Arg mx) { s.setDomainMinMax(f3(mn), f3(mx)); },
+          [](Simulation& s, F3Arg mn, F3Arg mx) {
+            finite3("set_domain", "min", mn, "length");
+            finite3("set_domain", "max", mx, "length");
+            for (int i = 0; i < 3; ++i)
+              require(mx[i] > mn[i], "set_domain", component("max", i),
+                      "> min[" + std::to_string(i) + "] = " + num(mn[i]) + " (length)", mx[i]);
+            s.setDomainMinMax(f3(mn), f3(mx));
+          },
           nb::arg("min"), nb::arg("max"),
           "Set the domain by (min, max) corner tuples (arbitrary origin); keeps current "
           "periodicity.")
@@ -392,6 +479,8 @@ NB_MODULE(_dem, m) {
       .def(
           "set_domain",
           [](Simulation& s, F3Arg extent, F3Arg origin, std::array<bool, 3> periodic) {
+            positive3("set_domain", "extent", extent, "length");
+            finite3("set_domain", "origin", origin, "length");
             s.setDomainCanonical(f3(extent), f3(origin), periodic[0], periodic[1], periodic[2]);
           },
           nb::arg("extent"), nb::arg("origin") = F3Arg{0, 0, 0},
@@ -412,23 +501,48 @@ NB_MODULE(_dem, m) {
                    "Per-axis periodicity (x, y, z) — read-only; set it with `set_periodic`.")
       // ---- physics settings ---------------------------------------------------------------
       .def(
-          "set_gravity", [](Simulation& s, F3Arg g) { s.setGravity(g[0], g[1], g[2]); },
+          "set_gravity",
+          [](Simulation& s, F3Arg g) {
+            finite3("set_gravity", "gravity", g, "length/time^2");
+            s.setGravity(g[0], g[1], g[2]);
+          },
           nb::arg("gravity"),
           "Set the gravitational acceleration (gx, gy, gz) -- any sequence of three floats. The "
           "default is ZERO.")
       .def_prop_ro("gravity", &Simulation::gravity, "The gravitational acceleration (gx, gy, gz).")
-      .def("set_thermostat", &Simulation::setThermostat, nb::arg("temperature"), nb::arg("tau"),
-           nb::arg("kB") = 1.0f,
-           "Enable a Berendsen-style velocity thermostat (target temperature, coupling time tau; "
-           "tau = 0 disables).")
-      .def("set_solver_iterations", &Simulation::setSolverIterations, nb::arg("pos"),
-           nb::arg("vel"),
-           "Set the XPBD position- and velocity-solve iteration counts. `vel` defaults to 0 (no "
-           "velocity solve, hence no restitution).")
-      .def("set_hertz_material", &Simulation::setHertzMaterial, nb::arg("mat"), nb::arg("youngs"),
-           nb::arg("poisson"),
-           "Per-material Young's modulus and Poisson ratio for the soft-sphere Hertz-Mindlin "
-           "engine (material ids as in set_material_ids).")
+      .def(
+          "set_thermostat",
+          [](Simulation& s, float temperature, float tau, float kB) {
+            nonneg("set_thermostat", "temperature", temperature, "temperature");
+            nonneg("set_thermostat", "tau", tau, "time; 0 disables");
+            positive("set_thermostat", "kB", kB, "energy/temperature");
+            s.setThermostat(temperature, tau, kB);
+          },
+          nb::arg("temperature"), nb::arg("tau"), nb::arg("kB") = 1.0f,
+          "Enable a Berendsen-style velocity thermostat (target temperature, coupling time tau; "
+          "tau = 0 disables).")
+      .def(
+          "set_solver_iterations",
+          [](Simulation& s, int pos, int vel) {
+            count("set_solver_iterations", "pos", pos, 0);
+            count("set_solver_iterations", "vel", vel, 0);
+            s.setSolverIterations(pos, vel);
+          },
+          nb::arg("pos"), nb::arg("vel"),
+          "Set the XPBD position- and velocity-solve iteration counts. `vel` defaults to 0 (no "
+          "velocity solve, hence no restitution).")
+      .def(
+          "set_hertz_material",
+          [](Simulation& s, int mat, float youngs, float poisson) {
+            positive("set_hertz_material", "youngs", youngs, "force/area");
+            require(std::isfinite(poisson) && poisson > -1.0f && poisson <= 0.5f,
+                    "set_hertz_material", "poisson", "finite and in (-1, 0.5] (dimensionless)",
+                    poisson);
+            s.setHertzMaterial(mat, youngs, poisson);
+          },
+          nb::arg("mat"), nb::arg("youngs"), nb::arg("poisson"),
+          "Per-material Young's modulus and Poisson ratio for the soft-sphere Hertz-Mindlin "
+          "engine (material ids as in set_material_ids).")
       .def(
           "set_stabilization",
           [](Simulation& s, const std::string& mode) {
@@ -459,40 +573,87 @@ NB_MODULE(_dem, m) {
            "it keeps Newton's per-substep targets, -e x the approach on approaching contacts "
            "only).")
       .def_prop_ro("restitution_model", &Simulation::restitutionModel, "'newton' or 'poisson'.")
-      .def("set_global_scale", &Simulation::setGlobalScale, nb::arg("scale"),
-           "Set a global length scale applied to all particles (effective radius = scale x "
-           "global_scale x base radius). Resets the broad-phase skin, as set_domain does -- call "
-           "it BEFORE set_domain if you rely on the skin.")
+      .def(
+          "set_global_scale",
+          [](Simulation& s, float scale) {
+            positive("set_global_scale", "scale", scale, "dimensionless");
+            s.setGlobalScale(scale);
+          },
+          nb::arg("scale"),
+          "Set a global length scale applied to all particles (effective radius = scale x "
+          "global_scale x base radius). Resets the broad-phase skin, as set_domain does -- call "
+          "it BEFORE set_domain if you rely on the skin.")
       .def_prop_ro("global_scale", &Simulation::globalScale, "The global length scale.")
-      .def("set_dt", &Simulation::setDt, nb::arg("dt"),
-           "Set the time step (> 0) every stepper uses: step, step_hertz, step_mpi, "
-           "step_hertz_mpi. There is no default -- a step before set_dt raises.")
+      .def(
+          "set_dt",
+          [](Simulation& s, float dt) {
+            positive("set_dt", "dt", dt, "time");
+            s.setDt(dt);
+          },
+          nb::arg("dt"),
+          "Set the time step (> 0) every stepper uses: step, step_hertz, step_mpi, "
+          "step_hertz_mpi. There is no default -- a step before set_dt raises.")
       .def_prop_ro("dt", &Simulation::dt, "The time step set by set_dt.")
-      .def("set_material_params", &Simulation::setMaterialParams, nb::arg("restitution_normal"),
-           nb::arg("restitution_tangent") = 0.0f, nb::arg("friction") = 0.0f,
-           "Set the BODY-BODY normal/tangential restitution and Coulomb friction coefficient. The "
-           "default friction is ZERO, and add_analytic_wall / add_sdf_wall set the particle-WALL "
-           "material only -- so a bed more than a few layers deep run with the defaults behaves "
-           "like a liquid: it transmits full hydrostatic pressure to the container and the "
-           "position solve squeezes grains through the boundary. That failure is silent and looks "
-           "like a solver-convergence bug (raising the position iterations and halving dt do not "
-           "move it). Set a non-zero friction for any deep bed.")
-      .def("set_material_ids", &Simulation::setMaterialIds, nb::arg("ids"),
-           "Per-particle material ids (0..7). Pair (e, mu) values come from set_pair_material; "
-           "without any set_pair_material call the global material applies everywhere.")
-      .def("set_pair_material", &Simulation::setPairMaterial, nb::arg("a"), nb::arg("b"),
-           nb::arg("restitution"), nb::arg("friction"),
-           "Symmetric pair material (restitution, friction) for material ids (a, b). The first "
-           "call seeds every pair from the current global material.")
-      .def("set_wall_material_id", &Simulation::setWallMaterialId, nb::arg("wid"), nb::arg("mat"),
-           "Give an SDF wall a material id so particle-wall (e, mu) resolves via the pair table "
-           "instead of the wall's binary material.")
+      .def(
+          "set_material_params",
+          [](Simulation& s, float restitution_normal, float restitution_tangent, float friction) {
+            restitution_coef("set_material_params", "restitution_normal", restitution_normal);
+            finite("set_material_params", "restitution_tangent", restitution_tangent,
+                   "dimensionless");
+            nonneg("set_material_params", "friction", friction, "dimensionless");
+            s.setMaterialParams(restitution_normal, restitution_tangent, friction);
+          },
+          nb::arg("restitution_normal"), nb::arg("restitution_tangent") = 0.0f,
+          nb::arg("friction") = 0.0f,
+          "Set the BODY-BODY normal/tangential restitution and Coulomb friction coefficient. The "
+          "default friction is ZERO, and add_analytic_wall / add_sdf_wall set the particle-WALL "
+          "material only -- so a bed more than a few layers deep run with the defaults behaves "
+          "like a liquid: it transmits full hydrostatic pressure to the container and the "
+          "position solve squeezes grains through the boundary. That failure is silent and looks "
+          "like a solver-convergence bug (raising the position iterations and halving dt do not "
+          "move it). Set a non-zero friction for any deep bed.")
+      .def(
+          "set_material_ids",
+          [](Simulation& s, const std::vector<int>& ids) {
+            for (std::size_t i = 0; i < ids.size(); ++i)
+              require(ids[i] >= 0 && ids[i] <= kMaxMaterialId, "set_material_ids",
+                      "ids[" + std::to_string(i) + "]",
+                      "an integer in [0, " + std::to_string(kMaxMaterialId) + "]", ids[i]);
+            s.setMaterialIds(ids);
+          },
+          nb::arg("ids"),
+          "Per-particle material ids (0..7). Pair (e, mu) values come from set_pair_material; "
+          "without any set_pair_material call the global material applies everywhere.")
+      .def(
+          "set_pair_material",
+          [](Simulation& s, int a, int b, float e, float mu) {
+            restitution_coef("set_pair_material", "restitution", e);
+            nonneg("set_pair_material", "friction", mu, "dimensionless");
+            s.setPairMaterial(a, b, e, mu);
+          },
+          nb::arg("a"), nb::arg("b"), nb::arg("restitution"), nb::arg("friction"),
+          "Symmetric pair material (restitution, friction) for material ids (a, b). The first "
+          "call seeds every pair from the current global material.")
+      .def(
+          "set_wall_material_id",
+          [](Simulation& s, int wid, int mat) {
+            // A negative id is the wall's default (-1: its binary material); only the upper bound
+            // is checked.
+            require(mat <= kMaxMaterialId, "set_wall_material_id", "mat",
+                    "an integer <= " + std::to_string(kMaxMaterialId), mat);
+            s.setWallMaterialId(wid, mat);
+          },
+          nb::arg("wid"), nb::arg("mat"),
+          "Give an SDF wall a material id so particle-wall (e, mu) resolves via the pair table "
+          "instead of the wall's binary material.")
       // ---- walls ----------------------------------------------------------------------------
       .def(
           "add_analytic_wall",
           [](Simulation& s, nb::ndarray<int, nb::c_contig> node_ints,
              nb::ndarray<float, nb::c_contig> node_reals, int root, bool invert, float restitution,
              float friction) {
+            restitution_coef("add_analytic_wall", "restitution", restitution);
+            nonneg("add_analytic_wall", "friction", friction, "dimensionless");
             return s.addAnalyticWall(
                 std::vector<int>(node_ints.data(), node_ints.data() + node_ints.size()),
                 to_vec(node_reals), root, invert, restitution, friction);
@@ -507,7 +668,13 @@ NB_MODULE(_dem, m) {
           "the wall index.")
       .def(
           "add_plane",
-          [](Simulation& s, F3Arg p, F3Arg n) { s.addPlane(p[0], p[1], p[2], n[0], n[1], n[2]); },
+          [](Simulation& s, F3Arg p, F3Arg n) {
+            finite3("add_plane", "point", p, "length");
+            finite3("add_plane", "normal", n, "dimensionless");
+            require(n[0] != 0.0f || n[1] != 0.0f || n[2] != 0.0f, "add_plane", "normal",
+                    "a non-zero vector", 0.0);
+            s.addPlane(p[0], p[1], p[2], n[0], n[1], n[2]);
+          },
           nb::arg("point"), nb::arg("normal"),
           "Add an infinite boundary wall plane through `point`, with `normal` pointing into the "
           "half-space the grains occupy (both 3-sequences). XPBD engine only; the Hertz engine "
@@ -516,6 +683,10 @@ NB_MODULE(_dem, m) {
           "add_sdf_wall",
           [](Simulation& s, Grid3 grid, F3Arg origin, F3Arg spacing, float restitution,
              float friction) {
+            finite3("add_sdf_wall", "origin", origin, "length");
+            positive3("add_sdf_wall", "spacing", spacing, "length");
+            restitution_coef("add_sdf_wall", "restitution", restitution);
+            nonneg("add_sdf_wall", "friction", friction, "dimensionless");
             const int nx = (int)grid.shape(0), ny = (int)grid.shape(1), nz = (int)grid.shape(2);
             return s.addSdfWall(grid_to_vec(grid), nx, ny, nz, f3(origin), f3(spacing), restitution,
                                 friction);
@@ -534,6 +705,9 @@ NB_MODULE(_dem, m) {
       .def(
           "set_wall_velocity",
           [](Simulation& s, int wall_index, F3Arg lin, F3Arg ang, F3Arg center) {
+            finite3("set_wall_velocity", "lin_vel", lin, "length/time");
+            finite3("set_wall_velocity", "ang_vel", ang, "1/time");
+            finite3("set_wall_velocity", "center", center, "length");
             s.setWallVelocity(wall_index, f3(lin), f3(ang), f3(center));
           },
           nb::arg("wall_index"), nb::arg("lin_vel") = F3Arg{0, 0, 0},
@@ -544,6 +718,9 @@ NB_MODULE(_dem, m) {
       .def(
           "set_wall_transform",
           [](Simulation& s, int wall_index, F3Arg translation, std::array<float, 4> quat) {
+            finite3("set_wall_transform", "translation", translation, "length");
+            for (int i = 0; i < 4; ++i)
+              finite("set_wall_transform", component("quat", i), quat[i], "dimensionless");
             s.setWallTransform(wall_index, f3(translation), quat[0], quat[1], quat[2], quat[3]);
           },
           nb::arg("wall_index"), nb::arg("translation") = F3Arg{0, 0, 0},
@@ -647,19 +824,30 @@ NB_MODULE(_dem, m) {
             s.setInvMass(flat_of(a, s, "set_inv_mass"));
           },
           nb::arg("inv_mass"), "Set per-particle inverse mass, an (N,) array (0 = fixed body).")
-      .def("set_scales_uniform", &Simulation::setScalesUniform, nb::arg("scale"),
-           "Set a single uniform scale for all particles.")
+      .def(
+          "set_scales_uniform",
+          [](Simulation& s, float scale) {
+            positive("set_scales_uniform", "scale", scale, "dimensionless");
+            s.setScalesUniform(scale);
+          },
+          nb::arg("scale"), "Set a single uniform scale for all particles.")
       .def(
           "set_scales",
           [](Simulation& s, nb::ndarray<float, nb::c_contig> a) {
             s.setScales(flat_of(a, s, "set_scales"));
           },
           nb::arg("scales"), "Set per-particle scales from an (N,) array (the growth target).")
-      .def("set_growth_params", &Simulation::setGrowthParams, nb::arg("rate"),
-           nb::arg("new_factor") = -1.0f,
-           "Set the particle growth rate (factor *= exp(rate*dt) per step, capped at 1) and, if "
-           "new_factor > 0, the current growth factor (a negative value keeps it; 0.01 if growth "
-           "was inactive).")
+      .def(
+          "set_growth_params",
+          [](Simulation& s, float rate, float new_factor) {
+            finite("set_growth_params", "rate", rate, "1/time");
+            finite("set_growth_params", "new_factor", new_factor, "dimensionless");
+            s.setGrowthParams(rate, new_factor);
+          },
+          nb::arg("rate"), nb::arg("new_factor") = -1.0f,
+          "Set the particle growth rate (factor *= exp(rate*dt) per step, capped at 1) and, if "
+          "new_factor > 0, the current growth factor (a negative value keeps it; 0.01 if growth "
+          "was inactive).")
       .def_prop_ro("growth_factor", &Simulation::growthFactor,
                    "The current particle growth factor (-1 = growth inactive).")
       .def_prop_ro("growth_rate", &Simulation::getGrowthRate, "The particle growth rate.")
@@ -776,24 +964,39 @@ NB_MODULE(_dem, m) {
       .def("export_lammps", &Simulation::exportLammps, nb::arg("filename"), nb::arg("step"),
            "Export particle state to a LAMMPS dump file.")
       // ---- execution policy -----------------------------------------------------------------
-      .def("set_sleeping", &Simulation::setSleeping, nb::arg("enabled"),
-           nb::arg("threshold_scale") = 2.0f, nb::arg("consecutive") = 64,
-           nb::arg("wake_scale") = 40.0f, nb::arg("wake_on_lost_contact") = false,
-           nb::arg("immovable_frac") = 0.01f,
-           "Island sleeping (single-GPU statics, default ON): freeze grounded bodies whose motion "
-           "stays below threshold_scale x the resting floor for `consecutive` substeps; wake only "
-           "above wake_scale x that floor (hysteresis vs residual jitter). wake_on_lost_contact "
-           "additionally wakes a sleeper whose support disappeared; immovable_frac is a sleeper's "
-           "effective inverse-mass fraction in the solve (0 = exactly immovable). Requires gravity "
-           "and no external force; inert under MPI.")
+      .def(
+          "set_sleeping",
+          [](Simulation& s, bool enabled, float threshold_scale, int consecutive, float wake_scale,
+             bool wake_on_lost_contact, float immovable_frac) {
+            finite("set_sleeping", "threshold_scale", threshold_scale, "dimensionless");
+            finite("set_sleeping", "wake_scale", wake_scale, "dimensionless");
+            finite("set_sleeping", "immovable_frac", immovable_frac, "dimensionless");
+            s.setSleeping(enabled, threshold_scale, consecutive, wake_scale, wake_on_lost_contact,
+                          immovable_frac);
+          },
+          nb::arg("enabled"), nb::arg("threshold_scale") = 2.0f, nb::arg("consecutive") = 64,
+          nb::arg("wake_scale") = 40.0f, nb::arg("wake_on_lost_contact") = false,
+          nb::arg("immovable_frac") = 0.01f,
+          "Island sleeping (single-GPU statics, default ON): freeze grounded bodies whose motion "
+          "stays below threshold_scale x the resting floor for `consecutive` substeps; wake only "
+          "above wake_scale x that floor (hysteresis vs residual jitter). wake_on_lost_contact "
+          "additionally wakes a sleeper whose support disappeared; immovable_frac is a sleeper's "
+          "effective inverse-mass fraction in the solve (0 = exactly immovable). Requires gravity "
+          "and no external force; inert under MPI.")
       .def_prop_ro("sleeping", &Simulation::sleeping, "Whether island sleeping is enabled.")
       .def_prop_ro(
           "num_asleep", [](Simulation& s) { return s.numAsleep(); },
           "Number of currently-sleeping real bodies.")
-      .def("set_verlet_skin", &Simulation::setVerletSkin, nb::arg("skin_frac"),
-           "Enable the Verlet-cached impulse broadphase (single-GPU, non-periodic, default OFF, "
-           "i.e. skin_frac = 0): skip the ArborX rebuild while nothing moved more than skin/2 "
-           "(skin = skin_frac x max grain radius).")
+      .def(
+          "set_verlet_skin",
+          [](Simulation& s, float skin_frac) {
+            nonneg("set_verlet_skin", "skin_frac", skin_frac, "dimensionless; 0 disables");
+            s.setVerletSkin(skin_frac);
+          },
+          nb::arg("skin_frac"),
+          "Enable the Verlet-cached impulse broadphase (single-GPU, non-periodic, default OFF, "
+          "i.e. skin_frac = 0): skip the ArborX rebuild while nothing moved more than skin/2 "
+          "(skin = skin_frac x max grain radius).")
       .def_prop_ro("verlet_skin", &Simulation::verletSkin,
                    "Broadphase-skin fraction of the max grain radius (0 = rebuild every step).")
       .def("set_incremental_coloring", &Simulation::setIncrementalColoring, nb::arg("enabled"),
@@ -824,6 +1027,15 @@ NB_MODULE(_dem, m) {
           [](Simulation& s, std::tuple<double, double, double> origin,
              std::tuple<double, double, double> extent, std::tuple<long, long, long> cells,
              std::tuple<bool, bool, bool> periodic) {
+            // Checked before MPI_Init, so a refused call leaves MPI untouched.
+            const auto [ox, oy, oz] = origin;
+            const auto [ex, ey, ez] = extent;
+            const auto [cx, cy, cz] = cells;
+            finite3("init_mpi", "origin", F3Arg{float(ox), float(oy), float(oz)}, "length");
+            positive3("init_mpi", "extent", F3Arg{float(ex), float(ey), float(ez)}, "length");
+            count("init_mpi", "cells[0]", cx, 1);
+            count("init_mpi", "cells[1]", cy, 1);
+            count("init_mpi", "cells[2]", cz, 1);
             int inited = 0;
             MPI_Initialized(&inited);
             if (!inited) {
@@ -837,23 +1049,32 @@ NB_MODULE(_dem, m) {
           "Set up the ORB block decomposition + core particle halo for the distributed step on "
           "the global domain (`origin` lower corner, `extent` SIZE, `cells` per axis for the ORB "
           "grid, `periodic` per axis -- the suite's domain quartet).")
-      .def("enable_mpi_step", &Simulation::enableMpiStep, nb::arg("rcut") = 0.0,
-           nb::arg("sync_every") = 1, nb::arg("forward_rotation") = true,
-           nb::arg("rebalance_every") = 0, nb::arg("verlet_skin") = 0.0,
-           "Enable the distributed step: ghost-band width rcut (a lower bound -- step_mpi widens "
-           "it to the contact reach plus a drift slack and the prediction allowance, "
-           "max(rcut, 2.1 x the global maximum radius + 0.25 x it + P), so the default 0 means "
-           "exactly that), sync_every (the owner/ghost reconciliation interval; conservation is "
-           "exact at any value -- a body updated from several places is solved through copies, "
-           "mass-split for the projection-form phases and exclusively held by one rank per sync "
-           "interval for the g = 0 one-shot restitution sweep -- larger sync_every means more lag, "
-           "fewer messages), rotation forwarding, the load-rebalance interval in steps (0 = fixed "
-           "decomposition; every step also votes, in the same reduction as the band, whether any "
-           "body has drifted more than the slack outside its owner's block, and migrates it if so "
-           "-- ownership is therefore not fixed across a run, and ghost selection uses the "
-           "domain-clamped position on non-periodic axes), and the Verlet ghost-reuse skin (0 = "
-           "rebuild the halo topology every substep; >0 = reuse it until a particle moves > skin, "
-           "and P above is the skin instead of the predicted displacement).")
+      .def(
+          "enable_mpi_step",
+          [](Simulation& s, double rcut, int sync_every, bool forward_rotation, int rebalance_every,
+             double verlet_skin) {
+            require(std::isfinite(rcut) && rcut >= 0.0, "enable_mpi_step", "rcut",
+                    "finite and >= 0 (length)", rcut);
+            require(std::isfinite(verlet_skin) && verlet_skin >= 0.0, "enable_mpi_step",
+                    "verlet_skin", "finite and >= 0 (length; 0 disables)", verlet_skin);
+            s.enableMpiStep(rcut, sync_every, forward_rotation, rebalance_every, verlet_skin);
+          },
+          nb::arg("rcut") = 0.0, nb::arg("sync_every") = 1, nb::arg("forward_rotation") = true,
+          nb::arg("rebalance_every") = 0, nb::arg("verlet_skin") = 0.0,
+          "Enable the distributed step: ghost-band width rcut (a lower bound -- step_mpi widens "
+          "it to the contact reach plus a drift slack and the prediction allowance, "
+          "max(rcut, 2.1 x the global maximum radius + 0.25 x it + P), so the default 0 means "
+          "exactly that), sync_every (the owner/ghost reconciliation interval; conservation is "
+          "exact at any value -- a body updated from several places is solved through copies, "
+          "mass-split for the projection-form phases and exclusively held by one rank per sync "
+          "interval for the g = 0 one-shot restitution sweep -- larger sync_every means more lag, "
+          "fewer messages), rotation forwarding, the load-rebalance interval in steps (0 = fixed "
+          "decomposition; every step also votes, in the same reduction as the band, whether any "
+          "body has drifted more than the slack outside its owner's block, and migrates it if so "
+          "-- ownership is therefore not fixed across a run, and ghost selection uses the "
+          "domain-clamped position on non-periodic axes), and the Verlet ghost-reuse skin (0 = "
+          "rebuild the halo topology every substep; >0 = reuse it until a particle moves > skin, "
+          "and P above is the skin instead of the predicted displacement).")
       .def("step_mpi", &Simulation::stepMpi, nb::arg("n") = 1,
            "Advance the distributed (MPI) simulation by `n` steps of the time step set by set_dt, "
            "with halo exchange.")
