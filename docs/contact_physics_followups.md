@@ -454,7 +454,7 @@ Until the user decides, the default stays N (WO-C1 adds M as a diagnostics A/B o
   - The bed ahead of the impact is at rest, so M ≈ N there.
   - Expect < 2% change on the 0.170 rebound. This is an expectation, and G-C3 measures it.
 
-## 5. Register entries (the caller writes them into `../docs/decisions/dem.md`)
+## 5. Register entries (the caller writes them into `../../docs/decisions/dem.md`)
 
 When each lands, also add entries 1, 3, 4 and 6 to the settled list in `CLAUDE.md` (dem).
 

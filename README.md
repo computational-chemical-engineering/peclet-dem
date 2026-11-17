@@ -98,7 +98,7 @@ and exposes the distributed step (`init_mpi` / `enable_mpi_step` / `step_mpi`), 
 balancing — `enable_mpi_step(..., rebalance_every=N)` or an explicit `rebalance()` re-decomposes by
 particle count (weighted ORB) and migrates ownership so each rank keeps a near-equal share.*
 
-The compiled `peclet.dem` extension is placed in `build/peclet/dem/`; run scripts with `build/` on `PYTHONPATH` (`import peclet.dem`).
+The compiled `peclet.dem` extension is placed in `<build>/peclet/dem/` (`<build>` is the CMake build directory, `build` in the recipe above); run scripts with `<build>` on `PYTHONPATH` (`import peclet.dem`).
 
 ## Quick start
 

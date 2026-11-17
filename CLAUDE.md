@@ -4,7 +4,7 @@ Kokkos + ArborX XPBD Discrete Element Method, header-only C++20 under `src/` beh
 class (`Simulation`, `src/dem_bindings.cpp`; the facade is `src/sim.hpp` on the `ShapeRegistry` base of
 `src/shape_registry.hpp`, the step drivers are the free functions of `src/step_solve.hpp` and
 `src/step_solve_mpi.hpp`). Drive it from Python; there is no C++ main. Read the
-umbrella `../CLAUDE.md` first (one venv, prefixes, `docs/NAMING.md`); `README.md` here has the folder map.
+umbrella `../CLAUDE.md` first (one venv, prefixes, `../docs/NAMING.md`); `README.md` here has the folder map.
 
 ## Build
 
@@ -226,7 +226,7 @@ modes `'escalate'`/`'ordered'`, `set_velocity_solver('gauss_seidel'|'jacobi')` (
 CHANGES RESULTS), `set_cuda_graphs` / `set_fused_sweeps` (bit-identical GPU submission policies),
 `coloring_conflicts()`, `rest_orphan_stats()` / `rest_bank_stats()`, `wall_sdf_at()`,
 `profiling_info()`, and under MPI `mpi_rebuilds` / `mpi_gathers`. `set_incremental_coloring` stays
-public because it changes the Gauss-Seidel order. Conventions (suite `docs/NAMING.md`): stored scalars
+public because it changes the Gauss-Seidel order. Conventions (suite `../docs/NAMING.md`): stored scalars
 are properties (`num_particles`, `num_contacts`, `max_overlap`, `dt`, `gravity`, `growth_factor`,
 `stabilization`, `rank`, ...), computed scalars are bare methods (`compute_overlaps()`), array copies
 are `get_*`; every triple is a 3-sequence (`set_gravity((0, 0, -9.8))`, `add_plane(point, normal)`);
@@ -307,8 +307,7 @@ binding, launch recipes, profiling, the optimisation backlog), `visualization.md
 Dated campaign records go to `docs/archive/` with a row in `docs/archive/README.md` — never
 deleted, never maintained (QUALITY_PLAN D7). Currently archived: `packing_investigation.md` (the
 five-phase RCP investigation) and `velocity_solver_algorithm.md` (pre-PGS summary of the velocity
-solve). `src/dem_bindings.cpp` and `examples/pack.py` still cite `docs/packing_investigation.md`
-as plain text — add the `archive/` prefix when those files are next touched.
+solve).
 
 ## Git
 

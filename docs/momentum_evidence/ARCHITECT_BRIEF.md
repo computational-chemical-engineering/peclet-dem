@@ -45,7 +45,7 @@ Structure in brief:
   are gid-pair keyed, so each owner of a cross-rank pair holds its **own copy** of that pair's ledger
   entry.
 - There is **no reverse (ghost→owner accumulate) halo operation** in dem today, only forward. Check
-  core's `ParticleMigrator` / `gatherGhosts` (`../core/include/peclet/core/halo/`) for anything
+  core's `ParticleMigrator` / `gatherGhosts` (`../../../core/include/peclet/core/halo/`) for anything
   reusable.
 - The ghost band is `max(rcut, 2.1 R_max_global)`, with a global narrow-phase margin, so both owners
   of a cross-rank pair see it as a contact.

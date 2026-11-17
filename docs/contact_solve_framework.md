@@ -726,7 +726,7 @@ The Hertz path calls `invalidateTopology()` before `gather` and passes `false`. 
   add a parameter `bool allImages = false`.
 - When true, the sender loop replaces `withinRcutOfBlock(pos[i], r, rcut, img)` with
   `imagesWithinRcutOfBlock(pos[i], r, rcut, /*allowIdentity=*/true, shifts)`
-  (`particle_migrator.hpp:202-243`) and pushes **one send entry per shift**, so the same `i` may
+  (core's `../../core/include/peclet/core/halo/particle_migrator.hpp`) and pushes **one send entry per shift**, so the same `i` may
   appear several times in `sendIdx[r]` with different shifts.
 - Everything downstream already works per entry:
   - the shift exchange;
@@ -1100,7 +1100,7 @@ force/torque, the gather rebuild predicate), `src/solve_driver_force.hpp` / `Mpi
 - Hertz: a drift mode (`hertz` with shear advection, 200 steps): dP ≤ 1e-6.
 
 ### WO-8 (core repository, `suite/core` in its own worktree): `allImages`
-Implement §5.3 in core with core tests. Tag and publish per `docs/RELEASE.md` (R-U2). dem work
+Implement §5.3 in core with core tests. Tag and publish per `../../docs/RELEASE.md` (R-U2). dem work
 continues meanwhile; only WO-9 waits.
 
 ### WO-9: dem uses all images (D4b)
@@ -1255,7 +1255,7 @@ Each must be **detected**. The test binary passes iff the gate fails.
 ## 10. Register entries and documentation text
 
 ### 10.1 New register entries
-These go in the umbrella `docs/decisions/dem.md`, indexed in `docs/DECISIONS.md`. The caller
+These go in the umbrella `../../docs/decisions/dem.md`, indexed in `../../docs/DECISIONS.md`. The caller
 commits them.
 
 ```
@@ -1401,7 +1401,7 @@ Every item has a default, so work proceeds unattended.
 | # | Item | Needs | Default |
 |---|---|---|---|
 | **R-U1** | dem's PGS restitution target (0 for pre-separating contacts) creates energy in dense random-velocity states even at np 1 (Appendix A: +6.4 % / +16 %). Changing it is a contact-law change, out of this package's scope. | **User preference** (physics model) | **Resolved 2026-09-26 (user):** the PGS restitution target is Moreau's, `−e·γ⁻` on every closed contact above the resting threshold (`'poisson'` keeps Newton's). Design and options: `docs/contact_physics_followups.md` §4; landed in WO-C2; register entry 7 of that note. |
-| **R-U2** | WO-8 needs a core minor release (tag + PyPI publish), which is outward-facing | **User go-ahead** under the standing "core first" directive | Implement and test in core and tag locally. The orchestrator confirms the publish step with the user per `docs/RELEASE.md`. dem WO-9 waits; every other WO proceeds. |
+| **R-U2** | WO-8 needs a core minor release (tag + PyPI publish), which is outward-facing | **User go-ahead** under the standing "core first" directive | Implement and test in core and tag locally. The orchestrator confirms the publish step with the user per `../../docs/RELEASE.md`. dem WO-9 waits; every other WO proceeds. |
 | **R-U3** | The np 1 changes beyond the brief's D1/D2/D3 list: periodic `demStep` and `step_mpi` position consensus (§WO-4 item 2) and the velocity slot map (§6.2) | **User preference** (the scope of "np 1 unchanged"; the c771e07 precedent: user accepted a periodic np 1 change for conservation) | Proceed (conservation is a directive). Report before/after in AFTER.md. |
 | R-F1 | Migration cost and frequency at `S = 0.25 R_max`; the ghost overhead of the slack | **Fact** (G12) | `S = 0.25`. If migrations exceed 1 per 5 substeps in `perf_*`, or G12 fails on ghost volume, report. The lever is `S = 0.5` (fewer migrations, +24 % ghosts), a recorded decision. |
 | R-F2 | Interface convergence of M with `ω_vel = 1` | **Fact** (G7c/e) | `ω_vel = 1`. If G7c or G7e fails, set `kSplitOmegaVelocity = 1.5` (pre-analysed: convergent for ω < 2, near-serial iterations; first-iterate KE overshoot like serial PGS), re-run G1/G7, record the decision. If it still fails, stop. **Superseded by §13.1 / §13.8:** this lever applies to the velocity phase only and is triggered by G7c only. The overlap projection is never relaxed; its lever is R-U4. |
@@ -2208,7 +2208,7 @@ PSOR would have a unique least-displacement fixed point and legitimate over-rela
   diagnostics are enabled, which the test harness does. With diagnostics off there must be no
   extra fence or copy.
 - **S13: G7 runs with every adaptive stop off.** The WO-5 misses were resolved by
-  `docs/contact_evidence/INVESTIGATION_WO5.md` (branch `wo5-investigation`, 689381d). With exactly N
+  `git show 689381d:docs/contact_evidence/INVESTIGATION_WO5.md` (branch `wo5-investigation`). With exactly N
   iterations forced:
   - np 2/4/8 converge to np 1 to the float floor. G7a gives 3.6e-3 at N = 8, 6.3e-5 at 16, and
     1.4e-7 from 32.

@@ -39,7 +39,12 @@ import numpy as np
 
 @dataclass
 class SceneParticle:
-    """A composed analytic particle, principal-frame, ready for dem (and flow)."""
+    """A composed analytic particle, principal-frame, ready for dem (and flow).
+
+    Lengths (``shell``, ``com``, ``bounding_radius``) are in the scene's length units, ``mass`` and
+    ``volume`` in mass and length^3 units, ``principal`` in mass x length^2 units,
+    ``inv_inertia_unit`` in 1/length^2 units; ``quat`` is dimensionless.
+    """
 
     builder: object          # the peclet.geom.SceneBuilder (owns the nodes)
     home_root: int           # root of the PRINCIPAL-FRAME copy of the tree

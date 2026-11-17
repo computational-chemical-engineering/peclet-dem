@@ -400,7 +400,8 @@ class WallSDF:
         inside the solid wall** (the opposite sign convention to :func:`build_particle`, whose solid is
         the particle).
     origin, spacing : np.ndarray
-        ``(3,)`` world coordinate of node ``(0,0,0)`` and the per-axis node spacing.
+        ``(3,)`` world coordinate of node ``(0,0,0)`` and the per-axis node spacing, in the
+        simulation's length units (as is ``grid``).
     """
 
     grid: np.ndarray

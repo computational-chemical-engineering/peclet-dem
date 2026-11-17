@@ -534,7 +534,7 @@ A pair that crosses a rank face **and** wraps that undecomposed periodic axis th
 second image of the partner that neither owner receives, so the pair is invisible on both.
 
 The local self-ghosts (`includePeriodicSelf`) do enumerate every image
-(`imagesWithinRcutOfBlock`, `particle_migrator.hpp:202-243`). That is why np = 1 is correct: only
+(`imagesWithinRcutOfBlock` in core's `../../../core/include/peclet/core/halo/particle_migrator.hpp`). That is why np = 1 is correct: only
 the cross-rank path is affected.
 
 `core/include/peclet/core/halo/particle_halo_topology.hpp:62-67`:
@@ -546,7 +546,7 @@ the cross-rank path is affected.
         if (!mig_->withinRcutOfBlock(pos[i], r, rcut, img))
           continue;
 ```
-`particle_migrator.hpp:179-190`: per axis, keep only the smallest-gap candidate of {x, x − L, x + L}.
+`withinRcutOfBlock` in core's `../../../core/include/peclet/core/halo/particle_migrator.hpp`: per axis, keep only the smallest-gap candidate of {x, x − L, x + L}.
 
 **The cause is the image enumeration, not the band width.** For every missed pair, the test asks
 core which images of the partner lie within the band of each owner's block. In all 5 of 5 missed
