@@ -104,6 +104,15 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packaging/particle_builder.py
                ${CMAKE_CURRENT_BINARY_DIR}/peclet/dem/particle_builder.py COPYONLY)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packaging/scene_particle.py
                ${CMAKE_CURRENT_BINARY_DIR}/peclet/dem/scene_particle.py COPYONLY)
+# Type stub of the extension (packaging/_dem.pyi), staged beside it with the PEP 561 marker. It is
+# generated against an MPI-enabled host build, so it also lists the distributed-step names -- after
+# changing a binding, regenerate it and drop the build-specific value of `execution_space`:
+#   PYTHONPATH=<build> python -m nanobind.stubgen -m peclet.dem._dem -o packaging/_dem.pyi
+#   sed -i "s/^execution_space: str = .*/execution_space: str/" packaging/_dem.pyi
+# tests/python/test_stub_sync.py fails when a public name of the module is missing from it.
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packaging/_dem.pyi
+               ${CMAKE_CURRENT_BINARY_DIR}/peclet/dem/_dem.pyi COPYONLY)
+file(TOUCH ${CMAKE_CURRENT_BINARY_DIR}/peclet/dem/py.typed)
 target_include_directories(dem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${PECLET_CORE_INCLUDE})
 target_link_libraries(dem PRIVATE ArborX::ArborX Kokkos::kokkos)
 
@@ -176,5 +185,8 @@ if(DEFINED SKBUILD)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/particle_builder.py
           DESTINATION peclet/dem COMPONENT python)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/scene_particle.py
+          DESTINATION peclet/dem COMPONENT python)
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/_dem.pyi
+                ${CMAKE_CURRENT_BINARY_DIR}/peclet/dem/py.typed
           DESTINATION peclet/dem COMPONENT python)
 endif()
