@@ -78,35 +78,42 @@ void require(bool ok, const char* who, const std::string& name, const std::strin
     throw std::invalid_argument(std::string(who) + ": " + name + " must be " + rule + ", got " +
                                 num(v));
 }
-void finite(const char* who, const std::string& name, float v, const char* dim) {
+void finite(const char* who, const std::string& name, double v, const char* dim) {
   require(std::isfinite(v), who, name, std::string("finite (") + dim + ")", v);
 }
-void positive(const char* who, const std::string& name, float v, const char* dim) {
-  require(std::isfinite(v) && v > 0.0f, who, name, std::string("finite and > 0 (") + dim + ")", v);
+void positive(const char* who, const std::string& name, double v, const char* dim) {
+  require(std::isfinite(v) && v > 0.0, who, name, std::string("finite and > 0 (") + dim + ")", v);
 }
-void nonneg(const char* who, const std::string& name, float v, const char* dim) {
-  require(std::isfinite(v) && v >= 0.0f, who, name, std::string("finite and >= 0 (") + dim + ")",
-          v);
+void nonneg(const char* who, const std::string& name, double v, const char* dim) {
+  require(std::isfinite(v) && v >= 0.0, who, name, std::string("finite and >= 0 (") + dim + ")", v);
 }
 /// A restitution coefficient: [0, 1], dimensionless.
-void restitution_coef(const char* who, const char* name, float v) {
-  require(std::isfinite(v) && v >= 0.0f && v <= 1.0f, who, name,
+void restitution_coef(const char* who, const char* name, double v) {
+  require(std::isfinite(v) && v >= 0.0 && v <= 1.0, who, name,
           "finite and in [0, 1] (dimensionless)", v);
 }
-/// Per-component forms for a triple: the parameter is named `name[i]` in the message.
-std::string component(const char* name, int i) {
+/// An isotropic solid's Poisson ratio: (-1, 0.5], dimensionless.
+void poisson_ratio(const char* who, const char* name, double v) {
+  require(std::isfinite(v) && v > -1.0 && v <= 0.5, who, name,
+          "finite and in (-1, 0.5] (dimensionless)", v);
+}
+/// Per-component forms for a triple (or a quaternion): the parameter is named `name[i]`.
+std::string component(const char* name, std::size_t i) {
   return std::string(name) + "[" + std::to_string(i) + "]";
 }
-void finite3(const char* who, const char* name, const F3Arg& a, const char* dim) {
-  for (int i = 0; i < 3; ++i)
+template <class T, std::size_t N>
+void finite_each(const char* who, const char* name, const std::array<T, N>& a, const char* dim) {
+  for (std::size_t i = 0; i < N; ++i)
     finite(who, component(name, i), a[i], dim);
 }
-void positive3(const char* who, const char* name, const F3Arg& a, const char* dim) {
-  for (int i = 0; i < 3; ++i)
+template <class T, std::size_t N>
+void positive_each(const char* who, const char* name, const std::array<T, N>& a, const char* dim) {
+  for (std::size_t i = 0; i < N; ++i)
     positive(who, component(name, i), a[i], dim);
 }
-void nonneg3(const char* who, const char* name, const F3Arg& a, const char* dim) {
-  for (int i = 0; i < 3; ++i)
+template <class T, std::size_t N>
+void nonneg_each(const char* who, const char* name, const std::array<T, N>& a, const char* dim) {
+  for (std::size_t i = 0; i < N; ++i)
     nonneg(who, component(name, i), a[i], dim);
 }
 /// A count (capacity, iterations, samples per axis): an integer >= `lo`.
@@ -123,13 +130,46 @@ void sample_counts(const char* who, int rx, int ry, int rz) {
 /// The shared arguments of set_sdf_shape / add_sdf_shape.
 void sdf_shape_args(const char* who, const F3Arg& origin, const F3Arg& spacing,
                     const F3Arg& inv_inertia, float bounding_radius) {
-  finite3(who, "origin", origin, "length");
-  positive3(who, "spacing", spacing, "length");
-  nonneg3(who, "inv_inertia", inv_inertia, "1/length^2");
+  finite_each(who, "origin", origin, "length");
+  positive_each(who, "spacing", spacing, "length");
+  nonneg_each(who, "inv_inertia", inv_inertia, "1/length^2");
   positive(who, "bounding_radius", bounding_radius, "length");
+}
+/// set_domain(min, max): finite corners, max > min on every axis.
+void domain_corners(const F3Arg& mn, const F3Arg& mx) {
+  finite_each("set_domain", "min", mn, "length");
+  finite_each("set_domain", "max", mx, "length");
+  for (std::size_t i = 0; i < 3; ++i)
+    require(mx[i] > mn[i], "set_domain", component("max", i),
+            "> min[" + std::to_string(i) + "] = " + num(mn[i]) + " (length)", mx[i]);
+}
+/// add_plane: a finite point and a finite, non-zero normal.
+void plane(const F3Arg& p, const F3Arg& n) {
+  finite_each("add_plane", "point", p, "length");
+  finite_each("add_plane", "normal", n, "dimensionless");
+  require(n[0] != 0.0f || n[1] != 0.0f || n[2] != 0.0f, "add_plane", "normal", "a non-zero vector",
+          0.0);
+}
+/// init_mpi's global box: finite origin, positive extent, at least one ORB cell per axis.
+void mpi_box(const std::tuple<double, double, double>& origin,
+             const std::tuple<double, double, double>& extent,
+             const std::tuple<long, long, long>& cells) {
+  const auto [ox, oy, oz] = origin;
+  const auto [ex, ey, ez] = extent;
+  const auto [cx, cy, cz] = cells;
+  finite_each("init_mpi", "origin", std::array<double, 3>{ox, oy, oz}, "length");
+  positive_each("init_mpi", "extent", std::array<double, 3>{ex, ey, ez}, "length");
+  const std::array<long, 3> c{cx, cy, cz};
+  for (std::size_t i = 0; i < 3; ++i)
+    count("init_mpi", component("cells", i), c[i], 1);
 }
 /// Material ids index the 8-entry pair tables (narrowphase.hpp kMaxMaterials).
 constexpr int kMaxMaterialId = peclet::dem::kMaxMaterials - 1;
+void material_ids(const std::vector<int>& ids) {
+  for (std::size_t i = 0; i < ids.size(); ++i)
+    require(ids[i] >= 0 && ids[i] <= kMaxMaterialId, "set_material_ids", component("ids", i),
+            "an integer in [0, " + std::to_string(kMaxMaterialId) + "]", ids[i]);
+}
 
 /// A grid SDF: ONE 3-D `(nx, ny, nz)` array indexed `[x, y, z]` (Fortran order = x-fastest, the
 /// suite's grid layout, CONVENTIONS.md §6); nanobind converts a C-order input. Never a flat
@@ -440,7 +480,7 @@ NB_MODULE(_dem, m) {
           [](Simulation& s, nb::ndarray<int, nb::c_contig> ni, nb::ndarray<float, nb::c_contig> nr,
              int root, nb::ndarray<float, nb::c_contig> shell, F3Arg inv_inertia,
              float bounding_radius) {
-            nonneg3("add_scene_shape", "inv_inertia", inv_inertia, "1/length^2");
+            nonneg_each("add_scene_shape", "inv_inertia", inv_inertia, "1/length^2");
             positive("add_scene_shape", "bounding_radius", bounding_radius, "length");
             return s.addSceneShape(std::vector<int>(ni.data(), ni.data() + ni.size()),
                                    std::vector<float>(nr.data(), nr.data() + nr.size()), root,
@@ -475,11 +515,7 @@ NB_MODULE(_dem, m) {
       .def(
           "set_domain",
           [](Simulation& s, F3Arg mn, F3Arg mx) {
-            finite3("set_domain", "min", mn, "length");
-            finite3("set_domain", "max", mx, "length");
-            for (int i = 0; i < 3; ++i)
-              require(mx[i] > mn[i], "set_domain", component("max", i),
-                      "> min[" + std::to_string(i) + "] = " + num(mn[i]) + " (length)", mx[i]);
+            domain_corners(mn, mx);
             s.setDomainMinMax(f3(mn), f3(mx));
           },
           nb::arg("min"), nb::arg("max"),
@@ -492,8 +528,8 @@ NB_MODULE(_dem, m) {
       .def(
           "set_domain",
           [](Simulation& s, F3Arg extent, F3Arg origin, std::array<bool, 3> periodic) {
-            positive3("set_domain", "extent", extent, "length");
-            finite3("set_domain", "origin", origin, "length");
+            positive_each("set_domain", "extent", extent, "length");
+            finite_each("set_domain", "origin", origin, "length");
             s.setDomainCanonical(f3(extent), f3(origin), periodic[0], periodic[1], periodic[2]);
           },
           nb::arg("extent"), nb::arg("origin") = F3Arg{0, 0, 0},
@@ -519,7 +555,7 @@ NB_MODULE(_dem, m) {
       .def(
           "set_gravity",
           [](Simulation& s, F3Arg g) {
-            finite3("set_gravity", "gravity", g, "length/time^2");
+            finite_each("set_gravity", "gravity", g, "length/time^2");
             s.setGravity(g[0], g[1], g[2]);
           },
           nb::arg("gravity"),
@@ -554,9 +590,7 @@ NB_MODULE(_dem, m) {
           "set_hertz_material",
           [](Simulation& s, int mat, float youngs, float poisson) {
             positive("set_hertz_material", "youngs", youngs, "force/area");
-            require(std::isfinite(poisson) && poisson > -1.0f && poisson <= 0.5f,
-                    "set_hertz_material", "poisson", "finite and in (-1, 0.5] (dimensionless)",
-                    poisson);
+            poisson_ratio("set_hertz_material", "poisson", poisson);
             s.setHertzMaterial(mat, youngs, poisson);
           },
           nb::arg("mat"), nb::arg("youngs"), nb::arg("poisson"),
@@ -634,10 +668,7 @@ NB_MODULE(_dem, m) {
       .def(
           "set_material_ids",
           [](Simulation& s, const std::vector<int>& ids) {
-            for (std::size_t i = 0; i < ids.size(); ++i)
-              require(ids[i] >= 0 && ids[i] <= kMaxMaterialId, "set_material_ids",
-                      "ids[" + std::to_string(i) + "]",
-                      "an integer in [0, " + std::to_string(kMaxMaterialId) + "]", ids[i]);
+            material_ids(ids);
             s.setMaterialIds(ids);
           },
           nb::arg("ids"),
@@ -688,10 +719,7 @@ NB_MODULE(_dem, m) {
       .def(
           "add_plane",
           [](Simulation& s, F3Arg p, F3Arg n) {
-            finite3("add_plane", "point", p, "length");
-            finite3("add_plane", "normal", n, "dimensionless");
-            require(n[0] != 0.0f || n[1] != 0.0f || n[2] != 0.0f, "add_plane", "normal",
-                    "a non-zero vector", 0.0);
+            plane(p, n);
             s.addPlane(p[0], p[1], p[2], n[0], n[1], n[2]);
           },
           nb::arg("point"), nb::arg("normal"),
@@ -703,8 +731,8 @@ NB_MODULE(_dem, m) {
           "add_sdf_wall",
           [](Simulation& s, Grid3 grid, F3Arg origin, F3Arg spacing, float restitution,
              float friction) {
-            finite3("add_sdf_wall", "origin", origin, "length");
-            positive3("add_sdf_wall", "spacing", spacing, "length");
+            finite_each("add_sdf_wall", "origin", origin, "length");
+            positive_each("add_sdf_wall", "spacing", spacing, "length");
             restitution_coef("add_sdf_wall", "restitution", restitution);
             nonneg("add_sdf_wall", "friction", friction, "dimensionless");
             const int nx = (int)grid.shape(0), ny = (int)grid.shape(1), nz = (int)grid.shape(2);
@@ -727,9 +755,9 @@ NB_MODULE(_dem, m) {
       .def(
           "set_wall_velocity",
           [](Simulation& s, int wall_index, F3Arg lin, F3Arg ang, F3Arg center) {
-            finite3("set_wall_velocity", "lin_vel", lin, "length/time");
-            finite3("set_wall_velocity", "ang_vel", ang, "1/time");
-            finite3("set_wall_velocity", "center", center, "length");
+            finite_each("set_wall_velocity", "lin_vel", lin, "length/time");
+            finite_each("set_wall_velocity", "ang_vel", ang, "1/time");
+            finite_each("set_wall_velocity", "center", center, "length");
             s.setWallVelocity(wall_index, f3(lin), f3(ang), f3(center));
           },
           nb::arg("wall_index"), nb::arg("lin_vel") = F3Arg{0, 0, 0},
@@ -742,9 +770,8 @@ NB_MODULE(_dem, m) {
       .def(
           "set_wall_transform",
           [](Simulation& s, int wall_index, F3Arg translation, std::array<float, 4> quat) {
-            finite3("set_wall_transform", "translation", translation, "length");
-            for (int i = 0; i < 4; ++i)
-              finite("set_wall_transform", component("quat", i), quat[i], "dimensionless");
+            finite_each("set_wall_transform", "translation", translation, "length");
+            finite_each("set_wall_transform", "quat", quat, "dimensionless");
             s.setWallTransform(wall_index, f3(translation), quat[0], quat[1], quat[2], quat[3]);
           },
           nb::arg("wall_index"), nb::arg("translation") = F3Arg{0, 0, 0},
@@ -1059,14 +1086,7 @@ NB_MODULE(_dem, m) {
              std::tuple<double, double, double> extent, std::tuple<long, long, long> cells,
              std::tuple<bool, bool, bool> periodic) {
             // Checked before MPI_Init, so a refused call leaves MPI untouched.
-            const auto [ox, oy, oz] = origin;
-            const auto [ex, ey, ez] = extent;
-            const auto [cx, cy, cz] = cells;
-            finite3("init_mpi", "origin", F3Arg{float(ox), float(oy), float(oz)}, "length");
-            positive3("init_mpi", "extent", F3Arg{float(ex), float(ey), float(ez)}, "length");
-            count("init_mpi", "cells[0]", cx, 1);
-            count("init_mpi", "cells[1]", cy, 1);
-            count("init_mpi", "cells[2]", cz, 1);
+            mpi_box(origin, extent, cells);
             int inited = 0;
             MPI_Initialized(&inited);
             if (!inited) {
@@ -1085,10 +1105,8 @@ NB_MODULE(_dem, m) {
           "enable_mpi_step",
           [](Simulation& s, double rcut, int sync_every, bool forward_rotation, int rebalance_every,
              double verlet_skin) {
-            require(std::isfinite(rcut) && rcut >= 0.0, "enable_mpi_step", "rcut",
-                    "finite and >= 0 (length)", rcut);
-            require(std::isfinite(verlet_skin) && verlet_skin >= 0.0, "enable_mpi_step",
-                    "verlet_skin", "finite and >= 0 (length; 0 disables)", verlet_skin);
+            nonneg("enable_mpi_step", "rcut", rcut, "length");
+            nonneg("enable_mpi_step", "verlet_skin", verlet_skin, "length; 0 disables");
             s.enableMpiStep(rcut, sync_every, forward_rotation, rebalance_every, verlet_skin);
           },
           nb::arg("rcut") = 0.0, nb::arg("sync_every") = 1, nb::arg("forward_rotation") = true,
