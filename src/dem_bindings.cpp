@@ -113,6 +113,13 @@ void nonneg3(const char* who, const char* name, const F3Arg& a, const char* dim)
 void count(const char* who, const std::string& name, long v, long lo) {
   require(v >= lo, who, name, "an integer >= " + std::to_string(lo), static_cast<double>(v));
 }
+/// A reconstruction grid's samples per axis (get_sdf_grid / export_sdf): each >= 1. A negative
+/// count used to abort the interpreter.
+void sample_counts(const char* who, int rx, int ry, int rz) {
+  count(who, "resolution[0]", rx, 1);
+  count(who, "resolution[1]", ry, 1);
+  count(who, "resolution[2]", rz, 1);
+}
 /// The shared arguments of set_sdf_shape / add_sdf_shape.
 void sdf_shape_args(const char* who, const F3Arg& origin, const F3Arg& spacing,
                     const F3Arg& inv_inertia, float bounding_radius) {
@@ -942,6 +949,7 @@ NB_MODULE(_dem, m) {
           "get_sdf_grid",
           [](Simulation& s, std::tuple<int, int, int> res) {
             auto [rx, ry, rz] = res;
+            sample_counts("get_sdf_grid", rx, ry, rz);
             // x-fastest samples -> an (rx, ry, rz) array indexed [x, y, z] (Fortran order), the
             // suite's grid layout and what set_sdf_shape / add_sdf_wall take back.
             return peclet::core::python::vector_to_ndarray(
@@ -955,6 +963,7 @@ NB_MODULE(_dem, m) {
           "export_sdf",
           [](Simulation& s, const std::string& filename, std::tuple<int, int, int> res) {
             auto [rx, ry, rz] = res;
+            sample_counts("export_sdf", rx, ry, rz);
             s.exportSdf(filename, rx, ry, rz);
           },
           nb::arg("filename"), nb::arg("resolution"),
