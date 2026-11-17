@@ -324,7 +324,7 @@ NB_MODULE(_dem, m) {
           "set_sdf_shape",
           [](Simulation& s, Grid3 grid, F3Arg origin, F3Arg spacing,
              nb::ndarray<float, nb::c_contig> shell, F3Arg inv_inertia, float bounding_radius) {
-            sdf_shape_args("set_sdf_shape", origin, spacing, inv_inertia, bounding_radius);
+            sdfShapeArgs("set_sdf_shape", origin, spacing, inv_inertia, bounding_radius);
             const int nx = (int)grid.shape(0), ny = (int)grid.shape(1), nz = (int)grid.shape(2);
             s.setSdfShape(grid_to_vec(grid), nx, ny, nz, f3(origin), f3(spacing), to_vec(shell),
                           f3(inv_inertia), bounding_radius);
@@ -358,7 +358,7 @@ NB_MODULE(_dem, m) {
           "add_sdf_shape",
           [](Simulation& s, Grid3 grid, F3Arg origin, F3Arg spacing,
              nb::ndarray<float, nb::c_contig> shell, F3Arg inv_inertia, float bounding_radius) {
-            sdf_shape_args("add_sdf_shape", origin, spacing, inv_inertia, bounding_radius);
+            sdfShapeArgs("add_sdf_shape", origin, spacing, inv_inertia, bounding_radius);
             const int nx = (int)grid.shape(0), ny = (int)grid.shape(1), nz = (int)grid.shape(2);
             return s.addSdfShape(grid_to_vec(grid), nx, ny, nz, f3(origin), f3(spacing),
                                  to_vec(shell), f3(inv_inertia), bounding_radius);
@@ -373,7 +373,7 @@ NB_MODULE(_dem, m) {
           [](Simulation& s, nb::ndarray<int, nb::c_contig> ni, nb::ndarray<float, nb::c_contig> nr,
              int root, nb::ndarray<float, nb::c_contig> shell, F3Arg inv_inertia,
              float bounding_radius) {
-            nonneg_each("add_scene_shape", "inv_inertia", inv_inertia, "1/length^2");
+            nonnegEach("add_scene_shape", "inv_inertia", inv_inertia, "1/length^2");
             positive("add_scene_shape", "bounding_radius", bounding_radius, "length");
             return s.addSceneShape(std::vector<int>(ni.data(), ni.data() + ni.size()),
                                    std::vector<float>(nr.data(), nr.data() + nr.size()), root,
@@ -408,7 +408,7 @@ NB_MODULE(_dem, m) {
       .def(
           "set_domain",
           [](Simulation& s, F3Arg mn, F3Arg mx) {
-            domain_corners(mn, mx);
+            domainCorners(mn, mx);
             s.setDomainMinMax(f3(mn), f3(mx));
           },
           nb::arg("min"), nb::arg("max"),
@@ -421,8 +421,8 @@ NB_MODULE(_dem, m) {
       .def(
           "set_domain",
           [](Simulation& s, F3Arg extent, F3Arg origin, std::array<bool, 3> periodic) {
-            positive_each("set_domain", "extent", extent, "length");
-            finite_each("set_domain", "origin", origin, "length");
+            positiveEach("set_domain", "extent", extent, "length");
+            finiteEach("set_domain", "origin", origin, "length");
             s.setDomainCanonical(f3(extent), f3(origin), periodic[0], periodic[1], periodic[2]);
           },
           nb::arg("extent"), nb::arg("origin") = F3Arg{0, 0, 0},
@@ -448,7 +448,7 @@ NB_MODULE(_dem, m) {
       .def(
           "set_gravity",
           [](Simulation& s, F3Arg g) {
-            finite_each("set_gravity", "gravity", g, "length/time^2");
+            finiteEach("set_gravity", "gravity", g, "length/time^2");
             s.setGravity(g[0], g[1], g[2]);
           },
           nb::arg("gravity"),
@@ -483,7 +483,7 @@ NB_MODULE(_dem, m) {
           "set_hertz_material",
           [](Simulation& s, int mat, float youngs, float poisson) {
             positive("set_hertz_material", "youngs", youngs, "force/area");
-            poisson_ratio("set_hertz_material", "poisson", poisson);
+            poissonRatio("set_hertz_material", "poisson", poisson);
             s.setHertzMaterial(mat, youngs, poisson);
           },
           nb::arg("mat"), nb::arg("youngs"), nb::arg("poisson"),
@@ -543,7 +543,7 @@ NB_MODULE(_dem, m) {
       .def(
           "set_material_params",
           [](Simulation& s, float restitution_normal, float restitution_tangent, float friction) {
-            restitution_coef("set_material_params", "restitution_normal", restitution_normal);
+            restitutionCoef("set_material_params", "restitution_normal", restitution_normal);
             finite("set_material_params", "restitution_tangent", restitution_tangent,
                    "dimensionless");
             nonneg("set_material_params", "friction", friction, "dimensionless");
@@ -561,7 +561,7 @@ NB_MODULE(_dem, m) {
       .def(
           "set_material_ids",
           [](Simulation& s, const std::vector<int>& ids) {
-            material_ids(ids);
+            materialIds(ids);
             s.setMaterialIds(ids);
           },
           nb::arg("ids"),
@@ -570,7 +570,7 @@ NB_MODULE(_dem, m) {
       .def(
           "set_pair_material",
           [](Simulation& s, int a, int b, float e, float mu) {
-            restitution_coef("set_pair_material", "restitution", e);
+            restitutionCoef("set_pair_material", "restitution", e);
             nonneg("set_pair_material", "friction", mu, "dimensionless");
             s.setPairMaterial(a, b, e, mu);
           },
@@ -595,7 +595,7 @@ NB_MODULE(_dem, m) {
           [](Simulation& s, nb::ndarray<int, nb::c_contig> node_ints,
              nb::ndarray<float, nb::c_contig> node_reals, int root, bool invert, float restitution,
              float friction) {
-            restitution_coef("add_analytic_wall", "restitution", restitution);
+            restitutionCoef("add_analytic_wall", "restitution", restitution);
             nonneg("add_analytic_wall", "friction", friction, "dimensionless");
             return s.addAnalyticWall(
                 std::vector<int>(node_ints.data(), node_ints.data() + node_ints.size()),
@@ -624,9 +624,9 @@ NB_MODULE(_dem, m) {
           "add_sdf_wall",
           [](Simulation& s, Grid3 grid, F3Arg origin, F3Arg spacing, float restitution,
              float friction) {
-            finite_each("add_sdf_wall", "origin", origin, "length");
-            positive_each("add_sdf_wall", "spacing", spacing, "length");
-            restitution_coef("add_sdf_wall", "restitution", restitution);
+            finiteEach("add_sdf_wall", "origin", origin, "length");
+            positiveEach("add_sdf_wall", "spacing", spacing, "length");
+            restitutionCoef("add_sdf_wall", "restitution", restitution);
             nonneg("add_sdf_wall", "friction", friction, "dimensionless");
             const int nx = (int)grid.shape(0), ny = (int)grid.shape(1), nz = (int)grid.shape(2);
             return s.addSdfWall(grid_to_vec(grid), nx, ny, nz, f3(origin), f3(spacing), restitution,
@@ -648,9 +648,9 @@ NB_MODULE(_dem, m) {
       .def(
           "set_wall_velocity",
           [](Simulation& s, int wall_index, F3Arg lin, F3Arg ang, F3Arg center) {
-            finite_each("set_wall_velocity", "lin_vel", lin, "length/time");
-            finite_each("set_wall_velocity", "ang_vel", ang, "1/time");
-            finite_each("set_wall_velocity", "center", center, "length");
+            finiteEach("set_wall_velocity", "lin_vel", lin, "length/time");
+            finiteEach("set_wall_velocity", "ang_vel", ang, "1/time");
+            finiteEach("set_wall_velocity", "center", center, "length");
             s.setWallVelocity(wall_index, f3(lin), f3(ang), f3(center));
           },
           nb::arg("wall_index"), nb::arg("lin_vel") = F3Arg{0, 0, 0},
@@ -663,8 +663,8 @@ NB_MODULE(_dem, m) {
       .def(
           "set_wall_transform",
           [](Simulation& s, int wall_index, F3Arg translation, std::array<float, 4> quat) {
-            finite_each("set_wall_transform", "translation", translation, "length");
-            finite_each("set_wall_transform", "quat", quat, "dimensionless");
+            finiteEach("set_wall_transform", "translation", translation, "length");
+            finiteEach("set_wall_transform", "quat", quat, "dimensionless");
             s.setWallTransform(wall_index, f3(translation), quat[0], quat[1], quat[2], quat[3]);
           },
           nb::arg("wall_index"), nb::arg("translation") = F3Arg{0, 0, 0},
@@ -891,7 +891,7 @@ NB_MODULE(_dem, m) {
           "get_sdf_grid",
           [](Simulation& s, std::tuple<int, int, int> res) {
             auto [rx, ry, rz] = res;
-            sample_counts("get_sdf_grid", rx, ry, rz);
+            sampleCounts("get_sdf_grid", rx, ry, rz);
             // x-fastest samples -> an (rx, ry, rz) array indexed [x, y, z] (Fortran order), the
             // suite's grid layout and what set_sdf_shape / add_sdf_wall take back.
             return peclet::core::python::vector_to_ndarray(
@@ -905,7 +905,7 @@ NB_MODULE(_dem, m) {
           "export_sdf",
           [](Simulation& s, const std::string& filename, std::tuple<int, int, int> res) {
             auto [rx, ry, rz] = res;
-            sample_counts("export_sdf", rx, ry, rz);
+            sampleCounts("export_sdf", rx, ry, rz);
             s.exportSdf(filename, rx, ry, rz);
           },
           nb::arg("filename"), nb::arg("resolution"),
@@ -979,7 +979,7 @@ NB_MODULE(_dem, m) {
              std::tuple<double, double, double> extent, std::tuple<long, long, long> cells,
              std::tuple<bool, bool, bool> periodic) {
             // Checked before MPI_Init, so a refused call leaves MPI untouched.
-            mpi_box(origin, extent, cells);
+            mpiBox(origin, extent, cells);
             int inited = 0;
             MPI_Initialized(&inited);
             if (!inited) {
