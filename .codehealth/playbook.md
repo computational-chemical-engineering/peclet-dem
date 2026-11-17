@@ -81,3 +81,38 @@ Evidence from `codehealth stats` over dem-s1..s8 (38 records, 2026-11-15):
 - **Moving uncovered device code**: a seam in a branch no G-branch scenario reaches (counting build = 0) is not
   proven by any gate. Cover it first, or leave it; dead paths (e.g. the shock-propagation block that the caller
   always passes empty) need a decision, not a refactor.
+
+## User-facing round (WO-28, 2026-11-17; the pilot recipe for flow, amr, pnm, voro)
+- **Where validation lives**: the binding TU only. A setter bound as `&Simulation::setX` becomes a lambda with
+  the SAME parameter names, defaults and return type, which checks and then calls the member. Prove the
+  surface unchanged by dumping every `__nb_signature__` before and after and diffing (identical here).
+- **Helper pattern** (top of `src/dem_bindings.cpp`): `require(ok, who, name, rule, value)` throws
+  `std::invalid_argument` -> ValueError `"<setter>: <param> must be <rule> (<dimension>), got <value>"`;
+  thin wrappers `finite` / `positive` / `nonneg` / `restitution_coef` / `poisson_ratio` / `count` take double
+  (float promotes exactly); `finite_each` / `positive_each` / `nonneg_each` template over `std::array<T, N>` and
+  name the component (`gravity[2]`). Put every loop and compound condition in a named helper: lambdas inside
+  NB_MODULE count toward ITS cyclomatic complexity (first cut: CCN 23 -> 33, debt 13 -> 23; helpers: 23, 13).
+- **Ranges**: only what the docstring, the solver's use, or physics makes evident (sizes, dt, moduli > 0;
+  frictions, skins, tau >= 0; restitution [0, 1]; Poisson (-1, 0.5]). Where a sign or a 0 might be a switch
+  (the solver often treats `<= 0` as "keep" or "off"), finite only, and list the question for the user.
+- **Probe beyond the audit**: it only probes -1 for names in `positive_tokens`. Try -1/0 on every int count:
+  `Simulation(-1)` and `get_sdf_grid((-1, ..))` ABORTED the interpreter (mdspan precondition), unseen by it.
+- **Tests**: one table-driven pytest file (`tests/python/test_input_validation.py`, 185 cases): each bad value
+  -> ValueError naming the parameter; one valid value accepted, or shown to pass validation by reaching the
+  C++ check behind it (RuntimeError) where the fixture is out of reach (analytic tree, MPI).
+- **Stub**: `python -m nanobind.stubgen -m peclet.<pkg>._<ext> -o packaging/_<ext>.pyi` against an MPI host
+  build; drop build-specific constant values (`execution_space`); stage with `configure_file` + `py.typed`,
+  install in the SKBUILD block (amr pattern). amr/core/geom have no sync check: add `test_stub_sync.py`
+  (ast names vs runtime, MPI-only names exempt on a non-MPI build). Regenerate AFTER the docstring step.
+- **Units**: the audit regex wants a unit word; phrase as "(length units)", "(length/time^2 units)",
+  "dimensionless", and say once in the class docstring that units are the caller's consistent set.
+- **Doc references**: umbrella and sibling-repo files by their path relative to the citing doc
+  (`../../docs/...`, `../../../core/...`; such paths are skipped, not broken); drop drifting line anchors
+  into other repos for the function name; a file on a branch as `git show <sha>:<path>`. `build/` resolves only
+  where a build/ dir exists on disk (check-ignore --no-index): write `<build>`.
+- **Auditing a branch**: api_audit.py reads origin/main; run a scratch copy with the ref as a variable
+  (`AUDIT_REF=HEAD`), the stub path set, and `--suite` a symlink farm whose `<pkg>` is the worktree.
+- **Traps**: `state_hash.py --save` takes a DIRECTORY; NB_MODULE growth trips `large_file` (nloc > 1000;
+  dem 812 -> 1063 here: helpers ~130, wrapped setters ~90, unit text ~30): decide up front where helpers go.
+- **Wall clock (TRS2, OMP 1)**: build cold 97 s / incremental 65 s; clang-format 1 s; state_hash 5 s (4 MPI
+  cases); ctest 304 tests 269 s (-j1); api audit 7 s; codehealth diff < 1 s; targeted pytest 0.4 s.
