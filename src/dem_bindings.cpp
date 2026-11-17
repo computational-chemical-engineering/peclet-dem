@@ -355,7 +355,8 @@ NB_MODULE(_dem, m) {
       "One granular-dynamics simulation (XPBD impulse engine + explicit Hertz-Mindlin engine, "
       "the same particle set). Set up shapes -> domain -> positions -> materials, `set_dt`, then "
       "`step(n)`; read out with the `get_*` arrays. Developer instruments live on "
-      "`.diagnostics`.")
+      "`.diagnostics`. Units: any consistent set chosen by the caller (SI or not); each "
+      "docstring states the dimension of its quantities.")
       .def(
           "__init__",
           [](Simulation* self, int capacity) {
@@ -381,7 +382,8 @@ NB_MODULE(_dem, m) {
           nb::arg("shape"), nb::arg("radius"), nb::arg("height") = 0.0f,
           nb::arg("thickness") = 0.0f,
           "Select the single particle shape and its dimensions: 'sphere' (radius), "
-          "'hollow_cylinder' (radius, height, thickness) or 'box' (half-extent = radius). RESETS "
+          "'hollow_cylinder' (radius, height, thickness) or 'box' (half-extent = radius), all in "
+          "length units. RESETS "
           "the shape registry to this one shape (use add_shape for a mixture) and records the "
           "unit-mass inverse inertia that set_positions applies to every particle -- so call it "
           "BEFORE set_positions.")
@@ -400,7 +402,9 @@ NB_MODULE(_dem, m) {
           "array indexed [x, y, z] (negative inside), sampled at nodes origin + (x, y, z) * "
           "spacing; `shell` the (M,3) surface point shell (EMPTY = sample the field's own zero "
           "level set); `inv_inertia` the unit-mass principal diagonal inverse inertia; "
-          "`bounding_radius` the canonical enclosing radius. RESETS the registry to this one "
+          "`bounding_radius` the canonical enclosing radius. `origin`, `spacing`, `grid` and "
+          "`bounding_radius` are in length units, `inv_inertia` in 1/length^2. RESETS the "
+          "registry to this one "
           "shape. See peclet.dem.build_particle for the SDF -> (grid, shell, inertia) helper.")
       .def(
           "add_shape",
@@ -412,8 +416,9 @@ NB_MODULE(_dem, m) {
           },
           nb::arg("shape"), nb::arg("radius"), nb::arg("height") = 0.0f,
           nb::arg("thickness") = 0.0f,
-          "Append an analytic shape ('sphere' | 'hollow_cylinder' | 'box', dimensions as "
-          "initialize_shape) to the registry and return its index, for a simulation with a "
+          "Append an analytic shape ('sphere' | 'hollow_cylinder' | 'box', dimensions -- radius, "
+          "height, thickness in length units -- as initialize_shape) to the registry and return "
+          "its index, for a simulation with a "
           "MIXTURE of shapes. initialize_shape stays the single-shape entry point (it RESETS the "
           "registry). Assign the returned index with set_shape_ids.")
       .def(
@@ -427,7 +432,8 @@ NB_MODULE(_dem, m) {
           },
           nb::arg("grid"), nb::arg("origin"), nb::arg("spacing"), nb::arg("shell"),
           nb::arg("inv_inertia"), nb::arg("bounding_radius"),
-          "Append a grid-SDF shape (arguments as set_sdf_shape) and return its index. "
+          "Append a grid-SDF shape (arguments as set_sdf_shape: origin, spacing, grid and "
+          "bounding_radius in length units, inv_inertia in 1/length^2) and return its index. "
           "set_sdf_shape stays the single-shape entry point (it RESETS the registry).")
       .def(
           "add_scene_shape",
@@ -477,8 +483,8 @@ NB_MODULE(_dem, m) {
             s.setDomainMinMax(f3(mn), f3(mx));
           },
           nb::arg("min"), nb::arg("max"),
-          "Set the domain by (min, max) corner tuples (arbitrary origin); keeps current "
-          "periodicity.")
+          "Set the domain by (min, max) corner tuples (arbitrary origin; length units); keeps "
+          "current periodicity.")
       // The suite-canonical form (suite/docs/NAMING.md 1.1): keyword `extent` / `origin` /
       // `periodic`, the same three names flow.Solver, peclet.voro and the AMR octree take. Bound
       // AFTER the corner overload, so a two-positional call still resolves to (min, max);
@@ -493,16 +499,19 @@ NB_MODULE(_dem, m) {
           nb::arg("extent"), nb::arg("origin") = F3Arg{0, 0, 0},
           nb::arg("periodic") = std::array<bool, 3>{true, true, false},
           "Set the domain the suite-canonical way: `extent` is the box SIZE (not the far corner), "
-          "`origin` the lower corner, `periodic` the per-axis flags. Equivalent to "
+          "`origin` the lower corner (both in length units), `periodic` the per-axis flags. "
+          "Equivalent to "
           "`set_domain(min=origin, max=origin+extent)` plus `set_periodic(*periodic)`. Either "
           "form resets the broad-phase skin to 0.1 x the global scale (as set_global_scale does).")
       .def("set_periodic", &Simulation::enablePeriodicity, nb::arg("x"), nb::arg("y"), nb::arg("z"),
            "Set periodic boundaries per axis (x, y, z); read back with the `periodic` property "
            "(suite/docs/NAMING.md 1.4).")
       .def_prop_ro("origin", &Simulation::domainOrigin,
-                   "The domain's lower corner (x, y, z) — read-only; set it with `set_domain`.")
+                   "The domain's lower corner (x, y, z), in length units — read-only; set it with "
+                   "`set_domain`.")
       .def_prop_ro("extent", &Simulation::domainExtent,
-                   "The domain's SIZE (Lx, Ly, Lz) — read-only, and note it is a size and not the "
+                   "The domain's SIZE (Lx, Ly, Lz), in length units — read-only, and note it is a "
+                   "size and not the "
                    "far corner, which is `origin + extent` (suite/docs/NAMING.md 1.1).")
       .def_prop_ro("periodic", &Simulation::domainPeriodic,
                    "Per-axis periodicity (x, y, z) — read-only; set it with `set_periodic`.")
@@ -514,9 +523,10 @@ NB_MODULE(_dem, m) {
             s.setGravity(g[0], g[1], g[2]);
           },
           nb::arg("gravity"),
-          "Set the gravitational acceleration (gx, gy, gz) -- any sequence of three floats. The "
-          "default is ZERO.")
-      .def_prop_ro("gravity", &Simulation::gravity, "The gravitational acceleration (gx, gy, gz).")
+          "Set the gravitational acceleration (gx, gy, gz), in length/time^2 units -- any "
+          "sequence of three floats. The default is ZERO.")
+      .def_prop_ro("gravity", &Simulation::gravity,
+                   "The gravitational acceleration (gx, gy, gz), in length/time^2 units.")
       .def(
           "set_thermostat",
           [](Simulation& s, float temperature, float tau, float kB) {
@@ -526,8 +536,10 @@ NB_MODULE(_dem, m) {
             s.setThermostat(temperature, tau, kB);
           },
           nb::arg("temperature"), nb::arg("tau"), nb::arg("kB") = 1.0f,
-          "Enable a Berendsen-style velocity thermostat (target temperature, coupling time tau; "
-          "tau = 0 disables).")
+          "Enable a Berendsen-style velocity thermostat: target `temperature` (temperature units, "
+          ">= 0), coupling time `tau` (time units; tau = 0 disables) and Boltzmann constant `kB` "
+          "(energy/temperature units; the measured temperature is 2 x kinetic energy / (3N x "
+          "kB)).")
       .def(
           "set_solver_iterations",
           [](Simulation& s, int pos, int vel) {
@@ -598,9 +610,9 @@ NB_MODULE(_dem, m) {
             s.setDt(dt);
           },
           nb::arg("dt"),
-          "Set the time step (> 0) every stepper uses: step, step_hertz, step_mpi, "
+          "Set the time step (> 0, time units) every stepper uses: step, step_hertz, step_mpi, "
           "step_hertz_mpi. There is no default -- a step before set_dt raises.")
-      .def_prop_ro("dt", &Simulation::dt, "The time step set by set_dt.")
+      .def_prop_ro("dt", &Simulation::dt, "The time step set by set_dt, in time units.")
       .def(
           "set_material_params",
           [](Simulation& s, float restitution_normal, float restitution_tangent, float friction) {
@@ -683,8 +695,9 @@ NB_MODULE(_dem, m) {
             s.addPlane(p[0], p[1], p[2], n[0], n[1], n[2]);
           },
           nb::arg("point"), nb::arg("normal"),
-          "Add an infinite boundary wall plane through `point`, with `normal` pointing into the "
-          "half-space the grains occupy (both 3-sequences). XPBD engine only; the Hertz engine "
+          "Add an infinite boundary wall plane through `point` (length units), with `normal` "
+          "(dimensionless direction) pointing into the half-space the grains occupy (both "
+          "3-sequences). XPBD engine only; the Hertz engine "
           "takes SDF walls.")
       .def(
           "add_sdf_wall",
@@ -701,9 +714,11 @@ NB_MODULE(_dem, m) {
           nb::arg("grid"), nb::arg("origin"), nb::arg("spacing"), nb::arg("restitution") = 0.0f,
           nb::arg("friction") = 0.0f,
           "Add a static world-space SDF wall/container (drum barrel, hopper, vibrating tray): "
-          "`grid` is the signed distance on an (nx, ny, nz) array indexed [x, y, z] at world nodes "
+          "`grid` is the signed distance (length units) on an (nx, ny, nz) array indexed [x, y, z] "
+          "at world nodes "
           "origin + (x, y, z) * spacing -- POSITIVE in the void where grains live, NEGATIVE in the "
-          "solid wall; restitution / friction are the binary particle-wall material. Returns the "
+          "solid wall; `origin` and `spacing` are in length units; restitution / friction are the "
+          "binary particle-wall material (dimensionless). Returns the "
           "wall index (for set_wall_velocity). See peclet.dem.build_wall_sdf for the SDF -> "
           "(grid, origin, spacing) helper.")
       // Rigid-body surface-velocity field of a wall: v(x) = linVel + angVel × (x − center).
@@ -719,7 +734,9 @@ NB_MODULE(_dem, m) {
           },
           nb::arg("wall_index"), nb::arg("lin_vel") = F3Arg{0, 0, 0},
           nb::arg("ang_vel") = F3Arg{0, 0, 0}, nb::arg("center") = F3Arg{0, 0, 0},
-          "Set a wall's rigid-body surface velocity v(x) = lin_vel + ang_vel × (x − center) (felt "
+          "Set a wall's rigid-body surface velocity v(x) = lin_vel + ang_vel × (x − center): "
+          "lin_vel in length/time units, ang_vel in 1/time (radians per time), center in length "
+          "units (felt "
           "by grains in contact even though the geometry is static). Cheap; call every step for a "
           "vibrating wall.")
       .def(
@@ -768,8 +785,9 @@ NB_MODULE(_dem, m) {
               s.setInvMass(im);
           },
           nb::arg("positions"),
-          "Set particle positions from an (N, 3) array, or (N, 4) whose column 3 is the INVERSE "
-          "mass (0 is remapped to 1; use set_inv_mass for a fixed body). N may not exceed "
+          "Set particle positions (length units) from an (N, 3) array, or (N, 4) whose column 3 "
+          "is the INVERSE mass (1/mass units) (0 is remapped to 1; use set_inv_mass for a fixed "
+          "body). N may not exceed "
           "`capacity`. This (re)sizes the particle set and RESETS every particle's quaternion, "
           "scale, inverse mass, shape id (to 0), velocities and gid -- so every other per-particle "
           "setter goes AFTER it.")
@@ -778,17 +796,19 @@ NB_MODULE(_dem, m) {
           [](Simulation& s, nb::ndarray<float, nb::c_contig> a) {
             s.setVelocities(rows_of(a, 3, s, "set_velocities"));
           },
-          nb::arg("velocities"), "Set particle velocities from an (N, 3) array.")
+          nb::arg("velocities"),
+          "Set particle velocities (length/time units) from an (N, 3) array.")
       .def(
           "set_external_forces",
           [](Simulation& s, nb::ndarray<float, nb::c_contig> a) {
             s.setExternalForces(rows_of(a, 3, s, "set_external_forces"));
           },
           nb::arg("forces"),
-          "Set the per-particle external FORCE (e.g. fluid drag) from an (N, 3) array. Applied "
+          "Set the per-particle external FORCE (e.g. fluid drag; force units, mass x "
+          "length/time^2) from an (N, 3) array. Applied "
           "each step as dv = F*invMass*dt; persists until re-set or cleared.")
       .def("clear_external_forces", &Simulation::clearExternalForces,
-           "Zero all per-particle external forces.")
+           "Zero all per-particle external forces (force units).")
       .def(
           "set_external_torques",
           [](Simulation& s, nb::ndarray<float, nb::c_contig> a) {
@@ -817,7 +837,8 @@ NB_MODULE(_dem, m) {
             s.setAngularVelocities(rows_of(a, 3, s, "set_angular_velocities"));
           },
           nb::arg("angular_velocities"),
-          "Set particle angular velocities (body frame) from an (N, 3) array.")
+          "Set particle angular velocities (body frame; 1/time units, radians per time) from an "
+          "(N, 3) array.")
       .def(
           "set_inv_inertia",
           [](Simulation& s, nb::ndarray<float, nb::c_contig> a) {
@@ -863,14 +884,15 @@ NB_MODULE(_dem, m) {
           "Return per-particle masses (1 / inverse mass; 0 for fixed bodies) as an (N,) array.")
       .def(
           "get_positions", [](const Simulation& s) { return rows(s.getPositions(), 3); },
-          "Return particle positions as an (N, 3) numpy array.")
+          "Return particle positions (length units) as an (N, 3) numpy array.")
       .def(
           "get_velocities", [](const Simulation& s) { return rows(s.getVelocities(), 3); },
-          "Return particle velocities as an (N, 3) numpy array.")
+          "Return particle velocities (length/time units) as an (N, 3) numpy array.")
       .def(
           "get_angular_velocities",
           [](const Simulation& s) { return rows(s.getAngularVelocities(), 3); },
-          "Return particle angular velocities (body frame) as an (N, 3) numpy array.")
+          "Return particle angular velocities (body frame; 1/time units) as an (N, 3) numpy "
+          "array.")
       .def(
           "get_inv_inertia", [](const Simulation& s) { return rows(s.getInvInertia(), 3); },
           "Return the per-particle principal-frame diagonal inverse inertia as an (N, 3) array.")
@@ -1056,7 +1078,8 @@ NB_MODULE(_dem, m) {
           },
           nb::arg("origin"), nb::arg("extent"), nb::arg("cells"), nb::arg("periodic"),
           "Set up the ORB block decomposition + core particle halo for the distributed step on "
-          "the global domain (`origin` lower corner, `extent` SIZE, `cells` per axis for the ORB "
+          "the global domain (`origin` lower corner and `extent` SIZE in length units, `cells` "
+          "per axis for the ORB "
           "grid, `periodic` per axis -- the suite's domain quartet).")
       .def(
           "enable_mpi_step",
@@ -1130,5 +1153,6 @@ NB_MODULE(_dem, m) {
       nb::arg("radii"), nb::arg("box_min") = std::nullopt, nb::arg("box_max") = std::nullopt,
       nb::arg("periodic") = false,
       "Module-level LAMMPS dump writer from raw arrays (filename, step, pos, vel, quats, radii, "
-      "box corners, periodic flag).");
+      "box corners, periodic flag), written as given: pos, radii and the box corners in length "
+      "units, vel in length/time units, quats dimensionless.");
 }
