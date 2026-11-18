@@ -829,6 +829,63 @@ inline bool launchFusedVelocityLoop(Particles& P, int nm, float vRest,
   return velLoopDone;
 }
 
+/// One iteration of the g = 0 one-shot coloured GS velocity solve (velocityUseGS on, PGS off): the
+/// residual zero, the rank-level X gate for sync interval `it`, the coloured sweep, the copy fold.
+inline void oneShotVelocityIteration(Particles& P, int nm, int it, float vRest, CpExec& space,
+                                     const VelocitySolveContext& ctx) {
+  const auto& numColors = ctx.numColors;
+  const auto& invMassVel = ctx.invMassVel;
+  const auto& invInertiaVel = ctx.invInertiaVel;
+  const auto& velOv = ctx.velOv;
+  const auto& rk = ctx.rk;
+  const auto& xOn = ctx.xOn;
+  Kokkos::deep_copy(space, P.maxApproach, 0.0f);
+  // Rank-level X (§1.4, WO-6): in sync interval t a contact fires only if this rank holds
+  // every rank-split endpoint; a non-firing contact still records its approach for the stop.
+  XGateSpec xGate;  // evaluated inline in the sweep (no separate pass)
+  if (xOn) {
+    const long long t = P.solveEpoch + it / rk.syncInterval;
+    xGate = XGateSpec{Kokkos::View<const unsigned long long*, CpMem>(P.velMask), rk.color,
+                      rk.numColors, t};
+    if (P.iterCounters) {  // diagnostics only: the explicit gate pass, to count the unfired
+      computeXGate(P.manifolds, nm, P.realIndices,
+                   Kokkos::View<const unsigned long long*, CpMem>(P.velMask), P.xGate, rk.color,
+                   rk.numColors, t);
+      P.splitStats.unfiredSplitContacts += countUnfired(P.xGate, nm);
+    }
+  }
+  solveVelocityColoredGS(ColoredManifolds{.manifolds = P.manifolds,
+                                          .numManifolds = nm,
+                                          .mColor = P.manifoldColor,
+                                          .numColors = numColors},
+                         VelocitySweepBodies{.invMass = invMassVel,
+                                             .invInertia = invInertiaVel,
+                                             .quat = P.quat,
+                                             .velPred = P.velPred,
+                                             .angVelPred = P.angVelPred,
+                                             .realIdx = P.realIndices,
+                                             .ov = velOv},
+                         P.growthRate, P.restitutionNormal, vRest, P.maxApproach, xGate);
+  foldVelocityCopies(space, P, ctx);
+}
+
+/// Mass-split Jacobi (velocityUseGS off, a global setting; docs/contact_solve_framework.md
+/// §3.1): every manifold is its own copy. Count first, make the counts global (every copy of
+/// a body must see the serial count), solve each manifold against copies of mass m / n with
+/// true-mass deltas, and add them with factor 1 -- conservative at every iterate.
+template <class Hooks>
+inline void massSplitVelocityIteration(Particles& P, int nm, const Hooks& hooks, float vRest) {
+  countVelocityJacobi(P.manifolds, nm, P.realIndices, P.constraintCounts,
+                      /*dedupTwins*/ !Hooks::distributed);
+  hooks.syncContactCounts(P);
+  solveVelocity(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
+                P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel, P.deltaAngVel,
+                P.constraintCounts, {}, 0, {}, /*massSplit=*/true,
+                /*dedupTwins*/ !Hooks::distributed);
+  applyVelocityDeltasAveraged(P.numParticles, P.velPred, P.angVelPred, P.deltaVel, P.deltaAngVel,
+                              P.constraintCounts, /*averaged=*/false);
+}
+
 /// The main velocity phase (docs/contact_solve_framework.md §4.4, §4.5, §13.3): the warm-started
 /// PGS iterations (|g| > 0; fused device loop, CUDA-graph replay or host submission), the g = 0
 /// one-shot coloured GS with rank-level X, or mass-split Jacobi, each to its adaptive stop, and the
@@ -838,7 +895,6 @@ template <class Hooks>
 inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks, CpExec& space,
                                const VelocitySolveContext& ctx, ColoringInvariant& inv) {
   const auto& velSched = ctx.velSched;
-  const auto& numColors = ctx.numColors;
   const auto& invMassVel = ctx.invMassVel;
   const auto& invInertiaVel = ctx.invInertiaVel;
   const auto& velOv = ctx.velOv;
@@ -847,11 +903,9 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
   const auto& vpkC = ctx.poissonViews.vPeak;
   const auto& orphV = ctx.poissonViews.orphan;
   const Kokkos::View<const float*, CpMem> orphPk = ctx.poissonViews.orphanPeak;
-  const auto& rk = ctx.rk;
   const auto& gMagP = ctx.gMagP;
   const auto& usePGS = ctx.usePGS;
   const auto& legacyFriction = ctx.legacyFriction;
-  const auto& xOn = ctx.xOn;
   const auto& velCons = ctx.velCons;
   const auto& stopsOn = ctx.stopsOn;
   // Restitution threshold ~ the speed one substep of free fall gains: below it a contact is
@@ -901,34 +955,7 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
         else
           emitVelIter();
       } else {
-        Kokkos::deep_copy(space, P.maxApproach, 0.0f);
-        // Rank-level X (§1.4, WO-6): in sync interval t a contact fires only if this rank holds
-        // every rank-split endpoint; a non-firing contact still records its approach for the stop.
-        XGateSpec xGate;  // evaluated inline in the sweep (no separate pass)
-        if (xOn) {
-          const long long t = P.solveEpoch + it / rk.syncInterval;
-          xGate = XGateSpec{Kokkos::View<const unsigned long long*, CpMem>(P.velMask), rk.color,
-                            rk.numColors, t};
-          if (P.iterCounters) {  // diagnostics only: the explicit gate pass, to count the unfired
-            computeXGate(P.manifolds, nm, P.realIndices,
-                         Kokkos::View<const unsigned long long*, CpMem>(P.velMask), P.xGate,
-                         rk.color, rk.numColors, t);
-            P.splitStats.unfiredSplitContacts += countUnfired(P.xGate, nm);
-          }
-        }
-        solveVelocityColoredGS(ColoredManifolds{.manifolds = P.manifolds,
-                                                .numManifolds = nm,
-                                                .mColor = P.manifoldColor,
-                                                .numColors = numColors},
-                               VelocitySweepBodies{.invMass = invMassVel,
-                                                   .invInertia = invInertiaVel,
-                                                   .quat = P.quat,
-                                                   .velPred = P.velPred,
-                                                   .angVelPred = P.angVelPred,
-                                                   .realIdx = P.realIndices,
-                                                   .ov = velOv},
-                               P.growthRate, P.restitutionNormal, vRest, P.maxApproach, xGate);
-        foldVelocityCopies(space, P, ctx);
+        oneShotVelocityIteration(P, nm, it, vRest, space, ctx);
       }
       // Every active manifold is coloured (§4.2): the count-averaged fallback is gone. The stop's
       // Allreduce carries the colouring-invariant vote (inv.vote; no extra message).
@@ -943,19 +970,8 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
       if (stopsOn && velRes <= (usePGS ? 0.02f * vRest : vRest))
         break;
     } else {
-      // Mass-split Jacobi (velocityUseGS off, a global setting; docs/contact_solve_framework.md
-      // §3.1): every manifold is its own copy. Count first, make the counts global (every copy of
-      // a body must see the serial count), solve each manifold against copies of mass m / n with
-      // true-mass deltas, and add them with factor 1 -- conservative at every iterate.
-      countVelocityJacobi(P.manifolds, nm, P.realIndices, P.constraintCounts,
-                          /*dedupTwins*/ !Hooks::distributed);
-      hooks.syncContactCounts(P);
-      solveVelocity(P.manifolds, nm, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred,
-                    P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.deltaVel,
-                    P.deltaAngVel, P.constraintCounts, {}, 0, {}, /*massSplit=*/true,
-                    /*dedupTwins*/ !Hooks::distributed);
-      applyVelocityDeltasAveraged(P.numParticles, P.velPred, P.angVelPred, P.deltaVel,
-                                  P.deltaAngVel, P.constraintCounts, /*averaged=*/false);
+      // Mass-split Jacobi (velocityUseGS off, a global setting; §3.1).
+      massSplitVelocityIteration(P, nm, hooks, vRest);
     }
     if constexpr (Hooks::distributed) {
       if (hooks.syncPoint(it))
