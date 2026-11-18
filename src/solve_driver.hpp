@@ -816,13 +816,14 @@ inline bool launchFusedVelocityLoop(Particles& P, int nm, float vRest,
       FusedLoopSpec spec{P.velocityIterations, stopsOn ? 0.02f * vRest : fusedOff, false};
       if (P.iterCounters)  // diagnostics (§12 S12): the loop writes its count on the device
         spec.iters = demIterCountSlot(P, 0);
-      velLoopDone = solveVelocityPGS(P.manifolds, nm, velSched, P.invMass, P.invInertia, P.quat,
-                                     P.velPred, P.angVelPred, P.realIndices, P.growthRate,
-                                     P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
-                                     Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
-                                     P.lambdaT, P.frictionDynamic, P.vt0, P.restitutionTangent,
-                                     Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV,
-                                     relV, vpkC, orphV, orphPk, &spec, {});
+      velLoopDone = solveVelocityPGS(
+          makePGSManifoldSweep(
+              P.manifolds, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
+              P.growthRate, P.restitutionNormal, vRest, P.maxApproach, {}, P.lambdaAcc, P.vn0,
+              Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
+              P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), bankV,
+              relV, vpkC, orphV, orphPk, {}),
+          nm, velSched, &spec);
     }
   }
   return velLoopDone;
@@ -864,11 +865,13 @@ inline void solveVelocityPhase(Particles& P, int nc, int nm, const Hooks& hooks,
   auto emitVelIter = [&] {
     Kokkos::deep_copy(space, P.maxApproach, 0.0f);
     solveVelocityPGS(
-        P.manifolds, nm, velSched, invMassVel, invInertiaVel, P.quat, P.velPred, P.angVelPred,
-        P.realIndices, P.growthRate, P.restitutionNormal, vRest, P.maxApproach, P.lambdaAcc, P.vn0,
-        Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic, P.vt0,
-        P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV,
-        vpkC, orphV, orphPk, nullptr, velOv);
+        makePGSManifoldSweep(
+            P.manifolds, invMassVel, invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,
+            P.growthRate, P.restitutionNormal, vRest, P.maxApproach, {}, P.lambdaAcc, P.vn0,
+            Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
+            P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), bankV,
+            relV, vpkC, orphV, orphPk, velOv),
+        nm, velSched);
     foldVelocityCopies(space, P, ctx);
   };
   // Device-side iteration loop (CUDA, single-rank): the whole adaptive velocity loop as ONE
@@ -994,24 +997,27 @@ inline void stabilizeOneSided(Particles& P, int nm, const Hooks& hooks, CpExec& 
   auto emitOsIter = [&] {
     Kokkos::deep_copy(space, P.maxApproach, 0.0f);
     solveVelocityPGS(
-        P.manifolds, nm, velSched, invMassVel, invInertiaVel, P.quat, P.velPred, P.angVelPred,
-        P.realIndices, P.growthRate, P.restitutionNormal, vRestS, P.maxApproach, P.lambdaAcc, P.vn0,
-        Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic, P.vt0,
-        P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV,
-        vpkC, orphV, orphPk, nullptr, velOv);
+        makePGSManifoldSweep(
+            P.manifolds, invMassVel, invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,
+            P.growthRate, P.restitutionNormal, vRestS, P.maxApproach, {}, P.lambdaAcc, P.vn0,
+            Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
+            P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), bankV,
+            relV, vpkC, orphV, orphPk, velOv),
+        nm, velSched);
     foldVelocityCopies(space, P, ctx);
   };
   bool osLoopDone = false;
   if constexpr (!Hooks::distributed) {
     if (!velCopiesOn && velFusedP) {
       const FusedLoopSpec spec{2 * P.velocityIterations, stopsOn ? vRestS : fusedOff, false};
-      osLoopDone = solveVelocityPGS(P.manifolds, nm, velSched, P.invMass, P.invInertia, P.quat,
-                                    P.velPred, P.angVelPred, P.realIndices, P.growthRate,
-                                    P.restitutionNormal, vRestS, P.maxApproach, P.lambdaAcc, P.vn0,
-                                    Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
-                                    P.lambdaT, P.frictionDynamic, P.vt0, P.restitutionTangent,
-                                    Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV,
-                                    relV, vpkC, orphV, orphPk, &spec, {});
+      osLoopDone = solveVelocityPGS(
+          makePGSManifoldSweep(
+              P.manifolds, P.invMass, P.invInertia, P.quat, P.velPred, P.angVelPred, P.realIndices,
+              P.growthRate, P.restitutionNormal, vRestS, P.maxApproach, {}, P.lambdaAcc, P.vn0,
+              Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
+              P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), bankV,
+              relV, vpkC, orphV, orphPk, {}),
+          nm, velSched, &spec);
     }
   }
   bool graphOs = false;
@@ -1157,13 +1163,15 @@ inline bool launchFusedMultilevelLoop(Particles& P, int nm, CpExec& space,
       } else if (H.numLevels == 0) {
         // aggregation found nothing: the loop is plain fine sweeps on the QS residual
         const FusedLoopSpec spec{2 * P.velocityIterations, stopsOn ? vRestS : fusedOff, false};
-        mlLoopDone = solveVelocityPGS(P.manifolds, nm, velSched, P.invMass, P.invInertia, P.quat,
-                                      P.velPred, P.angVelPred, P.realIndices, P.growthRate,
-                                      P.restitutionNormal, vRestS, P.maxApproach, P.lambdaAcc,
-                                      P.vn0, Kokkos::View<const unsigned char*, CpMem>(P.sideFlags),
-                                      P.lambdaT, P.frictionDynamic, P.vt0, P.restitutionTangent,
-                                      Kokkos::View<const float*, CpMem>(P.posImpulse),
-                                      P.maxApproachQS, bankV, relV, vpkC, orphV, orphPk, &spec, {});
+        mlLoopDone = solveVelocityPGS(
+            makePGSManifoldSweep(P.manifolds, P.invMass, P.invInertia, P.quat, P.velPred,
+                                 P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal,
+                                 vRestS, P.maxApproach, P.maxApproachQS, P.lambdaAcc, P.vn0,
+                                 Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+                                 P.frictionDynamic, P.vt0, P.restitutionTangent,
+                                 Kokkos::View<const float*, CpMem>(P.posImpulse), bankV, relV, vpkC,
+                                 orphV, orphPk, {}),
+            nm, velSched, &spec);
       }
     }
   }
@@ -1254,11 +1262,14 @@ inline void stabilizeMultilevel(Particles& P, int nm, int nBodies, const Hooks& 
   auto emitMlIter = [&] {
     Kokkos::deep_copy(space, P.maxApproachQS, 0.0f);
     solveVelocityPGS(
-        P.manifolds, nm, velSched, invMassVel, invInertiaVel, P.quat, P.velPred, P.angVelPred,
-        P.realIndices, P.growthRate, P.restitutionNormal, vRestS, P.maxApproach, P.lambdaAcc, P.vn0,
-        Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic, P.vt0,
-        P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), P.maxApproachQS,
-        bankV, relV, vpkC, orphV, orphPk, nullptr, velOv);
+        makePGSManifoldSweep(P.manifolds, invMassVel, invInertiaVel, P.quat, P.velPred,
+                             P.angVelPred, P.realIndices, P.growthRate, P.restitutionNormal, vRestS,
+                             P.maxApproach, P.maxApproachQS, P.lambdaAcc, P.vn0,
+                             Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT,
+                             P.frictionDynamic, P.vt0, P.restitutionTangent,
+                             Kokkos::View<const float*, CpMem>(P.posImpulse), bankV, relV, vpkC,
+                             orphV, orphPk, velOv),
+        nm, velSched);
     foldVelocityCopies(space, P, ctx);
     if (H.numLevels > 0) {
       multilevelCoarseCycle(P.manifolds, nm, P.realIndices, invMassCoarse, P.velPred, P.lambdaAcc,
@@ -1394,11 +1405,13 @@ inline void stabilizeEscalation(Particles& P, int nm, const Hooks& hooks, CpExec
   for (int it = 0; it < 256; ++it) {
     Kokkos::deep_copy(P.maxApproach, 0.0f);
     solveVelocityPGS(
-        P.manifolds, nm, velSched, invMassVel, invInertiaVel, P.quat, P.velPred, P.angVelPred,
-        P.realIndices, P.growthRate, P.restitutionNormal, vRestS, P.maxApproach, P.lambdaAcc, P.vn0,
-        Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic, P.vt0,
-        P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), {}, bankV, relV,
-        vpkC, orphV, orphPk, nullptr, velOv);
+        makePGSManifoldSweep(
+            P.manifolds, invMassVel, invInertiaVel, P.quat, P.velPred, P.angVelPred, P.realIndices,
+            P.growthRate, P.restitutionNormal, vRestS, P.maxApproach, {}, P.lambdaAcc, P.vn0,
+            Kokkos::View<const unsigned char*, CpMem>(P.sideFlags), P.lambdaT, P.frictionDynamic,
+            P.vt0, P.restitutionTangent, Kokkos::View<const float*, CpMem>(P.posImpulse), bankV,
+            relV, vpkC, orphV, orphPk, velOv),
+        nm, velSched);
     foldVelocityCopies(space, P, ctx);
     const float esRes = hooks.allMax(withConsensus(P, readFloat(P.maxApproach), velCons));
     if (stopsOn && esRes <= vRestS)

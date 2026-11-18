@@ -1581,34 +1581,16 @@ inline PGSManifoldSweep makePGSManifoldSweep(
 
 /// Returns true when the sweep (or, with `loop`, the whole iteration loop) was submitted;
 /// false ONLY in loop mode when the fused path is unavailable — the caller then runs its own
-/// host-side iteration loop (which calls back in per-iteration mode).
-inline bool solveVelocityPGS(
-    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds, const ColorSchedule& sched,
-    Kokkos::View<const float*, CpMem> invMass, Kokkos::View<const float* [3], CpMem> invInertia,
-    Kokkos::View<const float* [4], CpMem> quat, Kokkos::View<float* [3], CpMem> velPred,
-    Kokkos::View<float* [3], CpMem> angVelPred, Kokkos::View<const int*, CpMem> realIdx,
-    float growthRate, float restitutionNormal, float restVelThreshold,
-    Kokkos::View<float, CpMem> maxApproach, Kokkos::View<float*, CpMem> lambdaAcc,
-    Kokkos::View<const float*, CpMem> vn0, Kokkos::View<const unsigned char*, CpMem> sideFlag,
-    Kokkos::View<float* [3], CpMem> lambdaT, float frictionDynamic,
-    Kokkos::View<const float* [3], CpMem> vt0 = {}, float restitutionTangent = 0.0f,
-    Kokkos::View<const float*, CpMem> posImpulse = {},
-    Kokkos::View<float, CpMem> maxApproachQS = {}, Kokkos::View<float*, CpMem> restBank = {},
-    Kokkos::View<float*, CpMem> restRel = {}, Kokkos::View<const float*, CpMem> restVPeak = {},
-    Kokkos::View<float*, CpMem> restOrphan = {},
-    Kokkos::View<const float*, CpMem> restOrphanVPeak = {}, const FusedLoopSpec* loop = nullptr,
-    SlotOverride ov = {}) {
+/// host-side iteration loop (which calls back in per-iteration mode). `f` is the per-manifold
+/// sweep (makePGSManifoldSweep); `sched` its colouring.
+inline bool solveVelocityPGS(const PGSManifoldSweep& f, int numManifolds,
+                             const ColorSchedule& sched, const FusedLoopSpec* loop = nullptr) {
   const Kokkos::View<const int*, CpMem> mColor = sched.color;
   const int numColors = sched.numColors;
   const Kokkos::View<const int*, CpMem> colorPerm = sched.perm;
   const std::vector<int>* colorOffs = sched.offs;
   const FusedSweepCtx* fused = sched.fused;
   CpExec space;
-  const PGSManifoldSweep f = makePGSManifoldSweep(
-      manifolds, invMass, invInertia, quat, velPred, angVelPred, realIdx, growthRate,
-      restitutionNormal, restVelThreshold, maxApproach, maxApproachQS, lambdaAcc, vn0, sideFlag,
-      lambdaT, frictionDynamic, vt0, restitutionTangent, posImpulse, restBank, restRel, restVPeak,
-      restOrphan, restOrphanVPeak, ov);
   // Fused mode (CUDA): one persistent kernel iterates the colours device-side with a grid
   // barrier between them — same per-manifold math, same colour ordering, bit-identical to the
   // launch loop below (see solver_fused.hpp). Loop mode additionally iterates the whole
@@ -1617,7 +1599,7 @@ inline bool solveVelocityPGS(
   if (loop) {
     if (fused && fused->maxBucket > 0 && colorOffs)
       return demLaunchFusedSweepLoop(space, f, colorPerm, *fused, numColors, *loop,
-                                     (maxApproachQS.data() ? maxApproachQS : maxApproach).data());
+                                     f.maxApproachQS.data());
     return false;
   }
   if (fused && fused->maxBucket > 0 && colorOffs &&
