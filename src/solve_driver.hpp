@@ -1241,11 +1241,18 @@ inline void stabilizeMultilevel(Particles& P, int nm, int nBodies, const Hooks& 
               P.mlMate,        P.mlOriginG, P.mlComOffG,  P.mlAngG, P.mlAngG0, P.mlInvIG, P.mlAccD};
   const MlBodyViews mlBody{Kokkos::View<const float* [3], CpMem>(P.posPred), P.angVelPred,
                            Kokkos::View<const float* [4], CpMem>(P.quat), invInertiaCoarse};
+  const MlEligibility mlElig{P.manifolds,
+                             nm,
+                             Kokkos::View<const int*, CpMem>(P.manifoldColor),
+                             Kokkos::View<const float*, CpMem>(P.vn0),
+                             Kokkos::View<const float* [3], CpMem>(P.vt0),
+                             Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent),
+                             P.posPred,
+                             gHat,
+                             qsThr,
+                             mlGates};
   const ContactHierarchy H = buildContactHierarchy(
-      P.manifolds, nm, P.realIndices, Kokkos::View<const int*, CpMem>(P.manifoldColor),
-      Kokkos::View<const float*, CpMem>(P.vn0), Kokkos::View<const float* [3], CpMem>(P.vt0),
-      Kokkos::View<const unsigned char*, CpMem>(P.manifoldPersistent), P.posPred, gHat,
-      invMassCoarse, qsThr, mlGates, nBodies, S, P.bodyWinner, P.bodyColorMask,
+      mlElig, P.realIndices, invMassCoarse, nBodies, S, P.bodyWinner, P.bodyColorMask,
       /*excludeImmovable*/ sleepOn,
       sleepOn ? Kokkos::View<const unsigned char*, CpMem>(P.asleep)
               : Kokkos::View<const unsigned char*, CpMem>(),
