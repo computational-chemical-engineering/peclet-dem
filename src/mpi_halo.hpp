@@ -1570,9 +1570,11 @@ class ParticleHalo {
   }
 
  private:
-  // Download the committed state and pack it (position drives ownership; the rest is the payload).
-  // Each particle also carries its slice of the persistent-contact ledger (see MigratePack).
-  void packState(Particles& P, std::vector<peclet::core::Vec<3>>& pos, std::vector<char>& payload) {
+  // Download the committed state and pack each owned particle's record (position drives
+  // ownership; the rest is the payload); gidToLocal maps each gid to its local index.
+  std::vector<MigratePack> packParticleRecords(
+      const Particles& P, std::vector<peclet::core::Vec<3>>& pos, std::vector<char>& payload,
+      std::unordered_map<unsigned, int>& gidToLocal) const {
     const int no = P.numReal;
     auto h_pos = Kokkos::create_mirror_view(P.pos);
     auto h_quat = Kokkos::create_mirror_view(P.quat);
@@ -1611,7 +1613,6 @@ class ParticleHalo {
     pos.assign((std::size_t)no, peclet::core::Vec<3>{});
     payload.assign((std::size_t)no * sizeof(MigratePack), 0);
     std::vector<MigratePack> packs((std::size_t)no);
-    std::unordered_map<unsigned, int> gidToLocal;
     gidToLocal.reserve((std::size_t)no * 2);
     for (int i = 0; i < no; ++i) {
       pos[(std::size_t)i] = peclet::core::Vec<3>{h_pos(i, 0), h_pos(i, 1), h_pos(i, 2)};
@@ -1637,10 +1638,14 @@ class ParticleHalo {
       m.numWarm = 0;
       gidToLocal.emplace(static_cast<unsigned>(h_gid(i)), i);
     }
-    // Distribute the previous-substep converged ledger onto its endpoint particles: each pair
-    // rides on BOTH locally-owned endpoints (after the move either endpoint's new rank may own the
-    // pair; the unpack dedupes by key). Beyond kWarmCarryMax the lowest-|impulse| entry is
-    // evicted — a dropped pair merely warm-starts cold on the receiving rank.
+    return packs;
+  }
+  // Distribute the previous-substep converged ledger onto its endpoint particles: each pair
+  // rides on BOTH locally-owned endpoints (after the move either endpoint's new rank may own the
+  // pair; the unpack dedupes by key). Beyond kWarmCarryMax the lowest-|impulse| entry is
+  // evicted — a dropped pair merely warm-starts cold on the receiving rank.
+  static void carryWarmLedger(const Particles& P, std::vector<MigratePack>& packs,
+                              const std::unordered_map<unsigned, int>& gidToLocal) {
     if (P.prevPairCount > 0) {
       const int pc = P.prevPairCount;
       // Full-view mirrors (not row-range subviews): a row range of a LayoutLeft float*[3] view is
@@ -1701,9 +1706,11 @@ class ParticleHalo {
             attach(it->second, we, w);
       }
     }
-    // Force-engine (Hertz–Mindlin) history. Pack the LIVE cached-pair springs (hertzKeys/hertzXi
-    // hold the current values; keys are gid-based) onto their locally-owned endpoints, and each
-    // particle's wall-history slots verbatim.
+  }
+  // Force-engine (Hertz–Mindlin) history. Pack the LIVE cached-pair springs (hertzKeys/hertzXi
+  // hold the current values; keys are gid-based) onto their locally-owned endpoints.
+  static void carryHertzLedger(const Particles& P, std::vector<MigratePack>& packs,
+                               const std::unordered_map<unsigned, int>& gidToLocal) {
     if (P.hertzNumPairs > 0) {
       const int hn = P.hertzNumPairs;
       auto h_hk = Kokkos::create_mirror_view(P.hertzKeys);
@@ -1746,21 +1753,32 @@ class ParticleHalo {
           attachHertz(it->second, he, w);
       }
     }
-    {
-      auto h_xw = Kokkos::create_mirror_view(P.hertzXiWall);
-      auto h_sw = Kokkos::create_mirror_view(P.hertzSnWall);
-      Kokkos::deep_copy(h_xw, P.hertzXiWall);
-      Kokkos::deep_copy(h_sw, P.hertzSnWall);
-      for (int i = 0; i < no; ++i)
-        for (int wi = 0; wi < Particles::kHertzMaxWalls; ++wi) {
-          const int slot = i * Particles::kHertzMaxWalls + wi;
-          MigratePack& m = packs[(std::size_t)i];
-          m.hertzXiWall[wi][0] = h_xw(slot, 0);
-          m.hertzXiWall[wi][1] = h_xw(slot, 1);
-          m.hertzXiWall[wi][2] = h_xw(slot, 2);
-          m.hertzSnWall[wi] = h_sw(slot);
-        }
-    }
+  }
+  // Force-engine (Hertz–Mindlin) wall history: each particle's wall-history slots, verbatim.
+  static void packWallHistory(const Particles& P, std::vector<MigratePack>& packs, int no) {
+    auto h_xw = Kokkos::create_mirror_view(P.hertzXiWall);
+    auto h_sw = Kokkos::create_mirror_view(P.hertzSnWall);
+    Kokkos::deep_copy(h_xw, P.hertzXiWall);
+    Kokkos::deep_copy(h_sw, P.hertzSnWall);
+    for (int i = 0; i < no; ++i)
+      for (int wi = 0; wi < Particles::kHertzMaxWalls; ++wi) {
+        const int slot = i * Particles::kHertzMaxWalls + wi;
+        MigratePack& m = packs[(std::size_t)i];
+        m.hertzXiWall[wi][0] = h_xw(slot, 0);
+        m.hertzXiWall[wi][1] = h_xw(slot, 1);
+        m.hertzXiWall[wi][2] = h_xw(slot, 2);
+        m.hertzSnWall[wi] = h_sw(slot);
+      }
+  }
+  // Download the committed state and pack it (position drives ownership; the rest is the payload).
+  // Each particle also carries its slice of the persistent-contact ledger (see MigratePack).
+  void packState(Particles& P, std::vector<peclet::core::Vec<3>>& pos, std::vector<char>& payload) {
+    const int no = P.numReal;
+    std::unordered_map<unsigned, int> gidToLocal;
+    std::vector<MigratePack> packs = packParticleRecords(P, pos, payload, gidToLocal);
+    carryWarmLedger(P, packs, gidToLocal);
+    carryHertzLedger(P, packs, gidToLocal);
+    packWallHistory(P, packs, no);
     for (int i = 0; i < no; ++i)
       std::memcpy(&payload[(std::size_t)i * sizeof(MigratePack)], &packs[(std::size_t)i],
                   sizeof(MigratePack));
