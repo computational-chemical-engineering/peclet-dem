@@ -545,18 +545,14 @@ inline void colorMlLevelManifolds(CpExec& space, const MlEligibility& elig,
 /// support-oriented). Walls (bodyB < 0) never merge but their manifolds ARE coarse contacts
 /// (the momentum sink). Returns the host hierarchy description.
 inline ContactHierarchy buildContactHierarchy(
-    Kokkos::View<const ManifoldC*, CpMem> manifolds, int numManifolds,
-    Kokkos::View<const int*, CpMem> realIdx, Kokkos::View<const int*, CpMem> mColor,
-    Kokkos::View<const float*, CpMem> vn0, Kokkos::View<const float* [3], CpMem> vt0,
-    Kokkos::View<const unsigned char*, CpMem> persistent,
-    Kokkos::View<const float* [3], CpMem> posPred, F3 gHat,
-    Kokkos::View<const float*, CpMem> invMass, float qsThr, int gateMask, int numReal, MlScratch& S,
+    const MlEligibility& elig, Kokkos::View<const int*, CpMem> realIdx,
+    Kokkos::View<const float*, CpMem> invMass, int numReal, MlScratch& S,
     Kokkos::View<long long*, CpMem> winner, Kokkos::View<std::uint64_t*, CpMem> colorMask,
     bool excludeImmovable = false, Kokkos::View<const unsigned char*, CpMem> asleep = {},
     const MlBodyViews& body = {}) {
   ContactHierarchy H;
   CpExec space;
-  if (numManifolds <= 0 || numReal <= 0)
+  if (elig.numManifolds <= 0 || numReal <= 0)
     return H;
   // A sleeper carries a small POSITIVE effective inverse mass (heavy but not rigid, so the fine PGS
   // does not diverge against it), so the invMass==0 test alone no longer identifies it — exclude by
@@ -569,7 +565,7 @@ inline ContactHierarchy buildContactHierarchy(
         KOKKOS_LAMBDA(int i) { grp(i) = i; });
     auto cp = S.colorPacked;
     Kokkos::parallel_for(
-        "peclet::dem::ml_packed_init", Kokkos::RangePolicy<CpExec>(space, 0, numManifolds),
+        "peclet::dem::ml_packed_init", Kokkos::RangePolicy<CpExec>(space, 0, elig.numManifolds),
         KOKKOS_LAMBDA(int idx) { cp(idx) = ~0ll; });  // every 6-bit slot = 63 (skip)
   }
 
@@ -580,9 +576,6 @@ inline ContactHierarchy buildContactHierarchy(
   const bool haveGeometry = S.invIG.extent(0) >= S.invMassG.extent(0) &&
                             static_cast<int>(S.accD.extent(0)) >= numReal &&
                             body.quat.extent(0) > 0 && body.invIc.extent(0) > 0;
-
-  const MlEligibility elig{manifolds,  numManifolds, mColor, vn0,   vt0,
-                           persistent, posPred,      gHat,   qsThr, gateMask};
 
   for (int lvl = 1; lvl <= kMlMaxLevels; ++lvl) {
     if (parentOff + ngPrev > parentCap)
@@ -646,7 +639,8 @@ inline ContactHierarchy buildContactHierarchy(
     }
     // ---- rigid-aggregate geometry of this level (§2.3; the pools are allocated lazily) ----
     if (haveGeometry)
-      buildMlLevelGeometry(S, groupOff, ngNew, numReal, posPred, invMass, body.quat, body.invIc);
+      buildMlLevelGeometry(S, groupOff, ngNew, numReal, elig.posPred, invMass, body.quat,
+                           body.invIc);
     // ---- colour the crossing manifolds of this level on the group graph ----
     colorMlLevelManifolds(space, elig, realIdx, S, winner, colorMask, ngNew, lvl, H);
     H.groupOff.push_back(groupOff);
